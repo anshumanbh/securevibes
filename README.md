@@ -253,7 +253,6 @@ export ANTHROPIC_API_KEY='your-api-key-here'
 ```
 Get your API key from: https://console.anthropic.com/
 
-```
 
 ### Optional Configuration
 
