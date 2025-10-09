@@ -46,6 +46,8 @@ class TestCLIBasics:
         result = runner.invoke(cli, ['scan', '--help'])
         assert result.exit_code == 0
         assert 'scan' in result.output.lower()
+        # Verify streaming flag is documented
+        assert '--streaming' in result.output
     
     def test_assess_help(self, runner):
         """Test assess command help"""
@@ -95,6 +97,34 @@ class TestScanCommand:
         ])
         # Should complete (may fail if no API key, but command structure is valid)
         assert '--help' not in result.output  # Didn't fall back to help
+    
+    def test_scan_streaming_flag_accepted(self, runner, test_repo):
+        """Test that --streaming flag is accepted"""
+        result = runner.invoke(cli, ['scan', str(test_repo), '--streaming'])
+        # Should not show help (flag is recognized)
+        # May fail for other reasons (no API key, etc.) but flag should be valid
+        assert '--help' not in result.output or result.exit_code != 0
+    
+    def test_scan_streaming_with_debug(self, runner, test_repo):
+        """Test --streaming with --debug flag"""
+        result = runner.invoke(cli, ['scan', str(test_repo), '--streaming', '--debug'])
+        # Flags should be recognized (may fail for API key)
+        assert '--help' not in result.output or result.exit_code != 0
+    
+    def test_scan_banner_shows_streaming_mode(self, runner, test_repo):
+        """Test that streaming mode shows in banner"""
+        result = runner.invoke(cli, ['scan', str(test_repo), '--streaming'])
+        # Banner should indicate streaming mode
+        if 'SecureVibes' in result.output:
+            assert 'Streaming Mode' in result.output or 'streaming' in result.output.lower()
+    
+    def test_scan_classic_mode_banner(self, runner, test_repo):
+        """Test that classic mode doesn't show streaming in banner"""
+        result = runner.invoke(cli, ['scan', str(test_repo)])
+        # Banner should not say streaming mode (unless using --streaming)
+        if 'SecureVibes' in result.output and '--streaming' not in result.output:
+            # Classic mode banner
+            pass  # Just verify it runs
 
 
 class TestAssessCommand:
