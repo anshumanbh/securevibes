@@ -101,9 +101,11 @@ import asyncio
 from securevibes import SecurityScanner
 
 async def main():
-    # Authentication via ANTHROPIC_API_KEY env var or claude CLI session
+    # Authentication is automatically handled by Claude Agent SDK via:
+    # - ANTHROPIC_API_KEY environment variable, or
+    # - Session token from `claude` CLI (run: claude, then /login)
     scanner = SecurityScanner(
-        model="claude-3-5-sonnet-20241022"
+        model="sonnet"  # Use shorthand: sonnet, haiku, opus
     )
     
     result = await scanner.scan("/path/to/repo")
@@ -118,9 +120,11 @@ import asyncio
 from securevibes import StreamingScanner
 
 async def main():
-    # Authentication via ANTHROPIC_API_KEY env var or claude CLI session
+    # Authentication is automatically handled by Claude Agent SDK via:
+    # - ANTHROPIC_API_KEY environment variable, or
+    # - Session token from `claude` CLI (run: claude, then /login)
     scanner = StreamingScanner(
-        model="sonnet",
+        model="sonnet",  # Use shorthand: sonnet, haiku, opus
         debug=True  # Show agent thinking
     )
     

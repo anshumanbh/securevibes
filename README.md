@@ -183,10 +183,11 @@ import asyncio
 from securevibes import SecurityScanner
 
 async def main():
-    # Authentication is handled via environment (ANTHROPIC_API_KEY)
-    # or session token (from `claude` CLI /login)
+    # Authentication is automatically handled by Claude Agent SDK via:
+    # - ANTHROPIC_API_KEY environment variable, or
+    # - Session token from `claude` CLI (run: claude, then /login)
     scanner = SecurityScanner(
-        model="claude-3-5-sonnet-20241022"
+        model="sonnet"  # Use shorthand: sonnet, haiku, opus
     )
     
     result = await scanner.scan("/path/to/repo")
@@ -210,13 +211,14 @@ For long-running scans with real-time progress:
 
 ```python
 import asyncio
-from securevibes.scanner.streaming_scanner import StreamingScanner
+from securevibes import StreamingScanner
 
 async def main():
-    # Streaming scanner with real-time progress
+    # Authentication is automatically handled by Claude Agent SDK via:
+    # - ANTHROPIC_API_KEY environment variable, or
+    # - Session token from `claude` CLI (run: claude, then /login)
     scanner = StreamingScanner(
-        api_key="your-api-key",
-        model="sonnet",
+        model="sonnet",  # Use shorthand: sonnet, haiku, opus
         debug=True  # Show agent narration
     )
     

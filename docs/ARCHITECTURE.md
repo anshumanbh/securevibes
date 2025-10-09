@@ -263,8 +263,8 @@ cd packages/core
 # Install in development mode with all dependencies
 pip install -e ".[dev]"
 
-# Set Claude API key (required for agent execution)
-export CLAUDE_API_KEY="your-api-key"
+# Set Anthropic API key (required for agent execution)
+export ANTHROPIC_API_KEY="your-api-key"
 ```
 
 ### CLI Reference
@@ -280,7 +280,7 @@ securevibes scan [PATH] [OPTIONS]
 **Options:**
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--api-key` | Claude API key | `$CLAUDE_API_KEY` |
+| `--api-key` | Anthropic API key | `$ANTHROPIC_API_KEY` |
 | `--model`, `-m` | Claude model to use | `claude-3-5-sonnet-20241022` |
 | `--output`, `-o` | Save results to file | - |
 | `--format`, `-f` | Output format: `json`, `text`, `table` | `table` |
@@ -306,8 +306,8 @@ securevibes scan /path/to/project --severity high
 # Export as JSON
 securevibes scan . --format json --output results.json
 
-# Use different model
-securevibes scan . --model claude-3-5-haiku-20241022
+# Use different model (shorthand or full ID)
+securevibes scan . --model haiku  # or claude-3-5-haiku-20241022
 ```
 
 #### Individual Phase Commands
@@ -328,7 +328,7 @@ securevibes report .securevibes/scan_results.json
 
 ### Important Implementation Details
 
-1. **Vulnerability Severity Levels**: CRITICAL, HIGH, MEDIUM, LOW (defined in `securevibes/models/issue.py`)
+1. **Vulnerability Severity Levels**: CRITICAL, HIGH, MEDIUM, LOW, INFO (defined in `securevibes/models/issue.py`)
 
 2. **STRIDE Categories**: Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, Elevation of Privilege
 
