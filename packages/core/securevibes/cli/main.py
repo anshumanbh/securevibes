@@ -15,6 +15,7 @@ from rich import box
 from securevibes import __version__
 from securevibes.models.issue import Severity
 from securevibes.scanner.security_scanner import SecurityScanner
+from securevibes.scanner.streaming_scanner import StreamingScanner
 
 console = Console()
 
@@ -32,30 +33,36 @@ def cli():
 
 @cli.command()
 @click.argument('path', type=click.Path(exists=True), default='.')
-@click.option('--api-key', envvar='CLAUDE_API_KEY', help='Claude API key')
 @click.option('--model', '-m', default='sonnet', 
               help='Claude model to use (e.g., sonnet, haiku)')
 @click.option('--output', '-o', type=click.Path(), help='Output file path')
-@click.option('--format', '-f', type=click.Choice(['json', 'text', 'table']), default='table', help='Output format')
+@click.option('--format', '-f', type=click.Choice(['markdown', 'json', 'text', 'table']), default='markdown', help='Output format (default: markdown)')
 @click.option('--severity', '-s', type=click.Choice(['critical', 'high', 'medium', 'low']), 
               help='Minimum severity to report')
 @click.option('--no-save', is_flag=True, help='Do not save results to .securevibes/')
 @click.option('--quiet', '-q', is_flag=True, help='Minimal output (errors only)')
 @click.option('--debug', is_flag=True, help='Show verbose diagnostic output')
-def scan(path: str, api_key: Optional[str], model: str, output: Optional[str], format: str, 
-         severity: Optional[str], no_save: bool, quiet: bool, debug: bool):
+@click.option('--streaming', is_flag=True, help='Enable real-time streaming progress (recommended for large scans)')
+def scan(path: str, model: str, output: Optional[str], format: str, 
+         severity: Optional[str], no_save: bool, quiet: bool, debug: bool, streaming: bool):
     """
     Scan a repository for security vulnerabilities.
     
     Examples:
     
-        securevibes scan .
+        securevibes scan .  # Creates .securevibes/scan_report.md (default)
         
         securevibes scan /path/to/project --severity high
         
         securevibes scan . --format json --output results.json
         
+        securevibes scan . --format markdown --output custom_report.md  # Saves to .securevibes/custom_report.md
+        
+        securevibes scan . --format table  # Terminal table (no file saved)
+        
         securevibes scan . --model claude-3-5-haiku-20241022  # Use faster/cheaper model
+        
+        securevibes scan . --streaming  # Real-time progress (recommended for large repos)
     """
     try:
         # Validate flag conflicts
@@ -63,17 +70,13 @@ def scan(path: str, api_key: Optional[str], model: str, output: Optional[str], f
             console.print("[yellow]⚠️  Warning: --quiet and --debug are contradictory. Using --debug.[/yellow]")
             quiet = False  # Debug takes precedence
         
-        # Validate API key early
-        if not api_key:
-            console.print("[bold red]❌ Error:[/bold red] CLAUDE_API_KEY environment variable not set")
-            console.print("\n[dim]Set it with: export CLAUDE_API_KEY='your-api-key'[/dim]")
-            console.print("[dim]Or pass directly: securevibes scan --api-key 'your-api-key'[/dim]")
-            sys.exit(1)
-        
         # Show banner unless quiet
         if not quiet:
             console.print("[bold cyan]🛡️ SecureVibes Security Scanner[/bold cyan]")
-            console.print("[dim]AI-Powered Vulnerability Detection[/dim]")
+            if streaming:
+                console.print("[dim]AI-Powered Vulnerability Detection (Streaming Mode)[/dim]")
+            else:
+                console.print("[dim]AI-Powered Vulnerability Detection[/dim]")
             console.print()
         
         # Ensure output directory exists if saving results
@@ -85,8 +88,8 @@ def scan(path: str, api_key: Optional[str], model: str, output: Optional[str], f
                 console.print(f"[bold red]❌ Error:[/bold red] Cannot create output directory: {e}")
                 sys.exit(1)
         
-        # Run scan
-        result = asyncio.run(_run_scan(path, api_key, model, not no_save, quiet, debug))
+        # Run scan (use streaming scanner if requested)
+        result = asyncio.run(_run_scan(path, model, not no_save, quiet, debug, streaming))
         
         # Filter by severity if specified
         if severity:
@@ -99,7 +102,34 @@ def scan(path: str, api_key: Optional[str], model: str, output: Optional[str], f
             ]
         
         # Output results
-        if format == 'json':
+        if format == 'markdown':
+            from securevibes.reporters.markdown_reporter import MarkdownReporter
+            
+            if output:
+                # If absolute path, use as-is; otherwise save to .securevibes/
+                output_path = Path(output)
+                if not output_path.is_absolute():
+                    output_path = Path(path) / '.securevibes' / output
+                
+                try:
+                    # Ensure parent directory exists
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    MarkdownReporter.save(result, output_path)
+                    console.print(f"\n✅ Markdown report saved to: {output_path}")
+                except (IOError, OSError, PermissionError) as e:
+                    console.print(f"[bold red]❌ Error writing output file:[/bold red] {e}")
+                    sys.exit(1)
+            else:
+                # Save to default location
+                default_path = Path(path) / '.securevibes' / 'scan_report.md'
+                try:
+                    MarkdownReporter.save(result, default_path)
+                    console.print(f"\n📄 Markdown report: [cyan]{default_path}[/cyan]")
+                except (IOError, OSError, PermissionError) as e:
+                    console.print(f"[bold red]❌ Error writing report:[/bold red] {e}")
+                    sys.exit(1)
+        
+        elif format == 'json':
             import json
             output_data = result.to_dict()
             if output:
@@ -139,13 +169,18 @@ def scan(path: str, api_key: Optional[str], model: str, output: Optional[str], f
         sys.exit(1)
 
 
-async def _run_scan(path: str, api_key: Optional[str], model: str, save_results: bool, quiet: bool, debug: bool):
+async def _run_scan(path: str, model: str, save_results: bool, quiet: bool, debug: bool, streaming: bool):
     """Run the actual scan with progress indicator"""
 
-    scanner = SecurityScanner(api_key=api_key, model=model, debug=debug)
     repo_path = Path(path).absolute()
-
-    # The scanner now handles all output
+    
+    # Use streaming scanner if requested, otherwise use classic scanner
+    if streaming:
+        scanner = StreamingScanner(model=model, debug=debug)
+    else:
+        scanner = SecurityScanner(model=model, debug=debug)
+    
+    # The scanner handles all output
     result = await scanner.scan(str(repo_path))
 
     return result
@@ -330,10 +365,9 @@ def report(report_path: str):
 
 @cli.command()
 @click.argument('path', type=click.Path(exists=True), default='.')
-@click.option('--api-key', envvar='CLAUDE_API_KEY', help='Claude API key')
 @click.option('--model', '-m', default='claude-3-5-haiku-20241022', help='Claude model to use')
 @click.option('--debug', is_flag=True, default=True, help='Show verbose diagnostic output (default: enabled)')
-def assess(path: str, api_key: Optional[str], model: str, debug: bool):
+def assess(path: str, model: str, debug: bool):
     """
     Run only the architecture assessment phase.
     
@@ -346,12 +380,6 @@ def assess(path: str, api_key: Optional[str], model: str, debug: bool):
         securevibes assess /path/to/project
     """
     try:
-        # Validate API key
-        if not api_key:
-            console.print("[bold red]❌ Error:[/bold red] CLAUDE_API_KEY environment variable not set")
-            console.print("\n[dim]Set it with: export CLAUDE_API_KEY='your-api-key'[/dim]")
-            sys.exit(1)
-        
         console.print(Panel.fit(
             "[bold cyan]📐 SecureVibes Assessment Agent[/bold cyan]\n"
             "[dim]Architecture Documentation[/dim]",
@@ -362,7 +390,7 @@ def assess(path: str, api_key: Optional[str], model: str, debug: bool):
         output_dir = Path(path) / '.securevibes'
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        scanner = SecurityScanner(api_key=api_key, model=model, debug=debug)
+        scanner = SecurityScanner(model=model, debug=debug)
         result = asyncio.run(scanner.assess_only(path))
 
         console.print(f"\n✅ [green]Assessment complete[/green]")
@@ -378,10 +406,9 @@ def assess(path: str, api_key: Optional[str], model: str, debug: bool):
 
 @cli.command()
 @click.argument('path', type=click.Path(exists=True), default='.')
-@click.option('--api-key', envvar='CLAUDE_API_KEY', help='Claude API key')
 @click.option('--model', '-m', default='claude-3-5-haiku-20241022', help='Claude model to use')
 @click.option('--debug', is_flag=True, default=True, help='Show verbose diagnostic output (default: enabled)')
-def threat_model(path: str, api_key: Optional[str], model: str, debug: bool):
+def threat_model(path: str, model: str, debug: bool):
     """
     Run only the threat modeling phase.
     
@@ -392,12 +419,6 @@ def threat_model(path: str, api_key: Optional[str], model: str, debug: bool):
         securevibes threat-model .
     """
     try:
-        # Validate API key
-        if not api_key:
-            console.print("[bold red]❌ Error:[/bold red] CLAUDE_API_KEY environment variable not set")
-            console.print("\n[dim]Set it with: export CLAUDE_API_KEY='your-api-key'[/dim]")
-            sys.exit(1)
-        
         # Check prerequisites
         security_md = Path(path) / '.securevibes' / 'SECURITY.md'
         if not security_md.exists():
@@ -411,7 +432,7 @@ def threat_model(path: str, api_key: Optional[str], model: str, debug: bool):
             border_style="cyan"
         ))
 
-        scanner = SecurityScanner(api_key=api_key, model=model, debug=debug)
+        scanner = SecurityScanner(model=model, debug=debug)
         result = asyncio.run(scanner.threat_model_only(path))
 
         console.print(f"\n✅ [green]Threat modeling complete[/green]")
@@ -427,10 +448,9 @@ def threat_model(path: str, api_key: Optional[str], model: str, debug: bool):
 
 @cli.command()
 @click.argument('path', type=click.Path(exists=True), default='.')
-@click.option('--api-key', envvar='CLAUDE_API_KEY', help='Claude API key')
 @click.option('--model', '-m', default='claude-3-5-haiku-20241022', help='Claude model to use')
 @click.option('--debug', is_flag=True, default=True, help='Show verbose diagnostic output (default: enabled)')
-def review(path: str, api_key: Optional[str], model: str, debug: bool):
+def review(path: str, model: str, debug: bool):
     """
     Run only the code review phase.
     
@@ -441,12 +461,6 @@ def review(path: str, api_key: Optional[str], model: str, debug: bool):
         securevibes review .
     """
     try:
-        # Validate API key
-        if not api_key:
-            console.print("[bold red]❌ Error:[/bold red] CLAUDE_API_KEY environment variable not set")
-            console.print("\n[dim]Set it with: export CLAUDE_API_KEY='your-api-key'[/dim]")
-            sys.exit(1)
-        
         # Check prerequisites
         securevibes_dir = Path(path) / '.securevibes'
         security_md = securevibes_dir / 'SECURITY.md'
@@ -470,7 +484,7 @@ def review(path: str, api_key: Optional[str], model: str, debug: bool):
             border_style="cyan"
         ))
 
-        scanner = SecurityScanner(api_key=api_key, model=model, debug=debug)
+        scanner = SecurityScanner(model=model, debug=debug)
         result = asyncio.run(scanner.review_only(path))
 
         console.print(f"\n✅ [green]Code review complete[/green]")

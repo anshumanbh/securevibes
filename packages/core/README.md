@@ -1,12 +1,10 @@
 # 🛡️ SecureVibes
 
-**AI-Native Security Scanner for Vibecoded Applications**
+**AI-Native Security System for Vibecoded Applications**
 
 SecureVibes uses **Claude's multi-agent architecture** to autonomously find security vulnerabilities in your codebase. Four specialized AI agents work together to deliver comprehensive, context-aware security analysis with concrete evidence.
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Version](https://img.shields.io/badge/version-0.1.1-green.svg)](https://pypi.org/project/securevibes/)
 
 ---
 
@@ -16,27 +14,19 @@ SecureVibes uses **Claude's multi-agent architecture** to autonomously find secu
 # Install
 pip install securevibes
 
-# Configure API key
-export CLAUDE_API_KEY="your-api-key-here"
+# Authenticate (choose one method)
+# Method 1: Session-based (recommended)
+# You could use your Claude subscription here, if you don't want to pay per API requests
+claude  # Run interactive CLI, then type: /login
+
+# Method 2: API key
+export ANTHROPIC_API_KEY="your-api-key-here"
 
 # Scan your project
-securevibes scan .
-
-# View results
-securevibes report
+securevibes scan /path/to/code --streaming --debug
 ```
 
-Get your Claude API key from: https://console.anthropic.com/
-
----
-
-## ✨ What You Get
-
-- ✅ **Exact file paths and line numbers** for every vulnerability
-- ✅ **CWE IDs** for industry-standard tracking
-- ✅ **Concrete code snippets** showing the vulnerable code
-- ✅ **Remediation recommendations** with actionable fixes
-- ✅ **Exploitability analysis** with realistic attack scenarios
+Get your API key from: https://console.anthropic.com/
 
 ---
 
@@ -53,42 +43,23 @@ SecureVibes orchestrates 4 specialized Claude agents:
 
 ---
 
-## 📊 Example Scan
-
-```bash
-$ securevibes scan .
-
-🛡️ SecureVibes Security Scanner
-📁 Scanning: /Users/xyz/repos/my-project
-🤖 Model: sonnet
-============================================================
-
-✅ Phase 1/4: Architecture Assessment Complete
-✅ Phase 2/4: Threat Modeling (STRIDE Analysis) Complete
-✅ Phase 3/4: Code Review (Security Analysis) Complete
-✅ Phase 4/4: Report Generation Complete
-
-================================================================================
-📊 Scan Results
-================================================================================
-
-  📁 Files scanned:   1953
-  ⏱️  Scan time:       1053.66s
-  💰 Total cost:      $2.27
-  🐛 Issues found:    28
-     🔴 Critical:     5
-     🟠 High:         10
-     🟡 Medium:       10
-     🟢 Low:          3
-```
-
----
-
 ## 🎯 Common Use Cases
 
 ```bash
+# Default: creates .securevibes/scan_report.md (markdown format)
+securevibes scan .
+
+# Real-time progress for large repos (recommended)
+securevibes scan . --streaming
+
 # Export JSON for CI/CD pipeline
 securevibes scan . --format json --output security-report.json
+
+# Custom markdown report (saved to .securevibes/custom_report.md)
+securevibes scan . --format markdown --output custom_report.md
+
+# Terminal table output (no file saved)
+securevibes scan . --format table
 
 # Focus on critical/high severity
 securevibes scan . --severity high
@@ -107,14 +78,14 @@ securevibes scan . --quiet
 Control agent models and analysis depth via environment variables:
 
 ```bash
-# Required
-export CLAUDE_API_KEY='your-api-key'
+# Authenticate first (see Quick Start above)
+# Then optionally customize:
 
-# Optional: Customize agent models (default: sonnet)
+# Customize agent models (default: sonnet)
 export SECUREVIBES_CODE_REVIEW_MODEL="opus"  # Max accuracy
 export SECUREVIBES_THREAT_MODELING_MODEL="sonnet"
 
-# Optional: Control analysis depth (default: 50)
+# Control analysis depth (default: 50)
 export SECUREVIBES_MAX_TURNS=75  # Deeper analysis
 ```
 
@@ -124,13 +95,14 @@ export SECUREVIBES_MAX_TURNS=75  # Deeper analysis
 
 ## 🐍 Python API
 
+**Classic Scanner:**
 ```python
 import asyncio
 from securevibes import SecurityScanner
 
 async def main():
+    # Authentication via ANTHROPIC_API_KEY env var or claude CLI session
     scanner = SecurityScanner(
-        api_key="your-api-key",
         model="claude-3-5-sonnet-20241022"
     )
     
@@ -140,20 +112,24 @@ async def main():
 asyncio.run(main())
 ```
 
----
+**Streaming Scanner (Real-Time Progress):**
+```python
+import asyncio
+from securevibes import StreamingScanner
 
-## 🔒 Privacy & Security
+async def main():
+    # Authentication via ANTHROPIC_API_KEY env var or claude CLI session
+    scanner = StreamingScanner(
+        model="sonnet",
+        debug=True  # Show agent thinking
+    )
+    
+    result = await scanner.scan("/path/to/repo")
+    print(f"Found {len(result.issues)} vulnerabilities")
+    print(f"Cost: ${result.total_cost_usd:.4f}")
 
-**What SecureVibes sends to Anthropic:**
-- Your source code files
-- Relative file paths within the scanned repository
-
-**What SecureVibes does NOT send:**
-- Absolute paths or usernames
-- Environment variables or secrets
-- Git history or metadata
-
-⚠️ **Important:** SecureVibes sends your code to Anthropic's Claude API for analysis. Review [Anthropic's Privacy Policy](https://www.anthropic.com/legal/privacy) before scanning proprietary code.
+asyncio.run(main())
+```
 
 ---
 
@@ -165,19 +141,15 @@ This is a quick reference for PyPI users. For comprehensive documentation, visit
 
 Including:
 - 🏗️ [Architecture Deep Dive](https://github.com/anshumanbh/securevibes/blob/main/docs/ARCHITECTURE.md)
-- 🔧 [Advanced Configuration](https://github.com/anshumanbh/securevibes#%EF%B8%8F-configuration)
-- 🧪 [Example Scans & Results](https://github.com/anshumanbh/securevibes#-example-output)
-- 🤝 [Contributing Guide](https://github.com/anshumanbh/securevibes#-contributing)
+- 🌊 [Streaming Mode Guide](https://github.com/anshumanbh/securevibes/blob/main/docs/STREAMING_MODE.md) - Real-time progress tracking
 
 ---
 
-## 👤 Author & Support
+## 👤 Author
 
 Built by [@anshumanbh](https://github.com/anshumanbh)
 
-- 🐛 **Bug Reports:** [GitHub Issues](https://github.com/anshumanbh/securevibes/issues)
-- 💡 **Feature Requests:** [GitHub Discussions](https://github.com/anshumanbh/securevibes/discussions)
-- 🌟 **Star the repo** to follow development!
+🌟 **Star the repo** to follow development!
 
 ---
 

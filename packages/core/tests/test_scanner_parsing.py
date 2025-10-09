@@ -10,7 +10,7 @@ from securevibes.models.result import ScanResult
 @pytest.fixture
 def scanner():
     """Create a scanner instance"""
-    return SecurityScanner(api_key="test-key")
+    return SecurityScanner()
 
 
 @pytest.fixture

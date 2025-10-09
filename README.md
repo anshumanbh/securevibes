@@ -1,14 +1,10 @@
 # 🛡️ SecureVibes
 
-**AI-Native Security Scanner for Vibecoded Applications**
+**AI-Native Security System for Vibecoded Applications**
 
 SecureVibes uses **Claude's multi-agent architecture** to autonomously find security vulnerabilities in your codebase. Four specialized AI agents work together to deliver comprehensive, context-aware security analysis with concrete evidence.
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Version](https://img.shields.io/badge/version-0.3.2-green.svg)](https://github.com/anshumanbh/securevibes/releases)
-[![Tests](https://img.shields.io/badge/tests-74%20passed-success.svg)](https://github.com/anshumanbh/securevibes)
-[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 ---
 
@@ -21,13 +17,6 @@ SecureVibes uses **Claude's multi-agent architecture** to autonomously find secu
 - **🔍 Code Review Agent**: Security thinking methodology to find vulnerabilities
 - **📊 Report Generator**: Compiles comprehensive scan results
 
-### Results Include
-- ✅ Exact file paths and line numbers
-- ✅ Vulnerable code snippets
-- ✅ CWE IDs for tracking
-- ✅ Remediation recommendations
-- ✅ Evidence of exploitability
-
 ---
 
 ## 🚀 Quick Start
@@ -36,82 +25,16 @@ SecureVibes uses **Claude's multi-agent architecture** to autonomously find secu
 # Install
 pip install securevibes
 
-# Set API key (get yours from https://console.anthropic.com/)
-export CLAUDE_API_KEY="your-api-key-here"
+# Authenticate (choose one method)
+# Method 1: Session-based (recommended)
+# You could use your Claude subscription here, if you don't want to pay per API requests
+claude  # Run interactive CLI, then type: /login
+
+# Method 2: API key
+export ANTHROPIC_API_KEY="your-api-key-here"  # Get from https://console.anthropic.com/
 
 # Scan your project
-securevibes scan .
-
-# View results
-securevibes report
-```
-
----
-
-## 📊 Example Output
-
-```bash
-$ securevibes scan /Users/xyz/repos/test
-
-🛡️ SecureVibes Security Scanner
-AI-Powered Vulnerability Detection
-
-📁 Scanning: /Users/xyz/repos/test
-🤖 Model: sonnet
-============================================================
-
-✅ Phase 1/4: Architecture Assessment Complete
-   Created: SECURITY.md
-
-━━━ Phase 2/4: Threat Modeling (STRIDE Analysis) ━━━
-
-━━━ Phase 2/4: Threat Modeling (STRIDE Analysis) ━━━
-
-✅ Phase 2/4: Threat Modeling (STRIDE Analysis) Complete
-   Created: THREAT_MODEL.json
-
-━━━ Phase 3/4: Code Review (Security Analysis) ━━━
-
-━━━ Phase 3/4: Code Review (Security Analysis) ━━━
-
-✅ Phase 3/4: Code Review (Security Analysis) Complete
-   Created: VULNERABILITIES.json
-
-━━━ Phase 4/4: Report Generation ━━━
-
-✅ Phase 4/4: Report Generation Complete
-   Created: scan_results.json
-
-================================================================================
-
-================================================================================
-📊 Scan Results
-================================================================================
-
-  📁 Files scanned:   1953
-  ⏱️  Scan time:       1053.66s
-  💰 Total cost:      $2.2732
-  🐛 Issues found:    28
-     🔴 Critical:     5
-     🟠 High:         10
-     🟡 Medium:       10
-     🟢 Low:          3
-
-
-                                            🔍 Detected Vulnerabilities
-╭─────┬────────────┬────────────────────────────────────────────────────┬─────────────────────────────────────────╮
-│ #   │ Severity   │ Issue                                              │ Location                                │
-├─────┼────────────┼────────────────────────────────────────────────────┼─────────────────────────────────────────┤
-│ 1   │ CRITICAL   │ Unauthorized Blog Post Creation via Unauthenticate │ server/routes.ts:538                    │
-├─────┼────────────┼────────────────────────────────────────────────────┼─────────────────────────────────────────┤
-│ 2   │ HIGH       │ Course Data Manipulation via Unprotected Seed Endp │ server/routes.ts:732                    │
-├─────┼────────────┼────────────────────────────────────────────────────┼─────────────────────────────────────────┤
-│ 3   │ CRITICAL   │ Stripe Webhook Signature Bypass Allows Payment Man │ server/routes.ts:426                    │
-├─────┼────────────┼────────────────────────────────────────────────────┼─────────────────────────────────────────┤
-│ 4   │ HIGH       │ Race Condition in Course Seat Reservation Allows O │ server/routes.ts:218                    │
-├─────┼────────────┼────────────────────────────────────────────────────┼─────────────────────────────────────────┤
-....
-💾 Full report: .securevibes/scan_results.json
+securevibes scan /path/to/code --streaming --debug
 ```
 
 ---
@@ -136,22 +59,122 @@ securevibes review .        # Phase 3: Vulnerability validation
 ### Common Options
 
 ```bash
+# Default: creates .securevibes/scan_report.md (markdown format)
+securevibes scan .
+
 # Export results as JSON
 securevibes scan . --format json --output results.json
+
+# Custom markdown report (saved to .securevibes/custom_report.md)
+securevibes scan . --format markdown --output custom_report.md
+
+# Terminal table output (no file saved)
+securevibes scan . --format table
 
 # Filter by severity
 securevibes scan . --severity high
 
 # Use different model
-securevibes scan . --model claude-3-5-haiku-20241022
+securevibes scan . --model haiku
+
+# Real-time streaming progress (recommended for large repos)
+securevibes scan . --streaming
+
+# Streaming with verbose debug output
+securevibes scan . --streaming --debug
 
 # Quiet mode
 securevibes scan . --quiet
 ```
 
+**Example output:**
+```bash
+$ securevibes scan . --streaming --debug
+
+🛡️ SecureVibes Security Scanner
+AI-Powered Vulnerability Detection (Streaming Mode)
+
+📁 Scanning: /Users/user/repos/myapp
+🤖 Model: sonnet
+============================================================
+  💭 Starting Phase 1: Assessment
+  🤖 Starting assessment: Perform comprehensive security assessment...
+
+━━━ Phase 1/4: Architecture Assessment ━━━
+
+  📖 Reading package.json
+  📖 Reading index.ts
+  📖 Reading routes.ts
+  📖 Reading schema.ts
+  🔍 Searching: API_KEY|SECRET|PASSWORD|TOKEN
+  📖 Reading FirecrawlService.ts
+  🔍 Searching: passport|session|auth|login
+  🔍 Searching: cors|helmet|sanitize|validate
+  💾 Writing SECURITY.md
+  💭 Assessment complete
+
+━━━ Phase 2/4: Threat Modeling (STRIDE Analysis) ━━━
+
+  📖 Reading SECURITY.md
+  📖 Reading routes.ts
+  🔍 Searching: STRIPE_SECRET_KEY|DATABASE_URL
+  💾 Writing THREAT_MODEL.json
+  💭 Threat modeling complete - 28 threats identified
+
+━━━ Phase 3/4: Code Review (Security Analysis) ━━━
+
+  📖 Reading THREAT_MODEL.json
+  📖 Reading routes.ts
+  🔍 Searching: rate.limit|rateLimit
+  🔍 Searching: csrf|CSRF
+  📖 Reading BlogPost.tsx
+  🔍 Searching: dangerouslySetInnerHTML
+  💾 Writing VULNERABILITIES.json
+  💭 Code review complete - 21 vulnerabilities validated
+
+━━━ Phase 4/4: Report Generation ━━━
+
+  📖 Reading VULNERABILITIES.json
+  💾 Writing scan_results.json
+  💭 Report generation complete
+  💰 Cost update: $2.16
+
+================================================================================
+📊 Scan Results
+================================================================================
+
+  📁 Files scanned:   2053
+  ⏱️  Scan time:       987.93s (~16.5 min)
+  💰 Total cost:      $2.16
+  🐛 Issues found:    21
+     🔴 Critical:     3
+     🟠 High:         5
+     🟡 Medium:       11
+     🟢 Low:          2
+
+                        🔍 Detected Vulnerabilities
+╭────┬──────────┬──────────────────────────────────┬────────────────────╮
+│ #  │ Severity │ Issue                            │ Location           │
+├────┼──────────┼──────────────────────────────────┼────────────────────┤
+│ 1  │ CRITICAL │ Unauthenticated Blog Access      │ server/routes.ts   │
+│ 2  │ HIGH     │ No Rate Limiting                 │ server/index.ts    │
+│ 3  │ CRITICAL │ Stripe Webhook Bypass            │ server/routes.ts   │
+│ 4  │ CRITICAL │ Plaintext Password Storage       │ shared/schema.ts   │
+│ 5  │ HIGH     │ Stored XSS via Blog Content      │ BlogPost.tsx       │
+╰────┴──────────┴──────────────────────────────────┴────────────────────╯
+... and 16 more issues
+
+📄 Markdown report: .securevibes/scan_report.md
+💾 JSON results: .securevibes/scan_results.json
+```
+
+**Learn more:** [Streaming Mode Documentation →](docs/STREAMING_MODE.md)
+
 ---
 
 ## 🐍 Python API
+
+### Classic Scanner
 
 For programmatic access:
 
@@ -160,8 +183,9 @@ import asyncio
 from securevibes import SecurityScanner
 
 async def main():
+    # Authentication is handled via environment (ANTHROPIC_API_KEY)
+    # or session token (from `claude` CLI /login)
     scanner = SecurityScanner(
-        api_key="your-api-key",  # or use CLAUDE_API_KEY env var
         model="claude-3-5-sonnet-20241022"
     )
     
@@ -180,18 +204,56 @@ async def main():
 asyncio.run(main())
 ```
 
+### Streaming Scanner (Real-Time Progress)
+
+For long-running scans with real-time progress:
+
+```python
+import asyncio
+from securevibes.scanner.streaming_scanner import StreamingScanner
+
+async def main():
+    # Streaming scanner with real-time progress
+    scanner = StreamingScanner(
+        api_key="your-api-key",
+        model="sonnet",
+        debug=True  # Show agent narration
+    )
+    
+    # Scan with live progress updates to stdout
+    result = await scanner.scan("/path/to/large/repo")
+    
+    # Same result format as classic scanner
+    print(f"\n{'='*60}")
+    print(f"Scan complete!")
+    print(f"Found {len(result.issues)} vulnerabilities")
+    print(f"Cost: ${result.total_cost_usd:.4f}")
+
+asyncio.run(main())
+```
+
 ---
 
 ## ⚙️ Configuration
 
-### Required Environment Variables
+### Authentication
 
+SecureVibes uses the Claude CLI for AI analysis. Authenticate using any of these methods:
+
+**Method 1: Session-based authentication (recommended)**
 ```bash
-# Claude API Key (required for all operations)
-export CLAUDE_API_KEY='your-api-key-here'
+claude
+# In interactive mode, type: /login
+# Follow the prompts to authenticate
 ```
 
+**Method 2: API Key**
+```bash
+export ANTHROPIC_API_KEY='your-api-key-here'
+```
 Get your API key from: https://console.anthropic.com/
+
+```
 
 ### Optional Configuration
 
@@ -232,7 +294,7 @@ export SECUREVIBES_MAX_TURNS=100  # Maximum depth (use with caution)
 
 **Optimize for Speed & Cost:**
 ```bash
-export CLAUDE_API_KEY='your-key'
+# Ensure you're authenticated first (see Authentication section)
 export SECUREVIBES_ASSESSMENT_MODEL="haiku"
 export SECUREVIBES_THREAT_MODELING_MODEL="haiku"
 export SECUREVIBES_CODE_REVIEW_MODEL="sonnet"
@@ -242,7 +304,7 @@ securevibes scan .
 
 **Optimize for Accuracy (Recommended):**
 ```bash
-export CLAUDE_API_KEY='your-key'
+# Ensure you're authenticated first (see Authentication section)
 export SECUREVIBES_CODE_REVIEW_MODEL="opus"
 export SECUREVIBES_THREAT_MODELING_MODEL="sonnet"
 export SECUREVIBES_MAX_TURNS=75
@@ -300,6 +362,7 @@ Before scanning:
 ## 📚 Documentation
 
 - **[Architecture Guide](docs/ARCHITECTURE.md)** - Multi-agent system design and workflow
+- **[Streaming Mode Guide](docs/STREAMING_MODE.md)** - Real-time progress tracking (recommended for large repos)
 - **[Claude SDK Guide](docs/references/claude-agent-sdk-guide.md)** - Claude Agent SDK reference
 
 ---

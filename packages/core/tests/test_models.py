@@ -95,3 +95,20 @@ def test_scan_result_to_dict():
     assert data["files_scanned"] == 10
     assert data["summary"]["total"] == 1
     assert data["summary"]["high"] == 1
+
+
+def test_scan_result_to_markdown():
+    """Test ScanResult.to_markdown() method"""
+    result = ScanResult(
+        repository_path="/test/repo",
+        issues=[],
+        files_scanned=10,
+        scan_time_seconds=5.5
+    )
+    
+    markdown_str = result.to_markdown()
+    
+    assert isinstance(markdown_str, str)
+    assert len(markdown_str) > 0
+    assert "# Security Scan Report" in markdown_str
+    assert "/test/repo" in markdown_str
