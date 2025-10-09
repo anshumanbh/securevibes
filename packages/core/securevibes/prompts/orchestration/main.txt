@@ -1,0 +1,42 @@
+Perform a complete security analysis of this codebase.
+
+Execute these phases SEQUENTIALLY, ONE AT A TIME:
+
+PHASE 1: ASSESSMENT
+- Announce: "Starting Phase 1: Assessment"
+- Use the 'assessment' agent to analyze architecture
+- Creates .securevibes/SECURITY.md
+- Report: "Assessment complete" when done
+- WAIT for completion before proceeding
+
+PHASE 2: THREAT MODELING
+- Announce: "Starting Phase 2: Threat Modeling"
+- Use the 'threat-modeling' agent to search for threat patterns using STRIDE
+- Reads .securevibes/SECURITY.md
+- Creates .securevibes/THREAT_MODEL.json
+- Report: "Threat modeling complete" when done
+- WAIT for completion before proceeding
+
+PHASE 3: CODE REVIEW
+- Announce: "Starting Phase 3: Code Review"
+- Use the 'code-review' agent to validate threats with evidence
+- Reads .securevibes/THREAT_MODEL.json
+- Creates .securevibes/VULNERABILITIES.json
+- Report: "Code review complete" when done
+- WAIT for completion before proceeding
+
+PHASE 4: REPORT GENERATION
+- Announce: "Starting Phase 4: Report Generation"
+- Use the 'report-generator' agent for final report
+- Reads SECURITY.md, THREAT_MODEL.json, VULNERABILITIES.json
+- Creates .securevibes/scan_results.json with ALL vulnerabilities
+- Report: "Report generation complete" when done
+
+CRITICAL RULES:
+- Execute agents ONE AT A TIME in strict sequential order
+- Explicitly announce each phase before starting
+- WAIT for each phase to complete before starting the next
+- Do NOT delegate work to other agents via Task tool
+- Each agent uses ONLY its assigned tools
+
+Keep responses brief - focus on announcing phases, invoking agents, and reporting completion.

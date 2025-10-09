@@ -1,0 +1,4 @@
+include README.md
+include LICENSE
+recursive-include securevibes/prompts *.txt
+

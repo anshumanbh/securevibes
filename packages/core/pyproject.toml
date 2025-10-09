@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "securevibes"
+version = "0.1.0"
+description = "AI-Native Platform to Secure Vibecoded Applications"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "AGPL-3.0"}
+authors = [
+    {name = "Anshuman Bhartiya", email = "anshuman.bhartiya@gmail.com"}
+]
+keywords = ["security", "code-analysis", "ai", "claude", "vulnerability-scanner"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU Affero General Public License v3",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Software Development :: Quality Assurance",
+]
+
+dependencies = [
+    "claude-agent-sdk>=0.1.0",
+    "anyio>=4.0.0",
+    "python-dotenv>=1.0.0",
+    "click>=8.0.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+securevibes = "securevibes.cli.main:cli"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.0.0",
+    "black>=24.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/anshumanbh/securevibes"
+Repository = "https://github.com/anshumanbh/securevibes"
+Issues = "https://github.com/anshumanbh/securevibes/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["securevibes*"]
+
+[tool.setuptools.package-data]
+securevibes = ["prompts/**/*.txt"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
