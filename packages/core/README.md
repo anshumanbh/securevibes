@@ -6,7 +6,7 @@ SecureVibes uses **Claude's multi-agent architecture** to autonomously find secu
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Version](https://img.shields.io/badge/version-0.1.0-green.svg)](https://pypi.org/project/securevibes/)
+[![Version](https://img.shields.io/badge/version-0.1.1-green.svg)](https://pypi.org/project/securevibes/)
 
 ---
 
