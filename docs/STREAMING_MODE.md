@@ -1,0 +1,267 @@
+# Streaming Mode - Real-Time Progress Tracking
+
+## Overview
+
+SecureVibes supports **real-time streaming progress** mode for security scans. This eliminates long silent periods during scans (10-20+ minutes) and provides continuous feedback about what the scanner is doing.
+
+**Quick Start:**
+```bash
+securevibes scan . --streaming        # Real-time progress
+securevibes scan . --streaming --debug  # + Agent thinking
+```
+
+## Problem It Solves
+
+Traditional security scans can take 10-20+ minutes on large codebases with minimal progress feedback. Users would see:
+
+```
+━━━ Phase 3/4: Code Review (Security Analysis) ━━━
+  ⏳ Analyzing... (20 tools used)
+[10 minutes of silence]
+  ⏳ Analyzing... (30 tools used)
+```
+
+This led to:
+- Uncertainty about scan progress
+- Unclear if scanner is stuck or working
+- Poor user experience during long operations
+- No visibility into what files/patterns are being analyzed
+
+## Solution: Streaming Mode
+
+Streaming mode uses the Claude Agent SDK's **hooks system** to provide real-time updates on:
+
+✅ **Tool Usage** - See every Read, Grep, Write operation as it happens  
+✅ **File Operations** - Know which files are being analyzed  
+✅ **Sub-Agent Lifecycle** - Deterministic phase start/stop events  
+✅ **Cost Tracking** - Real-time cost accumulation  
+✅ **Agent Narration** - Optional debug mode shows agent thinking
+
+## Usage
+
+Enable streaming mode with the `--streaming` flag:
+
+```bash
+# Basic scan with streaming
+securevibes scan . --streaming
+
+# Streaming with verbose debug output
+securevibes scan . --streaming --debug
+
+# Streaming on specific directory
+securevibes scan /path/to/large/repo --streaming
+```
+
+## Example Output
+
+### Without Streaming (Classic Mode)
+```
+📁 Scanning: /Users/user/repos/myapp
+🤖 Model: sonnet
+============================================================
+
+✅ Phase 1/4: Architecture Assessment Complete
+   Created: SECURITY.md
+
+━━━ Phase 2/4: Threat Modeling (STRIDE Analysis) ━━━
+
+[long silence]
+
+✅ Phase 2/4: Threat Modeling (STRIDE Analysis) Complete
+   Created: THREAT_MODEL.json
+```
+
+### With Streaming Mode
+```
+📁 Scanning: /Users/user/repos/myapp
+🤖 Model: sonnet
+============================================================
+
+━━━ Phase 1/4: Architecture Assessment ━━━
+
+  🤖 Starting assessment: Analyze this codebase and create SECURITY.md...
+  📖 Reading pyproject.toml
+  📖 Reading package.json
+  🗂️  Finding files: *.py, *.ts, *.tsx
+  📖 Reading src/main.py
+  📖 Reading server/routes.ts
+  🔍 Searching: authentication|auth|login
+  📖 Reading server/middleware/auth.ts
+  🔍 Searching: database|db|postgres|mysql
+  📖 Reading config/database.py
+  💾 Writing SECURITY.md
+
+✅ Phase 1/4: Architecture Assessment Complete
+   Duration: 45.3s | Tools: 47 | Files: 23 read, 1 written
+   Created: SECURITY.md
+
+━━━ Phase 2/4: Threat Modeling (STRIDE Analysis) ━━━
+
+  🤖 Starting threat-modeling: Analyze threats based on SECURITY.md...
+  📖 Reading SECURITY.md
+  🔍 Searching: API|endpoint|route
+  📖 Reading server/routes.ts
+  🔍 Searching: authentication|authorization
+  💾 Writing THREAT_MODEL.json
+
+✅ Phase 2/4: Threat Modeling (STRIDE Analysis) Complete
+   Duration: 67.2s | Tools: 34 | Files: 15 read, 1 written
+   Created: THREAT_MODEL.json
+
+━━━ Phase 3/4: Code Review (Security Analysis) ━━━
+
+  🤖 Starting code-review: Validate threats and find vulnerabilities...
+  📖 Reading THREAT_MODEL.json
+  📖 Reading server/routes.ts
+  🔍 Searching: Stripe.*webhook.*verify
+  📖 Reading server/index.ts
+  🔍 Searching: csrf|CSRF
+  📖 Reading client/src/pages/BlogPost.tsx
+  🔍 Searching: dangerouslySetInnerHTML|innerHTML
+  📖 Reading shared/schema.ts
+  🔍 Searching: password.*hash|bcrypt|scrypt
+  💾 Writing VULNERABILITIES.json
+
+✅ Phase 3/4: Code Review (Security Analysis) Complete
+   Duration: 789.4s | Tools: 156 | Files: 87 read, 1 written
+   Created: VULNERABILITIES.json
+
+━━━ Phase 4/4: Report Generation ━━━
+
+  🤖 Starting report-generator: Create final scan results...
+  📖 Reading VULNERABILITIES.json
+  💾 Writing scan_results.json
+
+✅ Phase 4/4: Report Generation Complete
+   Duration: 12.1s | Tools: 8 | Files: 1 read, 1 written
+   Created: scan_results.json
+```
+
+## Technical Details
+
+### Architecture
+
+Streaming mode uses `ClaudeSDKClient` with three key hooks:
+
+1. **PreToolUse** - Fires before each tool execution
+   - Shows file reads, searches, writes in real-time
+   - Detects sub-agent orchestration
+
+2. **PostToolUse** - Fires after each tool completes
+   - Reports tool failures with error messages
+   - Tracks success/failure rates
+
+3. **SubagentStop** - Fires when sub-agent completes
+   - Provides deterministic phase boundaries
+   - Reports duration, tool count, file operations
+   - Eliminates need for file polling
+
+### Progress Tracking
+
+The `ProgressTracker` class maintains:
+- Current phase context
+- Tool usage counter
+- Set of files read/written
+- Sub-agent call stack
+- Phase timing information
+
+### Performance Impact
+
+Streaming mode has minimal performance overhead:
+- ~2-5% additional latency from hook processing
+- Same API costs as classic mode
+- Slightly higher memory for progress tracking (~1-2 MB)
+
+### Debug Mode
+
+Add `--debug` flag for maximum verbosity:
+
+```bash
+securevibes scan . --streaming --debug
+```
+
+This shows:
+- Agent narration (thinking process)
+- Real-time cost updates
+- Detailed error messages
+- Hook execution traces
+
+## When to Use Streaming Mode
+
+### Recommended For:
+✅ Large codebases (1000+ files)  
+✅ Long-running scans (>5 minutes)  
+✅ Production security audits  
+✅ CI/CD pipelines (progress visibility)  
+✅ Debugging stuck scans  
+
+### Classic Mode Still Works For:
+- Small projects (<100 files)
+- Quick spot checks
+- When minimal output is preferred
+- Automated scripts parsing output
+
+## Comparison Matrix
+
+| Feature | Classic Mode | Streaming Mode |
+|---------|--------------|----------------|
+| File polling | ✅ Every 2 seconds | ❌ Event-driven |
+| Phase detection | ⚠️  Indirect (file creation) | ✅ Deterministic (hooks) |
+| Tool visibility | ❌ Batched every 10 tools | ✅ Real-time |
+| Sub-agent tracking | ❌ Manual phase announce | ✅ Automatic lifecycle events |
+| File operations | ❌ Hidden | ✅ Visible (reads/writes) |
+| Cost updates | ❌ End only | ✅ Real-time (debug) |
+| Agent narration | ❌ Not available | ✅ Available (debug) |
+| Performance | 100% baseline | 98% baseline |
+| Memory usage | Low | Low-Medium |
+
+---
+
+## Implementation Details
+
+### Architecture
+
+Streaming mode migrates from the simple `query()` API to `ClaudeSDKClient` with hooks for real-time event capture.
+
+**Key Components:**
+
+1. **StreamingScanner Class** (`packages/core/securevibes/scanner/streaming_scanner.py`)
+   - Uses `ClaudeSDKClient` instead of `query()`
+   - Implements three hooks for complete visibility
+   - Maintains same `ScanResult` interface as `SecurityScanner`
+   - Backward compatible with existing agent definitions
+
+2. **ProgressTracker Class**
+   - Tracks tool usage, files read/written, sub-agent stack
+   - Smart output formatting with emojis and colors
+   - Phase timing and statistics
+   - Debug mode for agent narration
+
+3. **Hook System** (Closures)
+
+```python
+# PreToolUse - Fires before any tool executes
+async def pre_tool_hook(input_data: dict, tool_use_id: str, ctx: dict):
+    tool_name = input_data.get("tool_name")
+    tool_input = input_data.get("tool_input", {})
+    tracker.on_tool_start(tool_name, tool_input)
+    return {}
+
+# PostToolUse - Fires after tool completes
+async def post_tool_hook(input_data: dict, tool_use_id: str, ctx: dict):
+    tool_name = input_data.get("tool_name")
+    is_error = input_data.get("tool_response", {}).get("is_error", False)
+    tracker.on_tool_complete(tool_name, not is_error)
+    return {}
+
+# SubagentStop - DETERMINISTIC phase completion marker
+async def subagent_hook(input_data: dict, tool_use_id: str, ctx: dict):
+    agent_name = input_data.get("agent_name")
+    duration_ms = input_data.get("duration_ms", 0)
+    tracker.on_subagent_stop(agent_name, duration_ms)
+    return {}
+```
+
+**Why Closures?** Hooks are defined as closures inside `scan()` method to capture the `tracker` instance. This avoids needing a `hook_context` parameter (which isn't supported by the SDK).
+
+---

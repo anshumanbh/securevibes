@@ -15,6 +15,7 @@ from rich import box
 from securevibes import __version__
 from securevibes.models.issue import Severity
 from securevibes.scanner.security_scanner import SecurityScanner
+from securevibes.scanner.streaming_scanner import StreamingScanner
 
 console = Console()
 
@@ -42,8 +43,9 @@ def cli():
 @click.option('--no-save', is_flag=True, help='Do not save results to .securevibes/')
 @click.option('--quiet', '-q', is_flag=True, help='Minimal output (errors only)')
 @click.option('--debug', is_flag=True, help='Show verbose diagnostic output')
+@click.option('--streaming', is_flag=True, help='Enable real-time streaming progress (recommended for large scans)')
 def scan(path: str, api_key: Optional[str], model: str, output: Optional[str], format: str, 
-         severity: Optional[str], no_save: bool, quiet: bool, debug: bool):
+         severity: Optional[str], no_save: bool, quiet: bool, debug: bool, streaming: bool):
     """
     Scan a repository for security vulnerabilities.
     
@@ -56,6 +58,8 @@ def scan(path: str, api_key: Optional[str], model: str, output: Optional[str], f
         securevibes scan . --format json --output results.json
         
         securevibes scan . --model claude-3-5-haiku-20241022  # Use faster/cheaper model
+        
+        securevibes scan . --streaming  # Real-time progress (recommended for large repos)
     """
     try:
         # Validate flag conflicts
@@ -73,7 +77,10 @@ def scan(path: str, api_key: Optional[str], model: str, output: Optional[str], f
         # Show banner unless quiet
         if not quiet:
             console.print("[bold cyan]🛡️ SecureVibes Security Scanner[/bold cyan]")
-            console.print("[dim]AI-Powered Vulnerability Detection[/dim]")
+            if streaming:
+                console.print("[dim]AI-Powered Vulnerability Detection (Streaming Mode)[/dim]")
+            else:
+                console.print("[dim]AI-Powered Vulnerability Detection[/dim]")
             console.print()
         
         # Ensure output directory exists if saving results
@@ -85,8 +92,8 @@ def scan(path: str, api_key: Optional[str], model: str, output: Optional[str], f
                 console.print(f"[bold red]❌ Error:[/bold red] Cannot create output directory: {e}")
                 sys.exit(1)
         
-        # Run scan
-        result = asyncio.run(_run_scan(path, api_key, model, not no_save, quiet, debug))
+        # Run scan (use streaming scanner if requested)
+        result = asyncio.run(_run_scan(path, api_key, model, not no_save, quiet, debug, streaming))
         
         # Filter by severity if specified
         if severity:
@@ -139,13 +146,18 @@ def scan(path: str, api_key: Optional[str], model: str, output: Optional[str], f
         sys.exit(1)
 
 
-async def _run_scan(path: str, api_key: Optional[str], model: str, save_results: bool, quiet: bool, debug: bool):
+async def _run_scan(path: str, api_key: Optional[str], model: str, save_results: bool, quiet: bool, debug: bool, streaming: bool):
     """Run the actual scan with progress indicator"""
 
-    scanner = SecurityScanner(api_key=api_key, model=model, debug=debug)
     repo_path = Path(path).absolute()
-
-    # The scanner now handles all output
+    
+    # Use streaming scanner if requested, otherwise use classic scanner
+    if streaming:
+        scanner = StreamingScanner(api_key=api_key, model=model, debug=debug)
+    else:
+        scanner = SecurityScanner(api_key=api_key, model=model, debug=debug)
+    
+    # The scanner handles all output
     result = await scanner.scan(str(repo_path))
 
     return result

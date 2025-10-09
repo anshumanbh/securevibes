@@ -1,6 +1,6 @@
 # 🛡️ SecureVibes
 
-**AI-Native Security Scanner for Vibecoded Applications**
+**AI-Native Security System for Vibecoded Applications**
 
 SecureVibes uses **Claude's multi-agent architecture** to autonomously find security vulnerabilities in your codebase. Four specialized AI agents work together to deliver comprehensive, context-aware security analysis with concrete evidence.
 
@@ -40,78 +40,7 @@ pip install securevibes
 export CLAUDE_API_KEY="your-api-key-here"
 
 # Scan your project
-securevibes scan .
-
-# View results
-securevibes report
-```
-
----
-
-## 📊 Example Output
-
-```bash
-$ securevibes scan /Users/xyz/repos/test
-
-🛡️ SecureVibes Security Scanner
-AI-Powered Vulnerability Detection
-
-📁 Scanning: /Users/xyz/repos/test
-🤖 Model: sonnet
-============================================================
-
-✅ Phase 1/4: Architecture Assessment Complete
-   Created: SECURITY.md
-
-━━━ Phase 2/4: Threat Modeling (STRIDE Analysis) ━━━
-
-━━━ Phase 2/4: Threat Modeling (STRIDE Analysis) ━━━
-
-✅ Phase 2/4: Threat Modeling (STRIDE Analysis) Complete
-   Created: THREAT_MODEL.json
-
-━━━ Phase 3/4: Code Review (Security Analysis) ━━━
-
-━━━ Phase 3/4: Code Review (Security Analysis) ━━━
-
-✅ Phase 3/4: Code Review (Security Analysis) Complete
-   Created: VULNERABILITIES.json
-
-━━━ Phase 4/4: Report Generation ━━━
-
-✅ Phase 4/4: Report Generation Complete
-   Created: scan_results.json
-
-================================================================================
-
-================================================================================
-📊 Scan Results
-================================================================================
-
-  📁 Files scanned:   1953
-  ⏱️  Scan time:       1053.66s
-  💰 Total cost:      $2.2732
-  🐛 Issues found:    28
-     🔴 Critical:     5
-     🟠 High:         10
-     🟡 Medium:       10
-     🟢 Low:          3
-
-
-                                            🔍 Detected Vulnerabilities
-╭─────┬────────────┬────────────────────────────────────────────────────┬─────────────────────────────────────────╮
-│ #   │ Severity   │ Issue                                              │ Location                                │
-├─────┼────────────┼────────────────────────────────────────────────────┼─────────────────────────────────────────┤
-│ 1   │ CRITICAL   │ Unauthorized Blog Post Creation via Unauthenticate │ server/routes.ts:538                    │
-├─────┼────────────┼────────────────────────────────────────────────────┼─────────────────────────────────────────┤
-│ 2   │ HIGH       │ Course Data Manipulation via Unprotected Seed Endp │ server/routes.ts:732                    │
-├─────┼────────────┼────────────────────────────────────────────────────┼─────────────────────────────────────────┤
-│ 3   │ CRITICAL   │ Stripe Webhook Signature Bypass Allows Payment Man │ server/routes.ts:426                    │
-├─────┼────────────┼────────────────────────────────────────────────────┼─────────────────────────────────────────┤
-│ 4   │ HIGH       │ Race Condition in Course Seat Reservation Allows O │ server/routes.ts:218                    │
-├─────┼────────────┼────────────────────────────────────────────────────┼─────────────────────────────────────────┤
-....
-💾 Full report: .securevibes/scan_results.json
+securevibes scan /path/to/code --streaming --debug
 ```
 
 ---
@@ -145,13 +74,103 @@ securevibes scan . --severity high
 # Use different model
 securevibes scan . --model claude-3-5-haiku-20241022
 
+# Real-time streaming progress (recommended for large repos)
+securevibes scan . --streaming
+
+# Streaming with verbose debug output
+securevibes scan . --streaming --debug
+
 # Quiet mode
 securevibes scan . --quiet
 ```
 
+**Example output:**
+```bash
+$ securevibes scan . --streaming --debug
+
+🛡️ SecureVibes Security Scanner
+AI-Powered Vulnerability Detection (Streaming Mode)
+
+📁 Scanning: /Users/user/repos/myapp
+🤖 Model: sonnet
+============================================================
+  💭 Starting Phase 1: Assessment
+  🤖 Starting assessment: Perform comprehensive security assessment...
+
+━━━ Phase 1/4: Architecture Assessment ━━━
+
+  📖 Reading package.json
+  📖 Reading index.ts
+  📖 Reading routes.ts
+  📖 Reading schema.ts
+  🔍 Searching: API_KEY|SECRET|PASSWORD|TOKEN
+  📖 Reading FirecrawlService.ts
+  🔍 Searching: passport|session|auth|login
+  🔍 Searching: cors|helmet|sanitize|validate
+  💾 Writing SECURITY.md
+  💭 Assessment complete
+
+━━━ Phase 2/4: Threat Modeling (STRIDE Analysis) ━━━
+
+  📖 Reading SECURITY.md
+  📖 Reading routes.ts
+  🔍 Searching: STRIPE_SECRET_KEY|DATABASE_URL
+  💾 Writing THREAT_MODEL.json
+  💭 Threat modeling complete - 28 threats identified
+
+━━━ Phase 3/4: Code Review (Security Analysis) ━━━
+
+  📖 Reading THREAT_MODEL.json
+  📖 Reading routes.ts
+  🔍 Searching: rate.limit|rateLimit
+  🔍 Searching: csrf|CSRF
+  📖 Reading BlogPost.tsx
+  🔍 Searching: dangerouslySetInnerHTML
+  💾 Writing VULNERABILITIES.json
+  💭 Code review complete - 21 vulnerabilities validated
+
+━━━ Phase 4/4: Report Generation ━━━
+
+  📖 Reading VULNERABILITIES.json
+  💾 Writing scan_results.json
+  💭 Report generation complete
+  💰 Cost update: $2.16
+
+================================================================================
+📊 Scan Results
+================================================================================
+
+  📁 Files scanned:   2053
+  ⏱️  Scan time:       987.93s (~16.5 min)
+  💰 Total cost:      $2.16
+  🐛 Issues found:    21
+     🔴 Critical:     3
+     🟠 High:         5
+     🟡 Medium:       11
+     🟢 Low:          2
+
+                        🔍 Detected Vulnerabilities
+╭────┬──────────┬──────────────────────────────────┬────────────────────╮
+│ #  │ Severity │ Issue                            │ Location           │
+├────┼──────────┼──────────────────────────────────┼────────────────────┤
+│ 1  │ CRITICAL │ Unauthenticated Blog Access      │ server/routes.ts   │
+│ 2  │ HIGH     │ No Rate Limiting                 │ server/index.ts    │
+│ 3  │ CRITICAL │ Stripe Webhook Bypass            │ server/routes.ts   │
+│ 4  │ CRITICAL │ Plaintext Password Storage       │ shared/schema.ts   │
+│ 5  │ HIGH     │ Stored XSS via Blog Content      │ BlogPost.tsx       │
+╰────┴──────────┴──────────────────────────────────┴────────────────────╯
+... and 16 more issues
+
+💾 Full report: .securevibes/scan_results.json
+```
+
+**Learn more:** [Streaming Mode Documentation →](docs/STREAMING_MODE.md)
+
 ---
 
 ## 🐍 Python API
+
+### Classic Scanner
 
 For programmatic access:
 
@@ -176,6 +195,34 @@ async def main():
         print(f"  File: {issue.file_path}:{issue.line_number}")
         print(f"  CWE: {issue.cwe_id}")
         print(f"  Fix: {issue.recommendation}")
+
+asyncio.run(main())
+```
+
+### Streaming Scanner (Real-Time Progress)
+
+For long-running scans with real-time progress:
+
+```python
+import asyncio
+from securevibes.scanner.streaming_scanner import StreamingScanner
+
+async def main():
+    # Streaming scanner with real-time progress
+    scanner = StreamingScanner(
+        api_key="your-api-key",
+        model="sonnet",
+        debug=True  # Show agent narration
+    )
+    
+    # Scan with live progress updates to stdout
+    result = await scanner.scan("/path/to/large/repo")
+    
+    # Same result format as classic scanner
+    print(f"\n{'='*60}")
+    print(f"Scan complete!")
+    print(f"Found {len(result.issues)} vulnerabilities")
+    print(f"Cost: ${result.total_cost_usd:.4f}")
 
 asyncio.run(main())
 ```
@@ -300,6 +347,7 @@ Before scanning:
 ## 📚 Documentation
 
 - **[Architecture Guide](docs/ARCHITECTURE.md)** - Multi-agent system design and workflow
+- **[Streaming Mode Guide](docs/STREAMING_MODE.md)** - Real-time progress tracking (recommended for large repos)
 - **[Claude SDK Guide](docs/references/claude-agent-sdk-guide.md)** - Claude Agent SDK reference
 
 ---

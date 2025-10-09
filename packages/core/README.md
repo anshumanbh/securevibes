@@ -1,6 +1,6 @@
 # 🛡️ SecureVibes
 
-**AI-Native Security Scanner for Vibecoded Applications**
+**AI-Native Security System for Vibecoded Applications**
 
 SecureVibes uses **Claude's multi-agent architecture** to autonomously find security vulnerabilities in your codebase. Four specialized AI agents work together to deliver comprehensive, context-aware security analysis with concrete evidence.
 
@@ -20,10 +20,7 @@ pip install securevibes
 export CLAUDE_API_KEY="your-api-key-here"
 
 # Scan your project
-securevibes scan .
-
-# View results
-securevibes report
+securevibes scan /path/to/code --streaming --debug
 ```
 
 Get your Claude API key from: https://console.anthropic.com/
@@ -53,40 +50,12 @@ SecureVibes orchestrates 4 specialized Claude agents:
 
 ---
 
-## 📊 Example Scan
-
-```bash
-$ securevibes scan .
-
-🛡️ SecureVibes Security Scanner
-📁 Scanning: /Users/xyz/repos/my-project
-🤖 Model: sonnet
-============================================================
-
-✅ Phase 1/4: Architecture Assessment Complete
-✅ Phase 2/4: Threat Modeling (STRIDE Analysis) Complete
-✅ Phase 3/4: Code Review (Security Analysis) Complete
-✅ Phase 4/4: Report Generation Complete
-
-================================================================================
-📊 Scan Results
-================================================================================
-
-  📁 Files scanned:   1953
-  ⏱️  Scan time:       1053.66s
-  💰 Total cost:      $2.27
-  🐛 Issues found:    28
-     🔴 Critical:     5
-     🟠 High:         10
-     🟡 Medium:       10
-     🟢 Low:          3
-```
-
----
-
 ## 🎯 Common Use Cases
 
 ```bash
+# Real-time progress for large repos (recommended)
+securevibes scan . --streaming
+
 # Export JSON for CI/CD pipeline
 securevibes scan . --format json --output security-report.json
 
@@ -124,6 +93,7 @@ export SECUREVIBES_MAX_TURNS=75  # Deeper analysis
 
 ## 🐍 Python API
 
+**Classic Scanner:**
 ```python
 import asyncio
 from securevibes import SecurityScanner
@@ -140,20 +110,24 @@ async def main():
 asyncio.run(main())
 ```
 
----
+**Streaming Scanner (Real-Time Progress):**
+```python
+import asyncio
+from securevibes import StreamingScanner
 
-## 🔒 Privacy & Security
+async def main():
+    scanner = StreamingScanner(
+        api_key="your-api-key",
+        model="sonnet",
+        debug=True  # Show agent thinking
+    )
+    
+    result = await scanner.scan("/path/to/repo")
+    print(f"Found {len(result.issues)} vulnerabilities")
+    print(f"Cost: ${result.total_cost_usd:.4f}")
 
-**What SecureVibes sends to Anthropic:**
-- Your source code files
-- Relative file paths within the scanned repository
-
-**What SecureVibes does NOT send:**
-- Absolute paths or usernames
-- Environment variables or secrets
-- Git history or metadata
-
-⚠️ **Important:** SecureVibes sends your code to Anthropic's Claude API for analysis. Review [Anthropic's Privacy Policy](https://www.anthropic.com/legal/privacy) before scanning proprietary code.
+asyncio.run(main())
+```
 
 ---
 
@@ -165,19 +139,15 @@ This is a quick reference for PyPI users. For comprehensive documentation, visit
 
 Including:
 - 🏗️ [Architecture Deep Dive](https://github.com/anshumanbh/securevibes/blob/main/docs/ARCHITECTURE.md)
-- 🔧 [Advanced Configuration](https://github.com/anshumanbh/securevibes#%EF%B8%8F-configuration)
-- 🧪 [Example Scans & Results](https://github.com/anshumanbh/securevibes#-example-output)
-- 🤝 [Contributing Guide](https://github.com/anshumanbh/securevibes#-contributing)
+- 🌊 [Streaming Mode Guide](https://github.com/anshumanbh/securevibes/blob/main/docs/STREAMING_MODE.md) - Real-time progress tracking
 
 ---
 
-## 👤 Author & Support
+## 👤 Author
 
 Built by [@anshumanbh](https://github.com/anshumanbh)
 
-- 🐛 **Bug Reports:** [GitHub Issues](https://github.com/anshumanbh/securevibes/issues)
-- 💡 **Feature Requests:** [GitHub Discussions](https://github.com/anshumanbh/securevibes/discussions)
-- 🌟 **Star the repo** to follow development!
+🌟 **Star the repo** to follow development!
 
 ---
 
