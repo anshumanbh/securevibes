@@ -104,7 +104,6 @@ class SecurityScanner:
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
         model: str = "sonnet", 
         debug: bool = False
     ):
@@ -112,13 +111,9 @@ class SecurityScanner:
         Initialize scanner
 
         Args:
-            api_key: Claude API key (reads from CLAUDE_API_KEY if not provided)
             model: Claude model name (e.g., sonnet)
             debug: Enable debug output
         """
-        if api_key:
-            os.environ["CLAUDE_API_KEY"] = api_key
-
         self.model = model
         self.debug = debug
         self.total_cost = 0.0

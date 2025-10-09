@@ -5,10 +5,6 @@
 SecureVibes uses **Claude's multi-agent architecture** to autonomously find security vulnerabilities in your codebase. Four specialized AI agents work together to deliver comprehensive, context-aware security analysis with concrete evidence.
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Version](https://img.shields.io/badge/version-0.3.2-green.svg)](https://github.com/anshumanbh/securevibes/releases)
-[![Tests](https://img.shields.io/badge/tests-74%20passed-success.svg)](https://github.com/anshumanbh/securevibes)
-[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 ---
 
@@ -21,13 +17,6 @@ SecureVibes uses **Claude's multi-agent architecture** to autonomously find secu
 - **🔍 Code Review Agent**: Security thinking methodology to find vulnerabilities
 - **📊 Report Generator**: Compiles comprehensive scan results
 
-### Results Include
-- ✅ Exact file paths and line numbers
-- ✅ Vulnerable code snippets
-- ✅ CWE IDs for tracking
-- ✅ Remediation recommendations
-- ✅ Evidence of exploitability
-
 ---
 
 ## 🚀 Quick Start
@@ -36,8 +25,13 @@ SecureVibes uses **Claude's multi-agent architecture** to autonomously find secu
 # Install
 pip install securevibes
 
-# Set API key (get yours from https://console.anthropic.com/)
-export CLAUDE_API_KEY="your-api-key-here"
+# Authenticate (choose one method)
+# Method 1: Session-based (recommended)
+# You could use your Claude subscription here, if you don't want to pay per API requests
+claude  # Run interactive CLI, then type: /login
+
+# Method 2: API key
+export ANTHROPIC_API_KEY="your-api-key-here"  # Get from https://console.anthropic.com/
 
 # Scan your project
 securevibes scan /path/to/code --streaming --debug
@@ -65,14 +59,23 @@ securevibes review .        # Phase 3: Vulnerability validation
 ### Common Options
 
 ```bash
+# Default: creates .securevibes/scan_report.md (markdown format)
+securevibes scan .
+
 # Export results as JSON
 securevibes scan . --format json --output results.json
+
+# Custom markdown report (saved to .securevibes/custom_report.md)
+securevibes scan . --format markdown --output custom_report.md
+
+# Terminal table output (no file saved)
+securevibes scan . --format table
 
 # Filter by severity
 securevibes scan . --severity high
 
 # Use different model
-securevibes scan . --model claude-3-5-haiku-20241022
+securevibes scan . --model haiku
 
 # Real-time streaming progress (recommended for large repos)
 securevibes scan . --streaming
@@ -161,7 +164,8 @@ AI-Powered Vulnerability Detection (Streaming Mode)
 ╰────┴──────────┴──────────────────────────────────┴────────────────────╯
 ... and 16 more issues
 
-💾 Full report: .securevibes/scan_results.json
+📄 Markdown report: .securevibes/scan_report.md
+💾 JSON results: .securevibes/scan_results.json
 ```
 
 **Learn more:** [Streaming Mode Documentation →](docs/STREAMING_MODE.md)
@@ -179,8 +183,9 @@ import asyncio
 from securevibes import SecurityScanner
 
 async def main():
+    # Authentication is handled via environment (ANTHROPIC_API_KEY)
+    # or session token (from `claude` CLI /login)
     scanner = SecurityScanner(
-        api_key="your-api-key",  # or use CLAUDE_API_KEY env var
         model="claude-3-5-sonnet-20241022"
     )
     
@@ -231,14 +236,24 @@ asyncio.run(main())
 
 ## ⚙️ Configuration
 
-### Required Environment Variables
+### Authentication
 
+SecureVibes uses the Claude CLI for AI analysis. Authenticate using any of these methods:
+
+**Method 1: Session-based authentication (recommended)**
 ```bash
-# Claude API Key (required for all operations)
-export CLAUDE_API_KEY='your-api-key-here'
+claude
+# In interactive mode, type: /login
+# Follow the prompts to authenticate
 ```
 
+**Method 2: API Key**
+```bash
+export ANTHROPIC_API_KEY='your-api-key-here'
+```
 Get your API key from: https://console.anthropic.com/
+
+```
 
 ### Optional Configuration
 
@@ -279,7 +294,7 @@ export SECUREVIBES_MAX_TURNS=100  # Maximum depth (use with caution)
 
 **Optimize for Speed & Cost:**
 ```bash
-export CLAUDE_API_KEY='your-key'
+# Ensure you're authenticated first (see Authentication section)
 export SECUREVIBES_ASSESSMENT_MODEL="haiku"
 export SECUREVIBES_THREAT_MODELING_MODEL="haiku"
 export SECUREVIBES_CODE_REVIEW_MODEL="sonnet"
@@ -289,7 +304,7 @@ securevibes scan .
 
 **Optimize for Accuracy (Recommended):**
 ```bash
-export CLAUDE_API_KEY='your-key'
+# Ensure you're authenticated first (see Authentication section)
 export SECUREVIBES_CODE_REVIEW_MODEL="opus"
 export SECUREVIBES_THREAT_MODELING_MODEL="sonnet"
 export SECUREVIBES_MAX_TURNS=75

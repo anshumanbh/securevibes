@@ -52,3 +52,8 @@ class ScanResult:
     def to_json(self) -> str:
         """Convert to JSON string"""
         return json.dumps(self.to_dict(), indent=2)
+    
+    def to_markdown(self) -> str:
+        """Convert to Markdown string"""
+        from securevibes.reporters.markdown_reporter import MarkdownReporter
+        return MarkdownReporter.generate(self)

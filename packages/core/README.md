@@ -5,8 +5,6 @@
 SecureVibes uses **Claude's multi-agent architecture** to autonomously find security vulnerabilities in your codebase. Four specialized AI agents work together to deliver comprehensive, context-aware security analysis with concrete evidence.
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Version](https://img.shields.io/badge/version-0.1.1-green.svg)](https://pypi.org/project/securevibes/)
 
 ---
 
@@ -16,24 +14,19 @@ SecureVibes uses **Claude's multi-agent architecture** to autonomously find secu
 # Install
 pip install securevibes
 
-# Configure API key
-export CLAUDE_API_KEY="your-api-key-here"
+# Authenticate (choose one method)
+# Method 1: Session-based (recommended)
+# You could use your Claude subscription here, if you don't want to pay per API requests
+claude  # Run interactive CLI, then type: /login
+
+# Method 2: API key
+export ANTHROPIC_API_KEY="your-api-key-here"
 
 # Scan your project
 securevibes scan /path/to/code --streaming --debug
 ```
 
-Get your Claude API key from: https://console.anthropic.com/
-
----
-
-## ✨ What You Get
-
-- ✅ **Exact file paths and line numbers** for every vulnerability
-- ✅ **CWE IDs** for industry-standard tracking
-- ✅ **Concrete code snippets** showing the vulnerable code
-- ✅ **Remediation recommendations** with actionable fixes
-- ✅ **Exploitability analysis** with realistic attack scenarios
+Get your API key from: https://console.anthropic.com/
 
 ---
 
@@ -53,11 +46,20 @@ SecureVibes orchestrates 4 specialized Claude agents:
 ## 🎯 Common Use Cases
 
 ```bash
+# Default: creates .securevibes/scan_report.md (markdown format)
+securevibes scan .
+
 # Real-time progress for large repos (recommended)
 securevibes scan . --streaming
 
 # Export JSON for CI/CD pipeline
 securevibes scan . --format json --output security-report.json
+
+# Custom markdown report (saved to .securevibes/custom_report.md)
+securevibes scan . --format markdown --output custom_report.md
+
+# Terminal table output (no file saved)
+securevibes scan . --format table
 
 # Focus on critical/high severity
 securevibes scan . --severity high
@@ -76,14 +78,14 @@ securevibes scan . --quiet
 Control agent models and analysis depth via environment variables:
 
 ```bash
-# Required
-export CLAUDE_API_KEY='your-api-key'
+# Authenticate first (see Quick Start above)
+# Then optionally customize:
 
-# Optional: Customize agent models (default: sonnet)
+# Customize agent models (default: sonnet)
 export SECUREVIBES_CODE_REVIEW_MODEL="opus"  # Max accuracy
 export SECUREVIBES_THREAT_MODELING_MODEL="sonnet"
 
-# Optional: Control analysis depth (default: 50)
+# Control analysis depth (default: 50)
 export SECUREVIBES_MAX_TURNS=75  # Deeper analysis
 ```
 
@@ -99,8 +101,8 @@ import asyncio
 from securevibes import SecurityScanner
 
 async def main():
+    # Authentication via ANTHROPIC_API_KEY env var or claude CLI session
     scanner = SecurityScanner(
-        api_key="your-api-key",
         model="claude-3-5-sonnet-20241022"
     )
     
@@ -116,8 +118,8 @@ import asyncio
 from securevibes import StreamingScanner
 
 async def main():
+    # Authentication via ANTHROPIC_API_KEY env var or claude CLI session
     scanner = StreamingScanner(
-        api_key="your-api-key",
         model="sonnet",
         debug=True  # Show agent thinking
     )

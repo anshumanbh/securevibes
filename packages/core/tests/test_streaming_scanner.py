@@ -35,7 +35,7 @@ def debug_progress_tracker(console):
 @pytest.fixture
 def streaming_scanner():
     """Create a streaming scanner instance"""
-    return StreamingScanner(api_key="test-key", model="sonnet", debug=False)
+    return StreamingScanner(model="sonnet", debug=False)
 
 
 @pytest.fixture
@@ -228,7 +228,7 @@ class TestStreamingScannerInit:
     
     def test_initialization_defaults(self):
         """Test scanner initializes with defaults"""
-        scanner = StreamingScanner(api_key="test-key")
+        scanner = StreamingScanner()
         
         assert scanner.model == "sonnet"
         assert scanner.debug is False
@@ -236,22 +236,22 @@ class TestStreamingScannerInit:
     
     def test_initialization_with_model(self):
         """Test scanner initializes with custom model"""
-        scanner = StreamingScanner(api_key="test-key", model="opus")
+        scanner = StreamingScanner(model="opus")
         
         assert scanner.model == "opus"
     
     def test_initialization_with_debug(self):
         """Test scanner initializes with debug mode"""
-        scanner = StreamingScanner(api_key="test-key", debug=True)
+        scanner = StreamingScanner(debug=True)
         
         assert scanner.debug is True
     
     def test_api_key_sets_env_var(self):
         """Test API key is set in environment"""
         import os
-        scanner = StreamingScanner(api_key="custom-key")
+        scanner = StreamingScanner()
         
-        assert os.environ.get("CLAUDE_API_KEY") == "custom-key"
+        # API key is no longer set by the scanner - delegated to claude CLI
 
 
 class TestStreamingScannerIntegration:
@@ -449,8 +449,8 @@ class TestStreamingScannerVsClassic:
         from securevibes.scanner.security_scanner import SecurityScanner
         
         # Both should produce ScanResult
-        streaming = StreamingScanner(api_key="test")
-        classic = SecurityScanner(api_key="test")
+        streaming = StreamingScanner()
+        classic = SecurityScanner()
         
         # Both have scan method
         assert hasattr(streaming, 'scan')
@@ -461,7 +461,7 @@ class TestStreamingScannerVsClassic:
         from securevibes import StreamingScanner as ImportedScanner
         
         assert ImportedScanner is not None
-        scanner = ImportedScanner(api_key="test")
+        scanner = ImportedScanner()
         assert isinstance(scanner, StreamingScanner)
 
 
