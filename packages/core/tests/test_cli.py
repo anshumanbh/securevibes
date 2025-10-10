@@ -46,26 +46,7 @@ class TestCLIBasics:
         result = runner.invoke(cli, ['scan', '--help'])
         assert result.exit_code == 0
         assert 'scan' in result.output.lower()
-        # Verify streaming flag is documented
-        assert '--streaming' in result.output
     
-    def test_assess_help(self, runner):
-        """Test assess command help"""
-        result = runner.invoke(cli, ['assess', '--help'])
-        assert result.exit_code == 0
-        assert 'assess' in result.output.lower()
-    
-    def test_threat_model_help(self, runner):
-        """Test threat-model command help"""
-        result = runner.invoke(cli, ['threat-model', '--help'])
-        assert result.exit_code == 0
-        assert 'threat' in result.output.lower()
-    
-    def test_review_help(self, runner):
-        """Test review command help"""
-        result = runner.invoke(cli, ['review', '--help'])
-        assert result.exit_code == 0
-        assert 'review' in result.output.lower()
 
 
 class TestScanCommand:
@@ -97,34 +78,6 @@ class TestScanCommand:
         ])
         # Should complete (may fail if no API key, but command structure is valid)
         assert '--help' not in result.output  # Didn't fall back to help
-    
-    def test_scan_streaming_flag_accepted(self, runner, test_repo):
-        """Test that --streaming flag is accepted"""
-        result = runner.invoke(cli, ['scan', str(test_repo), '--streaming'])
-        # Should not show help (flag is recognized)
-        # May fail for other reasons (no API key, etc.) but flag should be valid
-        assert '--help' not in result.output or result.exit_code != 0
-    
-    def test_scan_streaming_with_debug(self, runner, test_repo):
-        """Test --streaming with --debug flag"""
-        result = runner.invoke(cli, ['scan', str(test_repo), '--streaming', '--debug'])
-        # Flags should be recognized (may fail for API key)
-        assert '--help' not in result.output or result.exit_code != 0
-    
-    def test_scan_banner_shows_streaming_mode(self, runner, test_repo):
-        """Test that streaming mode shows in banner"""
-        result = runner.invoke(cli, ['scan', str(test_repo), '--streaming'])
-        # Banner should indicate streaming mode
-        if 'SecureVibes' in result.output:
-            assert 'Streaming Mode' in result.output or 'streaming' in result.output.lower()
-    
-    def test_scan_classic_mode_banner(self, runner, test_repo):
-        """Test that classic mode doesn't show streaming in banner"""
-        result = runner.invoke(cli, ['scan', str(test_repo)])
-        # Banner should not say streaming mode (unless using --streaming)
-        if 'SecureVibes' in result.output and '--streaming' not in result.output:
-            # Classic mode banner
-            pass  # Just verify it runs
     
     def test_scan_markdown_format_default(self, runner, test_repo):
         """Test that markdown is default format"""
@@ -166,56 +119,6 @@ class TestScanCommand:
         # Should accept table format
         pass
 
-
-class TestAssessCommand:
-    """Test assess command"""
-    
-    def test_assess_nonexistent_path(self, runner):
-        """Test assess with non-existent path"""
-        result = runner.invoke(cli, ['assess', '/nonexistent/path'])
-        assert result.exit_code != 0
-    
-    @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Requires Claude API key")
-    def test_assess_with_path(self, runner, test_repo):
-        """Test assess with valid path"""
-        result = runner.invoke(cli, ['assess', str(test_repo)])
-        # Should run (may fail without API key, but command structure is valid)
-        assert 'Assessment' in result.output or 'Error' in result.output
-
-
-class TestThreatModelCommand:
-    """Test threat-model command"""
-    
-    def test_threat_model_without_security_md(self, runner, test_repo):
-        """Test threat-model fails without SECURITY.md"""
-        result = runner.invoke(cli, ['threat-model', str(test_repo)])
-        assert result.exit_code != 0
-        # Should mention missing SECURITY.md
-        assert 'SECURITY.md' in result.output or 'not found' in result.output.lower()
-    
-    @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Requires Claude API key and SECURITY.md")
-    def test_threat_model_with_security_md(self, runner, test_repo):
-        """Test threat-model with existing SECURITY.md"""
-        # Create SECURITY.md
-        securevibes_dir = test_repo / ".securevibes"
-        securevibes_dir.mkdir()
-        (securevibes_dir / "SECURITY.md").write_text("# Security Architecture\n\n## Overview\nTest")
-        
-        result = runner.invoke(cli, ['threat-model', str(test_repo)])
-        assert 'Threat' in result.output or 'Error' in result.output
-
-
-class TestReviewCommand:
-    """Test review command"""
-    
-    def test_review_without_artifacts(self, runner, test_repo):
-        """Test review fails without required artifacts"""
-        result = runner.invoke(cli, ['review', str(test_repo)])
-        assert result.exit_code != 0
-        # Should mention missing files
-        assert 'not found' in result.output.lower() or 'Error' in result.output
 
 
 class TestReportCommand:

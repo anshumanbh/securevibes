@@ -20,7 +20,7 @@ SecureVibes uses the **Claude Agent SDK** where Claude autonomously orchestrates
 User Command (securevibes scan)
         ↓
 ┌─────────────────────────────────────────────┐
-│         SecurityScanner                     │
+│         Scanner                             │
 │  • Configures agent definitions             │
 │  • Provides orchestration prompt to Claude  │
 └─────────────────────────────────────────────┘
@@ -199,20 +199,17 @@ User Input → Views → Models → Database
 - All confirmed vulnerabilities
 - Severity breakdown
 
-### 5. SecurityScanner (`scanner/security_scanner.py`)
+### 5. Scanner (`scanner/scanner.py`)
 
-**Purpose:** Configure agents and initiate Claude's orchestration
+**Purpose:** Configure agents and initiate Claude's orchestration with real-time progress tracking
 
 **Key Methods:**
 - `scan(repo_path)` - Full security scan with all agents
-- `assess_only(repo_path)` - Assessment phase only
-- `threat_model_only(repo_path)` - Threat modeling phase only
-- `review_only(repo_path)` - Code review phase only
 
 **Responsibilities:**
-- Configure `ClaudeAgentOptions` with agent definitions
+- Configure `ClaudeAgentOptions` with agent definitions and hooks
 - Provide orchestration prompt to Claude
-- Track costs and display progress
+- Track costs and display real-time progress via hooks
 - Return structured `ScanResult` objects
 
 ---
@@ -401,7 +398,7 @@ SECUREVIBES_AGENTS = {
 }
 ```
 
-2. Update orchestration prompt in `SecurityScanner`:
+2. Update orchestration prompt in `Scanner`:
 
 ```python
 orchestration_prompt = """
