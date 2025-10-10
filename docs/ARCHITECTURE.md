@@ -267,65 +267,6 @@ pip install -e ".[dev]"
 export ANTHROPIC_API_KEY="your-api-key"
 ```
 
-### CLI Reference
-
-#### `securevibes scan`
-
-Run a complete security scan with all 4 phases.
-
-```bash
-securevibes scan [PATH] [OPTIONS]
-```
-
-**Options:**
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--api-key` | Anthropic API key | `$ANTHROPIC_API_KEY` |
-| `--model`, `-m` | Claude model to use | `claude-3-5-sonnet-20241022` |
-| `--output`, `-o` | Save results to file | - |
-| `--format`, `-f` | Output format: `json`, `text`, `table` | `table` |
-| `--severity`, `-s` | Minimum severity: `critical`, `high`, `medium`, `low` | - |
-| `--no-save` | Don't save results to `.securevibes/` | `false` |
-| `--quiet`, `-q` | Minimal output (errors only) | `false` |
-| `--debug` | Verbose diagnostic output | `false` |
-
-**Exit Codes:**
-- `0` - Success (no critical/high issues)
-- `1` - High severity issues found
-- `2` - Critical issues found
-- `130` - Cancelled by user
-
-**Examples:**
-```bash
-# Basic scan
-securevibes scan .
-
-# Scan with severity filter
-securevibes scan /path/to/project --severity high
-
-# Export as JSON
-securevibes scan . --format json --output results.json
-
-# Use different model (shorthand or full ID)
-securevibes scan . --model haiku  # or claude-3-5-haiku-20241022
-```
-
-#### Individual Phase Commands
-
-```bash
-# Phase 1: Architecture assessment
-securevibes assess /path/to/repo
-
-# Phase 2: Threat modeling (requires SECURITY.md)
-securevibes threat-model /path/to/repo
-
-# Phase 3: Code review (requires SECURITY.md + THREAT_MODEL.json)
-securevibes review /path/to/repo
-
-# View previous scan results
-securevibes report .securevibes/scan_results.json
-```
-
 ### Important Implementation Details
 
 1. **Vulnerability Severity Levels**: CRITICAL, HIGH, MEDIUM, LOW, INFO (defined in `securevibes/models/issue.py`)
