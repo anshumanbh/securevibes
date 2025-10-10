@@ -451,3 +451,95 @@ class TestMarkdownScanTime:
         
         assert "125.70s" in markdown
         assert "2m" in markdown
+
+
+class TestMarkdownRecommendationFormatter:
+    """Test the _format_recommendation() method"""
+    
+    def test_formats_run_together_numbered_list(self):
+        """Test splitting run-together numbered items"""
+        input_text = "1. First item. 2. Second item. 3. Third item."
+        result = MarkdownReporter._format_recommendation(input_text)
+        
+        assert result.count('\n') == 2  # 3 items = 2 newlines
+        assert '1. First item.' in result
+        assert '2. Second item.' in result
+        assert '3. Third item.' in result
+    
+    def test_formats_inline_code_quotes(self):
+        """Test formatting 'quoted' identifiers"""
+        input_text = "1. Set 'permission_mode' to 'default'."
+        result = MarkdownReporter._format_recommendation(input_text)
+        
+        assert '`permission_mode`' in result
+        assert '`default`' in result
+        assert "'" not in result  # Single quotes should be replaced
+    
+    def test_formats_function_calls(self):
+        """Test formatting function() calls"""
+        input_text = "1. Use os.path.realpath() to validate. 2. Call Path.mkdir() with params."
+        result = MarkdownReporter._format_recommendation(input_text)
+        
+        assert '`os.path.realpath()`' in result
+        assert '`Path.mkdir()`' in result
+    
+    def test_formats_environment_variables(self):
+        """Test formatting ENVIRONMENT_VARIABLES"""
+        input_text = "1. Set SECURE_MODE variable. 2. Use API_KEY_NAME for auth."
+        result = MarkdownReporter._format_recommendation(input_text)
+        
+        assert '`SECURE_MODE`' in result
+        assert '`API_KEY_NAME`' in result
+    
+    def test_preserves_already_formatted_text(self):
+        """Test that well-formatted text is not modified"""
+        input_text = "1. First item\n2. Second item\n3. Third item"
+        result = MarkdownReporter._format_recommendation(input_text)
+        
+        assert result == input_text
+    
+    def test_handles_non_numbered_text(self):
+        """Test plain text without numbering"""
+        input_text = "Just a regular recommendation without numbers."
+        result = MarkdownReporter._format_recommendation(input_text)
+        
+        assert result == input_text
+    
+    def test_handles_file_paths(self):
+        """Test formatting file paths"""
+        input_text = "1. Check path/to/file.py for issues. 2. Review config/settings.json."
+        result = MarkdownReporter._format_recommendation(input_text)
+        
+        assert '`path/to/file.py`' in result
+        assert '`config/settings.json`' in result
+    
+    def test_complex_recommendation(self):
+        """Test complex recommendation with multiple formatting types"""
+        input_text = ("1. Use os.path.realpath() to check 'permission_mode'. "
+                     "2. Set SECURE_MODE=true in config/app.py. "
+                     "3. Validate with path.startswith().")
+        result = MarkdownReporter._format_recommendation(input_text)
+        
+        # Should have 3 separate lines
+        lines = result.split('\n')
+        assert len(lines) == 3
+        
+        # Check all formatting is applied
+        assert '`os.path.realpath()`' in result
+        assert '`permission_mode`' in result
+        assert '`SECURE_MODE`' in result
+        assert '`config/app.py`' in result
+        assert '`path.startswith()`' in result
+    
+    def test_handles_empty_string(self):
+        """Test empty string handling"""
+        result = MarkdownReporter._format_recommendation("")
+        assert result == ""
+    
+    def test_handles_single_item(self):
+        """Test single numbered item (should still work)"""
+        input_text = "1. Only one item here."
+        result = MarkdownReporter._format_recommendation(input_text)
+        
+        # Single item might not get split but should still format code
+        assert '1.' in result

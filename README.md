@@ -22,8 +22,20 @@ SecureVibes uses **Claude's multi-agent architecture** to autonomously find secu
 ## 🚀 Quick Start
 
 ```bash
-# Install
+
+# Install for the latest release on PyPi (might not have all the latest changes in the code)
 pip install securevibes
+
+# NOTE: the package uploaded on PyPi might not have all the latest changes. 
+# I will try to release a new version of the package whenever there are significant changes/developments
+# If you would rather use the version with the latest changes, you can do the following:
+
+# Install for the latest version (might be buggy)
+git clone https://github.com/anshumanbh/securevibes.git
+cd securevibes
+virtualenv env
+. env/bin/activate
+pip install -e packages/core
 
 # Authenticate (choose one method)
 # Method 1: Session-based (recommended)

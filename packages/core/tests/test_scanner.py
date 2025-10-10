@@ -441,31 +441,6 @@ class TestScannerHooks:
                 assert 'SubagentStop' in hooks
 
 
-class TestScannerVsClassic:
-    """Test compatibility between streaming and classic scanners"""
-    
-    def test_same_result_interface(self):
-        """Test Scanner returns same ScanResult interface"""
-        from securevibes.scanner.security_scanner import SecurityScanner
-        
-        # Both should produce ScanResult
-        streaming = Scanner()
-        classic = SecurityScanner()
-        
-        # Both have scan method
-        assert hasattr(streaming, 'scan')
-        assert hasattr(classic, 'scan')
-    
-    def test_scanner_importable_from_package(self):
-        """Test Scanner can be imported from main package"""
-        from securevibes import Scanner as ImportedScanner
-        
-        assert ImportedScanner is not None
-        scanner = ImportedScanner()
-        assert isinstance(scanner, Scanner)
-
-
-class TestProgressTrackerEdgeCases:
     """Test edge cases in progress tracking"""
     
     def test_empty_tool_input(self, progress_tracker):

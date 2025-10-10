@@ -6,8 +6,8 @@ SecureVibes supports **real-time streaming progress** mode for security scans. T
 
 **Quick Start:**
 ```bash
-securevibes scan . --streaming        # Real-time progress
-securevibes scan . --streaming --debug  # + Agent thinking
+securevibes scan .              # Real-time progress (always enabled)
+securevibes scan . --debug      # + Agent narration/thinking
 ```
 
 ## Problem It Solves
@@ -27,9 +27,9 @@ This led to:
 - Poor user experience during long operations
 - No visibility into what files/patterns are being analyzed
 
-## Solution: Streaming Mode
+## Solution: Real-Time Progress Tracking
 
-Streaming mode uses the Claude Agent SDK's **hooks system** to provide real-time updates on:
+SecureVibes uses the Claude Agent SDK's **hooks system** to provide real-time updates on:
 
 ✅ **Tool Usage** - See every Read, Grep, Write operation as it happens  
 ✅ **File Operations** - Know which files are being analyzed  
@@ -39,22 +39,22 @@ Streaming mode uses the Claude Agent SDK's **hooks system** to provide real-time
 
 ## Usage
 
-Enable streaming mode with the `--streaming` flag:
+Real-time progress is always enabled. Use the `--debug` flag for verbose output:
 
 ```bash
-# Basic scan with streaming
-securevibes scan . --streaming
+# Basic scan with real-time progress
+securevibes scan .
 
-# Streaming with verbose debug output
-securevibes scan . --streaming --debug
+# Verbose debug output (shows agent narration)
+securevibes scan . --debug
 
-# Streaming on specific directory
-securevibes scan /path/to/large/repo --streaming
+# Scan specific directory
+securevibes scan /path/to/large/repo
 ```
 
 ## Example Output
 
-### Without Streaming (Classic Mode)
+### Old Design (Before Progress Tracking)
 ```
 📁 Scanning: /Users/user/repos/myapp
 🤖 Model: sonnet
@@ -71,7 +71,7 @@ securevibes scan /path/to/large/repo --streaming
    Created: THREAT_MODEL.json
 ```
 
-### With Streaming Mode
+### Current Design (With Progress Tracking)
 ```
 📁 Scanning: /Users/user/repos/myapp
 🤖 Model: sonnet
@@ -169,7 +169,7 @@ The `ProgressTracker` class maintains:
 
 Streaming mode has minimal performance overhead:
 - ~2-5% additional latency from hook processing
-- Same API costs as classic mode
+- Minimal API cost overhead
 - Slightly higher memory for progress tracking (~1-2 MB)
 
 ### Debug Mode
@@ -177,7 +177,7 @@ Streaming mode has minimal performance overhead:
 Add `--debug` flag for maximum verbosity:
 
 ```bash
-securevibes scan . --streaming --debug
+securevibes scan . --debug
 ```
 
 This shows:
@@ -186,34 +186,35 @@ This shows:
 - Detailed error messages
 - Hook execution traces
 
-## When to Use Streaming Mode
+## When Progress Tracking Helps Most
 
-### Recommended For:
+### Especially Useful For:
 ✅ Large codebases (1000+ files)  
 ✅ Long-running scans (>5 minutes)  
 ✅ Production security audits  
 ✅ CI/CD pipelines (progress visibility)  
-✅ Debugging stuck scans  
+✅ Debugging or monitoring scans  
+✅ Understanding what the scanner is analyzing
 
-### Classic Mode Still Works For:
-- Small projects (<100 files)
-- Quick spot checks
-- When minimal output is preferred
-- Automated scripts parsing output
+### Output Control:
+- Use `--quiet` for minimal output
+- Use `--debug` for maximum verbosity with agent narration
+- Use `--format json` for machine-readable output
 
-## Comparison Matrix
+## Implementation Details
 
-| Feature | Classic Mode | Streaming Mode |
-|---------|--------------|----------------|
-| File polling | ✅ Every 2 seconds | ❌ Event-driven |
-| Phase detection | ⚠️  Indirect (file creation) | ✅ Deterministic (hooks) |
-| Tool visibility | ❌ Batched every 10 tools | ✅ Real-time |
-| Sub-agent tracking | ❌ Manual phase announce | ✅ Automatic lifecycle events |
-| File operations | ❌ Hidden | ✅ Visible (reads/writes) |
-| Cost updates | ❌ End only | ✅ Real-time (debug) |
-| Agent narration | ❌ Not available | ✅ Available (debug) |
-| Performance | 100% baseline | 98% baseline |
-| Memory usage | Low | Low-Medium |
+### Progress Tracking Features
+
+| Feature | Implementation |
+|---------|----------------|
+| Phase detection | ✅ Deterministic (SubagentStop hook) |
+| Tool visibility | ✅ Real-time (PreToolUse hook) |
+| Sub-agent tracking | ✅ Automatic lifecycle events |
+| File operations | ✅ Visible (reads/writes) |
+| Cost updates | ✅ Real-time (debug mode) |
+| Agent narration | ✅ Available (debug mode) |
+| Performance overhead | ~2-5% additional latency |
+| Memory usage | Low (~1-2 MB extra)
 
 ---
 
@@ -225,11 +226,11 @@ Streaming mode migrates from the simple `query()` API to `ClaudeSDKClient` with 
 
 **Key Components:**
 
-1. **StreamingScanner Class** (`packages/core/securevibes/scanner/streaming_scanner.py`)
-   - Uses `ClaudeSDKClient` instead of `query()`
+1. **Scanner Class** (`packages/core/securevibes/scanner/scanner.py`)
+   - Uses `ClaudeSDKClient` with hooks for real-time events
    - Implements three hooks for complete visibility
-   - Maintains same `ScanResult` interface as `SecurityScanner`
-   - Backward compatible with existing agent definitions
+   - Returns `ScanResult` with all vulnerability findings
+   - Compatible with all existing agent definitions
 
 2. **ProgressTracker Class**
    - Tracks tool usage, files read/written, sub-agent stack

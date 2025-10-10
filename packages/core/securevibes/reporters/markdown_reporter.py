@@ -212,7 +212,7 @@ class MarkdownReporter:
                 if issue.recommendation:
                     lines.append("**Recommendation:**")
                     lines.append("")
-                    lines.append(issue.recommendation)
+                    lines.append(MarkdownReporter._format_recommendation(issue.recommendation))
                     lines.append("")
                 
                 # Separator between issues
@@ -227,3 +227,62 @@ class MarkdownReporter:
         lines.append(f"*Report generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
         
         return '\n'.join(lines)
+    
+    @staticmethod
+    def _format_recommendation(recommendation: str) -> str:
+        """
+        Format recommendation text into proper markdown list.
+        
+        Handles:
+        - Numbered items (1. ... 2. ... 3. ...)
+        - Inline code formatting
+        - Proper line breaks
+        
+        Args:
+            recommendation: Raw recommendation text
+            
+        Returns:
+            Formatted markdown string
+        """
+        import re
+        
+        # If already well-formatted (has newlines with numbers), return as-is
+        if re.search(r'\n\d+\.', recommendation):
+            return recommendation
+        
+        # Split on numbered patterns: "1. ", "2. ", etc.
+        # Use lookahead to keep the number
+        items = re.split(r'(?=\d+\.\s+)', recommendation.strip())
+        items = [item.strip() for item in items if item.strip()]
+        
+        if len(items) <= 1:
+            # No numbered list detected, return as-is
+            return recommendation
+        
+        # Format each item
+        formatted_items = []
+        for item in items:
+            # Extract number and text
+            match = re.match(r'(\d+)\.\s+(.*)', item, re.DOTALL)
+            if match:
+                num, text = match.groups()
+                text = text.strip()
+                
+                # Format inline code:
+                # 1. Function/method calls with dots: os.path.realpath() -> `os.path.realpath()`
+                text = re.sub(r'\b([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*\(\))', r'`\1`', text)
+                
+                # 2. Single quotes around identifiers: 'permission_mode' -> `permission_mode`
+                text = re.sub(r"'([a-zA-Z_][a-zA-Z0-9_\.]*)'", r'`\1`', text)
+                
+                # 3. File paths: /path/to/file or path/to/file.py
+                text = re.sub(r'([a-zA-Z0-9_\-\.]+/[a-zA-Z0-9_/\-\.]+\.[a-z]+)', r'`\1`', text)
+                
+                # 4. Environment variables: SOME_VAR_NAME
+                text = re.sub(r'\b([A-Z][A-Z0-9_]{3,})\b', r'`\1`', text)
+                
+                # Add formatted item
+                formatted_items.append(f"{num}. {text}")
+        
+        # Join with newlines
+        return '\n'.join(formatted_items)

@@ -1,10 +1,10 @@
 # Security Scan Report
 
 **Repository:** `/Users/anshumanbhartiya/repos/securevibes`  
-**Scan Date:** 2025-10-09 17:48:59  
+**Scan Date:** 2025-10-10 12:59:52  
 **Files Scanned:** 2915  
-**Scan Duration:** 1134.94s (~18m 55s)  
-**Total Cost:** $2.1379  
+**Scan Duration:** 1930.93s (~32m 11s)  
+**Total Cost:** $3.4496  
 
 ---
 
@@ -12,8 +12,8 @@
 
 🔴 **19 security vulnerabilities found** - **CRITICAL** - Requires immediate attention
 
-- 🔴 **2 Critical** - Require immediate attention
-- 🟠 **6 High** - Should be fixed soon
+- 🔴 **1 Critical** - Require immediate attention
+- 🟠 **7 High** - Should be fixed soon
 - 🟡 **8 Medium** - Address when possible
 - 🟢 **3 Low** - Minor issues
 
@@ -23,8 +23,8 @@
 
 | Severity | Count | Percentage |
 |----------|-------|------------|
-| 🔴 Critical | 2 | 11% |
-| 🟠 High | 6 | 32% |
+| 🔴 Critical | 1 | 5% |
+| 🟠 High | 7 | 37% |
 | 🟡 Medium | 8 | 42% |
 | 🟢 Low | 3 | 16% |
 
@@ -34,137 +34,165 @@
 
 | # | Severity | Title | Location |
 |---|----------|-------|----------|
-| 1 | 🔴 CRITICAL | Arbitrary Filesystem Access via bypassPermissions Mode | `packages/core/securevibes/scanner/scanner.py:294` |
-| 2 | 🟠 HIGH | Malicious Prompt Injection via Unverified Prompt Files | `packages/core/securevibes/prompts/loader.py:30` |
-| 3 | 🟠 HIGH | API Key Exposure via Environment Variables | `packages/core/securevibes/scanner/scanner.py:308` |
-| 4 | 🟠 HIGH | Cost Overrun via Unbounded Repository Scanning | `packages/core/securevibes/scanner/scanner.py:250` |
-| 5 | 🔴 CRITICAL | Supply Chain Attack via Unpinned claude-agent-sdk Dependency | `packages/core/pyproject.toml:29` |
-| 6 | 🟠 HIGH | Secrets Exposure in Code Snippets within Scan Results | `packages/core/securevibes/models/issue.py:27` |
-| 7 | 🟡 MEDIUM | No Audit Trail for Security Scan Operations | `packages/core/securevibes/scanner/scanner.py:225` |
-| 8 | 🟡 MEDIUM | XSS Injection Risk in Agent-Generated Markdown Output | `packages/core/securevibes/reporters/markdown_reporter.py:25` |
-| 9 | 🟢 LOW | Absolute Path Disclosure in Debug Mode and Error Messages | `packages/core/securevibes/scanner/scanner.py:80` |
-| 10 | 🟠 HIGH | Arbitrary Code Execution via Write Tool File Extension Abuse | `packages/core/securevibes/scanner/scanner.py:242` |
-| 11 | 🟢 LOW | Race Condition in Concurrent File Writes to .securevibes/ | `packages/core/securevibes/scanner/scanner.py:242` |
-| 12 | 🟡 MEDIUM | No Integrity Verification for Scan Results | `packages/core/securevibes/reporters/json_reporter.py:24` |
-| 13 | 🟠 HIGH | Symlink Attack Enabling Privilege Escalation via .securevibe... | `packages/core/securevibes/scanner/scanner.py:240` |
-| 14 | 🟡 MEDIUM | Scan Results Stored Without Encryption at Rest | `packages/core/securevibes/reporters/json_reporter.py:24` |
-| 15 | 🟡 MEDIUM | Configuration Injection via Unvalidated Environment Variable... | `packages/core/securevibes/config.py:67` |
-| 16 | 🟡 MEDIUM | Memory Exhaustion via Large Code Snippets in Vulnerability R... | `packages/core/securevibes/scanner/scanner.py:368` |
-| 17 | 🟡 MEDIUM | Resource Exhaustion via Uncontrolled Glob Pattern Execution | `packages/core/securevibes/scanner/scanner.py:250` |
-| 18 | 🟢 LOW | Information Disclosure via Verbose Error Messages | `packages/core/securevibes/cli/main.py:159` |
-| 19 | 🟡 MEDIUM | Python Import Hijacking Risk via .securevibes/ Package Struc... | `packages/core/securevibes/scanner/scanner.py:242` |
+| 1 | 🔴 CRITICAL | AI Agents Running with bypassPermissions Grants Unrestricted... | `packages/core/securevibes/scanner/scanner.py:294` |
+| 2 | 🟠 HIGH | Symlink Attack Allows Writing Outside Repository Boundaries | `packages/core/securevibes/scanner/scanner.py:242` |
+| 3 | 🟠 HIGH | API Key Exposure Through Environment Variables and Process M... | `packages/core/securevibes/config.py:40` |
+| 4 | 🟠 HIGH | Sensitive Vulnerability Reports Stored in Plaintext Without ... | `packages/core/securevibes/reporters/json_reporter.py:24` |
+| 5 | 🟠 HIGH | Compromised PyPI Package Could Execute Malicious Code During... | `packages/core/pyproject.toml:29` |
+| 6 | 🟠 HIGH | AI Agent Output Files Can Be Modified Without Detection | `packages/core/securevibes/scanner/scanner.py:369` |
+| 7 | 🟠 HIGH | Scanning Large Repositories Causes Uncontrolled API Cost and... | `packages/core/securevibes/scanner/scanner.py:249` |
+| 8 | 🟡 MEDIUM | Malicious Files Could Cause JSON Parser Vulnerabilities or R... | `packages/core/securevibes/scanner/scanner.py:369` |
+| 9 | 🟡 MEDIUM | Error Messages and Stack Traces Leak Sensitive Information | `packages/core/securevibes/cli/main.py:158` |
+| 10 | 🟡 MEDIUM | No Audit Logging Prevents Forensic Analysis of Security Scan... | `packages/core/securevibes/scanner/scanner.py:72` |
+| 11 | 🟢 LOW | Configuration Environment Variables Allow Bypassing Security... | `packages/core/securevibes/config.py:66` |
+| 12 | 🟡 MEDIUM | Debug Mode Exposes Sensitive File Paths and Internal Operati... | `packages/core/securevibes/scanner/scanner.py:181` |
+| 13 | 🟢 LOW | Concurrent Scans Overwrite Each Other's Results Causing Data... | `packages/core/securevibes/scanner/scanner.py:242` |
+| 14 | 🟢 LOW | Race Condition in Artifact File Writing Could Cause Partial/... | `packages/core/securevibes/reporters/json_reporter.py:24` |
+| 15 | 🟠 HIGH | Hardcoded Secrets in Scanned Code Are Not Redacted from Repo... | `packages/core/securevibes/reporters/markdown_reporter.py:186` |
+| 16 | 🟡 MEDIUM | Binary File Processing Causes Memory Exhaustion or Parser Cr... | `packages/core/securevibes/scanner/scanner.py:249` |
+| 17 | 🟡 MEDIUM | No Report Signing Allows Forgery of Security Assessment Resu... | `packages/core/securevibes/reporters/json_reporter.py:24` |
+| 18 | 🟡 MEDIUM | No Privilege Separation Between AI Agents Allows Cascade Fai... | `packages/core/securevibes/agents/definitions.py:11` |
+| 19 | 🟡 MEDIUM | Prompt Injection Could Manipulate AI Agents to Execute Malic... | `packages/core/securevibes/agents/definitions.py:11` |
 
 ---
 
 ## Detailed Findings
 
-### 1. Arbitrary Filesystem Access via bypassPermissions Mode [🔴 CRITICAL]
+### 1. AI Agents Running with bypassPermissions Grants Unrestricted Filesystem Access [🔴 CRITICAL]
 
 **File:** `packages/core/securevibes/scanner/scanner.py:294`  
-**CWE:** CWE-22  
+**CWE:** CWE-250  
 **Severity:** 🔴 Critical
 
 **Description:**
 
-The Scanner class configures ClaudeSDKClient with permission_mode='bypassPermissions', granting unrestricted filesystem access to all AI agents. No validation restricts file reads/writes to the repository directory. Agents can access any file readable by the user process, including SSH keys, credentials, browser data, and system files. This enables prompt injection attacks where malicious instructions in code comments or repository files could direct agents to exfiltrate sensitive data.
+The Scanner class explicitly configures ClaudeSDKClient with permission_mode='bypassPermissions' at line 294, granting all AI agents unrestricted Read/Write access to the entire filesystem without user prompts or containment. This bypasses normal permission checks and allows agents to read sensitive system files (/etc/passwd, ~/.ssh/, browser credentials) and write to arbitrary locations, potentially enabling privilege escalation if an agent behaves maliciously or is manipulated through prompt injection. The bypassPermissions mode provides zero containment beyond OS-level user permissions.
 
 **Code Snippet:**
 
 ```python
-options = ClaudeAgentOptions(
-    agents=SECUREVIBES_AGENTS,
-    cwd=str(repo),
-    max_turns=config.get_max_turns(),
-    permission_mode='bypassPermissions',
-    model=self.model,
-    hooks={...}
-)
+        options = ClaudeAgentOptions(
+            agents=SECUREVIBES_AGENTS,
+            cwd=str(repo),
+            max_turns=config.get_max_turns(),
+            permission_mode='bypassPermissions',
+            model=self.model,
 ```
 
 **Recommendation:**
 
-1. Change permission_mode to 'default' or 'acceptEdits' to require user confirmation. 2. Implement filesystem jail by validating all file paths in pre_tool_hook to ensure they are within the repository boundary using os.path.realpath() and checking the resolved path starts with the repo path. 3. Add SECUREVIBES_RESTRICT_FILESYSTEM environment variable to enforce strict mode. 4. Implement path validation in the hook that rejects absolute paths outside the repository: if not realpath(file_path).startswith(realpath(repo)): raise PermissionError()
+1. Change permission_mode to `default` or `acceptEdits` to require user confirmation for sensitive operations.
+2. Implement filesystem sandboxing in pre_tool_hook by validating all file paths are within repository boundary using `os.path.realpath()` and checking resolved path starts with repo path.
+3. Add `SECUREVIBES_RESTRICT_FILESYSTEM` environment variable to enforce strict mode.
+4. Whitelist allowed file paths based on repository root.
+5. Add audit logging for all Read/Write operations with full path disclosure.
 
 ---
 
-### 2. Malicious Prompt Injection via Unverified Prompt Files [🟠 HIGH]
+### 2. Symlink Attack Allows Writing Outside Repository Boundaries [🟠 HIGH]
 
-**File:** `packages/core/securevibes/prompts/loader.py:30`  
-**CWE:** CWE-494  
+**File:** `packages/core/securevibes/scanner/scanner.py:242`  
+**CWE:** CWE-59  
 **Severity:** 🟠 High
 
 **Description:**
 
-Agent prompts are loaded from the filesystem without any integrity verification (signatures, checksums, or hashes). The load_prompt() function in prompts/loader.py reads prompt files directly using read_text() with no validation. If an attacker compromises the package installation directory or performs a supply chain attack on PyPI, they can modify prompt files to inject malicious instructions that exfiltrate data, bypass security checks, or manipulate scan results. The prompts directory has no write protection or integrity monitoring.
+The .securevibes/ directory creation at scanner.py:242 uses securevibes_dir.mkdir(exist_ok=True) without validating that the path is not a symbolic link before writing artifacts. An attacker who creates .securevibes/ as a symlink to a sensitive location (e.g., ~/.ssh/, /etc/, /var/www/) can cause the scanner to follow the symlink and overwrite critical files with scan artifacts (SECURITY.md, THREAT_MODEL.json, VULNERABILITIES.json, scan_results.json). Combined with bypassPermissions mode, this enables silent privilege escalation attacks.
 
 **Code Snippet:**
 
 ```python
-return prompt_file.read_text(encoding="utf-8")
+        # Ensure .securevibes directory exists
+        securevibes_dir = repo / SECUREVIBES_DIR
+        try:
+            securevibes_dir.mkdir(exist_ok=True)
+        except (OSError, PermissionError) as e:
+            raise RuntimeError(f"Failed to create output directory {securevibes_dir}: {e}")
 ```
 
 **Recommendation:**
 
-1. Implement cryptographic signing of prompt files during package build. 2. Add runtime integrity verification: compute SHA-256 hashes of all prompt files and compare against a manifest file signed with the package maintainer's private key. 3. Store prompt hashes in a secure manifest: prompts_manifest.json with structure {"assessment.txt": "sha256:..."}. 4. Add verification before loading: if hashlib.sha256(prompt_file.read_bytes()).hexdigest() != expected_hash: raise SecurityError("Prompt integrity verification failed"). 5. Add --verify-prompts CLI flag for manual integrity checks. 6. Set restrictive file permissions (0444) on prompt files during installation.
+1. Implement symlink detection before creating directory: if `securevibes_dir.is_symlink()`: raise SecurityError('Output directory is a symlink').
+2. Use `os.path.realpath()` to resolve symlinks and verify resolved path is within repository: if not realpath(securevibes_dir).startswith(realpath(repo)): raise `SecurityError()`.
+3. Validate all file paths before writing in pre_tool_hook ensuring no component is a symlink.
+4. Add --no-follow-symlinks flag (enabled by default).
+5. Set securevibes_dir permissions to 0700 after creation.
 
 ---
 
-### 3. API Key Exposure via Environment Variables [🟠 HIGH]
+### 3. API Key Exposure Through Environment Variables and Process Memory [🟠 HIGH]
 
-**File:** `packages/core/securevibes/scanner/scanner.py:308`  
+**File:** `packages/core/securevibes/config.py:40`  
 **CWE:** CWE-522  
 **Severity:** 🟠 High
 
 **Description:**
 
-The application relies on ANTHROPIC_API_KEY stored in environment variables with no additional protection. Environment variables are accessible to all processes running as the same user, visible in process listings (/proc/PID/environ on Linux), and may leak through error messages, debug logs, or crash dumps. No code exists to protect the API key in memory or implement secure credential storage. The key is passed directly to ClaudeSDKClient without encryption or obfuscation.
+ANTHROPIC_API_KEY is accessed from environment variables by the ClaudeSDKClient without any secure credential storage. Environment variables are visible to all processes running as the same user via 'ps aux e', /proc/PID/environ, and core dumps. The API key persists in plaintext in process memory throughout scan execution. No memory protection (mlock), OS keyring integration, or automatic redaction in logs is implemented. Test files confirm authentication relies on environment variable inheritance (test_cli.py:198).
 
 **Code Snippet:**
 
 ```python
-async with ClaudeSDKClient(options=options) as client:
-    await client.query(orchestration_prompt)
+    @classmethod
+    def get_agent_model(cls, agent_name: str) -> str:
+        env_var = f"SECUREVIBES_{agent_name.upper()}_MODEL"
+        return os.getenv(env_var, cls.DEFAULTS.get(agent_name, "haiku"))
 ```
 
 **Recommendation:**
 
-1. Integrate with OS credential managers: macOS Keychain (keyring.get_password('securevibes', 'anthropic_api_key')), Windows Credential Manager, Linux Secret Service. 2. Add keyring as a dependency and use it as the primary credential source, falling back to environment variables only with a warning. 3. Implement API key encryption at rest using cryptography.fernet with a user-provided passphrase. 4. Add warning when API key is sourced from environment: console.print('[yellow]Warning: API key from environment variable. Consider using keyring for better security[/yellow]'). 5. Implement secure memory handling: overwrite API key in memory after use. 6. Add --setup-keyring command to securely store credentials.
+1. Integrate OS keyring (keyring library) for secure credential storage.
+2. Implement memory protection for API keys using `mlock()` or secure memory allocators.
+3. Add automatic redaction of API keys in all log output and error messages.
+4. Support short-lived session tokens instead of long-lived API keys.
+5. Implement API key rotation mechanism.
+6. Warn users about environment variable visibility in documentation.
+7. Clear sensitive environment variables after initial read.
 
 ---
 
-### 4. Cost Overrun via Unbounded Repository Scanning [🟠 HIGH]
+### 4. Sensitive Vulnerability Reports Stored in Plaintext Without Encryption [🟠 HIGH]
 
-**File:** `packages/core/securevibes/scanner/scanner.py:250`  
-**CWE:** CWE-400  
+**File:** `packages/core/securevibes/reporters/json_reporter.py:24`  
+**CWE:** CWE-311  
 **Severity:** 🟠 High
 
 **Description:**
 
-The Scanner class performs no pre-scan validation of repository size or file count. The scan() method at line 250 counts files using glob() but only for reporting - it does not enforce any limits. An attacker or careless user could scan massive repositories (e.g., scanning filesystem root '/', monorepos with millions of files, directories including node_modules) causing excessive API costs and long execution times. No timeout mechanism exists beyond max_turns configuration.
+All scan artifacts (SECURITY.md, THREAT_MODEL.json, VULNERABILITIES.json, scan_results.json) are written to .securevibes/ directory as plaintext files with standard file permissions (0644 default). These files contain detailed vulnerability information including exploitation techniques, exact file paths with line numbers, code snippets that may contain hardcoded secrets, and attack scenarios. No encryption, access controls, or secure deletion is implemented. Files persist indefinitely with no expiration policy.
 
 **Code Snippet:**
 
 ```python
-files_scanned = len(list(repo.glob('**/*.py'))) + len(list(repo.glob('**/*.ts'))) + \
-               len(list(repo.glob('**/*.js'))) + len(list(repo.glob('**/*.tsx'))) + \
-               len(list(repo.glob('**/*.jsx')))
+    @staticmethod
+    def save(result: ScanResult, output_path: Union[str, Path]) -> None:
+        output_file = Path(output_path)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(output_file, 'w') as f:
+            json.dump(result.to_dict(), f, indent=2)
 ```
 
 **Recommendation:**
 
-1. Implement pre-scan size validation before line 250: if files_scanned > 10000: console.print('[red]Error: Repository too large[/red]'); raise ValueError(). 2. Add --max-files CLI option with default of 10,000 files. 3. Implement cost estimation: estimated_cost = (files_scanned * avg_tokens_per_file * model_cost_per_token); if estimated_cost > threshold: prompt for confirmation. 4. Add default exclusions for common bloat directories: exclude patterns ['**/node_modules/**', '**/.git/**', '**/venv/**', '**/__pycache__/**', '**/dist/**', '**/build/**']. 5. Implement scan timeout: add asyncio.wait_for() wrapper around the scan with configurable timeout via SECUREVIBES_MAX_SCAN_TIME. 6. Add --dry-run flag to estimate cost without running scan.
+1. Implement AES-256 encryption for all artifacts in .securevibes/ with user-provided or derived encryption keys.
+2. Add secure deletion functionality using shred or multiple overwrite passes.
+3. Implement automatic expiration policy deleting artifacts after 30 days.
+4. Set restrictive file permissions (0600) on all output files.
+5. Warn users prominently about artifact sensitivity during scan.
+6. Provide --encrypt flag for sensitive environments.
 
 ---
 
-### 5. Supply Chain Attack via Unpinned claude-agent-sdk Dependency [🔴 CRITICAL]
+### 5. Compromised PyPI Package Could Execute Malicious Code During Installation [🟠 HIGH]
 
 **File:** `packages/core/pyproject.toml:29`  
-**CWE:** CWE-1357  
-**Severity:** 🔴 Critical
+**CWE:** CWE-494  
+**Severity:** 🟠 High
 
 **Description:**
 
-The pyproject.toml specifies claude-agent-sdk>=0.1.0 using a minimum version constraint rather than exact pinning. This allows automatic installation of any future version >= 0.1.0, including potentially compromised versions. Since claude-agent-sdk controls all AI agent orchestration, tool execution, and API communication, a compromised version could inject backdoors, exfiltrate code, modify scan results, or execute arbitrary code. No dependency integrity verification (hash checking) is implemented.
+SecureVibes and its critical dependency claude-agent-sdk are distributed via PyPI without hash verification or package signing. The pyproject.toml specifies flexible version ranges (claude-agent-sdk>=0.1.0) allowing automatic updates to potentially compromised versions. No pip --require-hashes mode is used. An attacker who compromises PyPI infrastructure or maintainer accounts could distribute malicious packages executing arbitrary code during 'pip install securevibes'.
 
 **Code Snippet:**
 
@@ -180,139 +208,246 @@ dependencies = [
 
 **Recommendation:**
 
-1. Pin exact dependency versions in production deployments: change 'claude-agent-sdk>=0.1.0' to 'claude-agent-sdk==0.1.0'. 2. Generate requirements.txt with pip freeze and use pip install --require-hashes for hash verification. 3. Implement automated dependency scanning in CI/CD: add pip-audit or safety checks. 4. Create a lockfile mechanism: use poetry.lock or pip-tools to ensure reproducible builds. 5. Add pre-install verification: check that installed claude-agent-sdk matches expected hash before import. 6. Document recommended installation: 'pip install securevibes==X.Y.Z --require-hashes -r requirements-hashes.txt'. 7. Monitor Anthropic security advisories for claude-agent-sdk updates.
+1. Pin exact dependency versions with cryptographic hashes in requirements.txt: 'claude-agent-sdk==0.1.1 --hash sha256:...'.
+2. Use pip's --require-hashes mode for installation verification.
+3. Implement package signing with GPG keys.
+4. Enable PyPI two-factor authentication (2FA) on maintainer accounts.
+5. Add CI/CD pipeline checks scanning dependencies with pip-audit or safety.
+6. Document supply chain security recommendations.
 
 ---
 
-### 6. Secrets Exposure in Code Snippets within Scan Results [🟠 HIGH]
+### 6. AI Agent Output Files Can Be Modified Without Detection [🟠 HIGH]
 
-**File:** `packages/core/securevibes/models/issue.py:27`  
-**CWE:** CWE-312  
+**File:** `packages/core/securevibes/scanner/scanner.py:369`  
+**CWE:** CWE-353  
 **Severity:** 🟠 High
 
 **Description:**
 
-The Code Review Agent includes raw code snippets in VULNERABILITIES.json without redaction or secrets detection. The SecurityIssue model stores code_snippet as plain text with no sanitization. If vulnerable code contains hardcoded secrets (API keys, passwords, database credentials), these are captured verbatim in scan results. The scan_results.json and VULNERABILITIES.json files are stored unencrypted in .securevibes/ directory and may be committed to Git, shared via email, or uploaded to issue trackers, leaking credentials.
+Files created by AI agents lack integrity protection mechanisms such as cryptographic signatures, HMAC, or checksums. An attacker with filesystem write access can modify VULNERABILITIES.json to remove critical findings, inject false vulnerabilities, or manipulate scan results without detection. Sequential agents (threat-modeling, code-review, report-generator) trust previous agent outputs without verification. No tamper detection exists when loading artifacts.
 
 **Code Snippet:**
 
 ```python
-@dataclass
-class SecurityIssue:
-    ...
-    code_snippet: str
-    ...
-    def to_dict(self) -> dict:
-        return {
-            ...
-            "code_snippet": self.code_snippet,
-            ...
-        }
+        if results_file.exists():
+            try:
+                with open(results_file) as f:
+                    results_data = json.load(f)
+                
+                issues_data = results_data.get("issues") or results_data.get("vulnerabilities")
 ```
 
 **Recommendation:**
 
-1. Implement secrets detection before storing code snippets: use regex patterns to detect common secret formats (API keys: [A-Za-z0-9]{32,}, JWT tokens, AWS keys, etc.). 2. Add redaction function: def redact_secrets(code: str) -> str: return re.sub(r'(api[_-]?key|password|secret|token)\s*=\s*["\'][^"\'
-]+["\']', r'\1="[REDACTED]"', code, flags=re.IGNORECASE). 3. Integrate detect-secrets library: from detect_secrets import SecretsCollection; scan code snippets before storage. 4. Add --redact-secrets CLI flag (default enabled). 5. Display warning when secrets detected: 'WARNING: Potential credentials found in scan results at line X'. 6. Add pre-commit hook to prevent committing .securevibes/ directory: add '.securevibes/' to .gitignore template. 7. Implement configurable redaction patterns via SECUREVIBES_SECRET_PATTERNS environment variable.
+1. Implement `HMAC`-`SHA256` signatures for all artifacts using a scan-session secret key.
+2. Verify signatures before parsing any artifact file.
+3. Add tamper-evident logging with timestamps and file hashes.
+4. Store artifact checksums in a separate integrity manifest file.
+5. Implement secure audit trail tracking all file modifications.
+6. Add visual indicators in reports showing verification status.
 
 ---
 
-### 7. No Audit Trail for Security Scan Operations [🟡 MEDIUM]
+### 7. Scanning Large Repositories Causes Uncontrolled API Cost and Resource Exhaustion [🟠 HIGH]
 
-**File:** `packages/core/securevibes/scanner/scanner.py:225`  
+**File:** `packages/core/securevibes/scanner/scanner.py:249`  
+**CWE:** CWE-400  
+**Severity:** 🟠 High
+
+**Description:**
+
+No pre-scan size estimation, cost budgeting, or spending caps exist before initiating scans. Users can unknowingly scan massive repositories triggering thousands of API calls and incurring significant costs. The only limit is SECUREVIBES_MAX_TURNS (default 50, configurable via environment variable) which can be set arbitrarily high. No file count limits, file size limits, or cost thresholds prevent scanning of multi-gigabyte repositories. Progress tracking shows costs but does not enforce limits.
+
+**Code Snippet:**
+
+```python
+        # Count files for reporting
+        files_scanned = len(list(repo.glob('**/*.py'))) + len(list(repo.glob('**/*.ts'))) + \
+                       len(list(repo.glob('**/*.js'))) + len(list(repo.glob('**/*.tsx'))) + \
+                       len(list(repo.glob('**/*.jsx')))
+```
+
+**Recommendation:**
+
+1. Implement pre-scan file/line count estimation with cost projection and user confirmation.
+2. Add configurable cost budgets per scan (`SECUREVIBES_MAX_COST_USD`).
+3. Implement rate limiting on API requests.
+4. Add circuit breaker pattern that pauses scans exceeding cost thresholds.
+5. Provide real-time cost alerts at $1, $5, $10 milestones.
+6. Implement intelligent file filtering to exclude node_modules, build artifacts, vendor directories.
+7. Add --max-files and --max-file-size flags.
+
+---
+
+### 8. Malicious Files Could Cause JSON Parser Vulnerabilities or Resource Exhaustion [🟡 MEDIUM]
+
+**File:** `packages/core/securevibes/scanner/scanner.py:369`  
+**CWE:** CWE-409  
+**Severity:** 🟡 Medium
+
+**Description:**
+
+JSON parsing of agent-generated artifacts lacks protection against maliciously crafted payloads. The standard json.load() is used without size limits, nesting depth limits, or timeout mechanisms. Extremely large JSON files (multi-GB), deeply nested structures (10,000+ levels), or circular references could cause parser hangs, memory exhaustion, or crashes. While agents generate files, compromised agents or manual tampering could inject malicious JSON.
+
+**Code Snippet:**
+
+```python
+            try:
+                with open(results_file) as f:
+                    results_data = json.load(f)
+                
+                issues_data = results_data.get("issues") or results_data.get("vulnerabilities")
+```
+
+**Recommendation:**
+
+1. Implement max `JSON` file size limit (10MB) with rejection of larger files.
+2. Add max nesting depth validation (limit to 50 levels).
+3. Use streaming `JSON` parser for large files.
+4. Implement timeout mechanisms on `JSON` parsing operations (30 second limit).
+5. Add schema validation with maximum array/object size constraints.
+6. Implement resource monitoring killing parser if memory exceeds threshold.
+7. Add pre-parse file size checks.
+
+---
+
+### 9. Error Messages and Stack Traces Leak Sensitive Information [🟡 MEDIUM]
+
+**File:** `packages/core/securevibes/cli/main.py:158`  
+**CWE:** CWE-209  
+**Severity:** 🟡 Medium
+
+**Description:**
+
+Exception handling throughout the codebase prints detailed error messages and stack traces that may expose absolute file paths, internal architecture details, and configuration values. The CLI --debug flag enables verbose output including full exception tracebacks. Error messages are displayed to console and may be logged or shared in bug reports, creating information disclosure vectors.
+
+**Code Snippet:**
+
+```python
+    except Exception as e:
+        console.print(f"\n[bold red]❌ Error:[/bold red] {e}", style="red")
+        if not quiet:
+            console.print("\n[dim]Run with --help for usage information[/dim]")
+        sys.exit(1)
+```
+
+**Recommendation:**
+
+1. Implement sanitized error messages for production use, hiding technical details.
+2. Log full stack traces to secure audit log only, not console.
+3. Add --debug flag requirement for verbose error output.
+4. Redact absolute paths, replacing with relative paths.
+5. Implement error code system returning codes instead of descriptions.
+6. Filter sensitive strings (API keys, tokens) from all error output.
+
+---
+
+### 10. No Audit Logging Prevents Forensic Analysis of Security Scan Activities [🟡 MEDIUM]
+
+**File:** `packages/core/securevibes/scanner/scanner.py:72`  
 **CWE:** CWE-778  
 **Severity:** 🟡 Medium
 
 **Description:**
 
-The Scanner class provides no audit logging of scan operations. No record is maintained of who performed scans, when, on which repositories, what files were accessed, or what vulnerabilities were found. The console output displayed by ProgressTracker is ephemeral and not persisted. No log files are created. This prevents forensic investigation after security incidents, makes it impossible to track scan history, and fails compliance requirements (SOC 2, ISO 27001) for security tool usage auditing.
+The system has no structured audit logging recording scan activities. ProgressTracker provides ephemeral console output but creates no persistent audit trail. No logs capture: who performed scans, what files were accessed, what data was transmitted to the API, or what configuration was used. This prevents forensic investigation after security incidents and allows users to deny scan activities.
 
 **Code Snippet:**
 
 ```python
-async def scan(self, repo_path: str) -> ScanResult:
-    ...
-    scan_start_time = time.time()
-    ...
-    # No audit logging code exists
+    def on_tool_start(self, tool_name: str, tool_input: dict):
+        """Called when a tool execution begins"""
+        self.tool_count += 1
+        self.last_update = datetime.now()
+        
+        # Show meaningful progress based on tool type
+        if tool_name == "Read":
+            file_path = tool_input.get("file_path", "")
+            if file_path:
+                self.files_read.add(file_path)
+                filename = Path(file_path).name
+                self.console.print(f"  📖 Reading {filename}", style="dim")
 ```
 
 **Recommendation:**
 
-1. Implement audit logging module: create securevibes/audit.py with structured logging. 2. Log scan events to ~/.securevibes/audit.log with format: {"timestamp": "ISO8601", "user": os.getlogin(), "action": "scan_start", "repository": repo_path, "model": self.model}. 3. Add audit events for: scan_start, scan_complete, file_read (in pre_tool_hook), vulnerability_found, scan_error. 4. Implement secure append-only log file with proper permissions (0600). 5. Add --audit-mode CLI flag that requires log review before showing results. 6. Implement SIEM integration: add --syslog or --cloudwatch-logs options for enterprise environments. 7. Include audit trail in scan_results.json: add 'audit_trail' field with list of significant events. 8. Add audit log rotation to prevent disk exhaustion.
+1. Implement structured audit logging to ~/`.securevibes/audit.log` with: timestamp, user, repository path, model used, cost incurred, files accessed, scan duration.
+2. Log all Read/Write operations with full file paths.
+3. Log API requests with request/response metadata.
+4. Implement tamper-evident logging using append-only files with `HMAC` signatures.
+5. Support centralized logging (syslog) for enterprise.
+6. Add log rotation with retention policies.
 
 ---
 
-### 8. XSS Injection Risk in Agent-Generated Markdown Output [🟡 MEDIUM]
+### 11. Configuration Environment Variables Allow Bypassing Security Controls [🟢 LOW]
 
-**File:** `packages/core/securevibes/reporters/markdown_reporter.py:25`  
-**CWE:** CWE-79  
-**Severity:** 🟡 Medium
-
-**Description:**
-
-Agents write SECURITY.md and generate markdown reports that may be rendered in web interfaces (GitHub, GitLab, documentation sites, internal dashboards). The MarkdownReporter and agent prompts do not sanitize or HTML-escape content. An attacker who compromises agent prompts could inject XSS payloads in vulnerability descriptions, threat titles, or architecture documentation. When rendered in a web context, these payloads could execute JavaScript, steal session cookies, or perform actions on behalf of viewers.
-
-**Code Snippet:**
-
-```python
-output_file.write_text(markdown)
-```
-
-**Recommendation:**
-
-1. Implement output sanitization for all user-facing text: import html; sanitized = html.escape(user_content). 2. Escape HTML in all markdown output: threat titles, descriptions, code snippets, file paths. 3. Add markdown sanitization library: use bleach.clean() to allow only safe markdown tags. 4. Implement Content Security Policy recommendation in documentation: warn users that scan results should be rendered with CSP headers. 5. Add JSON schema validation with regex patterns to reject content containing <script>, javascript:, or other suspicious patterns. 6. Escape code snippets in markdown code blocks properly: wrap in triple backticks with language identifier. 7. Add --sanitize-output CLI flag (default enabled) to HTML-escape all agent-generated content.
-
----
-
-### 9. Absolute Path Disclosure in Debug Mode and Error Messages [🟢 LOW]
-
-**File:** `packages/core/securevibes/scanner/scanner.py:80`  
-**CWE:** CWE-209  
+**File:** `packages/core/securevibes/config.py:66`  
+**CWE:** CWE-15  
 **Severity:** 🟢 Low
 
 **Description:**
 
-The ProgressTracker displays absolute file paths when debug mode is enabled. Error messages throughout the codebase expose absolute paths in exceptions (FileNotFoundError, PermissionError). These paths reveal internal system structure including usernames, project names, directory layouts, and technology stack. Debug output is displayed to console and may be captured in CI/CD logs, shared in support tickets, or logged to centralized systems, aiding reconnaissance for attackers.
+Environment variables (SECUREVIBES_MAX_TURNS, SECUREVIBES_*_MODEL) can be manipulated to change system behavior without validation. Setting MAX_TURNS to extreme values (999999) removes termination limits. No bounds checking ensures environment variables contain safe values. Integer parsing has try/except but defaults to standard value rather than failing securely on manipulation attempts.
 
 **Code Snippet:**
 
 ```python
-if file_path:
-    self.files_read.add(file_path)
-    filename = Path(file_path).name
-    self.console.print(f"  📖 Reading {filename}", style="dim")
+    @classmethod
+    def get_max_turns(cls) -> int:
+        try:
+            return int(os.getenv("SECUREVIBES_MAX_TURNS", cls.DEFAULT_MAX_TURNS))
+        except ValueError:
+            # If invalid value provided, return default
+            return cls.DEFAULT_MAX_TURNS
 ```
 
 **Recommendation:**
 
-1. Sanitize file paths in debug output: replace absolute paths with relative paths from repository root. 2. Implement path transformation: def sanitize_path(path: str, repo_root: str) -> str: return os.path.relpath(path, repo_root) if path.startswith(repo_root) else Path(path).name. 3. Add path sanitization to ProgressTracker: use sanitized paths in all console.print() calls. 4. Implement error message sanitization: catch exceptions and re-raise with sanitized messages. 5. Add --redact-paths CLI flag to anonymize all file paths in output. 6. Replace user home directory with ~/ in displayed paths: path.replace(os.path.expanduser('~'), '~'). 7. Add warning when --debug is enabled: 'Warning: Debug mode may expose system paths'. 8. Configure CI/CD systems to filter sensitive path patterns from logs.
+1. Implement strict validation on all environment variables with sane defaults.
+2. Add maximum bounds on `SECUREVIBES_MAX_TURNS` (max: 200).
+3. Whitelist valid model names rejecting arbitrary values.
+4. Add warning when non-default configurations are detected.
+5. Provide config file alternative with permission checks.
+6. Document secure configuration practices.
 
 ---
 
-### 10. Arbitrary Code Execution via Write Tool File Extension Abuse [🟠 HIGH]
+### 12. Debug Mode Exposes Sensitive File Paths and Internal Operations [🟡 MEDIUM]
 
-**File:** `packages/core/securevibes/scanner/scanner.py:242`  
-**CWE:** CWE-94  
-**Severity:** 🟠 High
+**File:** `packages/core/securevibes/scanner/scanner.py:181`  
+**CWE:** CWE-532  
+**Severity:** 🟡 Medium
 
 **Description:**
 
-Agents use the Write tool to create files in .securevibes/ directory without file extension validation. While the prompts instruct agents to write .json and .md files, no code enforcement prevents writing arbitrary file types. A compromised agent could write executable files (.py, .sh, .exe), Python modules with __init__.py, or other dangerous file types. If users or automated systems execute these files, arbitrary code execution occurs. The agents have no restrictions on file content or permissions.
+When --debug flag is enabled, ProgressTracker outputs verbose diagnostic information including full file paths (potentially containing usernames), search patterns revealing security focus areas, and internal agent narration. This information leakage could assist attackers in reconnaissance. Debug output shows agent reasoning and tool usage patterns that could be exploited.
 
 **Code Snippet:**
 
 ```python
-securevibes_dir.mkdir(exist_ok=True)
+    def on_assistant_text(self, text: str):
+        """Called when the assistant produces text output"""
+        if self.debug and text.strip():
+            # Show agent narration in debug mode
+            text_preview = text[:120].replace('\n', ' ')
+            if len(text) > 120:
+                text_preview += "..."
+            self.console.print(f"  💭 {text_preview}", style="dim italic")
 ```
 
 **Recommendation:**
 
-1. Implement file extension whitelist validation in pre_tool_hook: ALLOWED_EXTENSIONS = {'.json', '.md', '.txt'}; if Path(file_path).suffix not in ALLOWED_EXTENSIONS: raise PermissionError(). 2. Add file content validation: scan written files for dangerous patterns (eval, exec, __import__, subprocess). 3. Set restrictive file permissions on all created files: os.chmod(file_path, 0o644) to prevent execution. 4. Explicitly reject __init__.py: if Path(file_path).name == '__init__.py': raise PermissionError('Cannot write __init__.py'). 5. Add Content Security Policy validation before writing files: detect suspicious code patterns using AST parsing for .py files. 6. Implement post-scan verification: scan .securevibes/ for unexpected file types and warn user. 7. Add .securevibes/ to .gitignore template generated during scan.
+1. Sanitize all output in debug mode removing absolute paths (use relative paths only).
+2. Implement redaction of usernames from file paths.
+3. Add warning banner when --debug is enabled about sensitive information exposure.
+4. Provide separate --trace flag for truly verbose output requiring explicit acknowledgment.
+5. Automatically redact API keys and credentials from all output.
 
 ---
 
-### 11. Race Condition in Concurrent File Writes to .securevibes/ [🟢 LOW]
+### 13. Concurrent Scans Overwrite Each Other's Results Causing Data Loss [🟢 LOW]
 
 **File:** `packages/core/securevibes/scanner/scanner.py:242`  
 **CWE:** CWE-362  
@@ -320,21 +455,127 @@ securevibes_dir.mkdir(exist_ok=True)
 
 **Description:**
 
-Multiple concurrent scans of the same repository can write to the same .securevibes/ directory simultaneously. The Scanner creates files without file locking, atomic writes, or concurrency control. Agents use the Write tool which performs direct file writes without synchronization. In CI/CD pipelines with parallel jobs or when multiple developers scan simultaneously, this causes race conditions leading to corrupted JSON files, interleaved data, or lost scan results.
+No file locking or concurrent access control prevents multiple scans from running simultaneously in the same repository. Concurrent scans overwrite .securevibes/ artifacts with last-write-wins semantics, causing data loss, corrupted reports, and race conditions. Users may receive mixed results from multiple scans.
 
 **Code Snippet:**
 
 ```python
-securevibes_dir.mkdir(exist_ok=True)
+        securevibes_dir = repo / SECUREVIBES_DIR
+        try:
+            securevibes_dir.mkdir(exist_ok=True)
+        except (OSError, PermissionError) as e:
+            raise RuntimeError(f"Failed to create output directory {securevibes_dir}: {e}")
 ```
 
 **Recommendation:**
 
-1. Implement file locking: import fcntl; with open(file, 'w') as f: fcntl.flock(f.fileno(), fcntl.LOCK_EX); f.write(data); fcntl.flock(f.fileno(), fcntl.LOCK_UN). 2. Use unique output directories per scan: securevibes_dir = repo / f'.securevibes-{uuid.uuid4().hex[:8]}'. 3. Implement atomic file writes: write to temporary file, then os.rename() to final location. 4. Add PID-based locking: create .securevibes/.lock file containing process PID; check lock before scanning. 5. Add --output-dir CLI flag to specify custom output location for concurrent scans. 6. Detect concurrent scans: check for .securevibes/.lock and warn: 'WARNING: Another scan in progress'. 7. Implement scan queue with mutex for CI/CD environments. 8. Add timestamp-based output directories: .securevibes-{timestamp}/.
+1. Implement file-based locking (.securevibes/.lock file) preventing concurrent scans.
+2. Use unique output directories per scan: .securevibes/scan-<timestamp>-<uuid>/.
+3. Add --output-dir flag allowing user-specified isolated output paths.
+4. Check for active scans before starting new scan, requiring --force to override.
 
 ---
 
-### 12. No Integrity Verification for Scan Results [🟡 MEDIUM]
+### 14. Race Condition in Artifact File Writing Could Cause Partial/Corrupted Output [🟢 LOW]
+
+**File:** `packages/core/securevibes/reporters/json_reporter.py:24`  
+**CWE:** CWE-667  
+**Severity:** 🟢 Low
+
+**Description:**
+
+Agents write artifacts using standard file operations without atomic write guarantees (write to temp + rename). If system crashes, process is killed, or disk fills during write, artifacts may be partially written. Subsequent agents reading corrupted JSON/Markdown fail or produce nonsensical results. No verification ensures file write completion.
+
+**Code Snippet:**
+
+```python
+        with open(output_file, 'w') as f:
+            json.dump(result.to_dict(), f, indent=2)
+```
+
+**Recommendation:**
+
+1. Implement atomic writes: write to .tmp file then rename on success.
+2. Add write verification reading back file and validating completeness.
+3. Include file checksums in artifacts validating integrity before downstream use.
+4. Implement file locking during write.
+5. Add size validation checking file is reasonable before considering complete.
+
+---
+
+### 15. Hardcoded Secrets in Scanned Code Are Not Redacted from Reports [🟠 HIGH]
+
+**File:** `packages/core/securevibes/reporters/markdown_reporter.py:186`  
+**CWE:** CWE-312  
+**Severity:** 🟠 High
+
+**Description:**
+
+When code snippets containing hardcoded credentials (API keys, passwords, tokens) are included in vulnerability reports, these secrets are written to plaintext files (VULNERABILITIES.json, scan_results.json, scan_report.md) without redaction. No automatic secret detection or sanitization occurs. Reports may be shared via email or Slack, spreading secrets further. Markdown reporter includes full code snippets in output without filtering.
+
+**Code Snippet:**
+
+```python
+                if issue.code_snippet:
+                    lines.append("**Code Snippet:**")
+                    lines.append("")
+                    # Try to detect language from file extension
+                    file_ext = Path(issue.file_path).suffix.lstrip('.')
+                    lang_map = {
+                        'py': 'python',
+                        'js': 'javascript',
+                        ...
+                    }
+                    lang = lang_map.get(file_ext, '')
+                    
+                    lines.append(f"```{lang}")
+                    lines.append(issue.code_snippet)
+                    lines.append("```")
+```
+
+**Recommendation:**
+
+1. Integrate secret detection (detect-secrets, TruffleHog) in pre-scan phase.
+2. Implement automatic redaction in code snippets replacing detected secrets with '[`REDACTED`]'.
+3. Add post-processing sanitization of all report outputs.
+4. Add warning banner in reports: 'Review for hardcoded credentials before sharing'.
+5. Provide --redact-secrets flag forcing sanitization.
+6. Implement entropy-based detection identifying high-entropy strings.
+
+---
+
+### 16. Binary File Processing Causes Memory Exhaustion or Parser Crashes [🟡 MEDIUM]
+
+**File:** `packages/core/securevibes/scanner/scanner.py:249`  
+**CWE:** CWE-400  
+**Severity:** 🟡 Medium
+
+**Description:**
+
+File processing lacks validation preventing agents from reading large binary files (images, videos, compiled binaries). The Read tool has no file type validation or size limits. Loading multi-gigabyte binary files into memory causes memory exhaustion (OOM) or excessive API costs transmitting non-code data. File counting at scanner.py:249-252 only filters by extension but agents can still read any file.
+
+**Code Snippet:**
+
+```python
+        # Count files for reporting
+        files_scanned = len(list(repo.glob('**/*.py'))) + len(list(repo.glob('**/*.ts'))) + \
+                       len(list(repo.glob('**/*.js'))) + len(list(repo.glob('**/*.tsx'))) + \
+                       len(list(repo.glob('**/*.jsx')))
+```
+
+**Recommendation:**
+
+1. Implement file type validation using magic number detection rejecting non-text files.
+2. Add maximum file size limit (10MB per file).
+3. Implement streaming/chunked reading for large files.
+4. Add binary file detection skipping non-`UTF8` content.
+5. Provide file type whitelist.
+6. Add --max-file-size flag.
+7. Implement memory monitoring pausing scans if memory usage exceeds threshold.
+
+---
+
+### 17. No Report Signing Allows Forgery of Security Assessment Results [🟡 MEDIUM]
 
 **File:** `packages/core/securevibes/reporters/json_reporter.py:24`  
 **CWE:** CWE-345  
@@ -342,185 +583,96 @@ securevibes_dir.mkdir(exist_ok=True)
 
 **Description:**
 
-Scan result files (scan_results.json, VULNERABILITIES.json, THREAT_MODEL.json) have no cryptographic signatures, checksums, or integrity verification. After agents generate these files, they can be modified by attackers without detection. A malicious insider or attacker with filesystem access could edit scan results to remove vulnerabilities, add false positives, or alter severity levels. No tamper detection mechanism exists, making scan results unreliable for compliance or security audits.
+Generated reports (scan_results.json, scan_report.md) lack digital signatures or cryptographic verification. An attacker can create forged reports claiming a codebase is secure when it contains critical vulnerabilities. Organizations making security decisions based on unsigned reports have no proof of authenticity. Reports can be fabricated without performing actual scans.
 
 **Code Snippet:**
 
 ```python
-with open(output_file, 'w') as f:
-    json.dump(result.to_dict(), f, indent=2)
+        with open(output_file, 'w') as f:
+            json.dump(result.to_dict(), f, indent=2)
 ```
 
 **Recommendation:**
 
-1. Implement HMAC-SHA256 signatures for all output files: import hmac, hashlib; signature = hmac.new(api_key.encode(), file_content.encode(), hashlib.sha256).hexdigest(). 2. Add 'signature' field to scan_results.json: compute signature over canonical JSON representation (sorted keys, no whitespace). 3. Store signature in separate .securevibes/scan_results.json.sig file. 4. Implement verification command: 'securevibes verify scan_results.json' that recomputes signature and compares. 5. Sign using API key or session token as HMAC secret. 6. Add signature verification to report command before loading results. 7. Include timestamp in signed data to prevent replay attacks. 8. Add --require-signature flag that aborts if signature verification fails. 9. Log signature verification results to audit log.
+1. Implement GPG/PGP signing of all generated reports.
+2. Include scan metadata in signature: timestamp, repository hash, scanner version.
+3. Add verification command: 'securevibes verify scan_results.json'.
+4. Include scan session `UUID` linking all artifacts.
+5. Add visual verification indicators in reports.
+6. Support enterprise CA integration for HSM-backed signing.
 
 ---
 
-### 13. Symlink Attack Enabling Privilege Escalation via .securevibes/ [🟠 HIGH]
+### 18. No Privilege Separation Between AI Agents Allows Cascade Failures [🟡 MEDIUM]
 
-**File:** `packages/core/securevibes/scanner/scanner.py:240`  
-**CWE:** CWE-59  
-**Severity:** 🟠 High
-
-**Description:**
-
-The Scanner creates and writes to .securevibes/ directory without symlink validation. If an attacker creates .securevibes/ as a symlink pointing to a sensitive location (e.g., ~/.ssh/, /etc/, ~/.bashrc), agents writing files will follow the symlink and overwrite the target. This enables privilege escalation: .securevibes/SECURITY.md → ~/.ssh/authorized_keys would allow the attacker to inject their SSH key. The Write tool in claude-agent-sdk may not check for symlinks before writing.
-
-**Code Snippet:**
-
-```python
-securevibes_dir = repo / SECUREVIBES_DIR
-try:
-    securevibes_dir.mkdir(exist_ok=True)
-```
-
-**Recommendation:**
-
-1. Implement symlink detection before creating directory: if securevibes_dir.is_symlink(): raise SecurityError('Output directory is a symlink'). 2. Use os.path.realpath() to resolve symlinks and verify resolved path is within repository: if not realpath(securevibes_dir).startswith(realpath(repo)): raise SecurityError(). 3. Create directory with O_NOFOLLOW semantics: use os.mkdir() with manual check instead of Path.mkdir(). 4. Validate all file paths before writing in pre_tool_hook: ensure no component of the path is a symlink. 5. Add --no-follow-symlinks flag (enabled by default). 6. Implement TOCTOU protection: verify path after directory creation. 7. Set securevibes_dir permissions to 0755 and validate after creation. 8. Use temporary directory with restricted permissions, then atomic move to final location.
-
----
-
-### 14. Scan Results Stored Without Encryption at Rest [🟡 MEDIUM]
-
-**File:** `packages/core/securevibes/reporters/json_reporter.py:24`  
-**CWE:** CWE-311  
+**File:** `packages/core/securevibes/agents/definitions.py:11`  
+**CWE:** CWE-250  
 **Severity:** 🟡 Medium
 
 **Description:**
 
-All scan output files (SECURITY.md, THREAT_MODEL.json, VULNERABILITIES.json, scan_results.json) are stored in plaintext with no encryption. These files contain sensitive security information including vulnerability details, proof-of-concept exploits, system architecture, and potentially code snippets with secrets. If the repository is stored on unencrypted disk, backed up to cloud storage, or synced via Dropbox/OneDrive, vulnerability data is exposed. Disk theft or unauthorized filesystem access leaks complete security assessment results.
+All four AI agents (assessment, threat-modeling, code-review, report-generator) share identical permissions with no role-based access control. All agents have Read, Write, Grep, and Glob tool access. A compromise of any single agent grants full system access. Agents trust previous agents' output implicitly without validation, so compromising the Assessment agent poisons all downstream analysis.
 
 **Code Snippet:**
 
 ```python
-with open(output_file, 'w') as f:
-    json.dump(result.to_dict(), f, indent=2)
+SECUREVIBES_AGENTS = {
+    "assessment": AgentDefinition(
+        tools=["Read", "Grep", "Glob", "LS", "Write"],
+    ),
+    "threat-modeling": AgentDefinition(
+        tools=["Read", "Grep", "Glob", "Write"],
+    ),
+    "code-review": AgentDefinition(
+        tools=["Read", "Grep", "Glob", "Write"],
+    ),
+    "report-generator": AgentDefinition(
+        tools=["Read", "Write"],
+    )
 ```
 
 **Recommendation:**
 
-1. Implement AES-256-GCM encryption for scan output files: from cryptography.fernet import Fernet; cipher = Fernet(key); encrypted = cipher.encrypt(json_bytes). 2. Derive encryption key from API key or user-provided passphrase using PBKDF2: key = PBKDF2(password, salt, iterations=100000). 3. Add --encrypt CLI flag: 'securevibes scan --encrypt' prompts for passphrase. 4. Store encrypted files with .enc extension: scan_results.json.enc. 5. Implement key management: store encryption key in OS keyring, never in plaintext. 6. Add automatic decryption in report command with passphrase prompt. 7. Set SECUREVIBES_ENCRYPT_OUTPUT=true environment variable for always-on encryption. 8. Implement file shredding for temporary plaintext artifacts: use os.remove() followed by overwriting file location. 9. Add --ephemeral flag to store results in memory only without persisting to disk.
+1. Implement principle of least privilege: Assessment agent only needs Read/Glob, Report Generator only needs Read.
+2. Remove Write access from Code Review agent.
+3. Implement agent-specific API credentials with usage quotas.
+4. Add cross-validation: Code Review agent independently verifies architecture.
+5. Implement multi-agent consensus for critical findings.
+6. Add integrity checks where later agents validate checksums of earlier artifacts.
 
 ---
 
-### 15. Configuration Injection via Unvalidated Environment Variables [🟡 MEDIUM]
+### 19. Prompt Injection Could Manipulate AI Agents to Execute Malicious Operations [🟡 MEDIUM]
 
-**File:** `packages/core/securevibes/config.py:67`  
-**CWE:** CWE-15  
+**File:** `packages/core/securevibes/agents/definitions.py:11`  
+**CWE:** CWE-94  
 **Severity:** 🟡 Medium
 
 **Description:**
 
-Agent configuration is controlled by environment variables (SECUREVIBES_ASSESSMENT_MODEL, SECUREVIBES_MAX_TURNS, etc.) with minimal validation. The AgentConfig.get_max_turns() attempts integer conversion but silently falls back to defaults on invalid input. An attacker controlling the environment (compromised CI/CD, malicious shell script) can inject invalid configurations to cause denial of service (max_turns=0), bypass security (set invalid model causing failures), or manipulate scan behavior. No validation ensures model names are valid or max_turns is within reasonable bounds.
+AI agents receive untrusted input from repository files (README.md, comments, configuration files) which could contain prompt injection payloads. Maliciously crafted input could trick agents into executing unintended tool operations, ignoring security findings, or modifying scan logic. No validation prevents prompt injection attacks. Combined with bypassPermissions mode, this enables data exfiltration.
 
 **Code Snippet:**
 
 ```python
-try:
-    return int(os.getenv("SECUREVIBES_MAX_TURNS", cls.DEFAULT_MAX_TURNS))
-except ValueError:
-    # If invalid value provided, return default
-    return cls.DEFAULT_MAX_TURNS
+    "assessment": AgentDefinition(
+        description="Analyzes codebase architecture and creates comprehensive security documentation",
+        prompt=AGENT_PROMPTS["assessment"],
+        tools=["Read", "Grep", "Glob", "LS", "Write"],
+        model=config.get_agent_model("assessment")
+    )
 ```
 
 **Recommendation:**
 
-1. Implement strict configuration validation with value ranges: if not 1 <= max_turns <= 200: raise ValueError('max_turns must be between 1 and 200'). 2. Whitelist allowed model names: VALID_MODELS = {'sonnet', 'haiku', 'opus', 'claude-3-5-sonnet-20241022'}; if model not in VALID_MODELS: raise ValueError(). 3. Add configuration verification mode: 'securevibes config --verify' that validates and displays all settings. 4. Log configuration source and values to audit log: log.info(f'Using max_turns={max_turns} from {source}'). 5. Add warnings for non-default configurations: if max_turns != DEFAULT: console.print('[yellow]Warning: Using custom max_turns[/yellow]'). 6. Implement configuration immutability: require --force-config flag to override defaults. 7. Add --config-file option to load validated configuration from signed JSON file instead of environment variables. 8. Validate all environment variables at startup before any scanning occurs.
-
----
-
-### 16. Memory Exhaustion via Large Code Snippets in Vulnerability Reports [🟡 MEDIUM]
-
-**File:** `packages/core/securevibes/scanner/scanner.py:368`  
-**CWE:** CWE-400  
-**Severity:** 🟡 Medium
-
-**Description:**
-
-The Code Review Agent includes code snippets in VULNERABILITIES.json with no size limits. If a vulnerability is found in a file with very long lines (minified JavaScript, base64-encoded data, single-line JSON), the entire line may be included as code_snippet. When loading scan results, the entire JSON file is read into memory without streaming. Large vulnerability reports (50MB+ JSON files with many massive code snippets) can cause memory exhaustion on systems with limited RAM, crashing the CLI or consuming excessive resources.
-
-**Code Snippet:**
-
-```python
-with open(results_file) as f:
-    results_data = json.load(f)
-```
-
-**Recommendation:**
-
-1. Implement code snippet truncation: MAX_SNIPPET_LENGTH = 500; code_snippet = code[:MAX_SNIPPET_LENGTH] + '...' if len(code) > MAX_SNIPPET_LENGTH else code. 2. Add validation in SecurityIssue constructor: if len(code_snippet) > 1000: raise ValueError('Code snippet too large'). 3. Implement streaming JSON parser for large files: use ijson library for incremental parsing. 4. Add file size check before loading: if results_file.stat().st_size > 10_000_000: console.print('[yellow]Warning: Large result file[/yellow]'). 5. Implement lazy loading: load issues on-demand rather than all at once. 6. Add --no-snippets CLI flag to exclude code snippets from output. 7. Compress large scan results: use gzip to compress .securevibes/*.json files automatically. 8. Add memory monitoring: if psutil.virtual_memory().percent > 80: abort loading.
-
----
-
-### 17. Resource Exhaustion via Uncontrolled Glob Pattern Execution [🟡 MEDIUM]
-
-**File:** `packages/core/securevibes/scanner/scanner.py:250`  
-**CWE:** CWE-400  
-**Severity:** 🟡 Medium
-
-**Description:**
-
-Agents can execute the Glob tool with arbitrary patterns. While patterns are restricted to the repository by the cwd parameter, agents could still execute expensive glob patterns like '**/*' that recursively match millions of files in large monorepos. The glob operations at scanner.py lines 250-252 demonstrate this - they use '**/*.py', '**/*.ts', etc. without result limits. A malicious or misconfigured agent could cause CPU and memory exhaustion by executing many broad glob patterns, hanging the scan.
-
-**Code Snippet:**
-
-```python
-files_scanned = len(list(repo.glob('**/*.py'))) + len(list(repo.glob('**/*.ts'))) + \
-               len(list(repo.glob('**/*.js'))) + len(list(repo.glob('**/*.tsx'))) + \
-               len(list(repo.glob('**/*.jsx')))
-```
-
-**Recommendation:**
-
-1. Implement maximum result limit for Glob tool: add validation in pre_tool_hook that raises error if glob would return more than 10,000 results. 2. Add timeout for glob operations: use asyncio.wait_for() with 30 second timeout around glob executions. 3. Implement pattern validation: reject overly broad patterns like '**/*' or patterns with excessive wildcards. 4. Use iterator-based approach instead of list(): replace len(list(repo.glob())) with sum(1 for _ in repo.glob()) to avoid loading all paths in memory. 5. Add resource monitoring: track total glob operations per scan and abort if exceeds threshold (e.g., 1000 glob calls). 6. Implement glob result streaming: process results incrementally rather than collecting all paths. 7. Add --max-glob-results CLI option with default of 10,000. 8. Cache glob results to avoid repeated expensive operations.
-
----
-
-### 18. Information Disclosure via Verbose Error Messages [🟢 LOW]
-
-**File:** `packages/core/securevibes/cli/main.py:159`  
-**CWE:** CWE-209  
-**Severity:** 🟢 Low
-
-**Description:**
-
-Exception handling throughout the codebase displays detailed error messages containing absolute file paths, system information, and internal state. The CLI displays raw exception messages without sanitization. PermissionError, FileNotFoundError, and other exceptions reveal directory structure, usernames in paths, and implementation details. These error messages may be captured in CI/CD logs, monitoring systems, or shared in support tickets, aiding attacker reconnaissance.
-
-**Code Snippet:**
-
-```python
-except Exception as e:
-    console.print(f"\n[bold red]❌ Error:[/bold red] {e}", style="red")
-```
-
-**Recommendation:**
-
-1. Implement custom exception classes with sanitized messages: class ScanError(Exception): def __str__(self): return self.user_friendly_message. 2. Sanitize error messages before display: remove absolute paths, replace with relative paths or generic descriptions. 3. Add error message mapping: map technical exceptions to user-friendly messages. 4. Log detailed errors to secure location: write full exception and stack trace to ~/.securevibes/errors.log with restricted permissions. 5. Add --sanitize-errors CLI flag (default enabled) to remove sensitive information from error messages. 6. Show detailed errors only in --debug mode: if not debug: show_generic_error() else: show_full_exception(). 7. Implement error categorization: categorize errors as 'permission', 'not_found', 'invalid_input' and show appropriate generic messages. 8. Add error reporting API: allow users to submit sanitized error reports for debugging.
-
----
-
-### 19. Python Import Hijacking Risk via .securevibes/ Package Structure [🟡 MEDIUM]
-
-**File:** `packages/core/securevibes/scanner/scanner.py:242`  
-**CWE:** CWE-427  
-**Severity:** 🟡 Medium
-
-**Description:**
-
-If an attacker creates malicious files in .securevibes/ directory (e.g., __init__.py, common module names like utils.py, config.py), and the repository is imported as a Python package, these files may be executed. While SecureVibes doesn't explicitly create __init__.py, nothing prevents its creation. If a user's Python application imports from the scanned repository, Python's import system may load .securevibes/__init__.py automatically, executing attacker code. This is especially dangerous in automated testing or deployment pipelines.
-
-**Code Snippet:**
-
-```python
-securevibes_dir.mkdir(exist_ok=True)
-```
-
-**Recommendation:**
-
-1. Never write __init__.py to .securevibes/: add explicit check in pre_tool_hook: if Path(file_path).name == '__init__.py': raise PermissionError('Cannot create __init__.py in scan output'). 2. Add .securevibes/ to .gitignore automatically: create/append to .gitignore during scan initialization. 3. Create .securevibes/.nopackage marker file to signal this is not a Python package. 4. Document the import hijacking risk in README with warning about .securevibes/ location. 5. Set directory permissions to prevent execution: os.chmod(securevibes_dir, 0o755) and all files to 0o644. 6. Implement post-scan verification: check for unexpected .py files in .securevibes/ and warn user. 7. Consider alternative output location: use ~/.securevibes/{repo_hash}/ instead of repo/.securevibes/. 8. Add PYTHONDONTWRITEBYTECODE=1 to prevent .pyc compilation in .securevibes/.
+1. Implement prompt injection detection using known pattern signatures.
+2. Sanitize all file inputs before including in agent prompts, escaping special characters.
+3. Use structured prompt templating preventing injection in instruction sections.
+4. Implement input validation rejecting files containing suspicious instruction phrases.
+5. Add agent behavior monitoring detecting deviations from expected tool usage.
+6. Use Claude's `system` prompt separation preventing user input from overriding instructions.
 
 ---
 
 *Generated by SecureVibes Security Scanner*  
-*Report generated at: 2025-10-09 17:48:59*
+*Report generated at: 2025-10-10 12:59:52*
