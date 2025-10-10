@@ -14,8 +14,7 @@ from rich import box
 
 from securevibes import __version__
 from securevibes.models.issue import Severity
-from securevibes.scanner.security_scanner import SecurityScanner
-from securevibes.scanner.streaming_scanner import StreamingScanner
+from securevibes.scanner.scanner import Scanner
 
 console = Console()
 
@@ -42,9 +41,8 @@ def cli():
 @click.option('--no-save', is_flag=True, help='Do not save results to .securevibes/')
 @click.option('--quiet', '-q', is_flag=True, help='Minimal output (errors only)')
 @click.option('--debug', is_flag=True, help='Show verbose diagnostic output')
-@click.option('--streaming', is_flag=True, help='Enable real-time streaming progress (recommended for large scans)')
 def scan(path: str, model: str, output: Optional[str], format: str, 
-         severity: Optional[str], no_save: bool, quiet: bool, debug: bool, streaming: bool):
+         severity: Optional[str], no_save: bool, quiet: bool, debug: bool):
     """
     Scan a repository for security vulnerabilities.
     
@@ -61,8 +59,6 @@ def scan(path: str, model: str, output: Optional[str], format: str,
         securevibes scan . --format table  # Terminal table (no file saved)
         
         securevibes scan . --model claude-3-5-haiku-20241022  # Use faster/cheaper model
-        
-        securevibes scan . --streaming  # Real-time progress (recommended for large repos)
     """
     try:
         # Validate flag conflicts
@@ -73,10 +69,7 @@ def scan(path: str, model: str, output: Optional[str], format: str,
         # Show banner unless quiet
         if not quiet:
             console.print("[bold cyan]🛡️ SecureVibes Security Scanner[/bold cyan]")
-            if streaming:
-                console.print("[dim]AI-Powered Vulnerability Detection (Streaming Mode)[/dim]")
-            else:
-                console.print("[dim]AI-Powered Vulnerability Detection[/dim]")
+            console.print("[dim]AI-Powered Vulnerability Detection[/dim]")
             console.print()
         
         # Ensure output directory exists if saving results
@@ -88,8 +81,8 @@ def scan(path: str, model: str, output: Optional[str], format: str,
                 console.print(f"[bold red]❌ Error:[/bold red] Cannot create output directory: {e}")
                 sys.exit(1)
         
-        # Run scan (use streaming scanner if requested)
-        result = asyncio.run(_run_scan(path, model, not no_save, quiet, debug, streaming))
+        # Run scan
+        result = asyncio.run(_run_scan(path, model, not no_save, quiet, debug))
         
         # Filter by severity if specified
         if severity:
@@ -169,16 +162,13 @@ def scan(path: str, model: str, output: Optional[str], format: str,
         sys.exit(1)
 
 
-async def _run_scan(path: str, model: str, save_results: bool, quiet: bool, debug: bool, streaming: bool):
+async def _run_scan(path: str, model: str, save_results: bool, quiet: bool, debug: bool):
     """Run the actual scan with progress indicator"""
 
     repo_path = Path(path).absolute()
     
-    # Use streaming scanner if requested, otherwise use classic scanner
-    if streaming:
-        scanner = StreamingScanner(model=model, debug=debug)
-    else:
-        scanner = SecurityScanner(model=model, debug=debug)
+    # Create scanner instance
+    scanner = Scanner(model=model, debug=debug)
     
     # The scanner handles all output
     result = await scanner.scan(str(repo_path))
@@ -360,141 +350,6 @@ def report(report_path: str):
         if '--debug' in sys.argv:
             import traceback
             console.print("\n[dim]" + traceback.format_exc() + "[/dim]")
-        sys.exit(1)
-
-
-@cli.command()
-@click.argument('path', type=click.Path(exists=True), default='.')
-@click.option('--model', '-m', default='claude-3-5-haiku-20241022', help='Claude model to use')
-@click.option('--debug', is_flag=True, default=True, help='Show verbose diagnostic output (default: enabled)')
-def assess(path: str, model: str, debug: bool):
-    """
-    Run only the architecture assessment phase.
-    
-    Creates SECURITY.md in .securevibes/ directory.
-    
-    Examples:
-    
-        securevibes assess .
-        
-        securevibes assess /path/to/project
-    """
-    try:
-        console.print(Panel.fit(
-            "[bold cyan]📐 SecureVibes Assessment Agent[/bold cyan]\n"
-            "[dim]Architecture Documentation[/dim]",
-            border_style="cyan"
-        ))
-        
-        # Ensure output directory exists
-        output_dir = Path(path) / '.securevibes'
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        scanner = SecurityScanner(model=model, debug=debug)
-        result = asyncio.run(scanner.assess_only(path))
-
-        console.print(f"\n✅ [green]Assessment complete[/green]")
-        console.print(f"📄 Output: [cyan]{result['file']}[/cyan]\n")
-        
-    except KeyboardInterrupt:
-        console.print("\n[yellow]⚠️  Assessment cancelled by user[/yellow]")
-        sys.exit(130)
-    except Exception as e:
-        console.print(f"\n[bold red]❌ Error:[/bold red] {e}")
-        sys.exit(1)
-
-
-@cli.command()
-@click.argument('path', type=click.Path(exists=True), default='.')
-@click.option('--model', '-m', default='claude-3-5-haiku-20241022', help='Claude model to use')
-@click.option('--debug', is_flag=True, default=True, help='Show verbose diagnostic output (default: enabled)')
-def threat_model(path: str, model: str, debug: bool):
-    """
-    Run only the threat modeling phase.
-    
-    Requires existing SECURITY.md. Creates THREAT_MODEL.json.
-    
-    Examples:
-    
-        securevibes threat-model .
-    """
-    try:
-        # Check prerequisites
-        security_md = Path(path) / '.securevibes' / 'SECURITY.md'
-        if not security_md.exists():
-            console.print("[bold red]❌ Error:[/bold red] SECURITY.md not found")
-            console.print("\n[dim]Run 'securevibes assess' first to create the security architecture document[/dim]")
-            sys.exit(1)
-        
-        console.print(Panel.fit(
-            "[bold cyan]🎯 SecureVibes Threat Modeling Agent[/bold cyan]\n"
-            "[dim]STRIDE Analysis[/dim]",
-            border_style="cyan"
-        ))
-
-        scanner = SecurityScanner(model=model, debug=debug)
-        result = asyncio.run(scanner.threat_model_only(path))
-
-        console.print(f"\n✅ [green]Threat modeling complete[/green]")
-        console.print(f"📄 Output: [cyan]{result['file']}[/cyan]\n")
-        
-    except KeyboardInterrupt:
-        console.print("\n[yellow]⚠️  Threat modeling cancelled by user[/yellow]")
-        sys.exit(130)
-    except Exception as e:
-        console.print(f"\n[bold red]❌ Error:[/bold red] {e}")
-        sys.exit(1)
-
-
-@cli.command()
-@click.argument('path', type=click.Path(exists=True), default='.')
-@click.option('--model', '-m', default='claude-3-5-haiku-20241022', help='Claude model to use')
-@click.option('--debug', is_flag=True, default=True, help='Show verbose diagnostic output (default: enabled)')
-def review(path: str, model: str, debug: bool):
-    """
-    Run only the code review phase.
-    
-    Requires SECURITY.md and THREAT_MODEL.json. Creates VULNERABILITIES.json.
-    
-    Examples:
-    
-        securevibes review .
-    """
-    try:
-        # Check prerequisites
-        securevibes_dir = Path(path) / '.securevibes'
-        security_md = securevibes_dir / 'SECURITY.md'
-        threat_model = securevibes_dir / 'THREAT_MODEL.json'
-        
-        missing = []
-        if not security_md.exists():
-            missing.append('SECURITY.md (run: securevibes assess)')
-        if not threat_model.exists():
-            missing.append('THREAT_MODEL.json (run: securevibes threat-model)')
-        
-        if missing:
-            console.print("[bold red]❌ Error:[/bold red] Missing required files:")
-            for item in missing:
-                console.print(f"  • {item}")
-            sys.exit(1)
-        
-        console.print(Panel.fit(
-            "[bold cyan]🔍 SecureVibes Code Review Agent[/bold cyan]\n"
-            "[dim]Vulnerability Validation[/dim]",
-            border_style="cyan"
-        ))
-
-        scanner = SecurityScanner(model=model, debug=debug)
-        result = asyncio.run(scanner.review_only(path))
-
-        console.print(f"\n✅ [green]Code review complete[/green]")
-        console.print(f"📄 Output: [cyan]{result['file']}[/cyan]\n")
-        
-    except KeyboardInterrupt:
-        console.print("\n[yellow]⚠️  Code review cancelled by user[/yellow]")
-        sys.exit(130)
-    except Exception as e:
-        console.print(f"\n[bold red]❌ Error:[/bold red] {e}")
         sys.exit(1)
 
 

@@ -95,37 +95,17 @@ export SECUREVIBES_MAX_TURNS=75  # Deeper analysis
 
 ## 🐍 Python API
 
-**Classic Scanner:**
 ```python
 import asyncio
-from securevibes import SecurityScanner
+from securevibes import Scanner
 
 async def main():
     # Authentication is automatically handled by Claude Agent SDK via:
     # - ANTHROPIC_API_KEY environment variable, or
     # - Session token from `claude` CLI (run: claude, then /login)
-    scanner = SecurityScanner(
-        model="sonnet"  # Use shorthand: sonnet, haiku, opus
-    )
-    
-    result = await scanner.scan("/path/to/repo")
-    print(f"Found {len(result.issues)} vulnerabilities")
-
-asyncio.run(main())
-```
-
-**Streaming Scanner (Real-Time Progress):**
-```python
-import asyncio
-from securevibes import StreamingScanner
-
-async def main():
-    # Authentication is automatically handled by Claude Agent SDK via:
-    # - ANTHROPIC_API_KEY environment variable, or
-    # - Session token from `claude` CLI (run: claude, then /login)
-    scanner = StreamingScanner(
+    scanner = Scanner(
         model="sonnet",  # Use shorthand: sonnet, haiku, opus
-        debug=True  # Show agent thinking
+        debug=True  # Show agent narration for verbose output
     )
     
     result = await scanner.scan("/path/to/repo")

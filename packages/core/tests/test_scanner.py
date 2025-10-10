@@ -1,11 +1,11 @@
-"""Tests for streaming scanner with real-time progress tracking"""
+"""Tests for scanner with real-time progress tracking"""
 
 import pytest
 import asyncio
 from pathlib import Path
 from unittest.mock import Mock, AsyncMock, patch, MagicMock
-from securevibes.scanner.streaming_scanner import (
-    StreamingScanner,
+from securevibes.scanner.scanner import (
+    Scanner,
     ProgressTracker
 )
 from securevibes.models.result import ScanResult
@@ -33,9 +33,9 @@ def debug_progress_tracker(console):
 
 
 @pytest.fixture
-def streaming_scanner():
-    """Create a streaming scanner instance"""
-    return StreamingScanner(model="sonnet", debug=False)
+def scanner():
+    """Create a scanner instance"""
+    return Scanner(model="sonnet", debug=False)
 
 
 @pytest.fixture
@@ -223,12 +223,12 @@ class TestProgressTracker:
             assert progress_tracker.phase_display[phase] == display_name
 
 
-class TestStreamingScannerInit:
-    """Test StreamingScanner initialization"""
+class TestScannerInit:
+    """Test Scanner initialization"""
     
     def test_initialization_defaults(self):
         """Test scanner initializes with defaults"""
-        scanner = StreamingScanner()
+        scanner = Scanner()
         
         assert scanner.model == "sonnet"
         assert scanner.debug is False
@@ -236,34 +236,34 @@ class TestStreamingScannerInit:
     
     def test_initialization_with_model(self):
         """Test scanner initializes with custom model"""
-        scanner = StreamingScanner(model="opus")
+        scanner = Scanner(model="opus")
         
         assert scanner.model == "opus"
     
     def test_initialization_with_debug(self):
         """Test scanner initializes with debug mode"""
-        scanner = StreamingScanner(debug=True)
+        scanner = Scanner(debug=True)
         
         assert scanner.debug is True
     
     def test_api_key_sets_env_var(self):
         """Test API key is set in environment"""
         import os
-        scanner = StreamingScanner()
+        scanner = Scanner()
         
         # API key is no longer set by the scanner - delegated to claude CLI
 
 
-class TestStreamingScannerIntegration:
-    """Integration tests for StreamingScanner (with mocks)"""
+class TestScannerIntegration:
+    """Integration tests for Scanner (with mocks)"""
     
     @pytest.mark.asyncio
-    async def test_scan_creates_output_directory(self, streaming_scanner, test_repo):
+    async def test_scan_creates_output_directory(self, scanner, test_repo):
         """Test scan creates .securevibes directory"""
         securevibes_dir = test_repo / ".securevibes"
         
         # Mock the ClaudeSDKClient to avoid real API calls
-        with patch('securevibes.scanner.streaming_scanner.ClaudeSDKClient') as mock_client:
+        with patch('securevibes.scanner.scanner.ClaudeSDKClient') as mock_client:
             # Mock the async context manager
             mock_instance = MagicMock()
             mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
@@ -278,7 +278,7 @@ class TestStreamingScannerIntegration:
             mock_instance.receive_messages = async_gen
             
             try:
-                await streaming_scanner.scan(str(test_repo))
+                await scanner.scan(str(test_repo))
             except RuntimeError:
                 # Expected to fail (no results file), but directory should be created
                 pass
@@ -286,13 +286,13 @@ class TestStreamingScannerIntegration:
         assert securevibes_dir.exists()
     
     @pytest.mark.asyncio
-    async def test_scan_invalid_path_raises_error(self, streaming_scanner):
+    async def test_scan_invalid_path_raises_error(self, scanner):
         """Test scan raises error for invalid path"""
         with pytest.raises(ValueError, match="does not exist"):
-            await streaming_scanner.scan("/nonexistent/path")
+            await scanner.scan("/nonexistent/path")
     
     @pytest.mark.asyncio
-    async def test_scan_tracks_costs(self, streaming_scanner, test_repo):
+    async def test_scan_tracks_costs(self, scanner, test_repo):
         """Test scan tracks API costs"""
         from claude_agent_sdk.types import ResultMessage
         
@@ -300,7 +300,7 @@ class TestStreamingScannerIntegration:
         mock_result = MagicMock(spec=ResultMessage)
         mock_result.total_cost_usd = 1.23
         
-        with patch('securevibes.scanner.streaming_scanner.ClaudeSDKClient') as mock_client:
+        with patch('securevibes.scanner.scanner.ClaudeSDKClient') as mock_client:
             mock_instance = MagicMock()
             mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
             mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
@@ -313,20 +313,20 @@ class TestStreamingScannerIntegration:
             mock_instance.receive_messages = async_gen
             
             try:
-                await streaming_scanner.scan(str(test_repo))
+                await scanner.scan(str(test_repo))
             except RuntimeError:
                 # Expected to fail (no results file)
                 pass
         
         # Cost should be tracked
-        assert streaming_scanner.total_cost == 1.23
+        assert scanner.total_cost == 1.23
 
 
-class TestStreamingScannerResultLoading:
+class TestScannerResultLoading:
     """Test result loading from generated files"""
     
     @pytest.mark.asyncio
-    async def test_load_from_scan_results_json(self, streaming_scanner, test_repo):
+    async def test_load_from_scan_results_json(self, scanner, test_repo):
         """Test loading results from scan_results.json"""
         securevibes_dir = test_repo / ".securevibes"
         securevibes_dir.mkdir()
@@ -352,7 +352,7 @@ class TestStreamingScannerResultLoading:
         (securevibes_dir / "scan_results.json").write_text(json.dumps(scan_results))
         
         # Mock scan to load results
-        result = streaming_scanner._load_scan_results(
+        result = scanner._load_scan_results(
             securevibes_dir, test_repo, files_scanned=10, scan_start_time=0
         )
         
@@ -361,7 +361,7 @@ class TestStreamingScannerResultLoading:
         assert result.issues[0].severity == Severity.CRITICAL
     
     @pytest.mark.asyncio
-    async def test_load_from_vulnerabilities_json_fallback(self, streaming_scanner, test_repo):
+    async def test_load_from_vulnerabilities_json_fallback(self, scanner, test_repo):
         """Test falling back to VULNERABILITIES.json if scan_results.json missing"""
         securevibes_dir = test_repo / ".securevibes"
         securevibes_dir.mkdir()
@@ -385,7 +385,7 @@ class TestStreamingScannerResultLoading:
         (securevibes_dir / "VULNERABILITIES.json").write_text(json.dumps(vulnerabilities))
         
         # Load results
-        result = streaming_scanner._load_scan_results(
+        result = scanner._load_scan_results(
             securevibes_dir, test_repo, files_scanned=10, scan_start_time=0
         )
         
@@ -394,25 +394,25 @@ class TestStreamingScannerResultLoading:
         assert result.issues[0].severity == Severity.HIGH
     
     @pytest.mark.asyncio
-    async def test_load_handles_missing_files(self, streaming_scanner, test_repo):
+    async def test_load_handles_missing_files(self, scanner, test_repo):
         """Test error handling when no results files exist"""
         securevibes_dir = test_repo / ".securevibes"
         securevibes_dir.mkdir()
         
         # No results files created
         with pytest.raises(RuntimeError, match="failed to generate results"):
-            streaming_scanner._load_scan_results(
+            scanner._load_scan_results(
                 securevibes_dir, test_repo, files_scanned=10, scan_start_time=0
             )
 
 
-class TestStreamingScannerHooks:
-    """Test hook integration in StreamingScanner"""
+class TestScannerHooks:
+    """Test hook integration in Scanner"""
     
     @pytest.mark.asyncio
-    async def test_hooks_are_configured(self, streaming_scanner, test_repo):
+    async def test_hooks_are_configured(self, scanner, test_repo):
         """Test that hooks are properly configured"""
-        with patch('securevibes.scanner.streaming_scanner.ClaudeSDKClient') as mock_client:
+        with patch('securevibes.scanner.scanner.ClaudeSDKClient') as mock_client:
             mock_instance = MagicMock()
             mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
             mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
@@ -426,7 +426,7 @@ class TestStreamingScannerHooks:
             mock_instance.receive_messages = async_gen
             
             try:
-                await streaming_scanner.scan(str(test_repo))
+                await scanner.scan(str(test_repo))
             except RuntimeError:
                 # Expected to fail
                 pass
@@ -441,28 +441,28 @@ class TestStreamingScannerHooks:
                 assert 'SubagentStop' in hooks
 
 
-class TestStreamingScannerVsClassic:
+class TestScannerVsClassic:
     """Test compatibility between streaming and classic scanners"""
     
     def test_same_result_interface(self):
-        """Test StreamingScanner returns same ScanResult interface"""
+        """Test Scanner returns same ScanResult interface"""
         from securevibes.scanner.security_scanner import SecurityScanner
         
         # Both should produce ScanResult
-        streaming = StreamingScanner()
+        streaming = Scanner()
         classic = SecurityScanner()
         
         # Both have scan method
         assert hasattr(streaming, 'scan')
         assert hasattr(classic, 'scan')
     
-    def test_streaming_scanner_importable_from_package(self):
-        """Test StreamingScanner can be imported from main package"""
-        from securevibes import StreamingScanner as ImportedScanner
+    def test_scanner_importable_from_package(self):
+        """Test Scanner can be imported from main package"""
+        from securevibes import Scanner as ImportedScanner
         
         assert ImportedScanner is not None
         scanner = ImportedScanner()
-        assert isinstance(scanner, StreamingScanner)
+        assert isinstance(scanner, Scanner)
 
 
 class TestProgressTrackerEdgeCases:

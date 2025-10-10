@@ -77,11 +77,8 @@ securevibes scan . --severity high
 # Use different model
 securevibes scan . --model haiku
 
-# Real-time streaming progress (recommended for large repos)
-securevibes scan . --streaming
-
-# Streaming with verbose debug output
-securevibes scan . --streaming --debug
+# Verbose debug output (shows agent narration)
+securevibes scan . --debug
 
 # Quiet mode
 securevibes scan . --quiet
@@ -180,13 +177,13 @@ For programmatic access:
 
 ```python
 import asyncio
-from securevibes import SecurityScanner
+from securevibes import Scanner
 
 async def main():
     # Authentication is automatically handled by Claude Agent SDK via:
     # - ANTHROPIC_API_KEY environment variable, or
     # - Session token from `claude` CLI (run: claude, then /login)
-    scanner = SecurityScanner(
+    scanner = Scanner(
         model="sonnet"  # Use shorthand: sonnet, haiku, opus
     )
     
@@ -211,15 +208,15 @@ For long-running scans with real-time progress:
 
 ```python
 import asyncio
-from securevibes import StreamingScanner
+from securevibes import Scanner
 
 async def main():
     # Authentication is automatically handled by Claude Agent SDK via:
     # - ANTHROPIC_API_KEY environment variable, or
     # - Session token from `claude` CLI (run: claude, then /login)
-    scanner = StreamingScanner(
+    scanner = Scanner(
         model="sonnet",  # Use shorthand: sonnet, haiku, opus
-        debug=True  # Show agent narration
+        debug=True  # Show agent narration for verbose output
     )
     
     # Scan with live progress updates to stdout

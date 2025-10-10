@@ -1,4 +1,4 @@
-"""Streaming security scanner with real-time progress tracking using ClaudeSDKClient"""
+"""Security scanner with real-time progress tracking using ClaudeSDKClient"""
 
 import os
 import json
@@ -196,11 +196,11 @@ class ProgressTracker:
         }
 
 
-class StreamingScanner:
+class Scanner:
     """
-    Enhanced security scanner using ClaudeSDKClient with real-time progress tracking.
+    Security scanner using ClaudeSDKClient with real-time progress tracking.
     
-    Provides streaming progress updates via hooks, eliminating silent periods during
+    Provides progress updates via hooks, eliminating silent periods during
     long-running scans. Uses deterministic sub-agent lifecycle events instead of
     file polling for phase detection.
     """

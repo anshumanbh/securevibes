@@ -1,5 +1,5 @@
 """Core scanning functionality"""
 
-from securevibes.scanner.security_scanner import SecurityScanner
+from securevibes.scanner.scanner import Scanner
 
-__all__ = ["SecurityScanner"]
+__all__ = ["Scanner"]
