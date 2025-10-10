@@ -17,7 +17,7 @@ from claude_agent_sdk.types import (
     ResultMessage
 )
 
-from securevibes.agents.definitions import SECUREVIBES_AGENTS
+from securevibes.agents.definitions import create_agent_definitions
 from securevibes.models.result import ScanResult
 from securevibes.models.issue import SecurityIssue, Severity
 from securevibes.prompts.loader import load_prompt
@@ -287,8 +287,12 @@ class Scanner:
         # Configure agent options with hooks
         from claude_agent_sdk.types import HookMatcher
         
+        # Create agent definitions with CLI model override
+        # This allows --model flag to cascade to all agents while respecting env vars
+        agents = create_agent_definitions(cli_model=self.model)
+        
         options = ClaudeAgentOptions(
-            agents=SECUREVIBES_AGENTS,
+            agents=agents,
             cwd=str(repo),
             max_turns=config.get_max_turns(),
             permission_mode='bypassPermissions',
