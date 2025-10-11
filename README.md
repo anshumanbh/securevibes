@@ -47,6 +47,9 @@ export ANTHROPIC_API_KEY="your-api-key-here"  # Get from https://console.anthrop
 
 # Scan your project
 securevibes scan /path/to/code --streaming --debug
+
+# The most important part
+# Sit back and relax. Please be patient as the scans might take some time, depending upon the model being used.
 ```
 
 ---
