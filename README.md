@@ -46,7 +46,7 @@ claude  # Run interactive CLI, then type: /login
 export ANTHROPIC_API_KEY="your-api-key-here"  # Get from https://console.anthropic.com/
 
 # Scan your project
-securevibes scan /path/to/code --streaming --debug
+securevibes scan /path/to/code --debug
 
 # The most important part
 # Sit back and relax. Please be patient as the scans might take some time, depending upon the model being used.
@@ -64,11 +64,6 @@ securevibes scan .
 
 # View results
 securevibes report
-
-# Individual phases (optional)
-securevibes assess .        # Phase 1: Architecture mapping
-securevibes threat-model .  # Phase 2: STRIDE analysis
-securevibes review .        # Phase 3: Vulnerability validation
 ```
 
 ### Common Options
@@ -101,7 +96,7 @@ securevibes scan . --quiet
 
 **Example output:**
 ```bash
-$ securevibes scan . --streaming --debug
+$ securevibes scan . --debug
 
 🛡️ SecureVibes Security Scanner
 AI-Powered Vulnerability Detection (Streaming Mode)

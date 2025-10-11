@@ -34,7 +34,7 @@ claude  # Run interactive CLI, then type: /login
 export ANTHROPIC_API_KEY="your-api-key-here"
 
 # Scan your project
-securevibes scan /path/to/code --streaming --debug
+securevibes scan /path/to/code --debug
 
 # The most important part
 # Sit back and relax. Please be patient as the scans might take some time, depending upon the model being used.
@@ -63,8 +63,8 @@ SecureVibes orchestrates 4 specialized Claude agents:
 # Default: creates .securevibes/scan_report.md (markdown format)
 securevibes scan .
 
-# Real-time progress for large repos (recommended)
-securevibes scan . --streaming
+# Real-time progress tracking (always enabled)
+securevibes scan .
 
 # Export JSON for CI/CD pipeline
 securevibes scan . --format json --output security-report.json
