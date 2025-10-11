@@ -89,21 +89,47 @@ securevibes scan . --quiet
 
 ## ⚙️ Configuration
 
-Control agent models and analysis depth via environment variables:
+### Model Selection
+
+SecureVibes uses a **three-tier priority system** for model selection:
+
+**Priority Hierarchy:**
+1. 🥇 **Per-agent environment variables** (highest)
+2. 🥈 **CLI `--model` flag** (applies to all agents)
+3. 🥉 **Default "sonnet"** (fallback)
+
+**Examples:**
+
+```bash
+# All agents use haiku
+securevibes scan . --model haiku
+
+# All use haiku, except code-review uses opus
+export SECUREVIBES_CODE_REVIEW_MODEL=opus
+securevibes scan . --model haiku
+
+# Fine-grained control per agent
+export SECUREVIBES_ASSESSMENT_MODEL=haiku
+export SECUREVIBES_CODE_REVIEW_MODEL=opus
+securevibes scan .  # Others use default (sonnet)
+```
+
+**Available models:** `haiku` (fast/cheap), `sonnet` (balanced), `opus` (thorough/expensive)
+
+### Per-Agent Model Override
+
+Override specific agent models via environment variables:
 
 ```bash
 # Authenticate first (see Quick Start above)
-# Then optionally customize:
 
-# Customize agent models (default: sonnet)
+# Override specific agent models (overrides CLI --model flag)
 export SECUREVIBES_CODE_REVIEW_MODEL="opus"  # Max accuracy
 export SECUREVIBES_THREAT_MODELING_MODEL="sonnet"
 
 # Control analysis depth (default: 50)
 export SECUREVIBES_MAX_TURNS=75  # Deeper analysis
 ```
-
-**Models:** `haiku` (fast/cheap) | `sonnet` (balanced) | `opus` (thorough/expensive)
 
 ---
 

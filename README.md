@@ -263,12 +263,41 @@ export ANTHROPIC_API_KEY='your-api-key-here'
 Get your API key from: https://console.anthropic.com/
 
 
+### Model Selection
+
+SecureVibes provides flexible model selection with a **three-tier priority system**:
+
+**Priority Hierarchy:**
+1. 🥇 **Per-agent environment variables** (highest priority)
+2. 🥈 **CLI `--model` flag** (applies to all agents)
+3. 🥉 **Default "sonnet"** (fallback)
+
+**Examples:**
+
+```bash
+# All agents use haiku (CLI flag)
+securevibes scan . --model haiku
+
+# All use haiku, except code-review uses opus (env var overrides CLI)
+export SECUREVIBES_CODE_REVIEW_MODEL=opus
+securevibes scan . --model haiku
+
+# Fine-grained control per agent
+export SECUREVIBES_ASSESSMENT_MODEL=haiku        # Fast
+export SECUREVIBES_CODE_REVIEW_MODEL=opus        # Most thorough
+securevibes scan .  # Other agents use default (sonnet)
+```
+
+**Available models:** `haiku` (fast/cheap), `sonnet` (balanced), `opus` (thorough/expensive)
+
+---
+
 ### Optional Configuration
 
 SecureVibes can be customized via environment variables:
 
-#### 🤖 Agent Models
-Customize which Claude model each agent uses (default: `sonnet`):
+#### 🤖 Per-Agent Model Override
+Override the model for specific agents (overrides CLI `--model` flag):
 
 ```bash
 # Assessment Agent - Architecture documentation
