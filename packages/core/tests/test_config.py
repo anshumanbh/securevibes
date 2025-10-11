@@ -178,6 +178,66 @@ class TestEnvironmentVariableNaming:
             assert AgentConfig.get_max_turns() == 99
 
 
+class TestCLIModelOverride:
+    """Test CLI model override functionality"""
+    
+    def test_cli_override_takes_precedence_over_default(self, monkeypatch):
+        """CLI override should override default"""
+        monkeypatch.delenv("SECUREVIBES_ASSESSMENT_MODEL", raising=False)
+        
+        model = config.get_agent_model("assessment", cli_override="haiku")
+        assert model == "haiku"
+        assert model != AgentConfig.DEFAULTS["assessment"]
+    
+    def test_env_var_takes_precedence_over_cli_override(self, monkeypatch):
+        """Environment variable should override CLI"""
+        monkeypatch.setenv("SECUREVIBES_CODE_REVIEW_MODEL", "opus")
+        
+        model = config.get_agent_model("code_review", cli_override="haiku")
+        assert model == "opus"  # Env var wins
+        assert model != "haiku"
+    
+    def test_cli_override_none_uses_default(self, monkeypatch):
+        """None CLI override should use default"""
+        monkeypatch.delenv("SECUREVIBES_ASSESSMENT_MODEL", raising=False)
+        
+        model = config.get_agent_model("assessment", cli_override=None)
+        assert model == "sonnet"
+    
+    def test_three_tier_hierarchy(self, monkeypatch):
+        """Test complete three-tier priority hierarchy"""
+        # Clear all env vars
+        for agent in AgentConfig.DEFAULTS.keys():
+            monkeypatch.delenv(f"SECUREVIBES_{agent.upper()}_MODEL", raising=False)
+        
+        # Set one env var override
+        monkeypatch.setenv("SECUREVIBES_THREAT_MODELING_MODEL", "opus")
+        
+        # Test with CLI override "haiku"
+        assert config.get_agent_model("assessment", cli_override="haiku") == "haiku"  # CLI
+        assert config.get_agent_model("threat_modeling", cli_override="haiku") == "opus"  # Env var
+        assert config.get_agent_model("code_review", cli_override="haiku") == "haiku"  # CLI
+        assert config.get_agent_model("report_generator", cli_override="haiku") == "haiku"  # CLI
+    
+    def test_cli_override_with_all_agents(self, monkeypatch):
+        """Test CLI override applies to all agents when no env vars set"""
+        # Clear all env vars
+        for agent in AgentConfig.DEFAULTS.keys():
+            monkeypatch.delenv(f"SECUREVIBES_{agent.upper()}_MODEL", raising=False)
+        
+        # All should use CLI override
+        for agent in AgentConfig.DEFAULTS.keys():
+            assert config.get_agent_model(agent, cli_override="haiku") == "haiku"
+    
+    def test_empty_string_cli_override_uses_default(self, monkeypatch):
+        """Empty string CLI override should use default"""
+        monkeypatch.delenv("SECUREVIBES_ASSESSMENT_MODEL", raising=False)
+        
+        # Empty string is falsy, so should fall back to default
+        model = config.get_agent_model("assessment", cli_override="")
+        assert model == "sonnet"
+
+
 class TestConfigurationIntegration:
     """Integration tests for configuration"""
     
@@ -206,4 +266,18 @@ class TestConfigurationIntegration:
         assert config.get_agent_model("assessment") == "sonnet"  # Default
         assert config.get_agent_model("code_review") == "opus"  # Override
         assert config.get_max_turns() == 50  # Default
+    
+    def test_mixed_cli_and_env_vars(self, monkeypatch):
+        """Test mixing CLI override with per-agent env vars"""
+        # Set only code review via env var
+        monkeypatch.delenv("SECUREVIBES_ASSESSMENT_MODEL", raising=False)
+        monkeypatch.setenv("SECUREVIBES_CODE_REVIEW_MODEL", "opus")
+        monkeypatch.delenv("SECUREVIBES_THREAT_MODELING_MODEL", raising=False)
+        
+        # CLI override should work for agents without env vars
+        assert config.get_agent_model("assessment", cli_override="haiku") == "haiku"
+        assert config.get_agent_model("threat_modeling", cli_override="haiku") == "haiku"
+        
+        # Env var should take precedence
+        assert config.get_agent_model("code_review", cli_override="haiku") == "opus"
 

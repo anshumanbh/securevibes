@@ -1,7 +1,7 @@
 """Configuration management for SecureVibes"""
 
 import os
-from typing import Dict
+from typing import Dict, Optional
 
 
 class AgentConfig:
@@ -19,11 +19,14 @@ class AgentConfig:
     DEFAULT_MAX_TURNS = 50
     
     @classmethod
-    def get_agent_model(cls, agent_name: str) -> str:
+    def get_agent_model(cls, agent_name: str, cli_override: Optional[str] = None) -> str:
         """
         Get the model to use for a specific agent.
         
-        Checks environment variables first, falls back to defaults.
+        Priority hierarchy (from highest to lowest):
+        1. Per-agent environment variable (e.g., SECUREVIBES_ASSESSMENT_MODEL)
+        2. CLI model override (from --model flag)
+        3. Default from DEFAULTS dict (sonnet)
         
         Environment variables:
             SECUREVIBES_ASSESSMENT_MODEL
@@ -33,12 +36,34 @@ class AgentConfig:
         
         Args:
             agent_name: Name of the agent (assessment, threat_modeling, code_review, report_generator)
+            cli_override: Optional model from CLI --model flag
             
         Returns:
             Model name (e.g., 'sonnet', 'haiku', 'opus')
+        
+        Examples:
+            # With env var (highest priority)
+            os.environ['SECUREVIBES_ASSESSMENT_MODEL'] = 'opus'
+            get_agent_model('assessment', cli_override='haiku')  # Returns 'opus'
+            
+            # With CLI override (medium priority)
+            get_agent_model('assessment', cli_override='haiku')  # Returns 'haiku'
+            
+            # Default (lowest priority)
+            get_agent_model('assessment')  # Returns 'sonnet'
         """
+        # Priority 1: Check per-agent environment variable
         env_var = f"SECUREVIBES_{agent_name.upper()}_MODEL"
-        return os.getenv(env_var, cls.DEFAULTS.get(agent_name, "haiku"))
+        env_value = os.getenv(env_var)
+        if env_value:
+            return env_value
+        
+        # Priority 2: Use CLI override if provided
+        if cli_override:
+            return cli_override
+        
+        # Priority 3: Fall back to default
+        return cls.DEFAULTS.get(agent_name, "sonnet")
     
     @classmethod
     def get_all_agent_models(cls) -> Dict[str, str]:
