@@ -2,18 +2,21 @@
 
 This file contains project-specific workflow preferences. For global preferences that apply across all projects, see `~/.factory/preferences.md`.
 
+**IMPORTANT:** This file should be kept in sync with `~/.factory/preferences.md` for all non-project-specific preferences. When updating global preferences, update both files.
+
 ---
 
 ## Global Preferences
 
 **All global workflow preferences apply to this project.**
 
-See: `~/.factory/preferences.md` for:
-- Git workflow (stop after `git add`)
+The following sections from `~/.factory/preferences.md` apply here:
+- Git workflow (stage files + suggest commit message, then stop)
 - Code changes (always update code + tests + docs together)
 - Testing requirements
 - Documentation standards
 - Communication style
+- Maintenance guidelines
 
 ---
 
