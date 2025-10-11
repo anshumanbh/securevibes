@@ -1,50 +1,21 @@
-# Droid Workflow Preferences (SecureVibes)
+# SecureVibes Factory Preferences
 
-This file contains project-specific workflow preferences. For global preferences that apply across all projects, see `~/.factory/preferences.md`.
+**Primary Guidelines:** See `AGENTS.md` in project root for comprehensive coding standards, workflows, and conventions.
 
-**IMPORTANT:** This file should be kept in sync with `~/.factory/preferences.md` for all non-project-specific preferences. When updating global preferences, update both files.
-
----
-
-## Global Preferences
-
-**All global workflow preferences apply to this project.**
-
-The following sections from `~/.factory/preferences.md` apply here:
-- Git workflow (stage files + suggest commit message, then stop)
-- Code changes (always update code + tests + docs together)
-- Testing requirements
-- Documentation standards
-- Communication style
-- Maintenance guidelines
+**Global Preferences:** See `~/.factory/preferences.md` for personal preferences that apply across all projects.
 
 ---
 
-## Project-Specific Overrides
+## Note
 
-### Testing
+This `.factory/` directory contains:
+- `preferences.md` (this file): References to main guidelines
+- `custom-droid-ideas.md`: Ideas for custom droid automation
+- `droids/` (future): Custom droid definitions for this project
 
-Test command for this project:
-```bash
-pytest packages/core/tests/
-```
-
-### Maintenance
-
-This project has a comprehensive maintenance guide. When suggesting maintenance tasks, refer to:
-- `docs/MAINTENANCE.md` - Full maintenance procedures and checklists
-
-### Documentation
-
-This project has documentation in multiple locations:
-- Root `README.md` - Main project overview
-- `packages/core/README.md` - Core package documentation
-- `docs/` - Detailed guides and maintenance procedures
-
-**Always update all relevant locations when making documentation changes.**
+All coding standards, testing requirements, and workflow preferences are now centralized in `AGENTS.md` following Factory's recommended structure.
 
 ---
 
 **Last Updated:** 2025-10-11  
-**Owner:** @anshumanbh  
-**Scope:** SecureVibes project only
+**Owner:** @anshumanbh

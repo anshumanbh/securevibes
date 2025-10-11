@@ -1,6 +1,6 @@
 # Custom Droid Ideas
 
-This document contains suggestions for custom droids based on workflow preferences documented in `.droid-preferences.md`.
+This document contains suggestions for custom droids based on workflow preferences documented in `AGENTS.md`.
 
 ---
 
@@ -14,7 +14,7 @@ Custom droids are reusable task templates that automate repetitive workflows. Th
 
 ## Project-Specific Droids
 
-These droids enforce the workflow preferences specific to this SecureVibes project.
+These droids enforce the workflow preferences documented in `AGENTS.md` for this SecureVibes project.
 
 ### 1. `safe-stage` - Safe Git Staging Workflow
 
@@ -241,5 +241,5 @@ droid safe-stage "Add input validation to login function"
 ---
 
 **Created**: 2025-10-11  
-**Source**: `.droid-preferences.md`  
+**Source**: `AGENTS.md`  
 **Owner**: @anshumanbh
