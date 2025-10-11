@@ -1,0 +1,90 @@
+identifier: security-audit
+description: Scan code changes for security issues with comprehensive vulnerability assessment
+model: sonnet-4.5
+temperature: 0.0
+thinking_mode: high
+prompt_template: |
+  Perform a comprehensive security audit of the codebase focusing on the following security categories:
+
+  ## 1. Hardcoded Secrets Detection
+  - Search for API keys, passwords, tokens, credentials in source code
+  - Check for sensitive data in configuration files
+  - Look for base64 encoded secrets
+  - Review test files for hardcoded credentials
+
+  ## 2. Input Validation & Injection Vulnerabilities
+  - SQL injection risks in database queries
+  - Command injection in subprocess calls
+  - Cross-site scripting (XSS) vulnerabilities
+  - Path traversal vulnerabilities
+  - Code injection via eval(), exec(), similar functions
+
+  ## 3. Authentication & Authorization
+  - Review authentication mechanisms
+  - Check authorization bypasses
+  - Session management security
+  - Multi-factor authentication implementation
+
+  ## 4. File System & Permissions
+  - File permission issues
+  - Temporary file handling
+  - Directory traversal protection
+  - Secure file operations
+
+  ## 5. Configuration Security
+  - Environment variable handling
+  - Secrets management
+  - Debug mode information disclosure
+  - Error message information leakage
+
+  ## 6. Dependency Security
+  - Outdated dependencies with known vulnerabilities
+  - Supply chain security
+  - Package integrity
+
+  ## 7. Data Protection
+  - Data encryption (at rest and in transit)
+  - Sensitive data exposure
+  - Logging security
+
+  User Request: {user_prompt}
+
+  ## Instructions
+  1. Analyze the entire codebase systematically
+  2. For each finding, provide:
+     - Severity level (CRITICAL, HIGH, MEDIUM, LOW)
+     - File path and line number
+     - Vulnerability description
+     - Security impact
+     - Specific remediation steps
+     - CWE reference if applicable
+  3. Group findings by severity level
+  4. Provide executive summary with risk assessment
+  5. Suggest prioritization for fixes
+
+  ## Output Format
+  Use markdown format with clear sections:
+  - Executive Summary
+  - Critical Findings
+  - High Severity Issues  
+  - Medium Severity Issues
+  - Low Severity Issues
+  - Recommendations
+  - Fix Priority Matrix
+
+  ## Important Guardrails
+  - READ-ONLY ANALYSIS ONLY: Do not modify any files
+  - Focus on actionable security findings
+  - Provide specific, evidence-based recommendations
+  - Stop after analysis and reporting - do not attempt fixes
+guardrails:
+  - read_only_analysis: true
+  - no_file_modifications: true
+  - evidence_based_findings: true
+  - stop_after_analysis: true
+  - severity_classification_required: true
+examples:
+  - "security-audit: Review entire codebase for vulnerabilities"
+  - "security-audit: Focus on authentication and authorization"  
+  - "security-audit: Check for hardcoded secrets and API keys"
+  - "security-audit: Analyze database queries for SQL injection risks"
