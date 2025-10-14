@@ -32,33 +32,39 @@ def cli():
 
 @cli.command()
 @click.argument('path', type=click.Path(exists=True), default='.')
-@click.option('--model', '-m', default='sonnet', 
+@click.option('--model', '-m', default='sonnet',
               help='Claude model to use (e.g., sonnet, haiku)')
 @click.option('--output', '-o', type=click.Path(), help='Output file path')
 @click.option('--format', '-f', type=click.Choice(['markdown', 'json', 'text', 'table']), default='markdown', help='Output format (default: markdown)')
-@click.option('--severity', '-s', type=click.Choice(['critical', 'high', 'medium', 'low']), 
+@click.option('--severity', '-s', type=click.Choice(['critical', 'high', 'medium', 'low']),
               help='Minimum severity to report')
 @click.option('--no-save', is_flag=True, help='Do not save results to .securevibes/')
 @click.option('--quiet', '-q', is_flag=True, help='Minimal output (errors only)')
 @click.option('--debug', is_flag=True, help='Show verbose diagnostic output')
-def scan(path: str, model: str, output: Optional[str], format: str, 
-         severity: Optional[str], no_save: bool, quiet: bool, debug: bool):
+@click.option('--agent', type=click.Choice(['assessment', 'threat-modeling', 'code-review', 'report-generator']),
+              help='Run only a specific agent instead of full scan')
+def scan(path: str, model: str, output: Optional[str], format: str,
+         severity: Optional[str], no_save: bool, quiet: bool, debug: bool, agent: Optional[str]):
     """
     Scan a repository for security vulnerabilities.
-    
+
     Examples:
-    
+
         securevibes scan .  # Creates .securevibes/scan_report.md (default)
-        
+
         securevibes scan /path/to/project --severity high
-        
+
         securevibes scan . --format json --output results.json
-        
+
         securevibes scan . --format markdown --output custom_report.md  # Saves to .securevibes/custom_report.md
-        
+
         securevibes scan . --format table  # Terminal table (no file saved)
-        
+
         securevibes scan . --model claude-3-5-haiku-20241022  # Use faster/cheaper model
+
+        securevibes scan . --agent code-review  # Run only code review agent
+
+        securevibes scan . --agent assessment  # Run only assessment agent
     """
     try:
         # Validate flag conflicts
@@ -82,7 +88,7 @@ def scan(path: str, model: str, output: Optional[str], format: str,
                 sys.exit(1)
         
         # Run scan
-        result = asyncio.run(_run_scan(path, model, not no_save, quiet, debug))
+        result = asyncio.run(_run_scan(path, model, not no_save, quiet, debug, agent))
         
         # Filter by severity if specified
         if severity:
@@ -162,14 +168,14 @@ def scan(path: str, model: str, output: Optional[str], format: str,
         sys.exit(1)
 
 
-async def _run_scan(path: str, model: str, save_results: bool, quiet: bool, debug: bool):
+async def _run_scan(path: str, model: str, save_results: bool, quiet: bool, debug: bool, agent: Optional[str]):
     """Run the actual scan with progress indicator"""
 
     repo_path = Path(path).absolute()
-    
-    # Create scanner instance
-    scanner = Scanner(model=model, debug=debug)
-    
+
+    # Create scanner instance with optional single agent
+    scanner = Scanner(model=model, debug=debug, single_agent=agent)
+
     # The scanner handles all output
     result = await scanner.scan(str(repo_path))
 

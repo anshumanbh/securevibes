@@ -92,6 +92,12 @@ securevibes scan . --debug
 
 # Quiet mode
 securevibes scan . --quiet
+
+# Run only a specific agent (instead of full scan)
+securevibes scan . --agent assessment          # Architecture analysis only
+securevibes scan . --agent threat-modeling     # Threat modeling only
+securevibes scan . --agent code-review         # Code review only
+securevibes scan . --agent report-generator    # Report generation only
 ```
 
 **Example output:**
@@ -366,6 +372,32 @@ SecureVibes uses a **multi-agent architecture** where Claude autonomously orches
 - ✅ Concrete evidence with file paths and line numbers
 
 For detailed architecture, agent descriptions, and data flow, see [ARCHITECTURE.md](docs/ARCHITECTURE.md)
+
+### Running Individual Agents
+
+You can run a single agent instead of the full scan pipeline using the `--agent` flag:
+
+```bash
+# Run only assessment (outputs .securevibes/SECURITY.md)
+securevibes scan . --agent assessment
+
+# Run only threat modeling (outputs .securevibes/THREAT_MODEL.json)
+securevibes scan . --agent threat-modeling
+
+# Run only code review (outputs .securevibes/VULNERABILITIES.json)
+securevibes scan . --agent code-review
+
+# Run only report generation (outputs .securevibes/scan_results.json)
+securevibes scan . --agent report-generator
+```
+
+**Use Cases:**
+- **Quick Architecture Analysis**: Run only `assessment` to understand codebase structure
+- **Iterative Development**: Re-run `code-review` after fixing vulnerabilities
+- **Cost Optimization**: Run different agents with different models (e.g., Haiku for assessment, Opus for code-review)
+- **Resume Interrupted Scans**: Continue from where a full scan failed
+
+**Note:** Agents depend on previous outputs (e.g., `threat-modeling` needs `SECURITY.md`). Running agents out of order may fail if required input files don't exist.
 
 ---
 

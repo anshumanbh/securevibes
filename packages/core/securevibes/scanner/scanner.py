@@ -208,7 +208,8 @@ class Scanner:
     def __init__(
         self,
         model: str = "sonnet",
-        debug: bool = False
+        debug: bool = False,
+        single_agent: Optional[str] = None
     ):
         """
         Initialize streaming scanner.
@@ -216,9 +217,11 @@ class Scanner:
         Args:
             model: Claude model name (e.g., sonnet, haiku)
             debug: Enable verbose debug output including agent narration
+            single_agent: Optional agent name to run only that agent (assessment, threat-modeling, code-review, report-generator)
         """
         self.model = model
         self.debug = debug
+        self.single_agent = single_agent
         self.total_cost = 0.0
         self.console = Console()
 
@@ -254,6 +257,8 @@ class Scanner:
         # Show scan info (banner already printed by CLI)
         self.console.print(f"📁 Scanning: {repo}")
         self.console.print(f"🤖 Model: {self.model}")
+        if self.single_agent:
+            self.console.print(f"🎯 Agent: {self.single_agent}")
         self.console.print("="*60)
 
         # Initialize progress tracker
@@ -286,10 +291,18 @@ class Scanner:
 
         # Configure agent options with hooks
         from claude_agent_sdk.types import HookMatcher
-        
+
         # Create agent definitions with CLI model override
         # This allows --model flag to cascade to all agents while respecting env vars
-        agents = create_agent_definitions(cli_model=self.model)
+        all_agents = create_agent_definitions(cli_model=self.model)
+
+        # If single agent mode, only include that agent
+        if self.single_agent:
+            if self.single_agent not in all_agents:
+                raise ValueError(f"Unknown agent: {self.single_agent}. Available: {list(all_agents.keys())}")
+            agents = {self.single_agent: all_agents[self.single_agent]}
+        else:
+            agents = all_agents
         
         options = ClaudeAgentOptions(
             agents=agents,
@@ -304,8 +317,14 @@ class Scanner:
             }
         )
 
-        # Load orchestration prompt
-        orchestration_prompt = load_prompt("main", category="orchestration")
+        # Load prompt - either orchestration or single agent
+        if self.single_agent:
+            # Run single agent directly with its prompt
+            orchestration_prompt = load_prompt(self.single_agent.replace("-", "_"), category="agents")
+            tracker.announce_phase(self.single_agent)
+        else:
+            # Run full orchestration
+            orchestration_prompt = load_prompt("main", category="orchestration")
 
         # Execute scan with streaming progress
         try:
@@ -358,11 +377,46 @@ class Scanner:
     ) -> ScanResult:
         """
         Load and parse scan results from agent-generated files.
-        
+
         Reuses the same loading logic as SecurityScanner for consistency.
+        Handles both full scan and single agent modes.
         """
+        scan_duration = time.time() - scan_start_time
         results_file = securevibes_dir / SCAN_RESULTS_FILE
         vulnerabilities_file = securevibes_dir / VULNERABILITIES_FILE
+
+        # Single agent mode: handle results differently based on agent
+        if self.single_agent:
+            if self.single_agent == "assessment":
+                self.console.print(f"\n✅ Agent 'assessment' completed successfully", style="bold green")
+                self.console.print(f"📄 Output: {securevibes_dir / SECURITY_FILE}", style="cyan")
+                return ScanResult(
+                    repository_path=str(repo),
+                    issues=[],
+                    files_scanned=files_scanned,
+                    scan_time_seconds=round(scan_duration, 2),
+                    total_cost_usd=self.total_cost
+                )
+            elif self.single_agent == "threat-modeling":
+                self.console.print(f"\n✅ Agent 'threat-modeling' completed successfully", style="bold green")
+                self.console.print(f"📄 Output: {securevibes_dir / THREAT_MODEL_FILE}", style="cyan")
+                return ScanResult(
+                    repository_path=str(repo),
+                    issues=[],
+                    files_scanned=files_scanned,
+                    scan_time_seconds=round(scan_duration, 2),
+                    total_cost_usd=self.total_cost
+                )
+            elif self.single_agent == "code-review":
+                # Load from VULNERABILITIES.json
+                if not vulnerabilities_file.exists():
+                    raise RuntimeError(f"Agent 'code-review' did not generate {VULNERABILITIES_FILE}")
+                # Continue to vulnerabilities loading logic below
+            elif self.single_agent == "report-generator":
+                # Load from scan_results.json
+                if not results_file.exists():
+                    raise RuntimeError(f"Agent 'report-generator' did not generate {SCAN_RESULTS_FILE}")
+                # Continue to results loading logic below
 
         scan_result = None
 
