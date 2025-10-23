@@ -44,7 +44,7 @@ The Claude Agent Python SDK is a powerful toolkit for building AI agents with Cl
 ### Requirements
 - Python 3.10 or higher
 - Node.js (for Claude Code CLI)
-- Claude Code CLI installed globally
+- Claude Code CLI 2.0.0+ installed globally (version checked automatically)
 
 ### Installation Steps
 
@@ -65,6 +65,9 @@ The SDK supports three authentication methods:
 Set your API key:
 ```bash
 export CLAUDE_API_KEY="your-api-key-here"
+
+# Optional: Skip version check if needed
+export CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK=1
 ```
 
 ## Quick Start
@@ -184,6 +187,24 @@ async def main():
     options = ClaudeAgentOptions(cwd=Path.home() / "project")
 
     async for message in query(prompt="List all Python files", options=options):
+        print(message)
+```
+
+### Custom CLI Path
+
+For organizations with non-standard Claude Code installations:
+
+```python
+from claude_agent_sdk import query, ClaudeAgentOptions
+
+async def main():
+    # Specify custom CLI path
+    options = ClaudeAgentOptions(
+        cli_path="/custom/path/to/claude",  # Custom installation location
+        cwd="/path/to/project"
+    )
+
+    async for message in query(prompt="Analyze the codebase", options=options):
         print(message)
 ```
 
@@ -331,6 +352,48 @@ calculator_server = create_sdk_mcp_server(
 )
 ```
 
+### Base64 Image Support (SDK 0.1.3+)
+
+Custom tools can now return base64-encoded images following the MCP standard:
+
+```python
+import base64
+from claude_agent_sdk import tool, create_sdk_mcp_server
+
+@tool("generate_chart", "Generate a data visualization chart", {"data": str, "chart_type": str})
+async def generate_chart(args):
+    """Generate a chart and return it as a base64-encoded image"""
+    # Your chart generation logic here
+    # For example, using matplotlib, plotly, etc.
+    chart_bytes = create_chart_image(args['data'], args['chart_type'])
+
+    # Encode to base64
+    encoded_image = base64.b64encode(chart_bytes).decode("utf-8")
+
+    return {
+        "content": [
+            {"type": "text", "text": f"Here's your {args['chart_type']} chart:"},
+            {
+                "type": "image",
+                "mimeType": "image/png",  # or "image/jpeg", "image/webp"
+                "data": encoded_image
+            }
+        ]
+    }
+
+# Create server with image-capable tool
+chart_server = create_sdk_mcp_server(
+    name="charts",
+    version="1.0.0",
+    tools=[generate_chart]
+)
+
+options = ClaudeAgentOptions(
+    mcp_servers={"charts": chart_server},
+    allowed_tools=["mcp__charts__generate_chart"]
+)
+```
+
 ### Mixed Server Support
 
 You can combine SDK servers (in-process) with external MCP servers:
@@ -357,6 +420,24 @@ options = ClaudeAgentOptions(
 
 Hooks provide deterministic processing at specific points in the Claude agent loop.
 
+### Strongly-Typed Hook Inputs (SDK 0.1.3+)
+
+The SDK provides typed input structures for better IDE autocomplete and type safety:
+- `PreToolUseHookInput` - Input data for pre-tool-use hooks
+- `PostToolUseHookInput` - Input data for post-tool-use hooks
+- `UserPromptSubmitHookInput` - Input data for user prompt submission hooks
+
+### Hook Output Fields
+
+Hook outputs can include:
+- `permissionDecision`: "approve" or "deny" (for PreToolUse hooks)
+- `permissionDecisionReason`: Explanation for the decision
+- `reason`: Additional reasoning information
+- `continue_`: Whether to continue processing (Python-safe name for `continue`)
+- `suppressOutput`: Whether to suppress output display
+- `stopReason`: Reason for stopping execution
+- `AsyncHookJSONOutput`: For deferred hook execution
+
 ### Pre-Tool-Use Hook Example
 
 ```python
@@ -379,8 +460,9 @@ async def security_check_hook(input_data, tool_use_id, context):
             return {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": f"Dangerous command pattern detected: {pattern}"
+                    "permissionDecision": "deny",  # Can also be "approve"
+                    "permissionDecisionReason": f"Dangerous command pattern detected: {pattern}",
+                    "reason": "Security policy violation"
                 }
             }
 
@@ -1139,6 +1221,30 @@ async for msg in query(very_long_prompt):
     print(msg)  # Could be expensive!
 ```
 
+### 7. Platform-Specific Considerations
+
+#### Windows Command Line Limits (SDK 0.1.3+)
+
+The SDK automatically handles Windows command line length limits (8191 characters) when using multiple subagents with long prompts. When the command line would exceed the limit, the SDK:
+- Automatically writes agents JSON to a temporary file
+- Uses Claude CLI's `@filepath` syntax to reference the file
+- Cleans up temporary files when the transport is closed
+
+This is handled transparently - no code changes required. The fallback only activates when needed on Windows systems.
+
+```python
+# This works seamlessly on Windows even with many subagents
+options = ClaudeAgentOptions(
+    agents={
+        'reviewer1': {'description': 'Code reviewer', 'prompt': '...[long prompt]...'},
+        'reviewer2': {'description': 'Security reviewer', 'prompt': '...[long prompt]...'},
+        'reviewer3': {'description': 'Performance reviewer', 'prompt': '...[long prompt]...'},
+        # ... more agents with long prompts
+    }
+)
+# SDK handles command line limits automatically
+```
+
 ## Conclusion
 
 The Claude Agent Python SDK provides a powerful, flexible framework for building AI agents with Claude. By following this guide and best practices, you can create robust, secure, and cost-effective AI applications.
@@ -1169,4 +1275,4 @@ The Claude Agent Python SDK provides a powerful, flexible framework for building
 
 ---
 
-*This guide covers Claude Agent SDK version 0.1.0 and above. For the latest updates and features, always refer to the official documentation.*
+*This guide covers Claude Agent SDK version 0.1.3 and above. For the latest updates and features, always refer to the official documentation.*
