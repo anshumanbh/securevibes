@@ -41,8 +41,15 @@ def cli():
 @click.option('--no-save', is_flag=True, help='Do not save results to .securevibes/')
 @click.option('--quiet', '-q', is_flag=True, help='Minimal output (errors only)')
 @click.option('--debug', is_flag=True, help='Show verbose diagnostic output')
+@click.option('--dast', is_flag=True, help='Enable DAST validation of IDOR vulnerabilities')
+@click.option('--target-url', type=str, help='Target URL for DAST testing (e.g., http://localhost:3000)')
+@click.option('--dast-timeout', type=int, default=120, help='DAST validation timeout in seconds (default: 120)')
+@click.option('--dast-accounts', type=click.Path(exists=True), help='Path to test accounts JSON file')
+@click.option('--allow-production', is_flag=True, help='Allow DAST testing on production URLs (use with caution!)')
 def scan(path: str, model: str, output: Optional[str], format: str, 
-         severity: Optional[str], no_save: bool, quiet: bool, debug: bool):
+         severity: Optional[str], no_save: bool, quiet: bool, debug: bool,
+         dast: bool, target_url: Optional[str], dast_timeout: int, 
+         dast_accounts: Optional[str], allow_production: bool):
     """
     Scan a repository for security vulnerabilities.
     
@@ -81,8 +88,35 @@ def scan(path: str, model: str, output: Optional[str], format: str,
                 console.print(f"[bold red]❌ Error:[/bold red] Cannot create output directory: {e}")
                 sys.exit(1)
         
+        # DAST validation checks
+        if dast:
+            if not target_url:
+                console.print("[bold red]❌ Error:[/bold red] --target-url is required when --dast is enabled")
+                console.print("[dim]Example: securevibes scan . --dast --target-url http://localhost:3000[/dim]")
+                sys.exit(1)
+            
+            # Safety gate: production URL detection
+            if _is_production_url(target_url) and not allow_production:
+                console.print(f"[bold red]⚠️  PRODUCTION URL DETECTED:[/bold red] {target_url}")
+                console.print("\n[yellow]DAST testing sends real HTTP requests to the target.")
+                console.print("Testing production systems requires explicit authorization.[/yellow]")
+                console.print("\n[dim]To proceed, add --allow-production flag (ensure you have authorization!)[/dim]")
+                sys.exit(1)
+            
+            # Safety gate: explicit confirmation
+            if not allow_production and not quiet:
+                console.print(f"\n[bold yellow]⚠️  DAST Validation Enabled[/bold yellow]")
+                console.print(f"Target: {target_url}")
+                console.print("\nDAst will send HTTP requests to validate IDOR vulnerabilities.")
+                console.print("Ensure you have authorization to test this target.\n")
+                
+                if not click.confirm("Proceed with DAST validation?", default=False):
+                    console.print("[yellow]DAST validation cancelled. Running SAST-only scan...[/yellow]")
+                    dast = False
+        
         # Run scan
-        result = asyncio.run(_run_scan(path, model, not no_save, quiet, debug))
+        result = asyncio.run(_run_scan(path, model, not no_save, quiet, debug, 
+                                        dast, target_url, dast_timeout, dast_accounts))
         
         # Filter by severity if specified
         if severity:
@@ -162,13 +196,75 @@ def scan(path: str, model: str, output: Optional[str], format: str,
         sys.exit(1)
 
 
-async def _run_scan(path: str, model: str, save_results: bool, quiet: bool, debug: bool):
+def _is_production_url(url: str) -> bool:
+    """Detect if a URL appears to be a production system"""
+    url_lower = url.lower()
+    
+    # Safe patterns (local development)
+    safe_patterns = [
+        'localhost', '127.0.0.1', '0.0.0.0', '[::1]',
+        'staging', 'dev', 'test', 'qa',
+        '.local', '.test', '.dev'
+    ]
+    
+    # Check if URL contains any safe pattern
+    if any(pattern in url_lower for pattern in safe_patterns):
+        return False
+    
+    # Production indicators
+    production_patterns = [
+        '.com', '.net', '.org', '.io',
+        'production', 'prod', 'api.',
+        'app.', 'www.'
+    ]
+    
+    return any(pattern in url_lower for pattern in production_patterns)
+
+
+def _check_target_reachability(target_url: str, timeout: int = 5) -> bool:
+    """Check if target URL is reachable"""
+    import requests
+    
+    try:
+        response = requests.get(target_url, timeout=timeout, allow_redirects=True)
+        return True
+    except requests.RequestException:
+        return False
+
+
+async def _run_scan(path: str, model: str, save_results: bool, quiet: bool, debug: bool,
+                    dast: bool = False, target_url: Optional[str] = None, 
+                    dast_timeout: int = 120, dast_accounts: Optional[str] = None):
     """Run the actual scan with progress indicator"""
 
     repo_path = Path(path).absolute()
     
-    # Create scanner instance
+    # DAST reachability check
+    if dast and target_url:
+        if not quiet:
+            console.print(f"\n🔍 Checking target reachability: {target_url}")
+        
+        if not _check_target_reachability(target_url, timeout=5):
+            console.print(f"[bold yellow]⚠️  Warning:[/bold yellow] Target {target_url} is not reachable")
+            console.print("[dim]DAST validation may fail if target is not running[/dim]")
+            
+            if not click.confirm("Continue anyway?", default=True):
+                console.print("[yellow]Scan cancelled[/yellow]")
+                sys.exit(0)
+        else:
+            if not quiet:
+                console.print("[green]✓ Target is reachable[/green]")
+    
+    # Create scanner instance with DAST configuration
     scanner = Scanner(model=model, debug=debug)
+    
+    # Configure DAST if enabled
+    if dast:
+        scanner.configure_dast(
+            target_url=target_url,
+            timeout=dast_timeout,
+            accounts_path=dast_accounts
+        )
     
     # The scanner handles all output
     result = await scanner.scan(str(repo_path))

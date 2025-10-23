@@ -50,12 +50,13 @@ class ProgressTracker:
         self.last_update = datetime.now()
         self.phase_start_time = None
         
-        # Phase display names
+        # Phase display names (DAST is optional, added dynamically)
         self.phase_display = {
             "assessment": "1/4: Architecture Assessment",
             "threat-modeling": "2/4: Threat Modeling (STRIDE Analysis)",
             "code-review": "3/4: Code Review (Security Analysis)",
-            "report-generator": "4/4: Report Generation"
+            "report-generator": "4/4: Report Generation",
+            "dast": "5/5: DAST Validation"
         }
     
     def announce_phase(self, phase_name: str):
@@ -175,6 +176,8 @@ class ProgressTracker:
             self.console.print(f"   Created: {VULNERABILITIES_FILE}", style="green")
         elif agent_name == "report-generator" and SCAN_RESULTS_FILE in [Path(f).name for f in self.files_written]:
             self.console.print(f"   Created: {SCAN_RESULTS_FILE}", style="green")
+        elif agent_name == "dast" and "DAST_VALIDATION.json" in [Path(f).name for f in self.files_written]:
+            self.console.print(f"   Created: DAST_VALIDATION.json", style="green")
     
     def on_assistant_text(self, text: str):
         """Called when the assistant produces text output"""
@@ -221,6 +224,31 @@ class Scanner:
         self.debug = debug
         self.total_cost = 0.0
         self.console = Console()
+        
+        # DAST configuration
+        self.dast_enabled = False
+        self.dast_config = {}
+    
+    def configure_dast(
+        self,
+        target_url: str,
+        timeout: int = 120,
+        accounts_path: Optional[str] = None
+    ):
+        """
+        Configure DAST validation settings.
+        
+        Args:
+            target_url: Target URL for DAST testing
+            timeout: Timeout in seconds for DAST validation
+            accounts_path: Optional path to test accounts JSON file
+        """
+        self.dast_enabled = True
+        self.dast_config = {
+            "target_url": target_url,
+            "timeout": timeout,
+            "accounts_path": accounts_path
+        }
 
     async def scan(self, repo_path: str) -> ScanResult:
         """
@@ -287,9 +315,24 @@ class Scanner:
         # Configure agent options with hooks
         from claude_agent_sdk.types import HookMatcher
         
+        # Set DAST environment variables if enabled
+        if self.dast_enabled:
+            os.environ["DAST_ENABLED"] = "true"
+            os.environ["DAST_TARGET_URL"] = self.dast_config["target_url"]
+            os.environ["DAST_TIMEOUT"] = str(self.dast_config["timeout"])
+            
+            if self.dast_config.get("accounts_path"):
+                # Read test accounts file if provided
+                accounts_file = Path(self.dast_config["accounts_path"])
+                if accounts_file.exists():
+                    os.environ["DAST_TEST_ACCOUNTS"] = accounts_file.read_text()
+        
         # Create agent definitions with CLI model override
         # This allows --model flag to cascade to all agents while respecting env vars
         agents = create_agent_definitions(cli_model=self.model)
+        
+        # Configure skills path for DAST agent
+        skills_path = str(repo / ".claude" / "skills" / "dast") if self.dast_enabled else None
         
         options = ClaudeAgentOptions(
             agents=agents,
@@ -297,6 +340,7 @@ class Scanner:
             max_turns=config.get_max_turns(),
             permission_mode='bypassPermissions',
             model=self.model,
+            skills_path=skills_path,
             hooks={
                 "PreToolUse": [HookMatcher(hooks=[pre_tool_hook])],
                 "PostToolUse": [HookMatcher(hooks=[post_tool_hook])],

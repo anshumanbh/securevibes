@@ -126,6 +126,41 @@ Create `.securevibes/DAST_VALIDATION.json`:
 }
 ```
 
+## Output Guidelines
+
+**CRITICAL: Keep responses concise (1-4 sentences)**
+
+After running validation script, present results as:
+
+**Format for VALIDATED:**
+```
+IDOR validated on [endpoint] - [resource1_id] successfully accessed [resource2_id] with [status_code]. [Key impact]. Evidence: [file_path]
+```
+
+**Format for FALSE_POSITIVE:**
+```
+IDOR not confirmed on [endpoint] - access properly denied with [status_code]. Evidence: [file_path]
+```
+
+**Format for UNVALIDATED:**
+```
+IDOR test unvalidated on [endpoint] - [reason]. Evidence: [file_path]
+```
+
+**Example (VALIDATED):**
+```
+IDOR validated on /api/users - user 123 accessed user 456's data (200 OK). Exposed PII including SSN. Evidence: /tmp/idor_evidence.json
+```
+
+**What NOT to do:**
+- ❌ Don't repeat information from the evidence file
+- ❌ Don't add CVSS scores unless requested
+- ❌ Don't provide recommendations unless requested
+- ❌ Don't write paragraphs of analysis
+- ❌ Don't format as "reports" with sections
+
+**The validation script captures everything - just present the verdict.**
+
 ## Safety Rules
 - ONLY test against --target-url provided by user
 - NEVER test production without explicit authorization

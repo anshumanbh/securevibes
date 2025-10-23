@@ -31,6 +31,18 @@ PHASE 4: REPORT GENERATION
 - Reads SECURITY.md, THREAT_MODEL.json, VULNERABILITIES.json
 - Creates .securevibes/scan_results.json with ALL vulnerabilities
 - Report: "Report generation complete" when done
+- WAIT for completion before proceeding
+
+PHASE 5: DAST VALIDATION (CONDITIONAL - only if DAST_ENABLED=true)
+- Check environment variable DAST_ENABLED
+- If DAST_ENABLED != "true", SKIP this phase entirely
+- If DAST_ENABLED == "true":
+  - Announce: "Starting Phase 5: DAST Validation"
+  - Use the 'dast' agent to validate IDOR vulnerabilities
+  - Reads .securevibes/VULNERABILITIES.json
+  - Creates .securevibes/DAST_VALIDATION.json
+  - Agent will use skills from .claude/skills/dast/
+  - Report: "DAST validation complete" when done
 
 CRITICAL RULES:
 - Execute agents ONE AT A TIME in strict sequential order
@@ -38,5 +50,6 @@ CRITICAL RULES:
 - WAIT for each phase to complete before starting the next
 - Do NOT delegate work to other agents via Task tool
 - Each agent uses ONLY its assigned tools
+- Phase 5 is OPTIONAL - only run if DAST_ENABLED=true
 
 Keep responses brief - focus on announcing phases, invoking agents, and reporting completion.
