@@ -80,3 +80,5 @@ scan_output.log
 .env.production.local
 
  .droid-preferences.md
+
+settings.local.json

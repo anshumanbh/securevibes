@@ -14,6 +14,14 @@ class Severity(str, Enum):
     INFO = "info"
 
 
+class ValidationStatus(str, Enum):
+    """DAST validation status"""
+    VALIDATED = "VALIDATED"  # Successfully exploited
+    FALSE_POSITIVE = "FALSE_POSITIVE"  # Disproven by testing
+    UNVALIDATED = "UNVALIDATED"  # Couldn't test (timeout, unreachable)
+    PARTIAL = "PARTIAL"  # Exploitable but different impact
+
+
 @dataclass
 class SecurityIssue:
     """Represents a security vulnerability found in code"""
@@ -28,9 +36,15 @@ class SecurityIssue:
     recommendation: Optional[str] = None
     cwe_id: Optional[str] = None
     
+    # DAST validation fields
+    validation_status: Optional[ValidationStatus] = None
+    dast_evidence: Optional[dict] = None
+    exploitability_score: Optional[float] = None
+    validated_at: Optional[str] = None
+    
     def to_dict(self) -> dict:
         """Convert to dictionary"""
-        return {
+        base_dict = {
             "id": self.id,
             "severity": self.severity.value,
             "title": self.title,
@@ -41,3 +55,24 @@ class SecurityIssue:
             "recommendation": self.recommendation,
             "cwe_id": self.cwe_id,
         }
+        
+        # Include DAST fields if present
+        if self.validation_status:
+            base_dict.update({
+                "validation_status": self.validation_status.value,
+                "dast_evidence": self.dast_evidence,
+                "exploitability_score": self.exploitability_score,
+                "validated_at": self.validated_at
+            })
+        
+        return base_dict
+    
+    @property
+    def is_validated(self) -> bool:
+        """Check if issue was validated by DAST"""
+        return self.validation_status == ValidationStatus.VALIDATED
+    
+    @property
+    def is_false_positive(self) -> bool:
+        """Check if issue was disproven by DAST"""
+        return self.validation_status == ValidationStatus.FALSE_POSITIVE
