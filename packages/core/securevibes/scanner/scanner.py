@@ -503,11 +503,61 @@ class Scanner:
         # Initialize progress tracker
         tracker = ProgressTracker(self.console, debug=self.debug, single_subagent=single_subagent)
 
+        # Define infrastructure directories to exclude
+        exclude_dirs = {'.claude', 'env', 'venv', '.venv', 'node_modules', '.git', 
+                       '__pycache__', '.pytest_cache', 'dist', 'build', '.eggs'}
+        
         # Create hooks as closures that capture the tracker
         async def pre_tool_hook(input_data: dict, tool_use_id: str, ctx: dict) -> dict:
             """Hook that fires before any tool executes"""
             tool_name = input_data.get("tool_name")
             tool_input = input_data.get("tool_input", {})
+            
+            # Block reads from infrastructure directories
+            if tool_name in ["Read", "Grep", "Glob", "LS"]:
+                # Extract path from tool input (different tools use different param names)
+                path = (tool_input.get("file_path") or 
+                       tool_input.get("path") or 
+                       tool_input.get("directory_path") or "")
+                
+                if path:
+                    # Check if path contains any excluded directory
+                    path_parts = Path(path).parts if path else []
+                    if any(excluded in path_parts for excluded in exclude_dirs):
+                        # Return empty result to skip this tool execution
+                        if self.debug:
+                            self.console.print(
+                                f"  ⏭️  Skipped: {path} (infrastructure directory)",
+                                style="dim yellow"
+                            )
+                        return {
+                            "override_result": {
+                                "content": f"Skipped: Infrastructure directory excluded from scan ({path})",
+                                "is_error": False
+                            }
+                        }
+                
+                # For Grep, inject excludePatterns to filter out infrastructure directories
+                if tool_name == "Grep":
+                    # Add exclude patterns for infrastructure directories
+                    exclude_patterns = [f"{excluded}/**" for excluded in exclude_dirs]
+                    
+                    # Add to existing excludePatterns if any, or create new
+                    existing_excludes = tool_input.get("excludePatterns", [])
+                    tool_input["excludePatterns"] = existing_excludes + exclude_patterns
+                    
+                    if self.debug:
+                        self.console.print(
+                            f"  🔍 Grep with exclusions: {len(exclude_patterns)} patterns",
+                            style="dim"
+                        )
+                
+                # For Glob, inject excludePatterns
+                if tool_name == "Glob":
+                    exclude_patterns = [f"{excluded}/**" for excluded in exclude_dirs]
+                    existing_excludes = tool_input.get("excludePatterns", [])
+                    tool_input["excludePatterns"] = existing_excludes + exclude_patterns
+            
             tracker.on_tool_start(tool_name, tool_input)
             return {}
 
