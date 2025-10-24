@@ -64,6 +64,81 @@ AI-Powered Vulnerability Detection
 
 ---
 
+## Running DAST Only
+
+After completing a full scan, you can re-run just the DAST validation to save time and API costs:
+
+### Iterative Testing Workflow
+
+1. **Initial Full Scan**: Run complete SAST + DAST
+   ```bash
+   securevibes scan . --dast --target-url http://localhost:3000
+   ```
+
+2. **Review Results**: Check `.securevibes/DAST_VALIDATION.json`
+   ```bash
+   cat .securevibes/DAST_VALIDATION.json | jq '.validations[] | select(.status == "VALIDATED")'
+   ```
+
+3. **Fix Vulnerabilities**: Update code based on findings
+
+4. **Re-test with DAST Only**: Run DAST sub-agent (faster, reuses static analysis)
+   ```bash
+   securevibes scan . --subagent dast --target-url http://localhost:3000
+   ```
+
+5. **Repeat**: Until all issues are validated as fixed
+
+### Sub-Agent Mode
+
+Run only the DAST validation phase:
+
+```bash
+# Basic DAST-only scan (uses existing VULNERABILITIES.json)
+securevibes scan . --subagent dast --target-url http://localhost:3000
+
+# With test accounts
+securevibes scan . --subagent dast \
+  --target-url http://localhost:3000 \
+  --dast-accounts test_accounts.json
+
+# Force execution without prompts (CI/CD)
+securevibes scan . --subagent dast \
+  --target-url http://localhost:3000 \
+  --force
+
+# Skip artifact validation
+securevibes scan . --subagent dast \
+  --target-url http://localhost:3000 \
+  --skip-checks
+```
+
+**Interactive Confirmation:**
+
+```bash
+$ securevibes scan . --subagent dast --target-url http://localhost:3000
+
+🔍 Checking prerequisites for 'dast' sub-agent...
+✓ Found: .securevibes/VULNERABILITIES.json (modified: 2h ago, 10 issues)
+
+⚠️  Re-running DAST will overwrite existing results.
+
+Options:
+  1. Use existing VULNERABILITIES.json and run DAST only [default]
+  2. Re-run entire scan (all sub-agents)
+  3. Cancel
+
+Choice [1]:
+```
+
+**Benefits:**
+- ⚡ **Faster**: Skip static analysis (already done)
+- 💰 **Cheaper**: Only runs DAST agent (~20% of full scan cost)
+- 🔄 **Iterative**: Test → Fix → Re-test cycle
+- 🎯 **Focused**: Validate specific fixes
+
+---
+
 ## Safety Gates
 
 DAST testing sends **real HTTP requests** to your target. SecureVibes includes multiple safety mechanisms:

@@ -22,6 +22,7 @@ from securevibes.models.result import ScanResult
 from securevibes.models.issue import SecurityIssue, Severity
 from securevibes.prompts.loader import load_prompt
 from securevibes.config import config
+from securevibes.scanner.subagent_manager import SubAgentManager, ScanMode
 
 # Constants for artifact paths
 SECUREVIBES_DIR = ".securevibes"
@@ -39,7 +40,7 @@ class ProgressTracker:
     to provide detailed progress feedback during long-running scans.
     """
     
-    def __init__(self, console: Console, debug: bool = False):
+    def __init__(self, console: Console, debug: bool = False, single_subagent: Optional[str] = None):
         self.console = console
         self.debug = debug
         self.current_phase = None
@@ -49,6 +50,7 @@ class ProgressTracker:
         self.subagent_stack = []  # Track nested subagents
         self.last_update = datetime.now()
         self.phase_start_time = None
+        self.single_subagent = single_subagent
         
         # Phase display names (DAST is optional, added dynamically)
         self.phase_display = {
@@ -58,6 +60,21 @@ class ProgressTracker:
             "report-generator": "4/4: Report Generation",
             "dast": "5/5: DAST Validation"
         }
+        
+        # Override display for single sub-agent mode
+        if single_subagent:
+            self.phase_display[single_subagent] = f"Sub-Agent 1/1: {self._get_subagent_title(single_subagent)}"
+    
+    def _get_subagent_title(self, subagent: str) -> str:
+        """Get human-readable title for sub-agent"""
+        titles = {
+            "assessment": "Architecture Assessment",
+            "threat-modeling": "Threat Modeling (STRIDE Analysis)",
+            "code-review": "Code Review (Security Analysis)",
+            "report-generator": "Report Generation",
+            "dast": "DAST Validation"
+        }
+        return titles.get(subagent, subagent)
     
     def announce_phase(self, phase_name: str):
         """Announce the start of a new phase"""
@@ -249,7 +266,164 @@ class Scanner:
             "timeout": timeout,
             "accounts_path": accounts_path
         }
-
+    
+    async def scan_subagent(
+        self,
+        repo_path: str,
+        subagent: str,
+        force: bool = False,
+        skip_checks: bool = False
+    ) -> ScanResult:
+        """
+        Run a single sub-agent with artifact validation.
+        
+        Args:
+            repo_path: Path to repository to scan
+            subagent: Sub-agent name to execute
+            force: Skip confirmation prompts
+            skip_checks: Skip artifact validation
+        
+        Returns:
+            ScanResult with findings
+        """
+        repo = Path(repo_path).resolve()
+        manager = SubAgentManager(repo, quiet=False)
+        
+        # Validate prerequisites unless skipped
+        if not skip_checks:
+            is_valid, error = manager.validate_prerequisites(subagent)
+            
+            if not is_valid:
+                deps = manager.get_subagent_dependencies(subagent)
+                required = deps["requires"]
+                
+                self.console.print(f"[bold red]❌ Error:[/bold red] '{subagent}' requires {required}")
+                self.console.print(f"\n.securevibes/{required} not found.\n")
+                
+                # Offer to run prerequisites
+                self.console.print("Options:")
+                self.console.print(f"  1. Run from prerequisite sub-agents (includes {subagent})")
+                self.console.print("  2. Run full scan (all sub-agents)")
+                self.console.print("  3. Cancel")
+                
+                import click
+                choice = click.prompt("\nChoice", type=int, default=3, show_default=False)
+                
+                if choice == 1:
+                    # Find which sub-agent creates the required artifact
+                    from securevibes.scanner.subagent_manager import SUBAGENT_ARTIFACTS, SUBAGENT_ORDER
+                    for sa_name in SUBAGENT_ORDER:
+                        if SUBAGENT_ARTIFACTS[sa_name]["creates"] == required:
+                            return await self.scan_resume(repo_path, sa_name, force, skip_checks)
+                    raise RuntimeError(f"Could not find sub-agent that creates {required}")
+                elif choice == 2:
+                    return await self.scan(repo_path)
+                else:
+                    raise RuntimeError("Scan cancelled by user")
+            
+            # Check if prerequisite exists and prompt user
+            deps = manager.get_subagent_dependencies(subagent)
+            if deps["requires"]:
+                artifact_status = manager.check_artifact(deps["requires"])
+                if artifact_status.exists and artifact_status.valid:
+                    mode = manager.prompt_user_choice(subagent, artifact_status, force)
+                    
+                    if mode == ScanMode.CANCEL:
+                        raise RuntimeError("Scan cancelled by user")
+                    elif mode == ScanMode.FULL_RESCAN:
+                        # Run full scan
+                        return await self.scan(repo_path)
+                    # else: ScanMode.USE_EXISTING - continue with single sub-agent
+        
+        # Set environment variable to run only this sub-agent
+        os.environ["RUN_ONLY_SUBAGENT"] = subagent
+        
+        # Auto-enable DAST if running dast sub-agent
+        if subagent == "dast" and self.dast_enabled:
+            os.environ["DAST_ENABLED"] = "true"
+            os.environ["DAST_TARGET_URL"] = self.dast_config["target_url"]
+            os.environ["DAST_TIMEOUT"] = str(self.dast_config["timeout"])
+            if self.dast_config.get("accounts_path"):
+                accounts_file = Path(self.dast_config["accounts_path"])
+                if accounts_file.exists():
+                    os.environ["DAST_TEST_ACCOUNTS"] = accounts_file.read_text()
+        
+        # Run scan with single sub-agent
+        return await self._execute_scan(repo, single_subagent=subagent)
+    
+    async def scan_resume(
+        self,
+        repo_path: str,
+        from_subagent: str,
+        force: bool = False,
+        skip_checks: bool = False
+    ) -> ScanResult:
+        """
+        Resume scan from a specific sub-agent onwards.
+        
+        Args:
+            repo_path: Path to repository to scan
+            from_subagent: Sub-agent to resume from
+            force: Skip confirmation prompts
+            skip_checks: Skip artifact validation
+        
+        Returns:
+            ScanResult with findings
+        """
+        repo = Path(repo_path).resolve()
+        manager = SubAgentManager(repo, quiet=False)
+        
+        # Get list of sub-agents to run
+        subagents_to_run = manager.get_resume_subagents(from_subagent)
+        
+        # Validate prerequisites unless skipped
+        if not skip_checks:
+            is_valid, error = manager.validate_prerequisites(from_subagent)
+            
+            if not is_valid:
+                self.console.print(f"[bold red]❌ Error:[/bold red] {error}")
+                raise RuntimeError(error)
+            
+            # Show what will be run
+            self.console.print(f"\n🔍 Resuming from '{from_subagent}' sub-agent...")
+            deps = manager.get_subagent_dependencies(from_subagent)
+            if deps["requires"]:
+                artifact_status = manager.check_artifact(deps["requires"])
+                if artifact_status.exists:
+                    self.console.print(f"✓ Found: .securevibes/{deps['requires']} (prerequisite for {from_subagent})", style="green")
+            
+            self.console.print(f"\nWill run: {' → '.join(subagents_to_run)}")
+            if "dast" not in subagents_to_run and not self.dast_enabled:
+                self.console.print("(DAST not enabled - use --dast --target-url to include)")
+            
+            if not force:
+                import click
+                if not click.confirm("\nProceed?", default=True):
+                    raise RuntimeError("Scan cancelled by user")
+        
+        # Set environment variables for resume mode
+        os.environ["RESUME_FROM_SUBAGENT"] = from_subagent
+        
+        # Calculate which sub-agents to skip
+        from securevibes.scanner.subagent_manager import SUBAGENT_ORDER
+        skip_index = SUBAGENT_ORDER.index(from_subagent)
+        skip_subagents = SUBAGENT_ORDER[:skip_index]
+        if skip_subagents:
+            os.environ["SKIP_SUBAGENTS"] = ",".join(skip_subagents)
+        
+        # Configure DAST if enabled and in resume list
+        if "dast" in subagents_to_run and self.dast_enabled:
+            os.environ["DAST_ENABLED"] = "true"
+            os.environ["DAST_TARGET_URL"] = self.dast_config["target_url"]
+            os.environ["DAST_TIMEOUT"] = str(self.dast_config["timeout"])
+            if self.dast_config.get("accounts_path"):
+                accounts_file = Path(self.dast_config["accounts_path"])
+                if accounts_file.exists():
+                    os.environ["DAST_TEST_ACCOUNTS"] = accounts_file.read_text()
+        
+        # Run scan from this sub-agent onwards
+        return await self._execute_scan(repo, resume_from=from_subagent)
+    
     async def scan(self, repo_path: str) -> ScanResult:
         """
         Run complete security scan with real-time progress streaming.
@@ -263,7 +437,37 @@ class Scanner:
         repo = Path(repo_path).resolve()
         if not repo.exists():
             raise ValueError(f"Repository path does not exist: {repo_path}")
-
+        
+        # Configure DAST environment variables if enabled
+        if self.dast_enabled:
+            os.environ["DAST_ENABLED"] = "true"
+            os.environ["DAST_TARGET_URL"] = self.dast_config["target_url"]
+            os.environ["DAST_TIMEOUT"] = str(self.dast_config["timeout"])
+            
+            if self.dast_config.get("accounts_path"):
+                accounts_file = Path(self.dast_config["accounts_path"])
+                if accounts_file.exists():
+                    os.environ["DAST_TEST_ACCOUNTS"] = accounts_file.read_text()
+        
+        return await self._execute_scan(repo)
+    
+    async def _execute_scan(
+        self,
+        repo: Path,
+        single_subagent: Optional[str] = None,
+        resume_from: Optional[str] = None
+    ) -> ScanResult:
+        """
+        Internal method to execute scan with optional sub-agent filtering.
+        
+        Args:
+            repo: Repository path (already resolved)
+            single_subagent: If set, run only this sub-agent
+            resume_from: If set, resume from this sub-agent onwards
+        
+        Returns:
+            ScanResult with findings
+        """
         # Ensure .securevibes directory exists
         securevibes_dir = repo / SECUREVIBES_DIR
         try:
@@ -297,7 +501,7 @@ class Scanner:
         self.console.print("="*60)
 
         # Initialize progress tracker
-        tracker = ProgressTracker(self.console, debug=self.debug)
+        tracker = ProgressTracker(self.console, debug=self.debug, single_subagent=single_subagent)
 
         # Create hooks as closures that capture the tracker
         async def pre_tool_hook(input_data: dict, tool_use_id: str, ctx: dict) -> dict:
@@ -326,18 +530,6 @@ class Scanner:
 
         # Configure agent options with hooks
         from claude_agent_sdk.types import HookMatcher
-        
-        # Set DAST environment variables if enabled
-        if self.dast_enabled:
-            os.environ["DAST_ENABLED"] = "true"
-            os.environ["DAST_TARGET_URL"] = self.dast_config["target_url"]
-            os.environ["DAST_TIMEOUT"] = str(self.dast_config["timeout"])
-            
-            if self.dast_config.get("accounts_path"):
-                # Read test accounts file if provided
-                accounts_file = Path(self.dast_config["accounts_path"])
-                if accounts_file.exists():
-                    os.environ["DAST_TEST_ACCOUNTS"] = accounts_file.read_text()
         
         # Create agent definitions with CLI model override
         # This allows --model flag to cascade to all agents while respecting env vars

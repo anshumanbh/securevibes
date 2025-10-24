@@ -94,6 +94,56 @@ securevibes scan . --debug
 securevibes scan . --quiet
 ```
 
+### Running Individual Sub-Agents
+
+SecureVibes breaks down security scanning into 5 sub-agents. You can run them individually to save time and API costs:
+
+```bash
+# Run specific sub-agent only
+securevibes scan . --subagent assessment
+securevibes scan . --subagent threat-modeling
+securevibes scan . --subagent code-review
+securevibes scan . --subagent report-generator
+securevibes scan . --subagent dast --target-url http://localhost:3000
+
+# Resume from specific sub-agent onwards
+securevibes scan . --resume-from code-review
+securevibes scan . --resume-from dast --dast --target-url http://localhost:3000
+
+# Force execution without prompts (CI/CD mode)
+securevibes scan . --subagent dast --target-url http://localhost:3000 --force
+
+# Skip artifact validation checks
+securevibes scan . --subagent code-review --skip-checks
+```
+
+**Sub-Agent Dependencies:**
+- `assessment` → Creates `SECURITY.md`
+- `threat-modeling` → Needs `SECURITY.md` → Creates `THREAT_MODEL.json`
+- `code-review` → Needs `THREAT_MODEL.json` → Creates `VULNERABILITIES.json`
+- `report-generator` → Needs `VULNERABILITIES.json` → Creates `scan_results.json`
+- `dast` → Needs `VULNERABILITIES.json` → Creates `DAST_VALIDATION.json`
+
+**Interactive Workflow:**
+
+When running a sub-agent, SecureVibes checks for existing artifacts:
+
+```bash
+$ securevibes scan . --subagent dast --target-url http://localhost:3000
+
+🔍 Checking prerequisites for 'dast' sub-agent...
+✓ Found: .securevibes/VULNERABILITIES.json (modified: 2h ago, 10 issues)
+
+⚠️  Re-running DAST will overwrite existing results.
+
+Options:
+  1. Use existing VULNERABILITIES.json and run DAST only [default]
+  2. Re-run entire scan (all sub-agents)
+  3. Cancel
+
+Choice [1]:
+```
+
 **Example output:**
 ```bash
 $ securevibes scan . --debug
