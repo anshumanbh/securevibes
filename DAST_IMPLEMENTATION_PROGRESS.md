@@ -18,11 +18,9 @@
   - Safety rules and error handling
   - CWE-639 mapping
 
-- ✅ **validate_idor.py**: HTTP-based validation script
-  - 8KB response body limit with SHA-256 hash
-  - Sensitive field redaction (ssn, password, credit_card, etc.)
-  - Classification logic (VALIDATED/FALSE_POSITIVE/UNVALIDATED)
-  - Proper error handling and timeouts
+- ✅ **reference/validate_idor.py**: Reference example for IDOR testing
+  - Illustrates evidence capture, redaction, and classification
+  - Not a drop-in script; adapt per application
 
 - ✅ **examples.md**: 5 detailed scenarios
   - Sequential ID IDOR
@@ -37,7 +35,7 @@
 **File**: `packages/core/securevibes/agents/definitions.py`
 
 - ✅ Added `dast` agent to `create_agent_definitions()`
-- ✅ Tools: `["Read", "Write", "Skill"]` (Skill enables skill discovery)
+- ✅ Tools: `["Read", "Write", "Skill", "Bash"]` (Skill discovery + ability to run small test helpers)
 - ✅ Configurable model: `SECUREVIBES_DAST_MODEL` env var support
 - ✅ Skills path: `.claude/skills/dast` (aligned with Claude SDK conventions)
 
@@ -123,13 +121,13 @@ class ValidationStatus(str, Enum):
 #### 8. Orchestration Prompt
 **File**: `packages/core/securevibes/prompts/orchestration/main.txt`
 
-**Add Phase 4**:
+**Add Phase 5**:
 ```
-Phase 4: DAST Validation (Conditional - only if enabled)
-- Use the 'dast' agent to validate IDOR vulnerabilities
+Phase 5: DAST Validation (Conditional - only if enabled)
+- Use the 'dast' agent to validate vulnerabilities via HTTP-based testing
 - Input: VULNERABILITIES.json
 - Output: DAST_VALIDATION.json
-- Agent will use skills from .claude/skills/dast/
+- Agent may use skills discovered in .claude/skills/dast/
 ```
 
 #### 9. Reporters Update

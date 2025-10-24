@@ -97,8 +97,6 @@ class ProgressTracker:
             file_path = tool_input.get("file_path", "")
             if file_path:
                 self.files_read.add(file_path)
-                filename = Path(file_path).name
-                self.console.print(f"  📖 Reading {filename}", style="dim")
         
         elif tool_name == "Grep":
             pattern = tool_input.get("pattern", "")
@@ -114,8 +112,6 @@ class ProgressTracker:
             file_path = tool_input.get("file_path", "")
             if file_path:
                 self.files_written.add(file_path)
-                filename = Path(file_path).name
-                self.console.print(f"  💾 Writing {filename}", style="cyan")
         
         elif tool_name == "Task":
             # Sub-agent orchestration
@@ -266,6 +262,49 @@ class Scanner:
             "timeout": timeout,
             "accounts_path": accounts_path
         }
+    
+    def _setup_dast_skills(self, repo: Path):
+        """
+        Copy DAST skills to target project for SDK discovery.
+        
+        Skills are bundled with SecureVibes package and automatically
+        copied to each project's .claude/skills/dast/ directory.
+        
+        Args:
+            repo: Target repository path
+        """
+        import shutil
+        
+        target_skills_dir = repo / ".claude" / "skills" / "dast"
+        
+        # Skip if skills already exist
+        if target_skills_dir.exists():
+            if self.debug:
+                self.console.print("  ✓ DAST skills already present", style="dim green")
+            return
+        
+        # Get skills from package installation
+        package_skills_dir = Path(__file__).parent.parent / "skills" / "dast"
+        
+        if not package_skills_dir.exists():
+            raise RuntimeError(
+                f"DAST skills not found at {package_skills_dir}. "
+                "Package installation may be corrupted."
+            )
+        
+        # Copy skills to target project
+        try:
+            target_skills_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(package_skills_dir, target_skills_dir, dirs_exist_ok=True)
+            
+            if self.debug:
+                self.console.print(
+                    f"  📦 Copied DAST skills to .claude/skills/dast/",
+                    style="dim green"
+                )
+        
+        except (OSError, PermissionError) as e:
+            raise RuntimeError(f"Failed to copy DAST skills: {e}")
     
     async def scan_subagent(
         self,
@@ -495,6 +534,19 @@ class Scanner:
         
         files_scanned = len(all_py) + len(all_ts) + len(all_js) + len(all_tsx) + len(all_jsx)
 
+        # Setup DAST skills if DAST will be executed
+        if single_subagent:
+            needs_dast = single_subagent == "dast"
+        elif resume_from:
+            from securevibes.scanner.subagent_manager import SubAgentManager
+            manager = SubAgentManager(repo, quiet=False)
+            needs_dast = "dast" in manager.get_resume_subagents(resume_from)
+        else:
+            needs_dast = self.dast_enabled
+        
+        if needs_dast:
+            self._setup_dast_skills(repo)
+
         # Show scan info (banner already printed by CLI)
         self.console.print(f"📁 Scanning: {repo}")
         self.console.print(f"🤖 Model: {self.model}")
@@ -503,9 +555,9 @@ class Scanner:
         # Initialize progress tracker
         tracker = ProgressTracker(self.console, debug=self.debug, single_subagent=single_subagent)
 
-        # Define infrastructure directories to exclude
-        exclude_dirs = {'.claude', 'env', 'venv', '.venv', 'node_modules', '.git', 
-                       '__pycache__', '.pytest_cache', 'dist', 'build', '.eggs'}
+        # Define infrastructure directories to exclude (adjusted dynamically per phase)
+        exclude_dirs = {'.claude', 'env', 'venv', '.venv', 'node_modules', '.git',
+                        '__pycache__', '.pytest_cache', 'dist', 'build', '.eggs'}
         
         # Create hooks as closures that capture the tracker
         async def pre_tool_hook(input_data: dict, tool_use_id: str, ctx: dict) -> dict:
@@ -515,6 +567,10 @@ class Scanner:
             
             # Block reads from infrastructure directories
             if tool_name in ["Read", "Grep", "Glob", "LS"]:
+                # Allow .claude/skills during DAST so the agent can load SKILL.md
+                active_exclude_dirs = exclude_dirs.copy()
+                if tracker.current_phase == "dast" and ".claude" in active_exclude_dirs:
+                    active_exclude_dirs.remove('.claude')
                 # Extract path from tool input (different tools use different param names)
                 path = (tool_input.get("file_path") or 
                        tool_input.get("path") or 
@@ -523,7 +579,7 @@ class Scanner:
                 if path:
                     # Check if path contains any excluded directory
                     path_parts = Path(path).parts if path else []
-                    if any(excluded in path_parts for excluded in exclude_dirs):
+                    if any(excluded in path_parts for excluded in active_exclude_dirs):
                         # Return empty result to skip this tool execution
                         if self.debug:
                             self.console.print(
@@ -540,7 +596,7 @@ class Scanner:
                 # For Grep, inject excludePatterns to filter out infrastructure directories
                 if tool_name == "Grep":
                     # Add exclude patterns for infrastructure directories
-                    exclude_patterns = [f"{excluded}/**" for excluded in exclude_dirs]
+                    exclude_patterns = [f"{excluded}/**" for excluded in active_exclude_dirs]
                     
                     # Add to existing excludePatterns if any, or create new
                     existing_excludes = tool_input.get("excludePatterns", [])
@@ -554,20 +610,54 @@ class Scanner:
                 
                 # For Glob, inject excludePatterns
                 if tool_name == "Glob":
-                    exclude_patterns = [f"{excluded}/**" for excluded in exclude_dirs]
+                    exclude_patterns = [f"{excluded}/**" for excluded in active_exclude_dirs]
                     existing_excludes = tool_input.get("excludePatterns", [])
                     tool_input["excludePatterns"] = existing_excludes + exclude_patterns
             
+            # Enforce DAST write restrictions: only allow writing DAST_VALIDATION.json or /tmp/*
+            if tool_name == "Write" and tracker.current_phase == "dast":
+                file_path = tool_input.get("file_path", "")
+                if file_path:
+                    try:
+                        p = Path(file_path)
+                        # Allow primary artifact write
+                        allowed_artifact = p.name == "DAST_VALIDATION.json" and p.parent.name == ".securevibes"
+                        # Allow ephemeral temp writes under /tmp for helper code/data
+                        allowed_tmp = str(p).startswith("/tmp/")
+                        allowed = allowed_artifact or allowed_tmp
+                    except Exception:
+                        allowed = False
+                    if not allowed:
+                        # Block non-artifact writes during DAST phase
+                        return {
+                            "override_result": {
+                                "content": (
+                                    "DAST phase may only write .securevibes/DAST_VALIDATION.json. "
+                                    f"Blocked write to: {file_path}"
+                                ),
+                                "is_error": False
+                            }
+                        }
+
+            # No read redirection; DAST should read/write artifacts explicitly in .securevibes/
+
             tracker.on_tool_start(tool_name, tool_input)
             return {}
 
         async def post_tool_hook(input_data: dict, tool_use_id: str, ctx: dict) -> dict:
             """Hook that fires after a tool completes"""
             tool_name = input_data.get("tool_name")
+            tool_input = input_data.get("tool_input", {})
             tool_response = input_data.get("tool_response", {})
             is_error = tool_response.get("is_error", False)
             error_msg = tool_response.get("content", "") if is_error else None
             tracker.on_tool_complete(tool_name, not is_error, error_msg)
+            # Additional success logs with full paths in debug mode
+            if self.debug and not is_error and tool_name in ("Read", "Write"):
+                p = tool_input.get("file_path") or tool_input.get("path")
+                if p:
+                    action = "✅ Read" if tool_name == "Read" else "✅ Wrote"
+                    self.console.print(f"  {action} {p}", style="dim green")
             return {}
 
         async def subagent_hook(input_data: dict, tool_use_id: str, ctx: dict) -> dict:

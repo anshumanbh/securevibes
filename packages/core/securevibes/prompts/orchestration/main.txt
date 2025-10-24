@@ -50,10 +50,10 @@ PHASE 5: DAST VALIDATION (CONDITIONAL)
 - If DAST_ENABLED != "true", SKIP this phase entirely
 - If DAST_ENABLED == "true":
   - Announce: "Starting Phase 5: DAST Validation"
-  - Use the 'dast' agent to validate IDOR vulnerabilities
+  - Use the 'dast' agent to validate vulnerabilities via HTTP-based dynamic testing
   - Reads .securevibes/VULNERABILITIES.json
   - Creates .securevibes/DAST_VALIDATION.json
-  - Agent will use skills from .claude/skills/dast/
+  - Agent may use skills discovered in .claude/skills/dast/
   - Report: "DAST validation complete" when done
 
 CRITICAL RULES:

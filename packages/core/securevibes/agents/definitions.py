@@ -72,9 +72,9 @@ def create_agent_definitions(cli_model: Optional[str] = None) -> Dict[str, Agent
         ),
 
         "dast": AgentDefinition(
-            description="Validates IDOR vulnerabilities through HTTP-based dynamic testing using specialized security testing skills",
+            description="Validates vulnerabilities via HTTP testing ONLY when a matching Agent Skill is available; otherwise reports UNVALIDATED",
             prompt=AGENT_PROMPTS["dast"],
-            tools=["Read", "Write", "Skill"],
+            tools=["Read", "Write", "Skill", "Bash"],
             model=config.get_agent_model("dast", cli_override=cli_model)
         )
     }

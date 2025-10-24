@@ -56,7 +56,10 @@ where = ["."]
 include = ["securevibes*"]
 
 [tool.setuptools.package-data]
-securevibes = ["prompts/**/*.txt"]
+securevibes = [
+    "prompts/**/*.txt",
+    "skills/**/*"
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

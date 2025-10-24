@@ -43,11 +43,11 @@ allowed-tools: Read, Write, Bash
 Test IDOR vulnerabilities via HTTP requests.
 """)
     
-    # Create validation script
-    scripts_dir = skills_dir / "scripts"
-    scripts_dir.mkdir(exist_ok=True)
-    (scripts_dir / "validate_idor.py").write_text("""#!/usr/bin/env python3
-print('IDOR validation script')
+    # Create reference example (non-runnable)
+    reference_dir = skills_dir / "reference"
+    reference_dir.mkdir(exist_ok=True)
+    (reference_dir / "validate_idor.py").write_text("""#!/usr/bin/env python3
+print('IDOR reference example')
 """)
     
     return tmp_path
@@ -530,6 +530,75 @@ def test_subagent_dast_auto_enables_dast():
     # This is tested via CLI validation logic
     # When --subagent dast is used, dast flag is auto-enabled
     assert True  # Logic tested in test_subagent_selection.py
+
+
+def test_setup_dast_skills_copies_to_target(tmp_path):
+    """Test that _setup_dast_skills copies skills to target project"""
+    from securevibes.scanner.scanner import Scanner
+    from pathlib import Path
+    
+    scanner = Scanner(model="sonnet", debug=False)
+    
+    # Call setup on temp directory
+    scanner._setup_dast_skills(tmp_path)
+    
+    # Verify skills were copied
+    target_skills = tmp_path / ".claude" / "skills" / "dast"
+    assert target_skills.exists()
+    assert (target_skills / "idor-testing" / "SKILL.md").exists()
+    assert (target_skills / "idor-testing" / "reference" / "validate_idor.py").exists()
+
+
+def test_setup_dast_skills_skips_if_exists(tmp_path):
+    """Test that _setup_dast_skills skips copy if skills already exist"""
+    from securevibes.scanner.scanner import Scanner
+    
+    scanner = Scanner(model="sonnet", debug=False)
+    
+    # Create existing skills directory
+    target_skills = tmp_path / ".claude" / "skills" / "dast"
+    target_skills.mkdir(parents=True)
+    marker_file = target_skills / "custom_skill.txt"
+    marker_file.write_text("custom")
+    
+    # Call setup - should skip
+    scanner._setup_dast_skills(tmp_path)
+    
+    # Verify it didn't overwrite
+    assert marker_file.exists()
+    assert marker_file.read_text() == "custom"
+
+
+def test_setup_dast_skills_error_handling(tmp_path):
+    """Test error handling when package skills missing"""
+    from securevibes.scanner.scanner import Scanner
+    from unittest.mock import patch
+    
+    scanner = Scanner(model="sonnet", debug=False)
+    
+    # Mock Path to return non-existent skills directory
+    with patch('securevibes.scanner.scanner.Path') as mock_path:
+        mock_path.return_value.parent.parent = tmp_path / "nonexistent"
+        mock_path.return_value.parts = []
+        
+        # Should raise error about missing skills
+        with pytest.raises(RuntimeError, match="DAST skills not found"):
+            scanner._setup_dast_skills(tmp_path)
+
+
+def test_bundled_skills_package_structure():
+    """Test that skills are included in package"""
+    from pathlib import Path
+    import securevibes
+    
+    package_dir = Path(securevibes.__file__).parent
+    skills_dir = package_dir / "skills" / "dast" / "idor-testing"
+    
+    # Verify structure
+    assert skills_dir.exists(), "Skills directory not found in package"
+    assert (skills_dir / "SKILL.md").exists(), "SKILL.md missing"
+    assert (skills_dir / "reference" / "validate_idor.py").exists(), "validate_idor.py missing"
+    assert (skills_dir / "examples.md").exists(), "examples.md missing"
 
 
 if __name__ == "__main__":

@@ -16,6 +16,8 @@ SecureVibes DAST (Dynamic Application Security Testing) validates IDOR (Insecure
 - At least 2 test user accounts (for cross-user access testing)
 - Authorization to test the target (required!)
 
+**Note:** DAST skills are automatically bundled with SecureVibes and copied to your project's `.claude/skills/dast/` directory during scans. No manual setup required!
+
 ### 2. Basic Usage
 
 ```bash
@@ -273,7 +275,7 @@ If `--dast` enabled, DAST agent:
    - Currently: `idor-testing` skill
 
 3. **Validates each IDOR**
-   - Uses `validate_idor.py` script
+   - Follows methodology from the `idor-testing` skill
    - Baseline request: User1 → User1's resource (200 OK expected)
    - Test request: User1 → User2's resource (403/401 expected, 200 = vulnerable)
 
@@ -402,6 +404,23 @@ Endpoint /api/users/{id} allows any user to access another user's data...
 ---
 
 ## Configuration
+
+### Automatic Skill Setup
+
+DAST skills are bundled with SecureVibes and automatically managed:
+
+- **Installation**: Skills included in package at `securevibes/skills/dast/`
+- **Runtime**: Automatically copied to `{project}/.claude/skills/dast/` before DAST execution
+- **Cleanup**: Skills remain in project for future scans (or add to `.gitignore`)
+
+**Recommended .gitignore entry:**
+```gitignore
+# SecureVibes artifacts
+.securevibes/
+.claude/skills/dast/  # Auto-copied DAST skills
+```
+
+**Manual override**: If you want custom skills, create `.claude/skills/dast/` in your project - SecureVibes will use existing skills instead of copying.
 
 ### Environment Variables
 
@@ -647,11 +666,10 @@ DAST uses Claude Agent SDK skills for modular, extensible testing:
 ```
 .claude/skills/dast/
 ├── idor-testing/
-│   ├── SKILL.md              # Skill definition and methodology
-│   ├── examples.md           # Test scenarios
-│   ├── scripts/
-│   │   └── validate_idor.py  # HTTP validation script
-│   └── env/                  # Isolated Python environment
+│   ├── SKILL.md                 # Methodology-focused skill definition
+│   ├── examples.md              # Conceptual test scenarios
+│   └── reference/               # Non-runnable examples to adapt
+│       └── validate_idor.py
 └── (future: sqli-testing, xss-testing, etc.)
 ```
 
