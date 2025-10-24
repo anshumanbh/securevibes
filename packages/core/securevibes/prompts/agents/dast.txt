@@ -137,7 +137,7 @@ Here is a COMPLETE example of DAST_VALIDATION.json:
     "unvalidated": 1,
     "scan_duration_seconds": 1.25,
     "target_reachable": true,
-    "skills_available": ["idor-testing"],
+    "skills_available": ["authorization-testing"],
     "test_accounts_available": true
   },
   "validations": [

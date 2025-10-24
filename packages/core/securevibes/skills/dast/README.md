@@ -10,20 +10,20 @@ Skills provide specialized testing methodologies that the DAST agent uses to val
 
 ```
 .claude/skills/dast/
-├── README.md              # This file
-└── idor-testing/          # IDOR vulnerability validation
-    ├── SKILL.md           # Methodology and guidance
-    ├── examples.md        # Conceptual test scenarios
-    └── reference/         # Non-runnable reference examples
+├── README.md                    # This file
+└── authorization-testing/       # Authorization failure validation (formerly idor-testing)
+    ├── SKILL.md                 # Methodology and guidance
+    ├── examples.md              # Conceptual test scenarios
+    └── reference/               # Non-runnable reference examples
         └── validate_idor.py
 ```
 
 ## Current Skills
 
-### idor-testing
-**Purpose**: Validate Insecure Direct Object Reference (IDOR) vulnerabilities through HTTP-based exploitation attempts.
+### authorization-testing (formerly idor-testing)
+**Purpose**: Validate authorization failures including IDOR, privilege escalation, and missing access controls through HTTP-based exploitation attempts.
 
-**Trigger**: CWE-639, vulnerability type "idor"
+**Trigger**: CWE-639 (IDOR), CWE-269 (Privilege Escalation), CWE-862 (Missing Authorization), CWE-863 (Incorrect Authorization), CWE-284 (Access Control), CWE-285 (Improper Authorization)
 
 **Requirements**:
 - Target application running and reachable

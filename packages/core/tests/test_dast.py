@@ -29,12 +29,12 @@ def get_user(user_id):
 """)
     
     # Create .claude/skills/dast directory structure
-    skills_dir = tmp_path / ".claude" / "skills" / "dast" / "idor-testing"
+    skills_dir = tmp_path / ".claude" / "skills" / "dast" / "authorization-testing"
     skills_dir.mkdir(parents=True, exist_ok=True)
     
     # Create SKILL.md
     (skills_dir / "SKILL.md").write_text("""---
-name: idor-testing
+name: authorization-testing
 description: Test IDOR vulnerabilities
 allowed-tools: Read, Write, Bash
 ---
@@ -545,8 +545,8 @@ def test_setup_dast_skills_copies_to_target(tmp_path):
     # Verify skills were copied
     target_skills = tmp_path / ".claude" / "skills" / "dast"
     assert target_skills.exists()
-    assert (target_skills / "idor-testing" / "SKILL.md").exists()
-    assert (target_skills / "idor-testing" / "reference" / "validate_idor.py").exists()
+    assert (target_skills / "authorization-testing" / "SKILL.md").exists()
+    assert (target_skills / "authorization-testing" / "reference" / "validate_idor.py").exists()
 
 
 def test_setup_dast_skills_skips_if_exists(tmp_path):
@@ -592,7 +592,7 @@ def test_bundled_skills_package_structure():
     import securevibes
     
     package_dir = Path(securevibes.__file__).parent
-    skills_dir = package_dir / "skills" / "dast" / "idor-testing"
+    skills_dir = package_dir / "skills" / "dast" / "authorization-testing"
     
     # Verify structure
     assert skills_dir.exists(), "Skills directory not found in package"

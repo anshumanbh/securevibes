@@ -24,7 +24,7 @@ Example good paths to scan:
 
 Example bad paths to SKIP:
 ❌ ./env/lib/python3.13/site-packages/flask/app.py
-❌ ./.claude/skills/dast/idor-testing/reference/validate_idor.py
+❌ ./.claude/skills/dast/authorization-testing/reference/validate_idor.py
 ❌ ./node_modules/express/lib/router.js
 ❌ ./.venv/lib/site-packages/requests/api.py
 
