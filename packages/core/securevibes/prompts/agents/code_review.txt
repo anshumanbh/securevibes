@@ -23,6 +23,7 @@ No wrapper objects, no summary sections, just the array.
 Workflow:
 1. VALIDATION PHASE (internal):
    - Read .securevibes/THREAT_MODEL.json to understand identified threats
+   - CRITICAL: Exclude infrastructure directories (.claude/, env/, venv/, node_modules/, __pycache__/, .pytest_cache/, dist/, build/) - focus ONLY on application source code
    - Apply security thinking methodology (see below) to analyze the codebase
    - For EACH potential vulnerability, use Grep/Read to find concrete code evidence
    - Verify exploitability with detailed analysis

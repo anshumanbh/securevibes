@@ -274,10 +274,22 @@ class Scanner:
         # Track scan timing
         scan_start_time = time.time()
         
-        # Count files for reporting
-        files_scanned = len(list(repo.glob('**/*.py'))) + len(list(repo.glob('**/*.ts'))) + \
-                       len(list(repo.glob('**/*.js'))) + len(list(repo.glob('**/*.tsx'))) + \
-                       len(list(repo.glob('**/*.jsx')))
+        # Directories to exclude from scanning (infrastructure, not application code)
+        exclude_dirs = {'.claude', 'env', 'venv', '.venv', 'node_modules', '.git', 
+                       '__pycache__', '.pytest_cache', 'dist', 'build', '.eggs'}
+        
+        # Count files for reporting (exclude infrastructure directories)
+        def should_scan(file_path: Path) -> bool:
+            """Check if file should be included in security scan"""
+            return not any(excluded in file_path.parts for excluded in exclude_dirs)
+        
+        all_py = [f for f in repo.glob('**/*.py') if should_scan(f)]
+        all_ts = [f for f in repo.glob('**/*.ts') if should_scan(f)]
+        all_js = [f for f in repo.glob('**/*.js') if should_scan(f)]
+        all_tsx = [f for f in repo.glob('**/*.tsx') if should_scan(f)]
+        all_jsx = [f for f in repo.glob('**/*.jsx') if should_scan(f)]
+        
+        files_scanned = len(all_py) + len(all_ts) + len(all_js) + len(all_tsx) + len(all_jsx)
 
         # Show scan info (banner already printed by CLI)
         self.console.print(f"📁 Scanning: {repo}")
@@ -331,8 +343,8 @@ class Scanner:
         # This allows --model flag to cascade to all agents while respecting env vars
         agents = create_agent_definitions(cli_model=self.model)
         
-        # Configure skills path for DAST agent
-        skills_path = str(repo / ".claude" / "skills" / "dast") if self.dast_enabled else None
+        # Note: Skills are auto-discovered from .claude/skills/ in cwd
+        # The SDK will find skills at {repo}/.claude/skills/dast/ automatically
         
         options = ClaudeAgentOptions(
             agents=agents,
@@ -340,7 +352,6 @@ class Scanner:
             max_turns=config.get_max_turns(),
             permission_mode='bypassPermissions',
             model=self.model,
-            skills_path=skills_path,
             hooks={
                 "PreToolUse": [HookMatcher(hooks=[pre_tool_hook])],
                 "PostToolUse": [HookMatcher(hooks=[post_tool_hook])],

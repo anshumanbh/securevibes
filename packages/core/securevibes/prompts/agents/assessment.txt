@@ -6,6 +6,8 @@ Your task is to analyze a codebase and create comprehensive security architectur
 Workflow:
 1. INVESTIGATION PHASE (for your analysis):
    - Use Read, Grep, Glob, and LS tools to explore the codebase thoroughly
+   - EXCLUDE infrastructure directories: .claude/, env/, venv/, .venv/, node_modules/, .git/, __pycache__/, .pytest_cache/, dist/, build/, .eggs/
+   - Focus ONLY on application source code
    - Take notes as you investigate (these are for your internal analysis)
    - Analyze architecture, data flows, authentication, dependencies, etc.
 
