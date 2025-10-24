@@ -51,18 +51,185 @@ Do NOT create DAST_TEST_ACCOUNTS.json yourself. Only read it if it already exist
 - Do NOT create arbitrary code files (e.g., *.py, *.sh) in the project unless explicitly instructed by a loaded SKILL.md.
 - If a skill calls for small helper code, prefer ephemeral files under /tmp and delete them after use.
 
-## Output Format
-Write .securevibes/DAST_VALIDATION.json with:
-- dast_scan_metadata (target, timestamp, counts, duration)
-- validations array (one per vulnerability tested)
+<critical_output_format>
+CRITICAL: DAST_VALIDATION.json MUST follow this EXACT structure.
 
-For vulnerabilities that cannot be validated, include:
-```
+CORRECT FORMAT (what you MUST write):
 {
-  "validation_status": "UNVALIDATED",
-  "reason": "No applicable validation skill for CWE-XXX"  
+  "dast_scan_metadata": {
+    "target_url": "string",
+    "scan_timestamp": "ISO8601 with timezone",
+    "total_vulnerabilities_tested": integer,
+    "validated": integer,
+    "false_positives": integer,
+    "unvalidated": integer,
+    "scan_duration_seconds": float,
+    "target_reachable": boolean,
+    "skills_available": ["skill-name"],
+    "test_accounts_available": boolean
+  },
+  "validations": [
+    {
+      "vulnerability_id": "THREAT-XXX",
+      "title": "string",
+      "cwe_id": "CWE-XXX",
+      "severity": "critical|high|medium|low",
+      "validation_status": "VALIDATED|FALSE_POSITIVE|UNVALIDATED",
+      "reason": "string or null",
+      "tested_at": "ISO8601 with timezone",
+      "test_steps": ["string"] or null,
+      "evidence": {...} or null,
+      "exploitability_score": float or null,
+      "notes": "string or null"
+    }
+  ]
+}
+
+REQUIRED FIELDS FOR ALL VALIDATION ENTRIES:
+- vulnerability_id: Copy "threat_id" from VULNERABILITIES.json (call it vulnerability_id here)
+- title: Copy from VULNERABILITIES.json
+- cwe_id: Copy from VULNERABILITIES.json
+- severity: Copy from VULNERABILITIES.json
+- validation_status: VALIDATED | FALSE_POSITIVE | UNVALIDATED
+- tested_at: ISO8601 timestamp with timezone (e.g., "2025-10-24T20:00:00+00:00")
+
+REQUIRED FIELDS FOR VALIDATED ENTRIES:
+- test_steps: Array of strings describing what you did
+- evidence: Object with http_requests array or other proof
+- exploitability_score: Float from 0.0 to 10.0
+- reason: null (not applicable for validated)
+
+REQUIRED FIELDS FOR UNVALIDATED/FALSE_POSITIVE ENTRIES:
+- reason: String explaining why (e.g., "No validation skill for CWE-XXX")
+- test_steps: null
+- evidence: null
+- exploitability_score: null
+
+INCORRECT FORMATS (DO NOT USE):
+❌ Using "threat_id" instead of "vulnerability_id"
+❌ Missing cwe_id or severity (you MUST copy from VULNERABILITIES.json)
+❌ Inconsistent timestamp formats (always use ISO8601 with timezone)
+❌ Using "N/A" or empty string instead of null
+❌ Missing required metadata fields
+❌ Adding arbitrary custom fields without documentation
+❌ Wrong validation_status values (only use: VALIDATED, FALSE_POSITIVE, UNVALIDATED)
+
+FIELD NAMING RULES:
+- Always use "vulnerability_id" not "threat_id"
+- Use snake_case for all field names
+- Boolean fields: true/false (lowercase, not "True"/"False" or "yes"/"no")
+- Null values: null (not "N/A", not empty string, not "null" as string)
+- Timestamps: Always ISO8601 with timezone (use "+00:00" or "Z")
+</critical_output_format>
+
+## Complete Output Example
+
+Here is a COMPLETE example of DAST_VALIDATION.json:
+
+```json
+{
+  "dast_scan_metadata": {
+    "target_url": "http://localhost:5000",
+    "scan_timestamp": "2025-10-24T20:00:00+00:00",
+    "total_vulnerabilities_tested": 3,
+    "validated": 1,
+    "false_positives": 1,
+    "unvalidated": 1,
+    "scan_duration_seconds": 1.25,
+    "target_reachable": true,
+    "skills_available": ["idor-testing"],
+    "test_accounts_available": true
+  },
+  "validations": [
+    {
+      "vulnerability_id": "THREAT-001",
+      "title": "IDOR Vulnerability Exposes User PII",
+      "cwe_id": "CWE-639",
+      "severity": "critical",
+      "validation_status": "VALIDATED",
+      "reason": null,
+      "tested_at": "2025-10-24T20:00:01+00:00",
+      "test_steps": [
+        "1. Authenticated as user (ID: 2)",
+        "2. Verified access to /api/user/2 → 200 OK",
+        "3. Modified request to /api/user/1 (admin)",
+        "4. Received 200 OK with admin's PII"
+      ],
+      "evidence": {
+        "http_requests": [
+          {
+            "request": "GET /api/user/1",
+            "authenticated_as": "user (id=2)",
+            "status": 200,
+            "response_snippet": "{\"id\": 1, \"email\": \"[REDACTED]\"}",
+            "response_hash": "sha256:abc123..."
+          }
+        ]
+      },
+      "exploitability_score": 9.5,
+      "notes": "IDOR confirmed - trivial exploitation"
+    },
+    {
+      "vulnerability_id": "THREAT-002",
+      "title": "Missing Authorization Check",
+      "cwe_id": "CWE-639",
+      "severity": "high",
+      "validation_status": "FALSE_POSITIVE",
+      "reason": "Access control properly implemented - 403 Forbidden returned",
+      "tested_at": "2025-10-24T20:00:02+00:00",
+      "test_steps": [
+        "1. Authenticated as user (ID: 2)",
+        "2. Attempted access to /api/admin/users",
+        "3. Received 403 Forbidden"
+      ],
+      "evidence": {
+        "http_requests": [
+          {
+            "request": "GET /api/admin/users",
+            "authenticated_as": "user (id=2)",
+            "status": 403,
+            "response_snippet": "{\"error\": \"Unauthorized\"}",
+            "response_hash": "sha256:def456..."
+          }
+        ]
+      },
+      "exploitability_score": null,
+      "notes": "Authorization check working correctly"
+    },
+    {
+      "vulnerability_id": "THREAT-003",
+      "title": "SQL Injection in Search Endpoint",
+      "cwe_id": "CWE-89",
+      "severity": "critical",
+      "validation_status": "UNVALIDATED",
+      "reason": "No applicable validation skill for CWE-89 (SQL Injection)",
+      "tested_at": "2025-10-24T20:00:03+00:00",
+      "test_steps": null,
+      "evidence": null,
+      "exploitability_score": null,
+      "notes": "Requires SQL injection testing skill to validate"
+    }
+  ]
 }
 ```
+
+COPY THIS STRUCTURE EXACTLY. Only change the actual values based on your testing.
+
+## Self-Check Before Writing Output
+
+Before writing DAST_VALIDATION.json, verify ALL of these:
+1. ✓ All validation entries use "vulnerability_id" (NOT "threat_id")
+2. ✓ All entries have title, cwe_id, severity copied from VULNERABILITIES.json
+3. ✓ All timestamps are ISO8601 format with timezone (+00:00 or Z)
+4. ✓ VALIDATED entries have: test_steps (array), evidence (object), exploitability_score (float)
+5. ✓ UNVALIDATED/FALSE_POSITIVE entries have: reason (string explaining why)
+6. ✓ Boolean fields use lowercase: true/false (not "True"/"False")
+7. ✓ Missing values use null (not "N/A", not empty string)
+8. ✓ Metadata has all 9 required fields
+9. ✓ validation_status only uses: VALIDATED, FALSE_POSITIVE, or UNVALIDATED
+10. ✓ Structure matches the example exactly
+
+If ANY check fails, FIX IT before writing the file.
 
 ## Error Handling
 - Target unreachable: Mark related items UNVALIDATED
