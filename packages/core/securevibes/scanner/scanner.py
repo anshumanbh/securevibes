@@ -736,6 +736,150 @@ class Scanner:
             self.console.print(f"❌ Error loading scan results: {e}", style="bold red")
             raise
 
+    def _regenerate_artifacts(self, scan_result: ScanResult, securevibes_dir: Path):
+        """
+        Regenerate JSON and Markdown reports with merged DAST validation data.
+        
+        Args:
+            scan_result: Scan result with merged DAST data
+            securevibes_dir: Path to .securevibes directory
+        """
+        try:
+            # Regenerate JSON report
+            from securevibes.reporters.json_reporter import JSONReporter
+            json_file = securevibes_dir / SCAN_RESULTS_FILE
+            JSONReporter.save(scan_result, json_file)
+            
+            # Regenerate Markdown report
+            from securevibes.reporters.markdown_reporter import MarkdownReporter
+            md_output = MarkdownReporter.generate(scan_result)
+            md_file = securevibes_dir / "scan_report.md"
+            with open(md_file, 'w') as f:
+                f.write(md_output)
+            
+            if self.debug:
+                self.console.print(
+                    "✅ Regenerated reports with DAST validation data",
+                    style="green"
+                )
+        
+        except Exception as e:
+            if self.debug:
+                self.console.print(
+                    f"⚠️  Warning: Failed to regenerate artifacts: {e}",
+                    style="yellow"
+                )
+
+    def _merge_dast_results(self, scan_result: ScanResult, securevibes_dir: Path) -> ScanResult:
+        """
+        Merge DAST validation data into scan results.
+        
+        Args:
+            scan_result: The base scan result with issues
+            securevibes_dir: Path to .securevibes directory
+            
+        Returns:
+            Updated ScanResult with DAST validation merged
+        """
+        dast_file = securevibes_dir / "DAST_VALIDATION.json"
+        if not dast_file.exists():
+            return scan_result
+        
+        try:
+            with open(dast_file) as f:
+                dast_data = json.load(f)
+            
+            # Extract DAST metadata
+            metadata = dast_data.get("dast_scan_metadata", {})
+            validations = dast_data.get("validations", [])
+            
+            if not validations:
+                return scan_result
+            
+            # Build lookup map: vulnerability_id -> validation data
+            validation_map = {}
+            for validation in validations:
+                vuln_id = validation.get("vulnerability_id")
+                if vuln_id:
+                    validation_map[vuln_id] = validation
+            
+            # Merge validation data into issues
+            from securevibes.models.issue import ValidationStatus
+            
+            updated_issues = []
+            validated_count = 0
+            false_positive_count = 0
+            unvalidated_count = 0
+            
+            for issue in scan_result.issues:
+                # Try to find matching validation by issue ID
+                validation = validation_map.get(issue.id)
+                
+                if validation:
+                    # Parse validation status
+                    status_str = validation.get("validation_status", "UNVALIDATED")
+                    try:
+                        validation_status = ValidationStatus[status_str]
+                    except KeyError:
+                        validation_status = ValidationStatus.UNVALIDATED
+                    
+                    # Update issue with DAST data
+                    issue.validation_status = validation_status
+                    issue.validated_at = validation.get("tested_at")
+                    issue.exploitability_score = validation.get("exploitability_score")
+                    
+                    # Build evidence dict from DAST data
+                    if validation.get("evidence"):
+                        issue.dast_evidence = validation["evidence"]
+                    elif validation.get("test_steps") or validation.get("reason") or validation.get("notes"):
+                        # Create evidence from available fields
+                        evidence = {}
+                        if validation.get("test_steps"):
+                            evidence["test_steps"] = validation["test_steps"]
+                        if validation.get("reason"):
+                            evidence["reason"] = validation["reason"]
+                        if validation.get("notes"):
+                            evidence["notes"] = validation["notes"]
+                        issue.dast_evidence = evidence
+                    
+                    # Track counts
+                    if validation_status == ValidationStatus.VALIDATED:
+                        validated_count += 1
+                    elif validation_status == ValidationStatus.FALSE_POSITIVE:
+                        false_positive_count += 1
+                    else:
+                        unvalidated_count += 1
+                
+                updated_issues.append(issue)
+            
+            # Update scan result
+            scan_result.issues = updated_issues
+            
+            # Update DAST metrics
+            total_tested = metadata.get("total_vulnerabilities_tested", len(validations))
+            if total_tested > 0:
+                scan_result.dast_enabled = True
+                scan_result.dast_validation_rate = validated_count / total_tested
+                scan_result.dast_false_positive_rate = false_positive_count / total_tested
+                scan_result.dast_scan_time_seconds = metadata.get("scan_duration_seconds", 0)
+            
+            if self.debug:
+                self.console.print(
+                    f"✅ Merged DAST results: {validated_count} validated, "
+                    f"{false_positive_count} false positives, {unvalidated_count} unvalidated",
+                    style="green"
+                )
+            
+            return scan_result
+            
+        except (OSError, json.JSONDecodeError) as e:
+            if self.debug:
+                self.console.print(
+                    f"⚠️  Warning: Failed to merge DAST results: {e}",
+                    style="yellow"
+                )
+            return scan_result
+
     def _load_scan_results(
         self,
         securevibes_dir: Path,
@@ -795,6 +939,14 @@ class Scanner:
                         scan_time_seconds=round(scan_duration, 2),
                         total_cost_usd=self.total_cost
                     )
+                    
+                    # Merge DAST validation results if available
+                    scan_result = self._merge_dast_results(scan_result, securevibes_dir)
+                    
+                    # Regenerate artifacts with merged validation data
+                    if scan_result.dast_enabled:
+                        self._regenerate_artifacts(scan_result, securevibes_dir)
+                    
                     return scan_result
                     
             except (OSError, PermissionError, json.JSONDecodeError) as e:
@@ -850,6 +1002,14 @@ class Scanner:
                     scan_time_seconds=round(scan_duration, 2),
                     total_cost_usd=self.total_cost
                 )
+                
+                # Merge DAST validation results if available
+                scan_result = self._merge_dast_results(scan_result, securevibes_dir)
+                
+                # Regenerate artifacts with merged validation data
+                if scan_result.dast_enabled:
+                    self._regenerate_artifacts(scan_result, securevibes_dir)
+                
                 return scan_result
                 
             except (OSError, PermissionError, json.JSONDecodeError, ValueError) as e:

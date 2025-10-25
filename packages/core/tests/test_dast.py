@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 from click.testing import CliRunner
+from datetime import datetime
 
 from securevibes.cli.main import cli, _is_production_url, _check_target_reachability
 from securevibes.scanner.scanner import Scanner
@@ -599,6 +600,247 @@ def test_bundled_skills_package_structure():
     assert (skills_dir / "SKILL.md").exists(), "SKILL.md missing"
     assert (skills_dir / "reference" / "validate_idor.py").exists(), "validate_idor.py missing"
     assert (skills_dir / "examples.md").exists(), "examples.md missing"
+
+
+def test_merge_dast_results_basic(tmp_path):
+    """Test basic DAST result merging"""
+    from securevibes.scanner.scanner import Scanner
+    
+    scanner = Scanner(model="sonnet", debug=False)
+    
+    # Create scan result with issues
+    issues = [
+        SecurityIssue(
+            id="THREAT-001",
+            title="IDOR Vulnerability",
+            description="Missing authorization check",
+            severity=Severity.HIGH,
+            file_path="/app.py",
+            line_number=10,
+            code_snippet="return db.get(id)",
+            cwe_id="CWE-639"
+        ),
+        SecurityIssue(
+            id="THREAT-002",
+            title="XSS Vulnerability",
+            description="Unescaped output",
+            severity=Severity.MEDIUM,
+            file_path="/app.py",
+            line_number=20,
+            code_snippet="print(user_input)",
+            cwe_id="CWE-79"
+        )
+    ]
+    
+    scan_result = ScanResult(
+        repository_path=str(tmp_path),
+        issues=issues,
+        files_scanned=1,
+        scan_time_seconds=10.0,
+        total_cost_usd=0.05
+    )
+    
+    # Create DAST validation file
+    securevibes_dir = tmp_path / ".securevibes"
+    securevibes_dir.mkdir()
+    
+    dast_data = {
+        "dast_scan_metadata": {
+            "target_url": "http://localhost:5000",
+            "scan_timestamp": "2025-10-25T00:00:00Z",
+            "total_vulnerabilities_tested": 2,
+            "validated": 1,
+            "false_positives": 0,
+            "unvalidated": 1,
+            "scan_duration_seconds": 5.0
+        },
+        "validations": [
+            {
+                "vulnerability_id": "THREAT-001",
+                "validation_status": "VALIDATED",
+                "tested_at": "2025-10-25T00:00:00Z",
+                "exploitability_score": 9.0,
+                "test_steps": ["Step 1", "Step 2"],
+                "evidence": {
+                    "http_requests": [{
+                        "request": "GET /user/1",
+                        "status": 200,
+                        "authenticated_as": "user_2"
+                    }]
+                }
+            },
+            {
+                "vulnerability_id": "THREAT-002",
+                "validation_status": "UNVALIDATED",
+                "tested_at": "2025-10-25T00:00:00Z",
+                "reason": "No applicable validation skill"
+            }
+        ]
+    }
+    
+    dast_file = securevibes_dir / "DAST_VALIDATION.json"
+    dast_file.write_text(json.dumps(dast_data))
+    
+    # Merge results
+    merged = scanner._merge_dast_results(scan_result, securevibes_dir)
+    
+    # Verify merge
+    assert merged.dast_enabled is True
+    assert merged.dast_validation_rate == 0.5  # 1/2
+    assert merged.dast_scan_time_seconds == 5.0
+    
+    # Check first issue (validated)
+    issue1 = merged.issues[0]
+    assert issue1.validation_status == ValidationStatus.VALIDATED
+    assert issue1.exploitability_score == 9.0
+    assert issue1.dast_evidence is not None
+    assert "http_requests" in issue1.dast_evidence
+    
+    # Check second issue (unvalidated)
+    issue2 = merged.issues[1]
+    assert issue2.validation_status == ValidationStatus.UNVALIDATED
+    assert issue2.dast_evidence is not None
+    assert "reason" in issue2.dast_evidence
+
+
+def test_merge_dast_results_no_file(tmp_path):
+    """Test merge when DAST file doesn't exist"""
+    from securevibes.scanner.scanner import Scanner
+    
+    scanner = Scanner(model="sonnet", debug=False)
+    
+    scan_result = ScanResult(
+        repository_path=str(tmp_path),
+        issues=[],
+        files_scanned=1
+    )
+    
+    securevibes_dir = tmp_path / ".securevibes"
+    securevibes_dir.mkdir()
+    
+    # Should return unchanged
+    merged = scanner._merge_dast_results(scan_result, securevibes_dir)
+    assert merged.dast_enabled is False
+    assert merged == scan_result
+
+
+def test_merge_dast_results_invalid_json(tmp_path):
+    """Test merge with invalid JSON"""
+    from securevibes.scanner.scanner import Scanner
+    
+    scanner = Scanner(model="sonnet", debug=False)
+    
+    scan_result = ScanResult(
+        repository_path=str(tmp_path),
+        issues=[],
+        files_scanned=1
+    )
+    
+    securevibes_dir = tmp_path / ".securevibes"
+    securevibes_dir.mkdir()
+    
+    dast_file = securevibes_dir / "DAST_VALIDATION.json"
+    dast_file.write_text("invalid json{")
+    
+    # Should handle gracefully
+    merged = scanner._merge_dast_results(scan_result, securevibes_dir)
+    assert merged.dast_enabled is False
+
+
+def test_regenerate_artifacts(tmp_path):
+    """Test artifact regeneration with DAST data"""
+    from securevibes.scanner.scanner import Scanner
+    
+    scanner = Scanner(model="sonnet", debug=True)  # Enable debug to see errors
+    
+    issues = [
+        SecurityIssue(
+            id="THREAT-001",
+            title="Test Issue",
+            description="Test",
+            severity=Severity.HIGH,
+            file_path="/app.py",
+            line_number=10,
+            code_snippet="test",
+            validation_status=ValidationStatus.VALIDATED,
+            exploitability_score=8.5
+        )
+    ]
+    
+    scan_result = ScanResult(
+        repository_path=str(tmp_path),
+        issues=issues,
+        files_scanned=1,
+        dast_enabled=True,
+        dast_validation_rate=1.0
+    )
+    
+    securevibes_dir = tmp_path / ".securevibes"
+    securevibes_dir.mkdir()
+    
+    # Regenerate
+    scanner._regenerate_artifacts(scan_result, securevibes_dir)
+    
+    # Verify files created
+    json_file = securevibes_dir / "scan_results.json"
+    md_file = securevibes_dir / "scan_report.md"
+    
+    assert json_file.exists()
+    assert md_file.exists()
+    
+    # Verify JSON contains validation data
+    with open(json_file) as f:
+        data = json.load(f)
+    
+    assert data["dast_metrics"]["enabled"] is True
+    assert data["issues"][0]["validation_status"] == "VALIDATED"
+    assert data["issues"][0]["exploitability_score"] == 8.5
+    
+    # Verify Markdown contains validation badges
+    md_content = md_file.read_text()
+    assert "✅" in md_content  # Validation badge
+    assert "DAST" in md_content
+
+
+def test_scan_result_to_dict_with_validation():
+    """Test ScanResult.to_dict() includes validation fields"""
+    issues = [
+        SecurityIssue(
+            id="THREAT-001",
+            title="Test",
+            description="Test",
+            severity=Severity.HIGH,
+            file_path="/app.py",
+            line_number=10,
+            code_snippet="test",
+            validation_status=ValidationStatus.VALIDATED,
+            exploitability_score=9.0,
+            validated_at="2025-10-25T00:00:00Z",
+            dast_evidence={"test": "data"}
+        )
+    ]
+    
+    result = ScanResult(
+        repository_path="/test",
+        issues=issues,
+        dast_enabled=True,
+        dast_validation_rate=1.0
+    )
+    
+    data = result.to_dict()
+    
+    # Check DAST metrics
+    assert "dast_metrics" in data
+    assert data["dast_metrics"]["enabled"] is True
+    assert data["dast_metrics"]["validation_rate"] == 1.0
+    assert data["dast_metrics"]["validated_count"] == 1
+    
+    # Check issue validation fields
+    issue_data = data["issues"][0]
+    assert issue_data["validation_status"] == "VALIDATED"
+    assert issue_data["exploitability_score"] == 9.0
+    assert issue_data["validated_at"] == "2025-10-25T00:00:00Z"
+    assert issue_data["dast_evidence"] == {"test": "data"}
 
 
 if __name__ == "__main__":

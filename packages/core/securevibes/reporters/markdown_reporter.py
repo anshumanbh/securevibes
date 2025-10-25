@@ -248,6 +248,37 @@ class MarkdownReporter:
                     lines.append("```")
                     lines.append("")
                 
+                # DAST Evidence
+                if result.dast_enabled and issue.dast_evidence:
+                    lines.append("**DAST Evidence:**")
+                    lines.append("")
+                    
+                    # Show test steps if available
+                    test_steps = issue.dast_evidence.get("test_steps")
+                    if test_steps:
+                        if isinstance(test_steps, list):
+                            for step in test_steps:
+                                lines.append(f"- {step}")
+                        else:
+                            lines.append(str(test_steps))
+                        lines.append("")
+                    
+                    # Show HTTP requests if available
+                    http_requests = issue.dast_evidence.get("http_requests")
+                    if http_requests and isinstance(http_requests, list):
+                        for req in http_requests:
+                            lines.append(f"Request: `{req.get('request', 'N/A')}`")
+                            lines.append(f"- Status: {req.get('status', 'N/A')}")
+                            if req.get('authenticated_as'):
+                                lines.append(f"- Auth: {req['authenticated_as']}")
+                            lines.append("")
+                    
+                    # Show notes or reason if available
+                    notes = issue.dast_evidence.get("notes") or issue.dast_evidence.get("reason")
+                    if notes:
+                        lines.append(f"*{notes}*")
+                        lines.append("")
+                
                 # Recommendation
                 if issue.recommendation:
                     lines.append("**Recommendation:**")
