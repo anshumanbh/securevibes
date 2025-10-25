@@ -79,6 +79,6 @@ scan_output.log
 .env.test.local
 .env.production.local
 
- .droid-preferences.md
+.droid-preferences.md
 
 settings.local.json
