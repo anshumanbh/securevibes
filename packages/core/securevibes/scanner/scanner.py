@@ -385,7 +385,10 @@ class Scanner:
             if self.dast_config.get("accounts_path"):
                 accounts_file = Path(self.dast_config["accounts_path"])
                 if accounts_file.exists():
-                    os.environ["DAST_TEST_ACCOUNTS"] = accounts_file.read_text()
+                    # Copy to .securevibes/ where agent can read it
+                    securevibes_dir = repo / ".securevibes"
+                    target_accounts = securevibes_dir / "DAST_TEST_ACCOUNTS.json"
+                    target_accounts.write_text(accounts_file.read_text())
         
         # Run scan with single sub-agent
         return await self._execute_scan(repo, single_subagent=subagent)
@@ -458,7 +461,10 @@ class Scanner:
             if self.dast_config.get("accounts_path"):
                 accounts_file = Path(self.dast_config["accounts_path"])
                 if accounts_file.exists():
-                    os.environ["DAST_TEST_ACCOUNTS"] = accounts_file.read_text()
+                    # Copy to .securevibes/ where agent can read it
+                    securevibes_dir = repo / ".securevibes"
+                    target_accounts = securevibes_dir / "DAST_TEST_ACCOUNTS.json"
+                    target_accounts.write_text(accounts_file.read_text())
         
         # Run scan from this sub-agent onwards
         return await self._execute_scan(repo, resume_from=from_subagent)
@@ -486,7 +492,10 @@ class Scanner:
             if self.dast_config.get("accounts_path"):
                 accounts_file = Path(self.dast_config["accounts_path"])
                 if accounts_file.exists():
-                    os.environ["DAST_TEST_ACCOUNTS"] = accounts_file.read_text()
+                    # Copy to .securevibes/ where agent can read it
+                    securevibes_dir = repo / ".securevibes"
+                    target_accounts = securevibes_dir / "DAST_TEST_ACCOUNTS.json"
+                    target_accounts.write_text(accounts_file.read_text())
         
         return await self._execute_scan(repo)
     

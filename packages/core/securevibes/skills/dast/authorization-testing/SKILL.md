@@ -89,22 +89,20 @@ Map vulnerabilities to test types:
 
 ### Phase 3: Prepare Test Accounts
 
-**If DAST_TEST_ACCOUNTS.json exists:**
+**If .securevibes/DAST_TEST_ACCOUNTS.json exists:**
 ```json
 {
-  "regular_users": [
+  "accounts": [
     {"username": "user1", "password": "Pass123!", "user_id": "123", "role": "user"},
-    {"username": "user2", "password": "Pass456!", "user_id": "456", "role": "user"}
-  ],
-  "admin_users": [
+    {"username": "user2", "password": "Pass456!", "user_id": "456", "role": "user"},
     {"username": "admin", "password": "Admin789!", "user_id": "1", "role": "admin"}
   ]
 }
 ```
 
 Extract credentials for:
-- **Horizontal tests:** user1, user2 (both regular)
-- **Vertical tests:** user1 (regular), admin (admin)
+- **Horizontal tests:** user1, user2 (both regular role)
+- **Vertical tests:** user1 (regular role), admin (admin role)
 
 **If no test accounts:**
 - Test only public endpoints
