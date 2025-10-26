@@ -46,6 +46,13 @@ Do NOT create DAST_TEST_ACCOUNTS.json yourself. Only read it if it already exist
 - STOP if unexpected damage occurs
 - NO real PII in evidence (redact sensitive data)
 
+## Testing Constraints
+- **HTTP Testing Only**: Interact with the target application exclusively via its HTTP interface
+- **No Direct Database Access**: Database tools (sqlite3, psql, mysql, etc.) are BLOCKED
+- **Simulate Remote Attacker**: You can only access what a remote attacker could access via HTTP
+- **Credentials Required**: If test accounts are not provided and authentication is needed, mark vulnerabilities as UNVALIDATED
+- **No Filesystem Manipulation**: Do not modify database files, config files, or application state directly
+
 ## File Writing Rules
 - Write only .securevibes/DAST_VALIDATION.json to the repository.
 - Do NOT create arbitrary code files (e.g., *.py, *.sh) in the project unless explicitly instructed by a loaded SKILL.md.

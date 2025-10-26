@@ -560,6 +560,46 @@ class Scanner:
                         '__pycache__', '.pytest_cache', 'dist', 'build', '.eggs'}
         
         # Create hooks as closures that capture the tracker
+        async def dast_security_hook(input_data: dict, tool_use_id: str, ctx: dict) -> dict:
+            """
+            Security hook: Block database manipulation tools in DAST Bash commands.
+            
+            DAST must simulate remote attackers who can only interact via HTTP.
+            Direct database access (sqlite3, psql, etc.) is blocked to ensure
+            realistic validation that requires proper test credentials.
+            """
+            tool_name = input_data.get("tool_name")
+            
+            # Only apply to DAST phase
+            if tracker.current_phase != "dast":
+                return {}
+            
+            # Only filter Bash commands
+            if tool_name != "Bash":
+                return {}
+            
+            tool_input = input_data.get("tool_input", {})
+            command = tool_input.get("command", "")
+            
+            # Block database CLI tools
+            blocked_db_tools = [
+                "sqlite3", "psql", "mysql", "mongosh", "mongo",
+                "redis-cli", "mariadb", "cockroach", "influx", "cqlsh"
+            ]
+            
+            for tool in blocked_db_tools:
+                if tool in command:
+                    return {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": f"DAST cannot use '{tool}' - HTTP testing only",
+                            "reason": "Database manipulation not allowed - provide test accounts via --dast-accounts"
+                        }
+                    }
+            
+            return {}  # Allow command
+        
         async def pre_tool_hook(input_data: dict, tool_use_id: str, ctx: dict) -> dict:
             """Hook that fires before any tool executes"""
             tool_name = input_data.get("tool_name")
@@ -685,7 +725,10 @@ class Scanner:
             permission_mode='bypassPermissions',
             model=self.model,
             hooks={
-                "PreToolUse": [HookMatcher(hooks=[pre_tool_hook])],
+                "PreToolUse": [
+                    HookMatcher(hooks=[dast_security_hook]),  # DAST security - blocks database tools
+                    HookMatcher(hooks=[pre_tool_hook])        # General pre-tool processing
+                ],
                 "PostToolUse": [HookMatcher(hooks=[post_tool_hook])],
                 "SubagentStop": [HookMatcher(hooks=[subagent_hook])]
             }
