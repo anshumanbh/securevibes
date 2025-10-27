@@ -89,21 +89,23 @@ def test_resume_from_dast_requires_target_url(runner, tmp_path):
     assert "--target-url is required when resuming from DAST" in result.output
 
 
-@patch('securevibes.cli.main._run_scan')
-def test_subagent_assessment(mock_run_scan, runner, tmp_path):
-    """Test running assessment sub-agent only"""
-    # Mock async function
-    async def mock_scan(*args, **kwargs):
-        mock_result = Mock()
-        mock_result.issues = []
-        mock_result.files_scanned = 10
-        mock_result.critical_count = 0
-        mock_result.high_count = 0
-        mock_result.medium_count = 0
-        mock_result.low_count = 0
-        return mock_result
+@patch('securevibes.cli.main.Scanner')
+def test_subagent_assessment(mock_scanner_class, runner, tmp_path):
+    """Test running assessment sub-agent calls scan_subagent method"""
+    # Create mock scanner instance and methods
+    mock_scanner = Mock()
+    mock_result = Mock()
+    mock_result.issues = []
+    mock_result.files_scanned = 10
+    mock_result.scan_time_seconds = 5.0
+    mock_result.total_cost_usd = 0.01
+    mock_result.critical_count = 0
+    mock_result.high_count = 0
+    mock_result.medium_count = 0
+    mock_result.low_count = 0
     
-    mock_run_scan.return_value = mock_scan()
+    mock_scanner.scan_subagent = AsyncMock(return_value=mock_result)
+    mock_scanner_class.return_value = mock_scanner
     
     result = runner.invoke(cli, [
         'scan', str(tmp_path),
@@ -111,24 +113,30 @@ def test_subagent_assessment(mock_run_scan, runner, tmp_path):
         '--format', 'table'
     ])
     
+    # Should call Scanner.scan_subagent with 'assessment'
+    mock_scanner.scan_subagent.assert_called_once()
+    call_args = mock_scanner.scan_subagent.call_args
+    assert call_args[0][1] == 'assessment'  # Second positional arg is subagent name
     assert result.exit_code == 0
-    assert mock_run_scan.called
 
 
 @patch('securevibes.cli.main._run_scan')
 def test_subagent_dast_with_target_url(mock_run_scan, runner, tmp_path):
     """Test running DAST sub-agent with target URL"""
-    async def mock_scan(*args, **kwargs):
-        mock_result = Mock()
-        mock_result.issues = []
-        mock_result.files_scanned = 10
-        mock_result.critical_count = 0
-        mock_result.high_count = 0
-        mock_result.medium_count = 0
-        mock_result.low_count = 0
-        return mock_result
+    # Create mock result with all required attributes
+    mock_result = Mock()
+    mock_result.issues = []
+    mock_result.files_scanned = 10
+    mock_result.scan_time_seconds = 5.0
+    mock_result.total_cost_usd = 0.01
+    mock_result.critical_count = 0
+    mock_result.high_count = 0
+    mock_result.medium_count = 0
+    mock_result.low_count = 0
     
-    mock_run_scan.return_value = mock_scan()
+    # Mock async function using AsyncMock for proper coroutine handling
+    async_mock = AsyncMock(return_value=mock_result)
+    mock_run_scan.side_effect = lambda *args, **kwargs: async_mock(*args, **kwargs)
     
     result = runner.invoke(cli, [
         'scan', str(tmp_path),
@@ -141,20 +149,23 @@ def test_subagent_dast_with_target_url(mock_run_scan, runner, tmp_path):
     assert "--target-url" in result.output or result.exit_code in [0, 1]
 
 
-@patch('securevibes.cli.main._run_scan')
-def test_resume_from_code_review(mock_run_scan, runner, tmp_path):
-    """Test resuming from code-review sub-agent"""
-    async def mock_scan(*args, **kwargs):
-        mock_result = Mock()
-        mock_result.issues = []
-        mock_result.files_scanned = 10
-        mock_result.critical_count = 0
-        mock_result.high_count = 0
-        mock_result.medium_count = 0
-        mock_result.low_count = 0
-        return mock_result
+@patch('securevibes.cli.main.Scanner')
+def test_resume_from_code_review(mock_scanner_class, runner, tmp_path):
+    """Test resuming from code-review sub-agent calls scan_resume method"""
+    # Create mock scanner instance and methods
+    mock_scanner = Mock()
+    mock_result = Mock()
+    mock_result.issues = []
+    mock_result.files_scanned = 10
+    mock_result.scan_time_seconds = 5.0
+    mock_result.total_cost_usd = 0.01
+    mock_result.critical_count = 0
+    mock_result.high_count = 0
+    mock_result.medium_count = 0
+    mock_result.low_count = 0
     
-    mock_run_scan.return_value = mock_scan()
+    mock_scanner.scan_resume = AsyncMock(return_value=mock_result)
+    mock_scanner_class.return_value = mock_scanner
     
     result = runner.invoke(cli, [
         'scan', str(tmp_path),
@@ -162,8 +173,11 @@ def test_resume_from_code_review(mock_run_scan, runner, tmp_path):
         '--format', 'table'
     ])
     
+    # Should call Scanner.scan_resume with 'code-review'
+    mock_scanner.scan_resume.assert_called_once()
+    call_args = mock_scanner.scan_resume.call_args
+    assert call_args[0][1] == 'code-review'  # Second positional arg is from_subagent name
     assert result.exit_code == 0
-    assert mock_run_scan.called
 
 
 def test_force_flag_available(runner, tmp_path):

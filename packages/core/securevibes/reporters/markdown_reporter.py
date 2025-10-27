@@ -326,7 +326,10 @@ class MarkdownReporter:
         items = re.split(r'(?=\d+\.\s+)', recommendation.strip())
         items = [item.strip() for item in items if item.strip()]
         
-        if len(items) <= 1:
+        # Check if any items start with numbered pattern
+        has_numbered_items = any(re.match(r'\d+\.\s+', item) for item in items)
+        
+        if not has_numbered_items or len(items) == 0:
             # No numbered list detected, return as-is
             return recommendation
         
