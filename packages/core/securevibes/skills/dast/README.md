@@ -12,10 +12,12 @@ Skills provide specialized testing methodologies that the DAST agent uses to val
 .claude/skills/dast/
 ├── README.md                    # This file
 └── authorization-testing/       # Authorization failure validation
-    ├── SKILL.md                 # Methodology and guidance
-    ├── examples.md              # Conceptual test scenarios
-    └── reference/               # Non-runnable reference examples
-        └── validate_idor.py
+    ├── SKILL.md                 # Core methodology (359 lines)
+    ├── examples.md              # 10+ examples organized by category (443 lines)
+    └── reference/               # Implementation examples
+        ├── README.md            # Reference guide
+        ├── auth_patterns.py     # Reusable authentication functions
+        └── validate_idor.py     # Complete testing script
 ```
 
 ## Current Skills

@@ -550,6 +550,7 @@ def test_setup_dast_skills_copies_to_target(tmp_path):
     assert target_skills.exists()
     assert (target_skills / "authorization-testing" / "SKILL.md").exists()
     assert (target_skills / "authorization-testing" / "reference" / "validate_idor.py").exists()
+    assert (target_skills / "authorization-testing" / "reference" / "auth_patterns.py").exists()
 
 
 def test_setup_dast_skills_skips_if_exists(tmp_path):
@@ -601,6 +602,8 @@ def test_bundled_skills_package_structure():
     assert skills_dir.exists(), "Skills directory not found in package"
     assert (skills_dir / "SKILL.md").exists(), "SKILL.md missing"
     assert (skills_dir / "reference" / "validate_idor.py").exists(), "validate_idor.py missing"
+    assert (skills_dir / "reference" / "auth_patterns.py").exists(), "auth_patterns.py missing"
+    assert (skills_dir / "reference" / "README.md").exists(), "reference README missing"
     assert (skills_dir / "examples.md").exists(), "examples.md missing"
 
 

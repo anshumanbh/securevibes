@@ -344,11 +344,13 @@ DAST uses Claude Agent SDK skills for modular, extensible testing:
 
 ```
 .claude/skills/dast/
-├── idor-testing/
-│   ├── SKILL.md                 # Methodology-focused skill definition
-│   ├── examples.md              # Conceptual test scenarios
-│   └── reference/               # Non-runnable examples to adapt
-│       └── ...
+├── authorization-testing/
+│   ├── SKILL.md                 # Core methodology (359 lines)
+│   ├── examples.md              # 10+ examples organized by category (443 lines)
+│   └── reference/               # Implementation examples
+│       ├── README.md            # Reference guide
+│       ├── auth_patterns.py     # Reusable authentication functions
+│       └── validate_idor.py     # Complete testing script
 └── (future: sqli-testing, xss-testing, etc.)
 ```
 
