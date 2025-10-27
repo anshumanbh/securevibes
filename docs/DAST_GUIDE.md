@@ -196,20 +196,26 @@ For testing authenticated endpoints, provide a JSON file with test user credenti
 
 ```json
 {
-  "user1": {
-    "id": "123",
-    "username": "alice@test.com",
-    "password": "test-password-1",
-    "token": "optional-pre-generated-token",
-    "role": "user"
-  },
-  "user2": {
-    "id": "456",
-    "username": "bob@test.com",
-    "password": "test-password-2",
-    "token": "optional-pre-generated-token",
-    "role": "user"
-  }
+  "accounts": [
+    {
+      "username": "alice",
+      "password": "test-password-1",
+      "user_id": "123",
+      "role": "user"
+    },
+    {
+      "username": "bob",
+      "password": "test-password-2",
+      "user_id": "456",
+      "role": "user"
+    },
+    {
+      "username": "admin",
+      "password": "admin-password",
+      "user_id": "1",
+      "role": "admin"
+    }
+  ]
 }
 ```
 
@@ -221,12 +227,14 @@ securevibes scan . --dast \
   --dast-accounts accounts.json
 ```
 
+The scanner automatically copies this file to `.securevibes/DAST_TEST_ACCOUNTS.json` in the target repository where the DAST agent can read it.
+
 **Notes:**
 - Minimum 2 accounts required (for cross-user testing)
-- If `token` provided, authentication step is skipped
-- If `token` missing, the agent may attempt a login flow (e.g., POST to `/auth/login`) based on the app
-- Accounts should have **same privilege level** (for horizontal privilege escalation testing)
-- Do NOT create `DAST_TEST_ACCOUNTS.json` automatically; only provide it explicitly or via `--dast-accounts`
+- Accounts file can be located anywhere on your filesystem
+- Include both regular users (for horizontal testing) and admin users (for vertical privilege escalation)
+- The DAST agent reads from `.securevibes/DAST_TEST_ACCOUNTS.json` (created automatically)
+- Do NOT manually create `DAST_TEST_ACCOUNTS.json`; always use `--dast-accounts` flag
 
 ---
 

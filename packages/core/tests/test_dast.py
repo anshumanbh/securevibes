@@ -58,18 +58,20 @@ print('IDOR reference example')
 def test_accounts_file(tmp_path):
     """Create test accounts JSON file"""
     accounts = {
-        "user1": {
-            "id": "123",
-            "username": "alice@test.com",
-            "password": "test-pass-1",
-            "role": "user"
-        },
-        "user2": {
-            "id": "456",
-            "username": "bob@test.com",
-            "password": "test-pass-2",
-            "role": "user"
-        }
+        "accounts": [
+            {
+                "username": "alice",
+                "password": "test-pass-1",
+                "user_id": "123",
+                "role": "user"
+            },
+            {
+                "username": "bob",
+                "password": "test-pass-2",
+                "user_id": "456",
+                "role": "user"
+            }
+        ]
     }
     accounts_file = tmp_path / "test_accounts.json"
     accounts_file.write_text(json.dumps(accounts, indent=2))
