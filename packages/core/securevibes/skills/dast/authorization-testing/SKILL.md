@@ -119,31 +119,27 @@ Extract credentials for:
 - Test only public endpoints
 - Mark authenticated paths as UNVALIDATED (insufficient accounts)
 
-### Phase 4: Authenticate Test Users (adapt to app)
+### Phase 4: Authenticate Test Users
 
-Read application code to determine auth mechanism, then adapt:
+Read application code to determine auth mechanism, then use authentication helpers from `reference/auth_patterns.py`:
 
-**Session-based auth (Flask/Express):**
 ```python
-import requests
-session = requests.Session()
-resp = session.post(f"{target_url}/login", 
-                    data={"username": user1_username, "password": user1_password})
-# Session cookie stored automatically
+from reference.auth_patterns import session_based_auth, jwt_bearer_auth, api_key_auth
+
+# Session-based (Flask, Express, Django)
+session = session_based_auth(target_url, user1_username, user1_password)
+response = session.get(f"{target_url}/api/resource")
+
+# JWT Bearer (REST APIs)
+headers = jwt_bearer_auth(target_url, user1_username, user1_password)
+response = requests.get(f"{target_url}/api/resource", headers=headers)
+
+# API Key
+headers = api_key_auth(api_key_for_user1)
+response = requests.get(f"{target_url}/api/resource", headers=headers)
 ```
 
-**JWT Bearer auth (REST APIs):**
-```python
-resp = requests.post(f"{target_url}/api/auth/login", 
-                     json={"username": user1_username, "password": user1_password})
-token = resp.json().get("access_token")
-headers = {"Authorization": f"Bearer {token}"}
-```
-
-**API key auth:**
-```python
-headers = {"X-API-Key": api_key_for_user1}
-```
+See `reference/auth_patterns.py` for additional patterns (OAuth2, Basic auth) and customization options.
 
 ### Phase 5: Execute Authorization Tests
 
@@ -330,67 +326,34 @@ This skill validates:
 - Timeout exceeded → UNVALIDATED with timeout reason
 - Unexpected error → Log error, continue with next vulnerability
 
-## Examples by Vulnerability Type
+## Examples
 
-### Example 1: Classic IDOR (CWE-639)
+For comprehensive vulnerability-specific examples with code and evidence, see `examples.md`:
+- **Horizontal Escalation (IDOR)**: Sequential IDs, UUIDs, nested resources, cross-account modification
+- **Vertical Privilege Escalation**: Role self-modification, admin function access
+- **Missing Authorization**: Unauthenticated admin endpoints
+- **Forced Browsing**: Direct URL access to protected resources
+- **Test Result Types**: FALSE_POSITIVE, UNVALIDATED scenarios
+
+### Quick Reference Examples
+
+**IDOR Test (Horizontal)**:
 ```
-Vulnerability: GET /api/user/<id> returns any user's PII
-Test: User 123 requests /api/user/456
-Result: 200 OK with user 456's email, phone, address
+User 123 → GET /api/user/456 → 200 OK with user 456's data
 Classification: VALIDATED (CWE-639)
-Impact: Horizontal privilege escalation, PII exposure
 ```
 
-### Example 2: Vertical Privilege Escalation (CWE-269)
+**Vertical Escalation**:
 ```
-Vulnerability: POST /update_role missing admin check
-Test: Regular user POSTs {"user_id": self, "role": "admin"}
-Result: 200 OK, user's role updated to admin
+Regular user → POST /update_role {"user_id": self, "role": "admin"} → 200 OK
 Classification: VALIDATED (CWE-269)
-Impact: Complete system compromise, privilege escalation
 ```
 
-### Example 3: Admin Function Access (CWE-285)
-```
-Vulnerability: /admin/dashboard accessible to non-admins
-Test: Regular user GETs /admin/dashboard
-Result: 200 OK, admin panel HTML returned
-Classification: VALIDATED (CWE-285)
-Impact: Information disclosure, potential further exploitation
-```
+## Reference Implementations
 
-### Example 4: Cross-Account Modification (CWE-639)
-```
-Vulnerability: POST /api/profile/<id>/update no ownership check
-Test: User 2 POSTs to /api/profile/1/update with malicious data
-Result: 200 OK, admin (user 1) profile modified
-Classification: VALIDATED (CWE-639)
-Impact: Account takeover, data manipulation
-```
+See `reference/` directory for implementation examples:
+- **`auth_patterns.py`**: Reusable authentication functions (session, JWT, API key, OAuth2, Basic)
+- **`validate_idor.py`**: Complete authorization testing script with redaction and classification
+- **`README.md`**: Usage guidance and adaptation notes
 
-### Example 5: Missing Authorization (CWE-862)
-```
-Vulnerability: GET /api/admin/users returns all users without authz
-Test: Unauthenticated GET /api/admin/users
-Result: 200 OK, full user list with sensitive data
-Classification: VALIDATED (CWE-862)
-Impact: Mass information disclosure, user enumeration
-```
-
-### Example 6: Direct Request / Forced Browsing (CWE-425)
-```
-Vulnerability: /admin/settings accessible by direct URL request
-Test: Regular user directly navigates to /admin/settings
-Result: 200 OK, admin settings page displayed
-Classification: VALIDATED (CWE-425)
-Impact: Unauthorized access to administrative functionality, potential configuration manipulation
-```
-
-## Reference Implementations (read-only)
-See `reference/` for example patterns:
-- `validate_idor.py` - Generic authorization testing pattern
-- Session-based auth examples (Flask, Express)
-- JWT Bearer auth examples
-- API key auth examples
-
-These are examples to read and adapt — do not run them verbatim. Each application is different!
+These are reference implementations to adapt — not drop-in scripts. Each application requires tailored logic.

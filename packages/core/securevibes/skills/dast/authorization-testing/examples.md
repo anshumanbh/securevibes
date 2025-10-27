@@ -1,6 +1,20 @@
-# IDOR Testing Examples
+# Authorization Testing Examples
 
-## Example 1: Sequential ID IDOR
+This file contains comprehensive examples of authorization vulnerability testing, organized by vulnerability category.
+
+## Table of Contents
+1. [Horizontal Escalation (IDOR)](#horizontal-escalation-idor)
+2. [Vertical Privilege Escalation](#vertical-privilege-escalation)
+3. [Missing Authorization](#missing-authorization)
+4. [Forced Browsing / Direct Request](#forced-browsing--direct-request)
+5. [Test Result Types](#test-result-types)
+6. [Common Patterns](#common-patterns)
+
+---
+
+## Horizontal Escalation (IDOR)
+
+### Example 1: Sequential ID IDOR
 
 **Scenario**: User management API with sequential numeric IDs
 
@@ -98,9 +112,212 @@ def get_team_member(team_id, member_id):
 2. User1 accesses `/api/teams/1/members/5` (their own) → 200 OK
 3. User1 accesses `/api/teams/2/members/10` (Team 2 member) → 200 OK (IDOR!)
 
+### Example 4: Cross-Account Modification (CWE-639)
+
+**Scenario**: Profile update API missing ownership check
+
+**Vulnerability**:
+```python
+# api/profiles.py - VULNERABLE
+@app.route('/api/profile/<int:user_id>/update', methods=['POST'])
+@login_required
+def update_profile(user_id):
+    profile = Profile.query.filter_by(user_id=user_id).first()
+    profile.email = request.json.get('email')
+    profile.phone = request.json.get('phone')
+    db.session.commit()
+    return jsonify({"success": True})  # No ownership check!
+```
+
+**Test**:
+1. User2 (ID: 456) authenticates
+2. User2 POSTs to `/api/profile/1/update` with malicious data
+3. Result: 200 OK, User1 (admin) profile modified
+
+**Evidence**:
+```json
+{
+  "status": "VALIDATED",
+  "baseline": {
+    "url": "http://target.com/api/profile/456/update",
+    "status": 200,
+    "response_snippet": "{\"success\":true}"
+  },
+  "test": {
+    "url": "http://target.com/api/profile/1/update",
+    "method": "POST",
+    "payload": "{\"email\":\"attacker@evil.com\",\"phone\":\"555-0000\"}",
+    "status": 200,
+    "response_snippet": "{\"success\":true}"
+  },
+  "evidence": "User2 modified User1's (admin) profile - account takeover risk"
+}
+```
+
 ---
 
-## Example 4: FALSE_POSITIVE (Properly Secured)
+## Vertical Privilege Escalation
+
+### Example 5: Role Self-Modification (CWE-269)
+
+**Scenario**: User can escalate own privileges via role update endpoint
+
+**Vulnerability**:
+```python
+# api/users.py - VULNERABLE
+@app.route('/update_role', methods=['POST'])
+@login_required
+def update_role():
+    user_id = request.json.get('user_id')
+    new_role = request.json.get('role')
+    
+    user = User.query.get(user_id)
+    user.role = new_role  # No authorization check!
+    db.session.commit()
+    
+    return jsonify({"success": True})
+```
+
+**Test**:
+1. Regular user (ID: 123, role: user) authenticates
+2. User POSTs to `/update_role` with `{"user_id": 123, "role": "admin"}`
+3. Result: 200 OK, user's role changed to admin
+
+**Evidence**:
+```json
+{
+  "status": "VALIDATED",
+  "baseline": {
+    "url": "http://target.com/api/user/123",
+    "status": 200,
+    "response_snippet": "{\"id\":123,\"role\":\"user\"}"
+  },
+  "test": {
+    "url": "http://target.com/update_role",
+    "method": "POST",
+    "payload": "{\"user_id\":123,\"role\":\"admin\"}",
+    "status": 200,
+    "response_snippet": "{\"success\":true}"
+  },
+  "evidence": "Regular user escalated to admin role - complete system compromise possible"
+}
+```
+
+### Example 6: Admin Function Access (CWE-285)
+
+**Scenario**: Admin dashboard accessible to non-admin users
+
+**Vulnerability**:
+```python
+# api/admin.py - VULNERABLE
+@app.route('/admin/dashboard')
+@login_required  # Only checks authentication, not authorization!
+def admin_dashboard():
+    users = User.query.all()
+    return render_template('admin/dashboard.html', users=users)
+```
+
+**Test**:
+1. Regular user authenticates
+2. User GETs `/admin/dashboard`
+3. Result: 200 OK, admin panel HTML returned with sensitive data
+
+**Evidence**:
+```json
+{
+  "status": "VALIDATED",
+  "baseline": {
+    "url": "http://target.com/dashboard",
+    "status": 200,
+    "response_snippet": "<html>User Dashboard</html>"
+  },
+  "test": {
+    "url": "http://target.com/admin/dashboard",
+    "status": 200,
+    "response_snippet": "<html>Admin Dashboard - 1,234 users</html>"
+  },
+  "evidence": "Regular user accessed admin dashboard - information disclosure, potential further exploitation"
+}
+```
+
+---
+
+## Missing Authorization
+
+### Example 7: Missing Authorization on Admin Endpoint (CWE-862)
+
+**Scenario**: Admin API endpoint has no authorization check at all
+
+**Vulnerability**:
+```python
+# api/admin.py - VULNERABLE
+@app.route('/api/admin/users')
+def get_all_users():  # No @login_required, no role check!
+    users = User.query.all()
+    return jsonify([u.to_dict() for u in users])
+```
+
+**Test**:
+1. Unauthenticated request to `/api/admin/users`
+2. Result: 200 OK, full user list with emails, phone numbers
+
+**Evidence**:
+```json
+{
+  "status": "VALIDATED",
+  "test": {
+    "url": "http://target.com/api/admin/users",
+    "method": "GET",
+    "authenticated": false,
+    "status": 200,
+    "response_snippet": "[{\"id\":1,\"email\":\"admin@company.com\"},{\"id\":2,\"email\":\"user@company.com\"}...]"
+  },
+  "evidence": "Unauthenticated access to admin endpoint - mass information disclosure, user enumeration"
+}
+```
+
+---
+
+## Forced Browsing / Direct Request
+
+### Example 8: Direct URL Access to Admin Settings (CWE-425)
+
+**Scenario**: Admin settings page accessible by directly navigating to URL
+
+**Vulnerability**:
+```python
+# routes/admin.py - VULNERABLE
+@app.route('/admin/settings')
+def admin_settings():
+    # Relies on UI hiding the link, but no server-side check!
+    return render_template('admin/settings.html')
+```
+
+**Test**:
+1. Regular user authenticates
+2. User directly navigates to `/admin/settings` (bypassing normal navigation)
+3. Result: 200 OK, admin settings page displayed
+
+**Evidence**:
+```json
+{
+  "status": "VALIDATED",
+  "test": {
+    "url": "http://target.com/admin/settings",
+    "method": "GET",
+    "user": "regular_user",
+    "status": 200,
+    "response_snippet": "<html>Admin Settings - API Keys, Database Config</html>"
+  },
+  "evidence": "Regular user accessed admin settings via direct URL - unauthorized access to administrative functionality"
+}
+```
+
+---
+
+## Test Result Types
+
+### Example 9: FALSE_POSITIVE (Properly Secured)
 
 **Scenario**: API with proper authorization
 
@@ -137,7 +354,7 @@ def get_user(user_id):
 
 ---
 
-## Example 5: UNVALIDATED (Cannot Test)
+### Example 10: UNVALIDATED (Cannot Test)
 
 **Scenario**: Endpoint requires complex multi-step authentication
 
@@ -152,7 +369,9 @@ def get_user(user_id):
 
 ---
 
-## Common IDOR Patterns to Test
+## Common Patterns
+
+### Authorization Bypass Patterns to Test
 
 ### Pattern 1: Direct Object Reference
 ```
