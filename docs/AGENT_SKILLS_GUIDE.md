@@ -551,34 +551,501 @@ Effectiveness varies by model capability.
 
 ## Using Skills with Claude Agent SDK
 
-### API Integration
+### Important: Platform Distinctions
 
-#### Messages API with Skills
+Skills work across multiple platforms with **different configuration requirements**:
+
+| Platform | Skills Loading | Configuration Method |
+|----------|---------------|----------------------|
+| **Claude Code CLI** | Automatic | Skills auto-discovered from `.claude/skills/` and `~/.claude/skills/` |
+| **Claude Messages API** | Built-in only | Document skills (xlsx, pdf, etc.) via `betas` parameter |
+| **Python Agent SDK** | **Explicit** | **MUST enable `use_project_settings`/`use_personal_settings`** |
+| **TypeScript Agent SDK** | **Explicit** | **MUST set `settingSources: ['user', 'project']`** |
+
+This section focuses on the **Python and TypeScript Agent SDKs** (`claude-agent-sdk`).
+
+### Critical Configuration Requirements
+
+⚠️ **THE MOST COMMON ISSUE**: The Agent SDK does **NOT** load filesystem settings by default.
+
+**You MUST explicitly configure two things:**
+
+1. ✅ Enable settings sources (`use_project_settings` or `use_personal_settings`)
+2. ✅ Include `"Skill"` in `allowed_tools`
+
+**Without these, your skills will NOT load**, even if they exist in the correct directories.
+
+### Python Agent SDK Configuration
+
+#### Minimal Working Example
+
+```python
+from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
+
+async def use_skills():
+    options = ClaudeAgentOptions(
+        # REQUIRED: Enable filesystem settings
+        use_project_settings=True,    # Load from .claude/skills/ in project
+        use_personal_settings=True,   # Load from ~/.claude/skills/ in user home
+
+        # REQUIRED: Include Skill tool
+        allowed_tools=["Skill", "Read", "Write", "Bash", "Edit", "Grep", "Glob"],
+
+        # REQUIRED: Set working directory containing .claude/
+        cwd="/path/to/your/project"
+    )
+
+    async with ClaudeSDKClient(options=options) as client:
+        # Claude will now detect and use your custom skills
+        await client.query("Create a new API endpoint for products")
+
+        async for msg in client.receive_response():
+            print(msg)
+```
+
+#### Project Skills Only (Team-Shared via Git)
+
+```python
+options = ClaudeAgentOptions(
+    use_project_settings=True,     # ✅ Load from .claude/skills/ in project
+    use_personal_settings=False,   # ❌ Ignore ~/.claude/skills/
+    allowed_tools=["Skill", "Read", "Write", "Bash"],
+    cwd="/path/to/project"
+)
+```
+
+**Use case**: Share skills with team via version control. Everyone gets the same skills when they pull the repository.
+
+#### Personal Skills Only (User-Specific, Cross-Project)
+
+```python
+options = ClaudeAgentOptions(
+    use_project_settings=False,    # ❌ Ignore .claude/skills/
+    use_personal_settings=True,    # ✅ Load from ~/.claude/skills/
+    allowed_tools=["Skill", "Read", "Write", "Bash"],
+    cwd="/path/to/any/directory"   # Still needed for working directory context
+)
+```
+
+**Use case**: Personal productivity skills you use across all projects, not shared with team.
+
+#### Both Project and Personal Skills
+
+```python
+options = ClaudeAgentOptions(
+    use_project_settings=True,     # ✅ Load project skills
+    use_personal_settings=True,    # ✅ Load personal skills
+    allowed_tools=["Skill", "Read", "Write", "Bash"],
+    cwd="/path/to/project"
+)
+```
+
+**Use case**: Combine team-shared project skills with your personal workflow skills.
+
+### TypeScript Agent SDK Configuration
+
+```typescript
+import { ClaudeSDKClient, ClaudeAgentOptions } from '@anthropic-ai/sdk';
+
+async function useSkills() {
+  const options: ClaudeAgentOptions = {
+    // REQUIRED: Enable filesystem settings
+    settingSources: ['user', 'project'],  // Loads from both ~/.claude and .claude/
+
+    // REQUIRED: Include Skill tool
+    allowedTools: ['Skill', 'Read', 'Write', 'Bash', 'Edit', 'Grep', 'Glob'],
+
+    // REQUIRED: Set working directory
+    cwd: '/path/to/your/project'
+  };
+
+  const client = new ClaudeSDKClient(options);
+
+  // Claude will now detect and use your custom skills
+  await client.query('Create a new API endpoint for products');
+
+  for await (const msg of client.receiveResponse()) {
+    console.log(msg);
+  }
+}
+```
+
+**Note**: In TypeScript, use `settingSources` array instead of separate boolean flags.
+
+### SDK-Specific Limitations
+
+#### 1. allowed-tools Frontmatter Field Is Ignored
+
+⚠️ **CRITICAL DIFFERENCE**: The `allowed-tools` field in your SKILL.md frontmatter **only works in Claude Code CLI**, not in the Agent SDK.
+
+```yaml
+---
+name: my-skill
+description: My security scanning skill
+allowed-tools: Read, Grep, Glob  # ⚠️ COMPLETELY IGNORED by Agent SDK
+---
+```
+
+**Why?** The SDK applies tool permissions globally, not per-skill. This is a fundamental architectural difference.
+
+**In the Agent SDK**, control tool access through the main `allowed_tools` option:
+
+```python
+# This controls tool access for ALL skills in the SDK
+options = ClaudeAgentOptions(
+    allowed_tools=["Skill", "Read", "Grep", "Glob"],  # Applied to all skills
+    use_project_settings=True
+)
+```
+
+#### 2. No Per-Skill Tool Restrictions in SDK
+
+Unlike Claude Code CLI (which respects per-skill tool restrictions defined in SKILL.md), the SDK applies the same tool permissions to all skills.
+
+**Workaround**: Use Pre-Tool-Use hooks for fine-grained control:
+
+```python
+from claude_agent_sdk import ClaudeAgentOptions, HookMatcher
+
+async def skill_based_tool_validator(input_data, tool_use_id, context):
+    """Restrict tools based on which skill is active"""
+    tool_name = input_data["tool_name"]
+
+    # Example: Block destructive tools for read-only skills
+    if tool_name in ["Write", "Edit", "Bash"]:
+        # Check context to determine if a read-only skill is active
+        # (This would require tracking skill state in your application)
+        if is_readonly_skill_active(context):
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": "Write operations not allowed for read-only skills"
+                }
+            }
+
+    return {}  # Allow the tool
+
+options = ClaudeAgentOptions(
+    use_project_settings=True,
+    allowed_tools=["Skill", "Read", "Write", "Bash", "Edit", "Grep", "Glob"],
+    hooks={
+        "PreToolUse": [
+            HookMatcher(matcher=".*", hooks=[skill_based_tool_validator])
+        ]
+    }
+)
+```
+
+### Verification and Debugging
+
+#### Verify Skills Exist Before Running
+
+```python
+from pathlib import Path
+
+def verify_skills(project_path: str = "."):
+    """Check if skills are available in expected locations"""
+    project_root = Path(project_path).resolve()
+
+    # Check project skills
+    project_skills_dir = project_root / ".claude" / "skills"
+    if project_skills_dir.exists():
+        project_skills = [d.name for d in project_skills_dir.iterdir() if d.is_dir()]
+        print(f"✅ Found {len(project_skills)} project skills: {project_skills}")
+    else:
+        print(f"⚠️  No project skills directory found at {project_skills_dir}")
+
+    # Check personal skills
+    user_skills_dir = Path.home() / ".claude" / "skills"
+    if user_skills_dir.exists():
+        user_skills = [d.name for d in user_skills_dir.iterdir() if d.is_dir()]
+        print(f"✅ Found {len(user_skills)} user skills: {user_skills}")
+    else:
+        print(f"⚠️  No user skills directory found at {user_skills_dir}")
+
+# Run before initializing SDK
+verify_skills("/path/to/project")
+```
+
+#### Debug Skill Activation
+
+Add logging to see when Claude activates skills:
+
+```python
+async with ClaudeSDKClient(options=options) as client:
+    await client.query("Use my custom skill")
+
+    async for msg in client.receive_response():
+        # Detect Skill tool usage
+        if hasattr(msg, 'content'):
+            for block in msg.content:
+                if hasattr(block, 'type') and block.type == 'tool_use':
+                    if hasattr(block, 'name') and block.name == 'Skill':
+                        skill_info = block.input if hasattr(block, 'input') else {}
+                        print(f"🎯 SKILL ACTIVATED: {skill_info}")
+
+        print(msg)
+```
+
+#### Verify Configuration
+
+```python
+def check_sdk_config(options: ClaudeAgentOptions):
+    """Validate SDK configuration for skills"""
+    issues = []
+
+    # Check settings sources
+    if not options.use_project_settings and not options.use_personal_settings:
+        issues.append("❌ Neither use_project_settings nor use_personal_settings is enabled")
+
+    # Check Skill tool
+    if "Skill" not in (options.allowed_tools or []):
+        issues.append("❌ 'Skill' not in allowed_tools")
+
+    # Check working directory
+    if options.use_project_settings and not options.cwd:
+        issues.append("⚠️  use_project_settings enabled but cwd not set")
+
+    if issues:
+        print("Configuration issues found:")
+        for issue in issues:
+            print(f"  {issue}")
+        return False
+    else:
+        print("✅ Configuration looks good!")
+        return True
+
+# Validate before using
+check_sdk_config(options)
+```
+
+### Common SDK Issues and Solutions
+
+#### Issue 1: Skills Don't Load
+
+**Symptoms**:
+- Claude doesn't use your skills
+- Skills exist in filesystem but never activate
+- No errors, but skills are ignored
+
+**Root Causes & Solutions**:
+
+| Cause | Check | Solution |
+|-------|-------|----------|
+| Settings not enabled | `use_project_settings` and `use_personal_settings` both False | Set at least one to True |
+| Skill tool not included | `"Skill"` not in `allowed_tools` | Add `"Skill"` to allowed_tools |
+| Wrong cwd | `cwd` doesn't contain `.claude/` | Set `cwd` to correct project root |
+| Invalid YAML | Syntax errors in SKILL.md | Validate YAML frontmatter (no tabs!) |
+| Vague description | Skill description doesn't match usage | Add specific trigger keywords |
+
+**Debugging checklist**:
+```python
+# ❌ Wrong - Default configuration
+options = ClaudeAgentOptions()
+
+# ✅ Correct - Explicit configuration
+options = ClaudeAgentOptions(
+    use_project_settings=True,       # ✓ Enable settings
+    use_personal_settings=True,      # ✓ Enable settings
+    allowed_tools=["Skill", "Read"], # ✓ Include Skill
+    cwd="/absolute/path/to/project"  # ✓ Correct path
+)
+```
+
+#### Issue 2: "Skill Tool Not Available" Error
+
+**Symptoms**:
+- Error message about Skill tool not found
+- SDK says tool "Skill" is not available
+
+**Solution**:
+```python
+# ❌ Wrong - Missing "Skill" in allowed_tools
+options = ClaudeAgentOptions(
+    use_project_settings=True,
+    allowed_tools=["Read", "Write", "Bash"]  # Missing "Skill"!
+)
+
+# ✅ Correct - Include "Skill"
+options = ClaudeAgentOptions(
+    use_project_settings=True,
+    allowed_tools=["Skill", "Read", "Write", "Bash"]  # Include Skill
+)
+```
+
+#### Issue 3: Skills Not Loading From Expected Location
+
+**Symptoms**:
+- Skills exist but SDK can't find them
+- Works in Claude Code CLI but not in SDK
+
+**Debug**:
+```python
+import os
+from pathlib import Path
+
+# Print current working directory
+print(f"Current CWD: {os.getcwd()}")
+
+# Print resolved path
+project_path = Path("/path/to/project").resolve()
+skills_path = project_path / ".claude" / "skills"
+print(f"Looking for skills at: {skills_path}")
+print(f"Skills directory exists: {skills_path.exists()}")
+
+# Use absolute path in options
+options = ClaudeAgentOptions(
+    use_project_settings=True,
+    cwd=str(project_path),  # Use absolute path
+    allowed_tools=["Skill"]
+)
+```
+
+#### Issue 4: Skill Activates But Fails
+
+**Symptoms**:
+- Skill is detected and activated
+- But execution fails or produces errors
+
+**Common Causes**:
+1. **Missing tools**: Skill instructions reference tools not in `allowed_tools`
+2. **File paths**: Skill uses absolute paths that don't exist in SDK context
+3. **Dependencies**: Scripts require packages not installed
+4. **Permissions**: Skill tries to access restricted resources
+
+**Solutions**:
+```python
+# 1. Include all tools skill might need
+options = ClaudeAgentOptions(
+    allowed_tools=["Skill", "Read", "Write", "Edit", "Bash", "Grep", "Glob"],
+    use_project_settings=True
+)
+
+# 2. Use relative paths in SKILL.md
+# ❌ Bad: /Users/you/project/scripts/validate.py
+# ✅ Good: scripts/validate.py
+
+# 3. Document dependencies in SKILL.md
+# ## Prerequisites
+# - Python 3.10+
+# - requests library
+# - jq command-line tool
+```
+
+### Complete Working Example
+
+Here's a complete, production-ready example demonstrating skills with the SDK:
+
+```python
+import anyio
+import sys
+from pathlib import Path
+from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions, AssistantMessage, TextBlock
+
+async def main():
+    # 1. Configuration
+    project_root = Path(__file__).parent.resolve()
+    print(f"Project root: {project_root}")
+
+    # 2. Verify skills exist
+    skills_dir = project_root / ".claude" / "skills"
+    if not skills_dir.exists():
+        print(f"❌ No skills directory found at {skills_dir}")
+        print("Create .claude/skills/ and add your skills first!")
+        sys.exit(1)
+
+    project_skills = [d.name for d in skills_dir.iterdir() if d.is_dir()]
+    if not project_skills:
+        print(f"⚠️  Skills directory exists but contains no skills")
+        sys.exit(1)
+
+    print(f"✅ Found {len(project_skills)} project skill(s): {project_skills}")
+
+    # 3. Configure SDK with skills enabled
+    options = ClaudeAgentOptions(
+        # Enable skills loading
+        use_project_settings=True,
+        use_personal_settings=True,
+
+        # Include all tools skills might need
+        allowed_tools=["Skill", "Read", "Write", "Edit", "Bash", "Grep", "Glob"],
+
+        # Set working directory
+        cwd=str(project_root),
+
+        # Optional: Custom system prompt
+        system_prompt="You are a helpful development assistant with access to custom skills.",
+
+        # Optional: Limit conversation turns
+        max_turns=10
+    )
+
+    print("\n✅ SDK initialized with skills enabled\n")
+
+    # 4. Use the SDK with skills
+    async with ClaudeSDKClient(options=options) as client:
+        # Query that should trigger a skill
+        query_text = "Create a new API endpoint for user management with authentication"
+        print(f"Query: {query_text}\n")
+
+        await client.query(query_text)
+
+        print("📨 Receiving response...\n")
+        print("=" * 80)
+
+        skill_activations = []
+
+        async for msg in client.receive_response():
+            # Log skill activations
+            if hasattr(msg, 'content'):
+                for block in msg.content:
+                    if hasattr(block, 'type') and block.type == 'tool_use':
+                        if hasattr(block, 'name') and block.name == 'Skill':
+                            skill_info = block.input if hasattr(block, 'input') else {}
+                            skill_name = skill_info.get('skill_name', 'unknown')
+                            skill_activations.append(skill_name)
+                            print(f"\n🎯 SKILL ACTIVATED: {skill_name}\n")
+
+            # Print assistant text messages
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        print(block.text)
+
+        print("=" * 80)
+
+        # 5. Summary
+        if skill_activations:
+            print(f"\n✅ Skills used: {', '.join(set(skill_activations))}")
+        else:
+            print("\n⚠️  No skills were activated. Check:")
+            print("  - Skill descriptions match the query")
+            print("  - Skills are properly formatted")
+            print("  - Configuration is correct")
+
+if __name__ == "__main__":
+    try:
+        anyio.run(main)
+    except KeyboardInterrupt:
+        print("\n\nInterrupted by user")
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        sys.exit(1)
+```
+
+### Claude Messages API (For Reference)
+
+If you're using the general Claude Messages API (not the Agent SDK), skill support is different:
+
+#### Built-in Document Skills Only
 
 ```python
 import anthropic
 
 client = anthropic.Anthropic(api_key="your-api-key")
 
-# Create message with skills enabled
-response = client.messages.create(
-    model="claude-3-5-sonnet-20241022",
-    max_tokens=4096,
-    messages=[
-        {"role": "user", "content": "Create a new user API endpoint"}
-    ],
-    # Skills are automatically available if configured in the environment
-)
-
-print(response.content)
-```
-
-#### Built-in Document Skills
-
-Claude provides four pre-built skills via API:
-
-```python
-# Excel generation
+# Claude Messages API supports built-in document skills
 response = client.messages.create(
     model="claude-3-5-sonnet-20241022",
     max_tokens=4096,
@@ -589,8 +1056,12 @@ response = client.messages.create(
 )
 
 # Access generated file
-file_id = response.content[0].file_id
-file_content = client.files.content(file_id)
+if hasattr(response.content[0], 'file_id'):
+    file_id = response.content[0].file_id
+    file_content = client.files.content(file_id)
+
+    with open("dashboard.xlsx", "wb") as f:
+        f.write(file_content)
 ```
 
 **Available built-in skills**:
@@ -599,67 +1070,84 @@ file_content = client.files.content(file_id)
 - `pdf`: Formatted PDF documents
 - `docx`: Word documents
 
-### Claude Code Integration
+**Note**: Custom skills (your own SKILL.md files) are **NOT** available via the Messages API. They require the Agent SDK or Claude Code CLI.
 
-Skills in Claude Code are automatically discovered from:
-1. `~/.claude/skills/` (personal skills)
-2. `.claude/skills/` (project skills)
-3. Plugin-installed skills
+### Claude Code CLI (For Reference)
 
-**Usage**: Simply interact with Claude Code naturally. Claude will activate relevant skills based on context.
+In Claude Code CLI, skills are automatically discovered and loaded:
 
 ```bash
-# Example interaction
-> "Generate a new API endpoint for products with inventory tracking"
+# Claude Code automatically discovers skills from:
+# 1. ~/.claude/skills/ (personal)
+# 2. .claude/skills/ (project)
+# 3. Plugin-installed skills
+
+# Simply use Claude Code naturally
+claude
 
 # Claude automatically:
-# 1. Detects the api-endpoint-generator skill
-# 2. Loads SKILL.md
-# 3. Follows the defined workflow
-# 4. Generates all required files
-# 5. Runs validation scripts
+# - Detects relevant skills based on your query
+# - Loads SKILL.md when appropriate
+# - Follows skill instructions
+# - Respects per-skill allowed-tools from frontmatter
 ```
 
-### Programmatic Skill Management
+**No configuration required** - skills work automatically in Claude Code CLI.
 
-```python
-# List available skills (API endpoint)
-import requests
+### Team Distribution
 
-headers = {
-    "anthropic-version": "2023-06-01",
-    "x-api-key": "your-api-key"
-}
+#### Sharing Project Skills via Git
 
-response = requests.get(
-    "https://api.anthropic.com/v1/skills",
-    headers=headers
-)
-
-skills = response.json()
-print(f"Available skills: {len(skills['skills'])}")
-```
-
-### Custom Skill Distribution
-
-**Via Git** (recommended for teams):
 ```bash
-# In your project repository
-git add .claude/skills/
-git commit -m "Add custom API generation skill"
+# Developer A: Create and commit skill
+git add .claude/skills/api-generator/
+git commit -m "Add API generation skill"
 git push
 
-# Team members automatically get the skill
+# Developer B: Pull and use
 git pull
+
+# Skills are now available to Developer B
+# Both developers must enable in their SDK code:
+options = ClaudeAgentOptions(
+    use_project_settings=True,  # Loads from .claude/skills/
+    allowed_tools=["Skill"]
+)
 ```
 
-**Via Package** (for broader distribution):
+#### Personal Skills (Not Shared)
+
 ```bash
-# Create a Claude Code plugin
-claude-plugin create my-skills-pack
-# Add skills to plugin
-# Publish to marketplace
+# Create personal skill in your home directory
+mkdir -p ~/.claude/skills/my-personal-workflow
+
+# Create SKILL.md
+cat > ~/.claude/skills/my-personal-workflow/SKILL.md << 'EOF'
+---
+name: my-personal-workflow
+description: My personal development workflow skill
+---
+
+# My Personal Workflow
+...
+EOF
+
+# Use in any project
+options = ClaudeAgentOptions(
+    use_personal_settings=True,  # Loads from ~/.claude/skills/
+    allowed_tools=["Skill"]
+)
 ```
+
+### Summary: SDK vs. CLI vs. API
+
+| Aspect | Agent SDK | Claude Code CLI | Messages API |
+|--------|-----------|----------------|--------------|
+| **Custom Skills** | ✅ Yes (explicit config) | ✅ Yes (automatic) | ❌ No |
+| **Built-in Skills** | ❌ No | ❌ No | ✅ Yes (document skills) |
+| **Configuration** | Required | Automatic | Via `betas` param |
+| **allowed-tools in SKILL.md** | ❌ Ignored | ✅ Respected | N/A |
+| **Best For** | Programmatic integration | Interactive development | API-only integration |
 
 ---
 
@@ -1524,6 +2012,7 @@ Agent Skills represent a paradigm shift in how we extend Claude's capabilities. 
 
 ### Resources
 
+- **Claude Agent SDK Guide**: [Complete SDK Documentation](references/claude-agent-sdk-guide.md) - Essential reading for using skills with the Python/TypeScript Agent SDK
 - **Official Documentation**: https://docs.claude.com/en/docs/claude-code/skills
 - **Skills Repository**: https://github.com/anthropics/skills
 - **Cookbooks**: https://github.com/anthropics/claude-cookbooks/tree/main/skills
