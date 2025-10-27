@@ -556,6 +556,21 @@ class Scanner:
         if needs_dast:
             self._setup_dast_skills(repo)
 
+        # Verify skills are available (debug mode)
+        if self.debug:
+            skills_dir = repo / ".claude" / "skills"
+            if skills_dir.exists():
+                skills = [d.name for d in skills_dir.iterdir() if d.is_dir()]
+                if skills:
+                    self.console.print(
+                        f"  ✅ Skills directory found: {len(skills)} skill(s) available: {', '.join(skills)}",
+                        style="dim green"
+                    )
+                else:
+                    self.console.print("  ⚠️  Skills directory exists but is empty", style="dim yellow")
+            else:
+                self.console.print("  ℹ️  No skills directory found (.claude/skills/)", style="dim")
+
         # Show scan info (banner already printed by CLI)
         self.console.print(f"📁 Scanning: {repo}")
         self.console.print(f"🤖 Model: {self.model}")
@@ -613,7 +628,15 @@ class Scanner:
             """Hook that fires before any tool executes"""
             tool_name = input_data.get("tool_name")
             tool_input = input_data.get("tool_input", {})
-            
+
+            # Log Skill tool invocations (debug mode)
+            if tool_name == "Skill" and self.debug:
+                skill_name = tool_input.get("skill_name", "unknown")
+                self.console.print(
+                    f"  🎯 SKILL INVOKED: {skill_name}",
+                    style="bold cyan"
+                )
+
             # Block reads from infrastructure directories
             if tool_name in ["Read", "Grep", "Glob", "LS"]:
                 # Allow .claude/skills during DAST so the agent can load SKILL.md
@@ -723,13 +746,23 @@ class Scanner:
         # Create agent definitions with CLI model override
         # This allows --model flag to cascade to all agents while respecting env vars
         agents = create_agent_definitions(cli_model=self.model)
-        
-        # Note: Skills are auto-discovered from .claude/skills/ in cwd
-        # The SDK will find skills at {repo}/.claude/skills/dast/ automatically
-        
+
+        # Skills configuration:
+        # - Skills must be explicitly enabled via setting_sources=["project"]
+        # - Skills are discovered from {repo}/.claude/skills/ when settings are enabled
+        # - The DAST agent has "Skill" in its tools to access loaded skills
+
         options = ClaudeAgentOptions(
             agents=agents,
             cwd=str(repo),
+
+            # REQUIRED: Enable filesystem settings to load skills from .claude/skills/
+            setting_sources=["project"],
+
+            # Explicit global tools (recommended for clarity)
+            # Individual agents may have more restrictive tool lists
+            allowed_tools=["Skill", "Read", "Write", "Edit", "Bash", "Grep", "Glob", "LS"],
+
             max_turns=config.get_max_turns(),
             permission_mode='bypassPermissions',
             model=self.model,

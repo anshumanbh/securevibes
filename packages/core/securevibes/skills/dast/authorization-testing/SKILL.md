@@ -1,12 +1,10 @@
 ---
 name: authorization-testing
-description: Validate authorization failures including IDOR, privilege escalation, and missing access controls. Test by attempting unauthorized access with lower-privileged credentials. Use when testing CWE-639 (IDOR), CWE-269 (Privilege Escalation), CWE-862 (Missing Authorization), CWE-863 (Incorrect Authorization), CWE-284 (Access Control), or CWE-285 (Improper Authorization) findings.
+description: Validate authorization failures including IDOR, privilege escalation, and missing access controls. Test by attempting unauthorized access with lower-privileged credentials. Use when testing CWE-639 (IDOR), CWE-269 (Privilege Escalation), CWE-862 (Missing Authorization), CWE-863 (Incorrect Authorization), CWE-284 (Access Control), CWE-285 (Improper Authorization), or CWE-425 (Direct Request/Forced Browsing) findings.
 allowed-tools: Read, Write, Bash
 ---
 
 # Authorization Testing Skill
-
-**Note:** Previously named `idor-testing`. Renamed to cover broader authorization failure spectrum.
 
 ## Purpose
 Validate authorization failures by attempting actions that should be blocked based on:
@@ -51,9 +49,19 @@ Actions execute without ANY authorization check.
 ### 5. Function-Level Access Control (CWE-285)
 Wrong authorization logic applied to functions.
 
-**Test Pattern:** Authenticate as user authorized for function X, attempt function Y (should be blocked)  
-**Expected:** 403 Forbidden | **Actual if vulnerable:** 200 OK  
+**Test Pattern:** Authenticate as user authorized for function X, attempt function Y (should be blocked)
+**Expected:** 403 Forbidden | **Actual if vulnerable:** 200 OK
 **Example:** Read-only user performs write operation
+
+### 6. Direct Request / Forced Browsing (CWE-425)
+Access restricted functionality by directly requesting URLs, bypassing normal navigation flow.
+
+**Test Pattern:** Request admin/protected URL directly without proper authorization flow
+**Expected:** 403 Forbidden or redirect to login | **Actual if vulnerable:** 200 OK
+**Examples:**
+- Direct access to `/admin/dashboard` without admin session
+- Force-browsing to `/api/internal/config` endpoint
+- Accessing `/reports/confidential` by guessing URL structure
 
 ## Prerequisites
 - Target application running and reachable
@@ -86,6 +94,9 @@ Map vulnerabilities to test types:
 | CWE-269 | Missing admin check on `/update_role` | Vertical | 1 regular, 1 admin |
 | CWE-862 | No authz on `/admin/dashboard` | Missing | 1 regular user |
 | CWE-863 | Flawed check on `/api/profile/<id>/update` | IDOR | 2 regular users |
+| CWE-284 | Generic access control bypass | Varies | Based on context |
+| CWE-285 | Wrong authz logic on read-only endpoint | Function-level | Read-only + write user |
+| CWE-425 | Direct URL access to `/admin/config` | Forced browsing | 1 regular user |
 
 ### Phase 3: Prepare Test Accounts
 
@@ -364,6 +375,15 @@ Test: Unauthenticated GET /api/admin/users
 Result: 200 OK, full user list with sensitive data
 Classification: VALIDATED (CWE-862)
 Impact: Mass information disclosure, user enumeration
+```
+
+### Example 6: Direct Request / Forced Browsing (CWE-425)
+```
+Vulnerability: /admin/settings accessible by direct URL request
+Test: Regular user directly navigates to /admin/settings
+Result: 200 OK, admin settings page displayed
+Classification: VALIDATED (CWE-425)
+Impact: Unauthorized access to administrative functionality, potential configuration manipulation
 ```
 
 ## Reference Implementations (read-only)

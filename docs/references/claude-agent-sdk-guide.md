@@ -639,8 +639,7 @@ from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
 async def use_skills():
     options = ClaudeAgentOptions(
         # REQUIRED: Enable filesystem settings
-        use_project_settings=True,    # Load .claude/skills/ from project
-        use_personal_settings=True,   # Load ~/.claude/skills/ from user dir
+        setting_sources=["project", "user"],  # Load from both .claude/skills/ and ~/.claude/skills/
 
         # REQUIRED: Include Skill tool
         allowed_tools=["Skill", "Read", "Write", "Bash"],
@@ -664,20 +663,19 @@ Skills are discovered from multiple filesystem locations:
 # Project skills (shared with team via git)
 # Location: {cwd}/.claude/skills/
 options = ClaudeAgentOptions(
-    use_project_settings=True,
+    setting_sources=["project"],
     cwd="/path/to/project"
 )
 
 # Personal skills (user-specific, cross-project)
 # Location: ~/.claude/skills/
 options = ClaudeAgentOptions(
-    use_personal_settings=True
+    setting_sources=["user"]
 )
 
 # Both project and personal skills
 options = ClaudeAgentOptions(
-    use_project_settings=True,
-    use_personal_settings=True,
+    setting_sources=["project", "user"],
     cwd="/path/to/project"
 )
 ```
@@ -754,7 +752,7 @@ allowed-tools: Read, Grep, Glob  # ⚠️ IGNORED by Agent SDK
 # This controls ALL skills in the SDK
 options = ClaudeAgentOptions(
     allowed_tools=["Skill", "Read", "Grep", "Glob"],
-    use_project_settings=True
+    setting_sources=["project"]
 )
 ```
 
@@ -781,7 +779,7 @@ async def skill_tool_validator(input_data, tool_use_id, context):
     return {}
 
 options = ClaudeAgentOptions(
-    use_project_settings=True,
+    setting_sources=["project"],
     allowed_tools=["Skill", "Read", "Write", "Bash"],
     hooks={
         "PreToolUse": [
@@ -804,10 +802,9 @@ options = ClaudeAgentOptions()
 
 # ✅ Correct - Explicitly enable settings
 options = ClaudeAgentOptions(
-    use_project_settings=True,    # Enable this
-    use_personal_settings=True,   # And/or this
-    allowed_tools=["Skill"],      # Don't forget Skill tool
-    cwd="/path/to/project"        # Directory with .claude/
+    setting_sources=["project", "user"],  # Enable project and/or user skills
+    allowed_tools=["Skill"],               # Don't forget Skill tool
+    cwd="/path/to/project"                 # Directory with .claude/
 )
 ```
 
@@ -832,13 +829,13 @@ else:
 ```python
 # ❌ Wrong - "Skill" not in allowed_tools
 options = ClaudeAgentOptions(
-    use_project_settings=True,
+    setting_sources=["project"],
     allowed_tools=["Read", "Write"]  # Missing "Skill"
 )
 
 # ✅ Correct - Include "Skill"
 options = ClaudeAgentOptions(
-    use_project_settings=True,
+    setting_sources=["project"],
     allowed_tools=["Skill", "Read", "Write"]
 )
 ```
@@ -856,7 +853,7 @@ print(f"CWD: {os.getcwd()}")
 
 # Use absolute path
 options = ClaudeAgentOptions(
-    use_project_settings=True,
+    setting_sources=["project"],
     cwd="/absolute/path/to/project",  # Explicit path
     allowed_tools=["Skill"]
 )
@@ -884,8 +881,7 @@ async def main():
 
     # 3. Configure SDK with skills enabled
     options = ClaudeAgentOptions(
-        use_project_settings=True,
-        use_personal_settings=True,
+        setting_sources=["project", "user"],
         allowed_tools=["Skill", "Read", "Write", "Edit", "Bash", "Grep", "Glob"],
         cwd=str(project_root),
         system_prompt="You are a helpful assistant with custom skills."
@@ -931,7 +927,7 @@ git pull
 
 # Both developers use in SDK
 options = ClaudeAgentOptions(
-    use_project_settings=True,  # Loads from .claude/skills/
+    setting_sources=["project"],  # Loads from .claude/skills/
     allowed_tools=["Skill"]
 )
 ```
@@ -945,7 +941,7 @@ options = ClaudeAgentOptions(
 | **Content** | Instructions + resources | Agent personality + prompt | Executable code |
 | **Loading** | Progressive (on-demand) | Full context | Runtime registration |
 | **Sharing** | Via git (filesystem) | Via git or config | Via code import |
-| **SDK Config** | `use_project_settings=True` | `agents={}` dict | `mcp_servers={}` dict |
+| **SDK Config** | `setting_sources=["project"]` | `agents={}` dict | `mcp_servers={}` dict |
 
 ### Further Reading
 
@@ -1421,8 +1417,7 @@ options = ClaudeCodeOptions()
 
 # New - explicit control
 options = ClaudeAgentOptions(
-    use_project_settings=True,    # Include project .claude/settings
-    use_personal_settings=False,  # Exclude personal settings
+    setting_sources=["project"],  # Include only project .claude/settings
 )
 ```
 
