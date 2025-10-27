@@ -21,7 +21,7 @@ from securevibes.agents.definitions import create_agent_definitions
 from securevibes.models.result import ScanResult
 from securevibes.models.issue import SecurityIssue, Severity
 from securevibes.prompts.loader import load_prompt
-from securevibes.config import config
+from securevibes.config import config, LanguageConfig, ScanConfig
 from securevibes.scanner.subagent_manager import SubAgentManager, ScanMode
 
 # Constants for artifact paths
@@ -526,22 +526,27 @@ class Scanner:
         # Track scan timing
         scan_start_time = time.time()
         
-        # Directories to exclude from scanning (infrastructure, not application code)
-        exclude_dirs = {'.claude', 'env', 'venv', '.venv', 'node_modules', '.git', 
-                       '__pycache__', '.pytest_cache', 'dist', 'build', '.eggs'}
+        # Detect languages in repository for smart exclusions
+        detected_languages = LanguageConfig.detect_languages(repo)
+        if self.debug:
+            self.console.print(f"  📋 Detected languages: {', '.join(sorted(detected_languages)) or 'none'}", style="dim")
+        
+        # Get language-aware exclusions
+        exclude_dirs = ScanConfig.get_excluded_dirs(detected_languages)
         
         # Count files for reporting (exclude infrastructure directories)
         def should_scan(file_path: Path) -> bool:
             """Check if file should be included in security scan"""
             return not any(excluded in file_path.parts for excluded in exclude_dirs)
         
-        all_py = [f for f in repo.glob('**/*.py') if should_scan(f)]
-        all_ts = [f for f in repo.glob('**/*.ts') if should_scan(f)]
-        all_js = [f for f in repo.glob('**/*.js') if should_scan(f)]
-        all_tsx = [f for f in repo.glob('**/*.tsx') if should_scan(f)]
-        all_jsx = [f for f in repo.glob('**/*.jsx') if should_scan(f)]
+        # Collect all supported code files
+        all_code_files = []
+        for lang, extensions in LanguageConfig.SUPPORTED_LANGUAGES.items():
+            for ext in extensions:
+                files = [f for f in repo.glob(f'**/*{ext}') if should_scan(f)]
+                all_code_files.extend(files)
         
-        files_scanned = len(all_py) + len(all_ts) + len(all_js) + len(all_tsx) + len(all_jsx)
+        files_scanned = len(all_code_files)
 
         # Setup DAST skills if DAST will be executed
         if single_subagent:
@@ -579,9 +584,8 @@ class Scanner:
         # Initialize progress tracker
         tracker = ProgressTracker(self.console, debug=self.debug, single_subagent=single_subagent)
 
-        # Define infrastructure directories to exclude (adjusted dynamically per phase)
-        exclude_dirs = {'.claude', 'env', 'venv', '.venv', 'node_modules', '.git',
-                        '__pycache__', '.pytest_cache', 'dist', 'build', '.eggs'}
+        # Store detected languages for phase-specific exclusions
+        detected_languages = LanguageConfig.detect_languages(repo) if repo else set()
         
         # Create hooks as closures that capture the tracker
         async def dast_security_hook(input_data: dict, tool_use_id: str, ctx: dict) -> dict:
@@ -605,13 +609,8 @@ class Scanner:
             tool_input = input_data.get("tool_input", {})
             command = tool_input.get("command", "")
             
-            # Block database CLI tools
-            blocked_db_tools = [
-                "sqlite3", "psql", "mysql", "mongosh", "mongo",
-                "redis-cli", "mariadb", "cockroach", "influx", "cqlsh"
-            ]
-            
-            for tool in blocked_db_tools:
+            # Block database CLI tools (centralized in config)
+            for tool in ScanConfig.BLOCKED_DB_TOOLS:
                 if tool in command:
                     return {
                         "hookSpecificOutput": {
@@ -639,10 +638,11 @@ class Scanner:
 
             # Block reads from infrastructure directories
             if tool_name in ["Read", "Grep", "Glob", "LS"]:
-                # Allow .claude/skills during DAST so the agent can load SKILL.md
-                active_exclude_dirs = exclude_dirs.copy()
-                if tracker.current_phase == "dast" and ".claude" in active_exclude_dirs:
-                    active_exclude_dirs.remove('.claude')
+                # Get phase-specific exclusions (DAST needs .claude/skills/ access)
+                active_exclude_dirs = ScanConfig.get_excluded_dirs_for_phase(
+                    tracker.current_phase or "assessment",
+                    detected_languages
+                )
                 # Extract path from tool input (different tools use different param names)
                 path = (tool_input.get("file_path") or 
                        tool_input.get("path") or 

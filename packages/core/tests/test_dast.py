@@ -870,12 +870,10 @@ async def test_dast_security_hook_blocks_database_tools():
             "tool_input": {"command": command}
         }
         
-        blocked_db_tools = [
-            "sqlite3", "psql", "mysql", "mongosh", "mongo",
-            "redis-cli", "mariadb", "cockroach", "influx", "cqlsh"
-        ]
+        # Use centralized blocked tools list from config
+        from securevibes.config import ScanConfig
         
-        is_blocked = any(tool in command for tool in blocked_db_tools)
+        is_blocked = any(tool in command for tool in ScanConfig.BLOCKED_DB_TOOLS)
         assert is_blocked == expected_blocked, f"Command '{command}' blocking mismatch"
     
     # Test database tools are blocked
