@@ -4,8 +4,6 @@
 
 SecureVibes DAST (Dynamic Application Security Testing) validates vulnerabilities found during the code review phase to confirm actual exploitability.
 
-**Status**: MVP with IDOR validation (HTTP-only)
-
 ---
 
 ## Quick Start
@@ -264,7 +262,7 @@ If `--dast` enabled, DAST agent:
    - Skills are model‑invoked; currently includes `idor-testing`
 
 3. **Validates eligible findings**
-   - Follows methodology from the `idor-testing` skill
+   - Follows methodology from the `authorization-testing` skill
    - Baseline: User1 → own resource (expect 200)
    - Test: User1 → User2’s resource (expect 401/403; 200 = vulnerable)
 
@@ -305,13 +303,6 @@ DAST skills are bundled with SecureVibes and automatically managed:
 - **Runtime**: Automatically copied to `{project}/.claude/skills/dast/` before DAST execution
 - **Access**: During the DAST phase, the agent can read `.claude/skills/**` to load SKILLs; other phases treat `.claude/` as infrastructure and skip it
 - **Cleanup**: Skills remain in project for future scans (or add to `.gitignore`)
-
-**Recommended .gitignore entry:**
-```gitignore
-# SecureVibes artifacts
-.securevibes/
-.claude/skills/dast/  # Auto-copied DAST skills
-```
 
 **Manual override**: If you want custom skills, create `.claude/skills/dast/` in your project - SecureVibes will use existing skills instead of copying.
 
