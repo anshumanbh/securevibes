@@ -52,6 +52,17 @@ Get your API key from: https://console.anthropic.com/
 - Report Generator → `scan_results.json`
 - DAST (optional) → `DAST_VALIDATION.json` (validates via HTTP when a matching skill exists)
 
+## 🌍 Supported Languages
+
+**11 Languages:** Python, JavaScript, TypeScript, Go, Ruby, Java, PHP, C#, Rust, Kotlin, Swift
+
+**Smart Features:**
+- Auto-detects languages in your project
+- Language-aware exclusions (Python: `venv/`, JS: `node_modules/`, Go: `vendor/`)
+- Handles mixed-language codebases intelligently
+
+For detailed language support and exclusion rules, see the [full documentation](https://github.com/anshumanbh/securevibes#-supported-languages).
+
 ---
 
 ## 🎯 Common Commands
@@ -87,6 +98,11 @@ securevibes scan . --subagent report-generator
 securevibes scan . --subagent dast --target-url http://localhost:3000
   # Validates only when a matching skill is available (e.g., IDOR)
   # Writes .securevibes/DAST_VALIDATION.json; no ad‑hoc files in repo
+
+# Works with any supported language:
+securevibes scan /path/to/go-app        # Go project
+securevibes scan /path/to/ruby-app      # Ruby project
+securevibes scan /path/to/mixed-stack   # Multi-language project
 ```
 
 ---

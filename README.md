@@ -18,6 +18,12 @@ SecureVibes uses **Claude's multi-agent architecture** to autonomously find secu
 - **🧪 DAST Agent**: Dynamic testing with auto-bundled skills
 - **📊 Report Generator**: Compiles comprehensive scan results
 
+### Multi-Language Support
+- **11 Languages**: Python, JavaScript, TypeScript, Go, Ruby, Java, PHP, C#, Rust, Kotlin, Swift
+- **Smart Detection**: Automatically detects languages in your project
+- **Language-Aware Exclusions**: Python projects exclude `venv/`, JS projects exclude `node_modules/`, Go projects exclude `vendor/`
+- **Mixed Projects**: Handles polyglot codebases intelligently
+
 ---
 
 ## 🚀 Quick Start
@@ -227,6 +233,34 @@ AI-Powered Vulnerability Detection (Streaming Mode)
 ```
 
 **Learn more:** [Streaming Mode Documentation →](docs/STREAMING_MODE.md)
+
+---
+
+## 🌍 Supported Languages
+
+SecureVibes automatically detects and scans code in **11 programming languages**:
+
+| Language | Extensions | Auto-Excluded Directories |
+|----------|-----------|---------------------------|
+| Python | `.py`, `.pyw` | `venv/`, `env/`, `.venv/`, `__pycache__/`, `.pytest_cache/`, `.tox/`, `.eggs/`, `*.egg-info/` |
+| JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` | `node_modules/`, `.npm/`, `.yarn/` |
+| TypeScript | `.ts`, `.tsx` | `node_modules/`, `.npm/`, `.yarn/`, `dist/`, `build/` |
+| Go | `.go` | `vendor/`, `bin/`, `pkg/` |
+| Ruby | `.rb`, `.rake` | `vendor/`, `.bundle/`, `tmp/` |
+| Java | `.java` | `target/`, `build/`, `.gradle/`, `.m2/` |
+| PHP | `.php` | `vendor/`, `.composer/` |
+| C# | `.cs` | `bin/`, `obj/`, `packages/` |
+| Rust | `.rs` | `target/` |
+| Kotlin | `.kt`, `.kts` | `build/`, `.gradle/` |
+| Swift | `.swift` | `.build/`, `.swiftpm/`, `Packages/` |
+
+**Smart Exclusions:**
+- Only language-relevant directories are excluded (e.g., Python-only projects won't exclude `node_modules/`)
+- Common directories like `.git/`, `.svn/`, `.hg/` are always excluded
+- DAST phase can access `.claude/skills/` for dynamic testing capabilities
+
+**Mixed-Language Projects:**
+SecureVibes detects all languages present and applies combined exclusion rules. For example, a Python + TypeScript project will exclude both `venv/` and `node_modules/`.
 
 ---
 
