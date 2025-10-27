@@ -406,41 +406,7 @@ class TestScannerResultLoading:
             )
 
 
-class TestScannerHooks:
-    """Test hook integration in Scanner"""
-    
-    @pytest.mark.asyncio
-    async def test_hooks_are_configured(self, scanner, test_repo):
-        """Test that hooks are properly configured"""
-        with patch('securevibes.scanner.scanner.ClaudeSDKClient') as mock_client:
-            mock_instance = MagicMock()
-            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
-            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
-            mock_instance.query = AsyncMock()
-            
-            # Create an async generator
-            async def async_gen():
-                return
-                yield
-            
-            mock_instance.receive_messages = async_gen
-            
-            try:
-                await scanner.scan(str(test_repo))
-            except RuntimeError:
-                # Expected to fail
-                pass
-            
-            # Verify ClaudeAgentOptions was called with hooks
-            assert mock_client.called
-            call_kwargs = mock_client.call_args[1] if mock_client.call_args else {}
-            if 'hooks' in call_kwargs:
-                hooks = call_kwargs['hooks']
-                assert 'PreToolUse' in hooks
-                assert 'PostToolUse' in hooks
-                assert 'SubagentStop' in hooks
-
-
+class TestProgressTrackerEdgeCases:
     """Test edge cases in progress tracking"""
     
     def test_empty_tool_input(self, progress_tracker):

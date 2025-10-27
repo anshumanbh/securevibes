@@ -23,6 +23,12 @@ from securevibes.models.issue import SecurityIssue, Severity
 from securevibes.prompts.loader import load_prompt
 from securevibes.config import config, LanguageConfig, ScanConfig
 from securevibes.scanner.subagent_manager import SubAgentManager, ScanMode
+from securevibes.scanner.hooks import (
+    create_dast_security_hook,
+    create_pre_tool_hook,
+    create_post_tool_hook,
+    create_subagent_hook
+)
 
 # Constants for artifact paths
 SECUREVIBES_DIR = ".securevibes"
@@ -587,158 +593,11 @@ class Scanner:
         # Store detected languages for phase-specific exclusions
         detected_languages = LanguageConfig.detect_languages(repo) if repo else set()
         
-        # Create hooks as closures that capture the tracker
-        async def dast_security_hook(input_data: dict, tool_use_id: str, ctx: dict) -> dict:
-            """
-            Security hook: Block database manipulation tools in DAST Bash commands.
-            
-            DAST must simulate remote attackers who can only interact via HTTP.
-            Direct database access (sqlite3, psql, etc.) is blocked to ensure
-            realistic validation that requires proper test credentials.
-            """
-            tool_name = input_data.get("tool_name")
-            
-            # Only apply to DAST phase
-            if tracker.current_phase != "dast":
-                return {}
-            
-            # Only filter Bash commands
-            if tool_name != "Bash":
-                return {}
-            
-            tool_input = input_data.get("tool_input", {})
-            command = tool_input.get("command", "")
-            
-            # Block database CLI tools (centralized in config)
-            for tool in ScanConfig.BLOCKED_DB_TOOLS:
-                if tool in command:
-                    return {
-                        "hookSpecificOutput": {
-                            "hookEventName": "PreToolUse",
-                            "permissionDecision": "deny",
-                            "permissionDecisionReason": f"DAST cannot use '{tool}' - HTTP testing only",
-                            "reason": "Database manipulation not allowed - provide test accounts via --dast-accounts"
-                        }
-                    }
-            
-            return {}  # Allow command
-        
-        async def pre_tool_hook(input_data: dict, tool_use_id: str, ctx: dict) -> dict:
-            """Hook that fires before any tool executes"""
-            tool_name = input_data.get("tool_name")
-            tool_input = input_data.get("tool_input", {})
-
-            # Log Skill tool invocations (debug mode)
-            if tool_name == "Skill" and self.debug:
-                skill_name = tool_input.get("skill_name", "unknown")
-                self.console.print(
-                    f"  🎯 SKILL INVOKED: {skill_name}",
-                    style="bold cyan"
-                )
-
-            # Block reads from infrastructure directories
-            if tool_name in ["Read", "Grep", "Glob", "LS"]:
-                # Get phase-specific exclusions (DAST needs .claude/skills/ access)
-                active_exclude_dirs = ScanConfig.get_excluded_dirs_for_phase(
-                    tracker.current_phase or "assessment",
-                    detected_languages
-                )
-                # Extract path from tool input (different tools use different param names)
-                path = (tool_input.get("file_path") or 
-                       tool_input.get("path") or 
-                       tool_input.get("directory_path") or "")
-                
-                if path:
-                    # Check if path contains any excluded directory
-                    path_parts = Path(path).parts if path else []
-                    if any(excluded in path_parts for excluded in active_exclude_dirs):
-                        # Return empty result to skip this tool execution
-                        if self.debug:
-                            self.console.print(
-                                f"  ⏭️  Skipped: {path} (infrastructure directory)",
-                                style="dim yellow"
-                            )
-                        return {
-                            "override_result": {
-                                "content": f"Skipped: Infrastructure directory excluded from scan ({path})",
-                                "is_error": False
-                            }
-                        }
-                
-                # For Grep, inject excludePatterns to filter out infrastructure directories
-                if tool_name == "Grep":
-                    # Add exclude patterns for infrastructure directories
-                    exclude_patterns = [f"{excluded}/**" for excluded in active_exclude_dirs]
-                    
-                    # Add to existing excludePatterns if any, or create new
-                    existing_excludes = tool_input.get("excludePatterns", [])
-                    tool_input["excludePatterns"] = existing_excludes + exclude_patterns
-                    
-                    if self.debug:
-                        self.console.print(
-                            f"  🔍 Grep with exclusions: {len(exclude_patterns)} patterns",
-                            style="dim"
-                        )
-                
-                # For Glob, inject excludePatterns
-                if tool_name == "Glob":
-                    exclude_patterns = [f"{excluded}/**" for excluded in active_exclude_dirs]
-                    existing_excludes = tool_input.get("excludePatterns", [])
-                    tool_input["excludePatterns"] = existing_excludes + exclude_patterns
-            
-            # Enforce DAST write restrictions: only allow writing DAST_VALIDATION.json or /tmp/*
-            if tool_name == "Write" and tracker.current_phase == "dast":
-                file_path = tool_input.get("file_path", "")
-                if file_path:
-                    try:
-                        p = Path(file_path)
-                        # Allow primary artifact write
-                        allowed_artifact = p.name == "DAST_VALIDATION.json" and p.parent.name == ".securevibes"
-                        # Allow ephemeral temp writes under /tmp for helper code/data
-                        allowed_tmp = str(p).startswith("/tmp/")
-                        allowed = allowed_artifact or allowed_tmp
-                    except Exception:
-                        allowed = False
-                    if not allowed:
-                        # Block non-artifact writes during DAST phase
-                        return {
-                            "override_result": {
-                                "content": (
-                                    "DAST phase may only write .securevibes/DAST_VALIDATION.json. "
-                                    f"Blocked write to: {file_path}"
-                                ),
-                                "is_error": False
-                            }
-                        }
-
-            # No read redirection; DAST should read/write artifacts explicitly in .securevibes/
-
-            tracker.on_tool_start(tool_name, tool_input)
-            return {}
-
-        async def post_tool_hook(input_data: dict, tool_use_id: str, ctx: dict) -> dict:
-            """Hook that fires after a tool completes"""
-            tool_name = input_data.get("tool_name")
-            tool_input = input_data.get("tool_input", {})
-            tool_response = input_data.get("tool_response", {})
-            is_error = tool_response.get("is_error", False)
-            error_msg = tool_response.get("content", "") if is_error else None
-            tracker.on_tool_complete(tool_name, not is_error, error_msg)
-            # Additional success logs with full paths in debug mode
-            if self.debug and not is_error and tool_name in ("Read", "Write"):
-                p = tool_input.get("file_path") or tool_input.get("path")
-                if p:
-                    action = "✅ Read" if tool_name == "Read" else "✅ Wrote"
-                    self.console.print(f"  {action} {p}", style="dim green")
-            return {}
-
-        async def subagent_hook(input_data: dict, tool_use_id: str, ctx: dict) -> dict:
-            """Hook that fires when a sub-agent completes"""
-            agent_name = input_data.get("agent_name") or input_data.get("subagent_type")
-            duration_ms = input_data.get("duration_ms", 0)
-            if agent_name:
-                tracker.on_subagent_stop(agent_name, duration_ms)
-            return {}
+        # Create hooks using hook creator functions
+        dast_security_hook = create_dast_security_hook(tracker, self.console, self.debug)
+        pre_tool_hook = create_pre_tool_hook(tracker, self.console, self.debug, detected_languages)
+        post_tool_hook = create_post_tool_hook(tracker, self.console, self.debug)
+        subagent_hook = create_subagent_hook(tracker)
 
         # Configure agent options with hooks
         from claude_agent_sdk.types import HookMatcher
