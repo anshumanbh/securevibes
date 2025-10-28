@@ -10,13 +10,14 @@
 7. [Custom Tools & MCP Servers](#custom-tools--mcp-servers)
 8. [Hooks](#hooks)
 9. [Subagents](#subagents)
-10. [Slash Commands](#slash-commands)
-11. [Permissions & Security](#permissions--security)
-12. [Sessions & Context Management](#sessions--context-management)
-13. [Cost Tracking](#cost-tracking)
-14. [Error Handling](#error-handling)
-15. [Migration Guide](#migration-guide)
-16. [Best Practices](#best-practices)
+10. [Agent Skills](#agent-skills)
+11. [Slash Commands](#slash-commands)
+12. [Permissions & Security](#permissions--security)
+13. [Sessions & Context Management](#sessions--context-management)
+14. [Cost Tracking](#cost-tracking)
+15. [Error Handling](#error-handling)
+16. [Migration Guide](#migration-guide)
+17. [Best Practices](#best-practices)
 
 ## Introduction
 
@@ -44,7 +45,7 @@ The Claude Agent Python SDK is a powerful toolkit for building AI agents with Cl
 ### Requirements
 - Python 3.10 or higher
 - Node.js (for Claude Code CLI)
-- Claude Code CLI installed globally
+- Claude Code CLI 2.0.0+ installed globally (version checked automatically)
 
 ### Installation Steps
 
@@ -65,6 +66,9 @@ The SDK supports three authentication methods:
 Set your API key:
 ```bash
 export CLAUDE_API_KEY="your-api-key-here"
+
+# Optional: Skip version check if needed
+export CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK=1
 ```
 
 ## Quick Start
@@ -184,6 +188,24 @@ async def main():
     options = ClaudeAgentOptions(cwd=Path.home() / "project")
 
     async for message in query(prompt="List all Python files", options=options):
+        print(message)
+```
+
+### Custom CLI Path
+
+For organizations with non-standard Claude Code installations:
+
+```python
+from claude_agent_sdk import query, ClaudeAgentOptions
+
+async def main():
+    # Specify custom CLI path
+    options = ClaudeAgentOptions(
+        cli_path="/custom/path/to/claude",  # Custom installation location
+        cwd="/path/to/project"
+    )
+
+    async for message in query(prompt="Analyze the codebase", options=options):
         print(message)
 ```
 
@@ -331,6 +353,48 @@ calculator_server = create_sdk_mcp_server(
 )
 ```
 
+### Base64 Image Support (SDK 0.1.3+)
+
+Custom tools can now return base64-encoded images following the MCP standard:
+
+```python
+import base64
+from claude_agent_sdk import tool, create_sdk_mcp_server
+
+@tool("generate_chart", "Generate a data visualization chart", {"data": str, "chart_type": str})
+async def generate_chart(args):
+    """Generate a chart and return it as a base64-encoded image"""
+    # Your chart generation logic here
+    # For example, using matplotlib, plotly, etc.
+    chart_bytes = create_chart_image(args['data'], args['chart_type'])
+
+    # Encode to base64
+    encoded_image = base64.b64encode(chart_bytes).decode("utf-8")
+
+    return {
+        "content": [
+            {"type": "text", "text": f"Here's your {args['chart_type']} chart:"},
+            {
+                "type": "image",
+                "mimeType": "image/png",  # or "image/jpeg", "image/webp"
+                "data": encoded_image
+            }
+        ]
+    }
+
+# Create server with image-capable tool
+chart_server = create_sdk_mcp_server(
+    name="charts",
+    version="1.0.0",
+    tools=[generate_chart]
+)
+
+options = ClaudeAgentOptions(
+    mcp_servers={"charts": chart_server},
+    allowed_tools=["mcp__charts__generate_chart"]
+)
+```
+
 ### Mixed Server Support
 
 You can combine SDK servers (in-process) with external MCP servers:
@@ -357,6 +421,24 @@ options = ClaudeAgentOptions(
 
 Hooks provide deterministic processing at specific points in the Claude agent loop.
 
+### Strongly-Typed Hook Inputs (SDK 0.1.3+)
+
+The SDK provides typed input structures for better IDE autocomplete and type safety:
+- `PreToolUseHookInput` - Input data for pre-tool-use hooks
+- `PostToolUseHookInput` - Input data for post-tool-use hooks
+- `UserPromptSubmitHookInput` - Input data for user prompt submission hooks
+
+### Hook Output Fields
+
+Hook outputs can include:
+- `permissionDecision`: "approve" or "deny" (for PreToolUse hooks)
+- `permissionDecisionReason`: Explanation for the decision
+- `reason`: Additional reasoning information
+- `continue_`: Whether to continue processing (Python-safe name for `continue`)
+- `suppressOutput`: Whether to suppress output display
+- `stopReason`: Reason for stopping execution
+- `AsyncHookJSONOutput`: For deferred hook execution
+
 ### Pre-Tool-Use Hook Example
 
 ```python
@@ -379,8 +461,9 @@ async def security_check_hook(input_data, tool_use_id, context):
             return {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": f"Dangerous command pattern detected: {pattern}"
+                    "permissionDecision": "deny",  # Can also be "approve"
+                    "permissionDecisionReason": f"Dangerous command pattern detected: {pattern}",
+                    "reason": "Security policy violation"
                 }
             }
 
@@ -528,6 +611,348 @@ Always consider:
 - Data normalization
 - Transaction isolation levels
 ```
+
+## Agent Skills
+
+### What Are Agent Skills?
+
+Agent Skills extend Claude with specialized capabilities through filesystem-based instructions. Unlike custom tools (which are programmatic functions) or subagents (which are specialized agent personalities), Skills are:
+
+- **Model-Invoked**: Claude autonomously decides when to use them based on context
+- **Progressive**: Load content on-demand using a three-tier disclosure pattern
+- **Composable**: Multiple skills work together automatically
+- **Portable**: Work across Claude Code CLI, Messages API, and the Agent SDK
+
+Skills are particularly useful for:
+- Domain-specific workflows (security scanning, API generation, documentation)
+- Organization-specific patterns and guidelines
+- Complex multi-step processes with validation
+- Tasks requiring consistent, repeatable patterns
+
+### Enabling Skills in the SDK
+
+**CRITICAL**: The SDK does **NOT** load filesystem settings by default. You must explicitly enable them.
+
+```python
+from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
+
+async def use_skills():
+    options = ClaudeAgentOptions(
+        # REQUIRED: Enable filesystem settings
+        setting_sources=["project", "user"],  # Load from both .claude/skills/ and ~/.claude/skills/
+
+        # REQUIRED: Include Skill tool
+        allowed_tools=["Skill", "Read", "Write", "Bash"],
+
+        # REQUIRED: Set working directory containing .claude/
+        cwd="/path/to/your/project"
+    )
+
+    async with ClaudeSDKClient(options=options) as client:
+        await client.query("Use my custom API generation skill")
+
+        async for msg in client.receive_response():
+            print(msg)
+```
+
+### Skill Locations
+
+Skills are discovered from multiple filesystem locations:
+
+```python
+# Project skills (shared with team via git)
+# Location: {cwd}/.claude/skills/
+options = ClaudeAgentOptions(
+    setting_sources=["project"],
+    cwd="/path/to/project"
+)
+
+# Personal skills (user-specific, cross-project)
+# Location: ~/.claude/skills/
+options = ClaudeAgentOptions(
+    setting_sources=["user"]
+)
+
+# Both project and personal skills
+options = ClaudeAgentOptions(
+    setting_sources=["project", "user"],
+    cwd="/path/to/project"
+)
+```
+
+### Creating a Basic Skill
+
+Skills are defined using `SKILL.md` files with YAML frontmatter:
+
+```bash
+# Create project skill
+mkdir -p .claude/skills/api-generator
+
+# Create SKILL.md
+cat > .claude/skills/api-generator/SKILL.md << 'EOF'
+---
+name: api-generator
+description: Generate RESTful API endpoints following our team's architecture patterns. Use when creating new API routes, controllers, or modifying backend structure.
+---
+
+# API Endpoint Generator
+
+## Purpose
+This skill generates consistent RESTful API endpoints following our layered architecture.
+
+## Architecture Pattern
+We use:
+- **Routes**: Define HTTP methods and paths
+- **Controllers**: Handle request/response logic
+- **Services**: Contain business logic
+- **Models**: Define data structures
+
+## Workflow
+1. Identify the resource name (e.g., "user", "product")
+2. Create the model schema
+3. Generate the service layer with CRUD operations
+4. Create the controller with request validation
+5. Define routes with appropriate middleware
+6. Generate corresponding tests
+
+## Example
+Input: "Create a product endpoint"
+
+Output structure:
+- `models/product.py`
+- `services/product_service.py`
+- `controllers/product_controller.py`
+- `routes/product_routes.py`
+- `tests/test_product.py`
+EOF
+```
+
+**Key Points**:
+- `name`: Lowercase, hyphens only, descriptive (not vague like "helper")
+- `description`: What it does + when to use it + trigger keywords
+- Content: Clear instructions, examples, and workflow steps
+
+### SDK-Specific Limitations
+
+#### 1. allowed-tools Frontmatter Ignored
+
+The `allowed-tools` field in SKILL.md frontmatter **only works in Claude Code CLI**, not in the SDK:
+
+```yaml
+---
+name: my-skill
+description: My skill
+allowed-tools: Read, Grep, Glob  # ⚠️ IGNORED by Agent SDK
+---
+```
+
+**In the SDK**, control tool access through the main `allowed_tools` option:
+
+```python
+# This controls ALL skills in the SDK
+options = ClaudeAgentOptions(
+    allowed_tools=["Skill", "Read", "Grep", "Glob"],
+    setting_sources=["project"]
+)
+```
+
+#### 2. No Per-Skill Tool Restrictions
+
+The SDK applies the same tool permissions to all skills. For fine-grained control, use hooks:
+
+```python
+from claude_agent_sdk import ClaudeAgentOptions, HookMatcher
+
+async def skill_tool_validator(input_data, tool_use_id, context):
+    """Restrict tools based on context"""
+    tool_name = input_data["tool_name"]
+
+    # Implement custom logic
+    if should_block_tool(tool_name):
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": "Tool not allowed in this context"
+            }
+        }
+    return {}
+
+options = ClaudeAgentOptions(
+    setting_sources=["project"],
+    allowed_tools=["Skill", "Read", "Write", "Bash"],
+    hooks={
+        "PreToolUse": [
+            HookMatcher(matcher=".*", hooks=[skill_tool_validator])
+        ]
+    }
+)
+```
+
+### Common Issues and Solutions
+
+#### Skills Don't Load
+
+**Problem**: Claude doesn't use your skills
+
+**Checklist**:
+```python
+# ❌ Wrong - Default settings don't load skills
+options = ClaudeAgentOptions()
+
+# ✅ Correct - Explicitly enable settings
+options = ClaudeAgentOptions(
+    setting_sources=["project", "user"],  # Enable project and/or user skills
+    allowed_tools=["Skill"],               # Don't forget Skill tool
+    cwd="/path/to/project"                 # Directory with .claude/
+)
+```
+
+**Verification**:
+```python
+from pathlib import Path
+
+# Check if skills exist
+skills_dir = Path(".claude/skills")
+if skills_dir.exists():
+    skills = list(skills_dir.iterdir())
+    print(f"Found {len(skills)} skills: {[s.name for s in skills]}")
+else:
+    print("⚠️  No .claude/skills/ directory found")
+```
+
+#### Skill Tool Not Available
+
+**Problem**: Error about Skill tool not found
+
+**Solution**:
+```python
+# ❌ Wrong - "Skill" not in allowed_tools
+options = ClaudeAgentOptions(
+    setting_sources=["project"],
+    allowed_tools=["Read", "Write"]  # Missing "Skill"
+)
+
+# ✅ Correct - Include "Skill"
+options = ClaudeAgentOptions(
+    setting_sources=["project"],
+    allowed_tools=["Skill", "Read", "Write"]
+)
+```
+
+#### Skills in Wrong Location
+
+**Problem**: Skills not loading from expected location
+
+**Debug**:
+```python
+import os
+
+# Verify working directory
+print(f"CWD: {os.getcwd()}")
+
+# Use absolute path
+options = ClaudeAgentOptions(
+    setting_sources=["project"],
+    cwd="/absolute/path/to/project",  # Explicit path
+    allowed_tools=["Skill"]
+)
+```
+
+### Complete Working Example
+
+```python
+import anyio
+from pathlib import Path
+from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
+
+async def main():
+    # 1. Verify skills directory exists
+    project_root = Path("/path/to/project")
+    skills_dir = project_root / ".claude" / "skills"
+
+    if not skills_dir.exists():
+        print("⚠️  No skills directory found. Create one first!")
+        return
+
+    # 2. List available skills
+    skills = list(skills_dir.iterdir())
+    print(f"Available skills: {[s.name for s in skills]}")
+
+    # 3. Configure SDK with skills enabled
+    options = ClaudeAgentOptions(
+        setting_sources=["project", "user"],
+        allowed_tools=["Skill", "Read", "Write", "Edit", "Bash", "Grep", "Glob"],
+        cwd=str(project_root),
+        system_prompt="You are a helpful assistant with custom skills."
+    )
+
+    # 4. Use skills
+    async with ClaudeSDKClient(options=options) as client:
+        await client.query("Create a new API endpoint for user management")
+
+        async for msg in client.receive_response():
+            # Log skill activations
+            if hasattr(msg, 'content'):
+                for block in msg.content:
+                    if hasattr(block, 'type') and block.type == 'tool_use':
+                        if hasattr(block, 'name') and block.name == 'Skill':
+                            print(f"🎯 Skill activated: {block.input}")
+            print(msg)
+
+if __name__ == "__main__":
+    anyio.run(main)
+```
+
+### Best Practices
+
+1. **Always enable settings explicitly** - Don't rely on defaults
+2. **Include "Skill" in allowed_tools** - Required for activation
+3. **Use specific descriptions** - Include trigger keywords users would say
+4. **Keep SKILL.md under 500 lines** - Use progressive disclosure with separate files
+5. **Test across models** - Verify skills work with Haiku, Sonnet, and Opus
+6. **Version control project skills** - Share with team via git
+7. **Document prerequisites** - List required tools and dependencies
+
+### Team Distribution
+
+```bash
+# Developer A: Create and commit skill
+git add .claude/skills/api-generator/
+git commit -m "Add API generation skill"
+git push
+
+# Developer B: Pull and use
+git pull
+
+# Both developers use in SDK
+options = ClaudeAgentOptions(
+    setting_sources=["project"],  # Loads from .claude/skills/
+    allowed_tools=["Skill"]
+)
+```
+
+### Differences from Subagents and Custom Tools
+
+| Feature | Skills | Subagents | Custom Tools |
+|---------|--------|-----------|--------------|
+| **Definition** | Filesystem (.claude/skills/) | Filesystem or programmatic | Programmatic only |
+| **Invocation** | Claude decides based on context | Claude decides based on task | Claude calls as function |
+| **Content** | Instructions + resources | Agent personality + prompt | Executable code |
+| **Loading** | Progressive (on-demand) | Full context | Runtime registration |
+| **Sharing** | Via git (filesystem) | Via git or config | Via code import |
+| **SDK Config** | `setting_sources=["project"]` | `agents={}` dict | `mcp_servers={}` dict |
+
+### Further Reading
+
+For comprehensive skill development guidance including:
+- Progressive disclosure architecture
+- Best practices for skill design
+- Real-world examples (security scanner, React generator, DB migrations)
+- Advanced patterns (composition, state management, versioning)
+- Detailed troubleshooting
+
+See the [Comprehensive Agent Skills Guide](../AGENT_SKILLS_GUIDE.md).
 
 ## Slash Commands
 
@@ -992,8 +1417,7 @@ options = ClaudeCodeOptions()
 
 # New - explicit control
 options = ClaudeAgentOptions(
-    use_project_settings=True,    # Include project .claude/settings
-    use_personal_settings=False,  # Exclude personal settings
+    setting_sources=["project"],  # Include only project .claude/settings
 )
 ```
 
@@ -1139,6 +1563,30 @@ async for msg in query(very_long_prompt):
     print(msg)  # Could be expensive!
 ```
 
+### 7. Platform-Specific Considerations
+
+#### Windows Command Line Limits (SDK 0.1.3+)
+
+The SDK automatically handles Windows command line length limits (8191 characters) when using multiple subagents with long prompts. When the command line would exceed the limit, the SDK:
+- Automatically writes agents JSON to a temporary file
+- Uses Claude CLI's `@filepath` syntax to reference the file
+- Cleans up temporary files when the transport is closed
+
+This is handled transparently - no code changes required. The fallback only activates when needed on Windows systems.
+
+```python
+# This works seamlessly on Windows even with many subagents
+options = ClaudeAgentOptions(
+    agents={
+        'reviewer1': {'description': 'Code reviewer', 'prompt': '...[long prompt]...'},
+        'reviewer2': {'description': 'Security reviewer', 'prompt': '...[long prompt]...'},
+        'reviewer3': {'description': 'Performance reviewer', 'prompt': '...[long prompt]...'},
+        # ... more agents with long prompts
+    }
+)
+# SDK handles command line limits automatically
+```
+
 ## Conclusion
 
 The Claude Agent Python SDK provides a powerful, flexible framework for building AI agents with Claude. By following this guide and best practices, you can create robust, secure, and cost-effective AI applications.
@@ -1169,4 +1617,4 @@ The Claude Agent Python SDK provides a powerful, flexible framework for building
 
 ---
 
-*This guide covers Claude Agent SDK version 0.1.0 and above. For the latest updates and features, always refer to the official documentation.*
+*This guide covers Claude Agent SDK version 0.1.3 and above. For the latest updates and features, always refer to the official documentation.*

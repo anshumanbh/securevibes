@@ -1,8 +1,8 @@
 # 🛡️ SecureVibes
 
-**AI-Native Security System for Vibecoded Applications**
+**AI‑Native Security for Vibecoded Apps**
 
-SecureVibes uses **Claude's multi-agent architecture** to autonomously find security vulnerabilities in your codebase. Four specialized AI agents work together to deliver comprehensive, context-aware security analysis with concrete evidence.
+SecureVibes uses Claude’s multi‑agent architecture to find security issues with concrete evidence. Agents coordinate to map your architecture, model threats, review code, and generate a clear report. An optional DAST phase validates exploitability via HTTP testing using auto‑discovered skills.
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
@@ -44,26 +44,31 @@ Get your API key from: https://console.anthropic.com/
 
 ---
 
-## 🤖 Multi-Agent Architecture
+## 🤖 Agents
 
-SecureVibes orchestrates 4 specialized Claude agents:
+- Assessment → `SECURITY.md`
+- Threat Modeling (STRIDE) → `THREAT_MODEL.json`
+- Code Review → `VULNERABILITIES.json`
+- Report Generator → `scan_results.json`
+- DAST (optional) → `DAST_VALIDATION.json` (validates via HTTP when a matching skill exists)
 
-1. **Assessment Agent** - Maps codebase architecture and technology stack
-2. **Threat Modeling Agent** - Applies STRIDE methodology for realistic threats
-3. **Code Review Agent** - Uses security thinking framework to find vulnerabilities
-4. **Report Generator** - Compiles findings into actionable reports
+## 🌍 Supported Languages
 
-**Key Difference:** Unlike traditional pattern-matching tools, SecureVibes agents *understand* your code's context, architecture, and business logic to find novel vulnerabilities that static analysis misses.
+**11 Languages:** Python, JavaScript, TypeScript, Go, Ruby, Java, PHP, C#, Rust, Kotlin, Swift
+
+**Smart Features:**
+- Auto-detects languages in your project
+- Language-aware exclusions (Python: `venv/`, JS: `node_modules/`, Go: `vendor/`)
+- Handles mixed-language codebases intelligently
+
+For detailed language support and exclusion rules, see the [full documentation](https://github.com/anshumanbh/securevibes#-supported-languages).
 
 ---
 
-## 🎯 Common Use Cases
+## 🎯 Common Commands
 
 ```bash
 # Default: creates .securevibes/scan_report.md (markdown format)
-securevibes scan .
-
-# Real-time progress tracking (always enabled)
 securevibes scan .
 
 # Export JSON for CI/CD pipeline
@@ -83,13 +88,28 @@ securevibes scan . --model haiku
 
 # Quiet mode for automation
 securevibes scan . --quiet
+
+# Run individual sub-agents
+securevibes scan . --subagent assessment
+securevibes scan . --subagent code-review
+securevibes scan . --subagent report-generator
+
+# DAST (optional): skill‑gated dynamic validation
+securevibes scan . --subagent dast --target-url http://localhost:3000
+  # Validates only when a matching skill is available (e.g., IDOR)
+  # Writes .securevibes/DAST_VALIDATION.json; no ad‑hoc files in repo
+
+# Works with any supported language:
+securevibes scan /path/to/go-app        # Go project
+securevibes scan /path/to/ruby-app      # Ruby project
+securevibes scan /path/to/mixed-stack   # Multi-language project
 ```
 
 ---
 
 ## ⚙️ Configuration
 
-### Model Selection
+### Models
 
 SecureVibes uses a **three-tier priority system** for model selection:
 
@@ -114,10 +134,9 @@ export SECUREVIBES_CODE_REVIEW_MODEL=opus
 securevibes scan .  # Others use default (sonnet)
 ```
 
-**Available models:** `haiku` (fast/cheap), `sonnet` (balanced), `opus` (thorough/expensive)
+Models: `haiku` (fast/cheap), `sonnet` (balanced), `opus` (thorough/expensive)
 
-### Per-Agent Model Override
-
+### Per‑Agent Overrides
 Override specific agent models via environment variables:
 
 ```bash
@@ -133,16 +152,16 @@ export SECUREVIBES_MAX_TURNS=75  # Deeper analysis
 
 ---
 
-## 🐍 Python API
+## 🐍 Python API (minimal)
 
 ```python
 import asyncio
 from securevibes import Scanner
 
 async def main():
-    # Authentication is automatically handled by Claude Agent SDK via:
-    # - ANTHROPIC_API_KEY environment variable, or
-    # - Session token from `claude` CLI (run: claude, then /login)
+    # Auth via Claude Agent SDK:
+    # - ANTHROPIC_API_KEY or
+    # - Session token from `claude` CLI (/login)
     scanner = Scanner(
         model="sonnet",  # Use shorthand: sonnet, haiku, opus
         debug=True  # Show agent narration for verbose output

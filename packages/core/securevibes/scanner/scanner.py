@@ -21,7 +21,14 @@ from securevibes.agents.definitions import create_agent_definitions
 from securevibes.models.result import ScanResult
 from securevibes.models.issue import SecurityIssue, Severity
 from securevibes.prompts.loader import load_prompt
-from securevibes.config import config
+from securevibes.config import config, LanguageConfig, ScanConfig
+from securevibes.scanner.subagent_manager import SubAgentManager, ScanMode
+from securevibes.scanner.hooks import (
+    create_dast_security_hook,
+    create_pre_tool_hook,
+    create_post_tool_hook,
+    create_subagent_hook
+)
 
 # Constants for artifact paths
 SECUREVIBES_DIR = ".securevibes"
@@ -39,7 +46,7 @@ class ProgressTracker:
     to provide detailed progress feedback during long-running scans.
     """
     
-    def __init__(self, console: Console, debug: bool = False):
+    def __init__(self, console: Console, debug: bool = False, single_subagent: Optional[str] = None):
         self.console = console
         self.debug = debug
         self.current_phase = None
@@ -49,14 +56,31 @@ class ProgressTracker:
         self.subagent_stack = []  # Track nested subagents
         self.last_update = datetime.now()
         self.phase_start_time = None
+        self.single_subagent = single_subagent
         
-        # Phase display names
+        # Phase display names (DAST is optional, added dynamically)
         self.phase_display = {
             "assessment": "1/4: Architecture Assessment",
             "threat-modeling": "2/4: Threat Modeling (STRIDE Analysis)",
             "code-review": "3/4: Code Review (Security Analysis)",
-            "report-generator": "4/4: Report Generation"
+            "report-generator": "4/4: Report Generation",
+            "dast": "5/5: DAST Validation"
         }
+        
+        # Override display for single sub-agent mode
+        if single_subagent:
+            self.phase_display[single_subagent] = f"Sub-Agent 1/1: {self._get_subagent_title(single_subagent)}"
+    
+    def _get_subagent_title(self, subagent: str) -> str:
+        """Get human-readable title for sub-agent"""
+        titles = {
+            "assessment": "Architecture Assessment",
+            "threat-modeling": "Threat Modeling (STRIDE Analysis)",
+            "code-review": "Code Review (Security Analysis)",
+            "report-generator": "Report Generation",
+            "dast": "DAST Validation"
+        }
+        return titles.get(subagent, subagent)
     
     def announce_phase(self, phase_name: str):
         """Announce the start of a new phase"""
@@ -79,8 +103,6 @@ class ProgressTracker:
             file_path = tool_input.get("file_path", "")
             if file_path:
                 self.files_read.add(file_path)
-                filename = Path(file_path).name
-                self.console.print(f"  📖 Reading {filename}", style="dim")
         
         elif tool_name == "Grep":
             pattern = tool_input.get("pattern", "")
@@ -96,8 +118,6 @@ class ProgressTracker:
             file_path = tool_input.get("file_path", "")
             if file_path:
                 self.files_written.add(file_path)
-                filename = Path(file_path).name
-                self.console.print(f"  💾 Writing {filename}", style="cyan")
         
         elif tool_name == "Task":
             # Sub-agent orchestration
@@ -175,6 +195,8 @@ class ProgressTracker:
             self.console.print(f"   Created: {VULNERABILITIES_FILE}", style="green")
         elif agent_name == "report-generator" and SCAN_RESULTS_FILE in [Path(f).name for f in self.files_written]:
             self.console.print(f"   Created: {SCAN_RESULTS_FILE}", style="green")
+        elif agent_name == "dast" and "DAST_VALIDATION.json" in [Path(f).name for f in self.files_written]:
+            self.console.print(f"   Created: DAST_VALIDATION.json", style="green")
     
     def on_assistant_text(self, text: str):
         """Called when the assistant produces text output"""
@@ -221,7 +243,238 @@ class Scanner:
         self.debug = debug
         self.total_cost = 0.0
         self.console = Console()
-
+        
+        # DAST configuration
+        self.dast_enabled = False
+        self.dast_config = {}
+    
+    def configure_dast(
+        self,
+        target_url: str,
+        timeout: int = 120,
+        accounts_path: Optional[str] = None
+    ):
+        """
+        Configure DAST validation settings.
+        
+        Args:
+            target_url: Target URL for DAST testing
+            timeout: Timeout in seconds for DAST validation
+            accounts_path: Optional path to test accounts JSON file
+        """
+        self.dast_enabled = True
+        self.dast_config = {
+            "target_url": target_url,
+            "timeout": timeout,
+            "accounts_path": accounts_path
+        }
+    
+    def _setup_dast_skills(self, repo: Path):
+        """
+        Copy DAST skills to target project for SDK discovery.
+        
+        Skills are bundled with SecureVibes package and automatically
+        copied to each project's .claude/skills/dast/ directory.
+        
+        Args:
+            repo: Target repository path
+        """
+        import shutil
+        
+        target_skills_dir = repo / ".claude" / "skills" / "dast"
+        
+        # Skip if skills already exist
+        if target_skills_dir.exists():
+            if self.debug:
+                self.console.print("  ✓ DAST skills already present", style="dim green")
+            return
+        
+        # Get skills from package installation
+        package_skills_dir = Path(__file__).parent.parent / "skills" / "dast"
+        
+        if not package_skills_dir.exists():
+            raise RuntimeError(
+                f"DAST skills not found at {package_skills_dir}. "
+                "Package installation may be corrupted."
+            )
+        
+        # Copy skills to target project
+        try:
+            target_skills_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(package_skills_dir, target_skills_dir, dirs_exist_ok=True)
+            
+            if self.debug:
+                self.console.print(
+                    f"  📦 Copied DAST skills to .claude/skills/dast/",
+                    style="dim green"
+                )
+        
+        except (OSError, PermissionError) as e:
+            raise RuntimeError(f"Failed to copy DAST skills: {e}")
+    
+    async def scan_subagent(
+        self,
+        repo_path: str,
+        subagent: str,
+        force: bool = False,
+        skip_checks: bool = False
+    ) -> ScanResult:
+        """
+        Run a single sub-agent with artifact validation.
+        
+        Args:
+            repo_path: Path to repository to scan
+            subagent: Sub-agent name to execute
+            force: Skip confirmation prompts
+            skip_checks: Skip artifact validation
+        
+        Returns:
+            ScanResult with findings
+        """
+        repo = Path(repo_path).resolve()
+        manager = SubAgentManager(repo, quiet=False)
+        
+        # Validate prerequisites unless skipped
+        if not skip_checks:
+            is_valid, error = manager.validate_prerequisites(subagent)
+            
+            if not is_valid:
+                deps = manager.get_subagent_dependencies(subagent)
+                required = deps["requires"]
+                
+                self.console.print(f"[bold red]❌ Error:[/bold red] '{subagent}' requires {required}")
+                self.console.print(f"\n.securevibes/{required} not found.\n")
+                
+                # Offer to run prerequisites
+                self.console.print("Options:")
+                self.console.print(f"  1. Run from prerequisite sub-agents (includes {subagent})")
+                self.console.print("  2. Run full scan (all sub-agents)")
+                self.console.print("  3. Cancel")
+                
+                import click
+                choice = click.prompt("\nChoice", type=int, default=3, show_default=False)
+                
+                if choice == 1:
+                    # Find which sub-agent creates the required artifact
+                    from securevibes.scanner.subagent_manager import SUBAGENT_ARTIFACTS, SUBAGENT_ORDER
+                    for sa_name in SUBAGENT_ORDER:
+                        if SUBAGENT_ARTIFACTS[sa_name]["creates"] == required:
+                            return await self.scan_resume(repo_path, sa_name, force, skip_checks)
+                    raise RuntimeError(f"Could not find sub-agent that creates {required}")
+                elif choice == 2:
+                    return await self.scan(repo_path)
+                else:
+                    raise RuntimeError("Scan cancelled by user")
+            
+            # Check if prerequisite exists and prompt user
+            deps = manager.get_subagent_dependencies(subagent)
+            if deps["requires"]:
+                artifact_status = manager.check_artifact(deps["requires"])
+                if artifact_status.exists and artifact_status.valid:
+                    mode = manager.prompt_user_choice(subagent, artifact_status, force)
+                    
+                    if mode == ScanMode.CANCEL:
+                        raise RuntimeError("Scan cancelled by user")
+                    elif mode == ScanMode.FULL_RESCAN:
+                        # Run full scan
+                        return await self.scan(repo_path)
+                    # else: ScanMode.USE_EXISTING - continue with single sub-agent
+        
+        # Set environment variable to run only this sub-agent
+        os.environ["RUN_ONLY_SUBAGENT"] = subagent
+        
+        # Auto-enable DAST if running dast sub-agent
+        if subagent == "dast" and self.dast_enabled:
+            os.environ["DAST_ENABLED"] = "true"
+            os.environ["DAST_TARGET_URL"] = self.dast_config["target_url"]
+            os.environ["DAST_TIMEOUT"] = str(self.dast_config["timeout"])
+            if self.dast_config.get("accounts_path"):
+                accounts_file = Path(self.dast_config["accounts_path"])
+                if accounts_file.exists():
+                    # Copy to .securevibes/ where agent can read it
+                    securevibes_dir = repo / ".securevibes"
+                    target_accounts = securevibes_dir / "DAST_TEST_ACCOUNTS.json"
+                    target_accounts.write_text(accounts_file.read_text())
+        
+        # Run scan with single sub-agent
+        return await self._execute_scan(repo, single_subagent=subagent)
+    
+    async def scan_resume(
+        self,
+        repo_path: str,
+        from_subagent: str,
+        force: bool = False,
+        skip_checks: bool = False
+    ) -> ScanResult:
+        """
+        Resume scan from a specific sub-agent onwards.
+        
+        Args:
+            repo_path: Path to repository to scan
+            from_subagent: Sub-agent to resume from
+            force: Skip confirmation prompts
+            skip_checks: Skip artifact validation
+        
+        Returns:
+            ScanResult with findings
+        """
+        repo = Path(repo_path).resolve()
+        manager = SubAgentManager(repo, quiet=False)
+        
+        # Get list of sub-agents to run
+        subagents_to_run = manager.get_resume_subagents(from_subagent)
+        
+        # Validate prerequisites unless skipped
+        if not skip_checks:
+            is_valid, error = manager.validate_prerequisites(from_subagent)
+            
+            if not is_valid:
+                self.console.print(f"[bold red]❌ Error:[/bold red] {error}")
+                raise RuntimeError(error)
+            
+            # Show what will be run
+            self.console.print(f"\n🔍 Resuming from '{from_subagent}' sub-agent...")
+            deps = manager.get_subagent_dependencies(from_subagent)
+            if deps["requires"]:
+                artifact_status = manager.check_artifact(deps["requires"])
+                if artifact_status.exists:
+                    self.console.print(f"✓ Found: .securevibes/{deps['requires']} (prerequisite for {from_subagent})", style="green")
+            
+            self.console.print(f"\nWill run: {' → '.join(subagents_to_run)}")
+            if "dast" not in subagents_to_run and not self.dast_enabled:
+                self.console.print("(DAST not enabled - use --dast --target-url to include)")
+            
+            if not force:
+                import click
+                if not click.confirm("\nProceed?", default=True):
+                    raise RuntimeError("Scan cancelled by user")
+        
+        # Set environment variables for resume mode
+        os.environ["RESUME_FROM_SUBAGENT"] = from_subagent
+        
+        # Calculate which sub-agents to skip
+        from securevibes.scanner.subagent_manager import SUBAGENT_ORDER
+        skip_index = SUBAGENT_ORDER.index(from_subagent)
+        skip_subagents = SUBAGENT_ORDER[:skip_index]
+        if skip_subagents:
+            os.environ["SKIP_SUBAGENTS"] = ",".join(skip_subagents)
+        
+        # Configure DAST if enabled and in resume list
+        if "dast" in subagents_to_run and self.dast_enabled:
+            os.environ["DAST_ENABLED"] = "true"
+            os.environ["DAST_TARGET_URL"] = self.dast_config["target_url"]
+            os.environ["DAST_TIMEOUT"] = str(self.dast_config["timeout"])
+            if self.dast_config.get("accounts_path"):
+                accounts_file = Path(self.dast_config["accounts_path"])
+                if accounts_file.exists():
+                    # Copy to .securevibes/ where agent can read it
+                    securevibes_dir = repo / ".securevibes"
+                    target_accounts = securevibes_dir / "DAST_TEST_ACCOUNTS.json"
+                    target_accounts.write_text(accounts_file.read_text())
+        
+        # Run scan from this sub-agent onwards
+        return await self._execute_scan(repo, resume_from=from_subagent)
+    
     async def scan(self, repo_path: str) -> ScanResult:
         """
         Run complete security scan with real-time progress streaming.
@@ -235,7 +488,40 @@ class Scanner:
         repo = Path(repo_path).resolve()
         if not repo.exists():
             raise ValueError(f"Repository path does not exist: {repo_path}")
-
+        
+        # Configure DAST environment variables if enabled
+        if self.dast_enabled:
+            os.environ["DAST_ENABLED"] = "true"
+            os.environ["DAST_TARGET_URL"] = self.dast_config["target_url"]
+            os.environ["DAST_TIMEOUT"] = str(self.dast_config["timeout"])
+            
+            if self.dast_config.get("accounts_path"):
+                accounts_file = Path(self.dast_config["accounts_path"])
+                if accounts_file.exists():
+                    # Copy to .securevibes/ where agent can read it
+                    securevibes_dir = repo / ".securevibes"
+                    target_accounts = securevibes_dir / "DAST_TEST_ACCOUNTS.json"
+                    target_accounts.write_text(accounts_file.read_text())
+        
+        return await self._execute_scan(repo)
+    
+    async def _execute_scan(
+        self,
+        repo: Path,
+        single_subagent: Optional[str] = None,
+        resume_from: Optional[str] = None
+    ) -> ScanResult:
+        """
+        Internal method to execute scan with optional sub-agent filtering.
+        
+        Args:
+            repo: Repository path (already resolved)
+            single_subagent: If set, run only this sub-agent
+            resume_from: If set, resume from this sub-agent onwards
+        
+        Returns:
+            ScanResult with findings
+        """
         # Ensure .securevibes directory exists
         securevibes_dir = repo / SECUREVIBES_DIR
         try:
@@ -246,10 +532,55 @@ class Scanner:
         # Track scan timing
         scan_start_time = time.time()
         
-        # Count files for reporting
-        files_scanned = len(list(repo.glob('**/*.py'))) + len(list(repo.glob('**/*.ts'))) + \
-                       len(list(repo.glob('**/*.js'))) + len(list(repo.glob('**/*.tsx'))) + \
-                       len(list(repo.glob('**/*.jsx')))
+        # Detect languages in repository for smart exclusions
+        detected_languages = LanguageConfig.detect_languages(repo)
+        if self.debug:
+            self.console.print(f"  📋 Detected languages: {', '.join(sorted(detected_languages)) or 'none'}", style="dim")
+        
+        # Get language-aware exclusions
+        exclude_dirs = ScanConfig.get_excluded_dirs(detected_languages)
+        
+        # Count files for reporting (exclude infrastructure directories)
+        def should_scan(file_path: Path) -> bool:
+            """Check if file should be included in security scan"""
+            return not any(excluded in file_path.parts for excluded in exclude_dirs)
+        
+        # Collect all supported code files
+        all_code_files = []
+        for lang, extensions in LanguageConfig.SUPPORTED_LANGUAGES.items():
+            for ext in extensions:
+                files = [f for f in repo.glob(f'**/*{ext}') if should_scan(f)]
+                all_code_files.extend(files)
+        
+        files_scanned = len(all_code_files)
+
+        # Setup DAST skills if DAST will be executed
+        if single_subagent:
+            needs_dast = single_subagent == "dast"
+        elif resume_from:
+            from securevibes.scanner.subagent_manager import SubAgentManager
+            manager = SubAgentManager(repo, quiet=False)
+            needs_dast = "dast" in manager.get_resume_subagents(resume_from)
+        else:
+            needs_dast = self.dast_enabled
+        
+        if needs_dast:
+            self._setup_dast_skills(repo)
+
+        # Verify skills are available (debug mode)
+        if self.debug:
+            skills_dir = repo / ".claude" / "skills"
+            if skills_dir.exists():
+                skills = [d.name for d in skills_dir.iterdir() if d.is_dir()]
+                if skills:
+                    self.console.print(
+                        f"  ✅ Skills directory found: {len(skills)} skill(s) available: {', '.join(skills)}",
+                        style="dim green"
+                    )
+                else:
+                    self.console.print("  ⚠️  Skills directory exists but is empty", style="dim yellow")
+            else:
+                self.console.print("  ℹ️  No skills directory found (.claude/skills/)", style="dim")
 
         # Show scan info (banner already printed by CLI)
         self.console.print(f"📁 Scanning: {repo}")
@@ -257,32 +588,16 @@ class Scanner:
         self.console.print("="*60)
 
         # Initialize progress tracker
-        tracker = ProgressTracker(self.console, debug=self.debug)
+        tracker = ProgressTracker(self.console, debug=self.debug, single_subagent=single_subagent)
 
-        # Create hooks as closures that capture the tracker
-        async def pre_tool_hook(input_data: dict, tool_use_id: str, ctx: dict) -> dict:
-            """Hook that fires before any tool executes"""
-            tool_name = input_data.get("tool_name")
-            tool_input = input_data.get("tool_input", {})
-            tracker.on_tool_start(tool_name, tool_input)
-            return {}
-
-        async def post_tool_hook(input_data: dict, tool_use_id: str, ctx: dict) -> dict:
-            """Hook that fires after a tool completes"""
-            tool_name = input_data.get("tool_name")
-            tool_response = input_data.get("tool_response", {})
-            is_error = tool_response.get("is_error", False)
-            error_msg = tool_response.get("content", "") if is_error else None
-            tracker.on_tool_complete(tool_name, not is_error, error_msg)
-            return {}
-
-        async def subagent_hook(input_data: dict, tool_use_id: str, ctx: dict) -> dict:
-            """Hook that fires when a sub-agent completes"""
-            agent_name = input_data.get("agent_name") or input_data.get("subagent_type")
-            duration_ms = input_data.get("duration_ms", 0)
-            if agent_name:
-                tracker.on_subagent_stop(agent_name, duration_ms)
-            return {}
+        # Store detected languages for phase-specific exclusions
+        detected_languages = LanguageConfig.detect_languages(repo) if repo else set()
+        
+        # Create hooks using hook creator functions
+        dast_security_hook = create_dast_security_hook(tracker, self.console, self.debug)
+        pre_tool_hook = create_pre_tool_hook(tracker, self.console, self.debug, detected_languages)
+        post_tool_hook = create_post_tool_hook(tracker, self.console, self.debug)
+        subagent_hook = create_subagent_hook(tracker)
 
         # Configure agent options with hooks
         from claude_agent_sdk.types import HookMatcher
@@ -290,15 +605,31 @@ class Scanner:
         # Create agent definitions with CLI model override
         # This allows --model flag to cascade to all agents while respecting env vars
         agents = create_agent_definitions(cli_model=self.model)
-        
+
+        # Skills configuration:
+        # - Skills must be explicitly enabled via setting_sources=["project"]
+        # - Skills are discovered from {repo}/.claude/skills/ when settings are enabled
+        # - The DAST agent has "Skill" in its tools to access loaded skills
+
         options = ClaudeAgentOptions(
             agents=agents,
             cwd=str(repo),
+
+            # REQUIRED: Enable filesystem settings to load skills from .claude/skills/
+            setting_sources=["project"],
+
+            # Explicit global tools (recommended for clarity)
+            # Individual agents may have more restrictive tool lists
+            allowed_tools=["Skill", "Read", "Write", "Edit", "Bash", "Grep", "Glob", "LS"],
+
             max_turns=config.get_max_turns(),
             permission_mode='bypassPermissions',
             model=self.model,
             hooks={
-                "PreToolUse": [HookMatcher(hooks=[pre_tool_hook])],
+                "PreToolUse": [
+                    HookMatcher(hooks=[dast_security_hook]),  # DAST security - blocks database tools
+                    HookMatcher(hooks=[pre_tool_hook])        # General pre-tool processing
+                ],
                 "PostToolUse": [HookMatcher(hooks=[post_tool_hook])],
                 "SubagentStop": [HookMatcher(hooks=[subagent_hook])]
             }
@@ -348,6 +679,150 @@ class Scanner:
         except RuntimeError as e:
             self.console.print(f"❌ Error loading scan results: {e}", style="bold red")
             raise
+
+    def _regenerate_artifacts(self, scan_result: ScanResult, securevibes_dir: Path):
+        """
+        Regenerate JSON and Markdown reports with merged DAST validation data.
+        
+        Args:
+            scan_result: Scan result with merged DAST data
+            securevibes_dir: Path to .securevibes directory
+        """
+        try:
+            # Regenerate JSON report
+            from securevibes.reporters.json_reporter import JSONReporter
+            json_file = securevibes_dir / SCAN_RESULTS_FILE
+            JSONReporter.save(scan_result, json_file)
+            
+            # Regenerate Markdown report
+            from securevibes.reporters.markdown_reporter import MarkdownReporter
+            md_output = MarkdownReporter.generate(scan_result)
+            md_file = securevibes_dir / "scan_report.md"
+            with open(md_file, 'w') as f:
+                f.write(md_output)
+            
+            if self.debug:
+                self.console.print(
+                    "✅ Regenerated reports with DAST validation data",
+                    style="green"
+                )
+        
+        except Exception as e:
+            if self.debug:
+                self.console.print(
+                    f"⚠️  Warning: Failed to regenerate artifacts: {e}",
+                    style="yellow"
+                )
+
+    def _merge_dast_results(self, scan_result: ScanResult, securevibes_dir: Path) -> ScanResult:
+        """
+        Merge DAST validation data into scan results.
+        
+        Args:
+            scan_result: The base scan result with issues
+            securevibes_dir: Path to .securevibes directory
+            
+        Returns:
+            Updated ScanResult with DAST validation merged
+        """
+        dast_file = securevibes_dir / "DAST_VALIDATION.json"
+        if not dast_file.exists():
+            return scan_result
+        
+        try:
+            with open(dast_file) as f:
+                dast_data = json.load(f)
+            
+            # Extract DAST metadata
+            metadata = dast_data.get("dast_scan_metadata", {})
+            validations = dast_data.get("validations", [])
+            
+            if not validations:
+                return scan_result
+            
+            # Build lookup map: vulnerability_id -> validation data
+            validation_map = {}
+            for validation in validations:
+                vuln_id = validation.get("vulnerability_id")
+                if vuln_id:
+                    validation_map[vuln_id] = validation
+            
+            # Merge validation data into issues
+            from securevibes.models.issue import ValidationStatus
+            
+            updated_issues = []
+            validated_count = 0
+            false_positive_count = 0
+            unvalidated_count = 0
+            
+            for issue in scan_result.issues:
+                # Try to find matching validation by issue ID
+                validation = validation_map.get(issue.id)
+                
+                if validation:
+                    # Parse validation status
+                    status_str = validation.get("validation_status", "UNVALIDATED")
+                    try:
+                        validation_status = ValidationStatus[status_str]
+                    except KeyError:
+                        validation_status = ValidationStatus.UNVALIDATED
+                    
+                    # Update issue with DAST data
+                    issue.validation_status = validation_status
+                    issue.validated_at = validation.get("tested_at")
+                    issue.exploitability_score = validation.get("exploitability_score")
+                    
+                    # Build evidence dict from DAST data
+                    if validation.get("evidence"):
+                        issue.dast_evidence = validation["evidence"]
+                    elif validation.get("test_steps") or validation.get("reason") or validation.get("notes"):
+                        # Create evidence from available fields
+                        evidence = {}
+                        if validation.get("test_steps"):
+                            evidence["test_steps"] = validation["test_steps"]
+                        if validation.get("reason"):
+                            evidence["reason"] = validation["reason"]
+                        if validation.get("notes"):
+                            evidence["notes"] = validation["notes"]
+                        issue.dast_evidence = evidence
+                    
+                    # Track counts
+                    if validation_status == ValidationStatus.VALIDATED:
+                        validated_count += 1
+                    elif validation_status == ValidationStatus.FALSE_POSITIVE:
+                        false_positive_count += 1
+                    else:
+                        unvalidated_count += 1
+                
+                updated_issues.append(issue)
+            
+            # Update scan result
+            scan_result.issues = updated_issues
+            
+            # Update DAST metrics
+            total_tested = metadata.get("total_vulnerabilities_tested", len(validations))
+            if total_tested > 0:
+                scan_result.dast_enabled = True
+                scan_result.dast_validation_rate = validated_count / total_tested
+                scan_result.dast_false_positive_rate = false_positive_count / total_tested
+                scan_result.dast_scan_time_seconds = metadata.get("scan_duration_seconds", 0)
+            
+            if self.debug:
+                self.console.print(
+                    f"✅ Merged DAST results: {validated_count} validated, "
+                    f"{false_positive_count} false positives, {unvalidated_count} unvalidated",
+                    style="green"
+                )
+            
+            return scan_result
+            
+        except (OSError, json.JSONDecodeError) as e:
+            if self.debug:
+                self.console.print(
+                    f"⚠️  Warning: Failed to merge DAST results: {e}",
+                    style="yellow"
+                )
+            return scan_result
 
     def _load_scan_results(
         self,
@@ -408,6 +883,14 @@ class Scanner:
                         scan_time_seconds=round(scan_duration, 2),
                         total_cost_usd=self.total_cost
                     )
+                    
+                    # Merge DAST validation results if available
+                    scan_result = self._merge_dast_results(scan_result, securevibes_dir)
+                    
+                    # Regenerate artifacts with merged validation data
+                    if scan_result.dast_enabled:
+                        self._regenerate_artifacts(scan_result, securevibes_dir)
+                    
                     return scan_result
                     
             except (OSError, PermissionError, json.JSONDecodeError) as e:
@@ -463,6 +946,14 @@ class Scanner:
                     scan_time_seconds=round(scan_duration, 2),
                     total_cost_usd=self.total_cost
                 )
+                
+                # Merge DAST validation results if available
+                scan_result = self._merge_dast_results(scan_result, securevibes_dir)
+                
+                # Regenerate artifacts with merged validation data
+                if scan_result.dast_enabled:
+                    self._regenerate_artifacts(scan_result, securevibes_dir)
+                
                 return scan_result
                 
             except (OSError, PermissionError, json.JSONDecodeError, ValueError) as e:

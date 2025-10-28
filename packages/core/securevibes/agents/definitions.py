@@ -69,6 +69,13 @@ def create_agent_definitions(cli_model: Optional[str] = None) -> Dict[str, Agent
             prompt=AGENT_PROMPTS["report_generator"],
             tools=["Read", "Write"],
             model=config.get_agent_model("report_generator", cli_override=cli_model)
+        ),
+
+        "dast": AgentDefinition(
+            description="Validates vulnerabilities via HTTP testing ONLY when a matching Agent Skill is available; otherwise reports UNVALIDATED",
+            prompt=AGENT_PROMPTS["dast"],
+            tools=["Read", "Write", "Skill", "Bash"],
+            model=config.get_agent_model("dast", cli_override=cli_model)
         )
     }
 

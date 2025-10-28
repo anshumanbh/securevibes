@@ -26,11 +26,12 @@ classifiers = [
 ]
 
 dependencies = [
-    "claude-agent-sdk>=0.1.0",
+    "claude-agent-sdk>=0.1.4",
     "anyio>=4.0.0",
     "python-dotenv>=1.0.0",
     "click>=8.0.0",
     "rich>=13.0.0",
+    "requests>=2.31.0",
 ]
 
 [project.scripts]
@@ -55,7 +56,10 @@ where = ["."]
 include = ["securevibes*"]
 
 [tool.setuptools.package-data]
-securevibes = ["prompts/**/*.txt"]
+securevibes = [
+    "prompts/**/*.txt",
+    "skills/**/*"
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

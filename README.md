@@ -15,7 +15,14 @@ SecureVibes uses **Claude's multi-agent architecture** to autonomously find secu
 - **📐 Assessment Agent**: Maps your codebase architecture
 - **🎯 Threat Modeling Agent**: Architecture-driven STRIDE threat analysis
 - **🔍 Code Review Agent**: Security thinking methodology to find vulnerabilities
+- **🧪 DAST Agent**: Dynamic testing with auto-bundled skills
 - **📊 Report Generator**: Compiles comprehensive scan results
+
+### Multi-Language Support
+- **11 Languages**: Python, JavaScript, TypeScript, Go, Ruby, Java, PHP, C#, Rust, Kotlin, Swift
+- **Smart Detection**: Automatically detects languages in your project
+- **Language-Aware Exclusions**: Python projects exclude `venv/`, JS projects exclude `node_modules/`, Go projects exclude `vendor/`
+- **Mixed Projects**: Handles polyglot codebases intelligently
 
 ---
 
@@ -92,6 +99,56 @@ securevibes scan . --debug
 
 # Quiet mode
 securevibes scan . --quiet
+```
+
+### Running Individual Sub-Agents
+
+SecureVibes breaks down security scanning into 5 sub-agents. You can run them individually to save time and API costs:
+
+```bash
+# Run specific sub-agent only
+securevibes scan . --subagent assessment
+securevibes scan . --subagent threat-modeling
+securevibes scan . --subagent code-review
+securevibes scan . --subagent report-generator
+securevibes scan . --subagent dast --target-url http://localhost:3000
+
+# Resume from specific sub-agent onwards
+securevibes scan . --resume-from code-review
+securevibes scan . --resume-from dast --dast --target-url http://localhost:3000
+
+# Force execution without prompts (CI/CD mode)
+securevibes scan . --subagent dast --target-url http://localhost:3000 --force
+
+# Skip artifact validation checks
+securevibes scan . --subagent code-review --skip-checks
+```
+
+**Sub-Agent Dependencies:**
+- `assessment` → Creates `SECURITY.md`
+- `threat-modeling` → Needs `SECURITY.md` → Creates `THREAT_MODEL.json`
+- `code-review` → Needs `THREAT_MODEL.json` → Creates `VULNERABILITIES.json`
+- `report-generator` → Needs `VULNERABILITIES.json` → Creates `scan_results.json`
+- `dast` → Needs `VULNERABILITIES.json` → Creates `DAST_VALIDATION.json`
+
+**Interactive Workflow:**
+
+When running a sub-agent, SecureVibes checks for existing artifacts:
+
+```bash
+$ securevibes scan . --subagent dast --target-url http://localhost:3000
+
+🔍 Checking prerequisites for 'dast' sub-agent...
+✓ Found: .securevibes/VULNERABILITIES.json (modified: 2h ago, 10 issues)
+
+⚠️  Re-running DAST will overwrite existing results.
+
+Options:
+  1. Use existing VULNERABILITIES.json and run DAST only [default]
+  2. Re-run entire scan (all sub-agents)
+  3. Cancel
+
+Choice [1]:
 ```
 
 **Example output:**
@@ -176,6 +233,34 @@ AI-Powered Vulnerability Detection (Streaming Mode)
 ```
 
 **Learn more:** [Streaming Mode Documentation →](docs/STREAMING_MODE.md)
+
+---
+
+## 🌍 Supported Languages
+
+SecureVibes automatically detects and scans code in **11 programming languages**:
+
+| Language | Extensions | Auto-Excluded Directories |
+|----------|-----------|---------------------------|
+| Python | `.py`, `.pyw` | `venv/`, `env/`, `.venv/`, `__pycache__/`, `.pytest_cache/`, `.tox/`, `.eggs/`, `*.egg-info/` |
+| JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` | `node_modules/`, `.npm/`, `.yarn/` |
+| TypeScript | `.ts`, `.tsx` | `node_modules/`, `.npm/`, `.yarn/`, `dist/`, `build/` |
+| Go | `.go` | `vendor/`, `bin/`, `pkg/` |
+| Ruby | `.rb`, `.rake` | `vendor/`, `.bundle/`, `tmp/` |
+| Java | `.java` | `target/`, `build/`, `.gradle/`, `.m2/` |
+| PHP | `.php` | `vendor/`, `.composer/` |
+| C# | `.cs` | `bin/`, `obj/`, `packages/` |
+| Rust | `.rs` | `target/` |
+| Kotlin | `.kt`, `.kts` | `build/`, `.gradle/` |
+| Swift | `.swift` | `.build/`, `.swiftpm/`, `Packages/` |
+
+**Smart Exclusions:**
+- Only language-relevant directories are excluded (e.g., Python-only projects won't exclude `node_modules/`)
+- Common directories like `.git/`, `.svn/`, `.hg/` are always excluded
+- DAST phase can access `.claude/skills/` for dynamic testing capabilities
+
+**Mixed-Language Projects:**
+SecureVibes detects all languages present and applies combined exclusion rules. For example, a Python + TypeScript project will exclude both `venv/` and `node_modules/`.
 
 ---
 

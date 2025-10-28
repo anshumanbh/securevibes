@@ -57,6 +57,13 @@ class MarkdownReporter:
         if result.total_cost_usd > 0:
             lines.append(f"**Total Cost:** ${result.total_cost_usd:.4f}  ")
         
+        # DAST metrics if enabled
+        if result.dast_enabled:
+            lines.append(f"**DAST Enabled:** ✓ Yes  ")
+            lines.append(f"**Validation Rate:** {result.dast_validation_rate:.1f}%  ")
+            if result.dast_scan_time_seconds > 0:
+                lines.append(f"**DAST Time:** {result.dast_scan_time_seconds:.1f}s  ")
+        
         lines.append("")
         lines.append("---")
         lines.append("")
@@ -93,6 +100,14 @@ class MarkdownReporter:
                 lines.append(f"- 🟡 **{result.medium_count} Medium** - Address when possible")
             if result.low_count > 0:
                 lines.append(f"- 🟢 **{result.low_count} Low** - Minor issues")
+            
+            # DAST validation summary
+            if result.dast_enabled:
+                lines.append("")
+                lines.append("**DAST Validation Status:**")
+                lines.append(f"- ✅ {len(result.validated_issues)} Validated")
+                lines.append(f"- ❌ {len(result.false_positives)} False Positives")
+                lines.append(f"- ❓ {len(result.unvalidated_issues)} Unvalidated")
         else:
             lines.append("## Executive Summary")
             lines.append("")
@@ -142,7 +157,18 @@ class MarkdownReporter:
             
             for idx, issue in enumerate(result.issues, 1):
                 icon = severity_icons.get(issue.severity.value, '⚪')
-                severity_text = f"{icon} {issue.severity.value.upper()}"
+                
+                # Add validation badge if DAST enabled
+                if result.dast_enabled and issue.validation_status:
+                    validation_badge = {
+                        'VALIDATED': ' ✅',
+                        'FALSE_POSITIVE': ' ❌',
+                        'UNVALIDATED': ' ❓',
+                        'PARTIAL': ' ⚠️'
+                    }.get(issue.validation_status.value, '')
+                    severity_text = f"{icon} {issue.severity.value.upper()}{validation_badge}"
+                else:
+                    severity_text = f"{icon} {issue.severity.value.upper()}"
                 
                 # Truncate title if too long for table
                 title = issue.title[:60] + "..." if len(issue.title) > 60 else issue.title
@@ -173,6 +199,20 @@ class MarkdownReporter:
                 if issue.cwe_id:
                     lines.append(f"**CWE:** {issue.cwe_id}  ")
                 lines.append(f"**Severity:** {icon} {issue.severity.value.capitalize()}")
+                
+                # DAST validation status
+                if result.dast_enabled and issue.validation_status:
+                    status_display = {
+                        'VALIDATED': '✅ **Validated** - Exploitability confirmed',
+                        'FALSE_POSITIVE': '❌ **False Positive** - Not exploitable',
+                        'UNVALIDATED': '❓ **Unvalidated** - Could not verify',
+                        'PARTIAL': '⚠️ **Partially Validated** - Needs review'
+                    }
+                    lines.append(f"**DAST Status:** {status_display.get(issue.validation_status.value, issue.validation_status.value)}")
+                    
+                    if issue.exploitability_score is not None:
+                        lines.append(f"**Exploitability:** {issue.exploitability_score:.1f}/10")
+                
                 lines.append("")
                 
                 # Description
@@ -207,6 +247,37 @@ class MarkdownReporter:
                     lines.append(issue.code_snippet)
                     lines.append("```")
                     lines.append("")
+                
+                # DAST Evidence
+                if result.dast_enabled and issue.dast_evidence:
+                    lines.append("**DAST Evidence:**")
+                    lines.append("")
+                    
+                    # Show test steps if available
+                    test_steps = issue.dast_evidence.get("test_steps")
+                    if test_steps:
+                        if isinstance(test_steps, list):
+                            for step in test_steps:
+                                lines.append(f"- {step}")
+                        else:
+                            lines.append(str(test_steps))
+                        lines.append("")
+                    
+                    # Show HTTP requests if available
+                    http_requests = issue.dast_evidence.get("http_requests")
+                    if http_requests and isinstance(http_requests, list):
+                        for req in http_requests:
+                            lines.append(f"Request: `{req.get('request', 'N/A')}`")
+                            lines.append(f"- Status: {req.get('status', 'N/A')}")
+                            if req.get('authenticated_as'):
+                                lines.append(f"- Auth: {req['authenticated_as']}")
+                            lines.append("")
+                    
+                    # Show notes or reason if available
+                    notes = issue.dast_evidence.get("notes") or issue.dast_evidence.get("reason")
+                    if notes:
+                        lines.append(f"*{notes}*")
+                        lines.append("")
                 
                 # Recommendation
                 if issue.recommendation:
@@ -255,7 +326,10 @@ class MarkdownReporter:
         items = re.split(r'(?=\d+\.\s+)', recommendation.strip())
         items = [item.strip() for item in items if item.strip()]
         
-        if len(items) <= 1:
+        # Check if any items start with numbered pattern
+        has_numbered_items = any(re.match(r'\d+\.\s+', item) for item in items)
+        
+        if not has_numbered_items or len(items) == 0:
             # No numbered list detected, return as-is
             return recommendation
         
