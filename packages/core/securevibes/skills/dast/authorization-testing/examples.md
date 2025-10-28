@@ -8,6 +8,9 @@ This file contains comprehensive examples of authorization vulnerability testing
 3. [Missing Authorization](#missing-authorization)
 4. [Forced Browsing / Direct Request](#forced-browsing--direct-request)
 5. [Test Result Types](#test-result-types)
+   - FALSE_POSITIVE (Example 9)
+   - UNVALIDATED (Example 10)
+   - PARTIAL (Example 11)
 6. [Common Patterns](#common-patterns)
 
 ---
@@ -366,6 +369,92 @@ def get_user(user_id):
   "evidence": null
 }
 ```
+
+---
+
+### Example 11: PARTIAL (Mixed Results)
+
+**Scenario**: Document API with inconsistent authorization - read succeeds but write/delete are protected
+
+**Vulnerability**:
+```python
+# api/documents.py - PARTIALLY VULNERABLE
+@app.route('/api/documents/<int:doc_id>', methods=['GET'])
+def get_document(doc_id):
+    doc = Document.query.get(doc_id)
+    return jsonify(doc.to_dict())  # No authorization check!
+
+@app.route('/api/documents/<int:doc_id>', methods=['PUT'])
+@require_ownership  # This decorator checks ownership
+def update_document(doc_id):
+    # Properly protected
+    pass
+
+@app.route('/api/documents/<int:doc_id>', methods=['DELETE'])
+@require_ownership  # This decorator checks ownership
+def delete_document(doc_id):
+    # Properly protected
+    pass
+```
+
+**Test**:
+1. User1 (owns doc 123) authenticates
+2. User1 creates baseline: `GET /api/documents/123` → 200 OK
+3. User1 tests User2's document (doc 456):
+   - `GET /api/documents/456` → 200 OK (IDOR on read!)
+   - `PUT /api/documents/456` → 403 Forbidden (write protected)
+   - `DELETE /api/documents/456` → 403 Forbidden (delete protected)
+
+**Evidence**:
+```json
+{
+  "status": "PARTIAL",
+  "baseline": {
+    "url": "http://target.com/api/documents/123",
+    "method": "GET",
+    "status": 200,
+    "response_snippet": "{\"id\":123,\"title\":\"My Doc\",\"owner\":\"user1\"}",
+    "response_hash": "sha256:abc123..."
+  },
+  "test": {
+    "read": {
+      "url": "http://target.com/api/documents/456",
+      "method": "GET",
+      "status": 200,
+      "response_snippet": "{\"id\":456,\"title\":\"Private Doc\",\"owner\":\"user2\"}",
+      "response_hash": "sha256:def456..."
+    },
+    "write": {
+      "url": "http://target.com/api/documents/456",
+      "method": "PUT",
+      "status": 403,
+      "response_snippet": "{\"error\":\"Not authorized to modify this document\"}",
+      "response_hash": "sha256:ghi789..."
+    },
+    "delete": {
+      "url": "http://target.com/api/documents/456",
+      "method": "DELETE",
+      "status": 403,
+      "response_snippet": "{\"error\":\"Not authorized to delete this document\"}",
+      "response_hash": "sha256:jkl012..."
+    }
+  },
+  "evidence": "User1 read User2's document (200 OK) but modification/deletion properly blocked (403). Information disclosure via IDOR on read operation.",
+  "requires_manual_review": true,
+  "risk_assessment": "Medium - Information disclosure but not tampering"
+}
+```
+
+**Classification Rationale**:
+- **Not VALIDATED**: Write and delete operations are properly secured
+- **Not FALSE_POSITIVE**: Read operation has IDOR vulnerability
+- **PARTIAL**: Mixed results - some operations bypass authorization, others don't
+- **Manual Review Needed**: Security team must assess whether read-only IDOR poses acceptable risk
+
+**Real-World Impact**:
+- Attacker can read sensitive documents (information disclosure)
+- Cannot modify or delete documents (tampering prevented)
+- Risk depends on document sensitivity and business context
 
 ---
 

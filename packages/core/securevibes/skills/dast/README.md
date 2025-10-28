@@ -25,7 +25,7 @@ Skills provide specialized testing methodologies that the DAST agent uses to val
 ### authorization-testing
 **Purpose**: Validate authorization failures including IDOR, privilege escalation, and missing access controls through HTTP-based exploitation attempts.
 
-**Trigger**: CWE-639 (IDOR), CWE-269 (Privilege Escalation), CWE-862 (Missing Authorization), CWE-863 (Incorrect Authorization), CWE-284 (Access Control), CWE-285 (Improper Authorization)
+**Trigger**: CWE-639 (IDOR), CWE-269 (Privilege Escalation), CWE-862 (Missing Authorization), CWE-863 (Incorrect Authorization), CWE-284 (Access Control), CWE-285 (Improper Authorization), CWE-425 (Forced Browsing)
 
 **Requirements**:
 - Target application running and reachable
@@ -97,16 +97,8 @@ User1 ID is 123, User2 ID is 456."
 
 Claude should automatically discover and use the appropriate skill.
 
-## Future Skills (Planned)
-
-- `sqli-testing`: SQL injection validation
-- `xss-testing`: Cross-site scripting validation  
-- `csrf-testing`: CSRF token validation
-- `auth-bypass-testing`: Authentication bypass validation
-- `ssrf-testing`: Server-side request forgery validation
-
 ## Resources
 
 - [Agent Skills Documentation](https://docs.anthropic.com/en/docs/agents-and-tools/agent-skills/overview)
 - [Agent Skills Best Practices](https://docs.anthropic.com/en/docs/agents-and-tools/agent-skills/best-practices)
-- [SecureVibes DAST Guide](../../docs/DAST_GUIDE.md) (coming soon)
+- [SecureVibes DAST Guide](../../docs/DAST_GUIDE.md)

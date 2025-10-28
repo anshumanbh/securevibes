@@ -218,31 +218,82 @@ POST /api/profile/456/update {"email": "evil@attacker.com"} → ???
 
 ### Phase 6: Capture Evidence
 
-Same minimal structured evidence as before, with redaction:
+Capture minimal structured evidence with redaction and truncation:
 
 ```json
 {
-  "status": "VALIDATED|FALSE_POSITIVE|UNVALIDATED",
+  "status": "VALIDATED|FALSE_POSITIVE|PARTIAL|UNVALIDATED",
   "baseline": {
     "url": "http://target.com/api/user/123",
     "method": "GET",
     "status": 200,
     "response_snippet": "{\"id\": 123, \"role\": \"user\"}",
-    "response_hash": "sha256:..."
+    "response_hash": "sha256:abc123...",
+    "truncated": false,
+    "original_size_bytes": 58
   },
   "test": {
     "url": "http://target.com/update_role",
-    "method": "POST", 
+    "method": "POST",
     "payload": "{\"user_id\": 123, \"role\": \"admin\"}",
     "status": 200,
     "response_snippet": "{\"success\": true}",
-    "response_hash": "sha256:..."
+    "response_hash": "sha256:def456...",
+    "truncated": false,
+    "original_size_bytes": 18
   },
   "evidence": "User 123 escalated own role from 'user' to 'admin'"
 }
 ```
 
-**CRITICAL:** Redact sensitive data (passwords, SSNs, credit cards, tokens).
+**Evidence Fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `response_snippet` | Yes | First 8KB of response body (text only) |
+| `response_hash` | Yes | SHA-256 hash of complete response (format: `sha256:...`) |
+| `truncated` | Recommended | `true` if response exceeded 8KB limit, `false` otherwise |
+| `original_size_bytes` | Recommended | Full response size before truncation |
+
+**Truncation Pattern:**
+- Limit response snippets to 8KB (8192 bytes) maximum
+- If response exceeds limit, truncate and set `truncated: true`
+- Always compute hash of **complete** response (before truncation)
+- Include `original_size_bytes` to show actual response size
+
+**Example with Large Response:**
+```json
+{
+  "baseline": {
+    "url": "http://target.com/api/users/export",
+    "method": "GET",
+    "status": 200,
+    "response_snippet": "[truncated 8KB of 250KB JSON array...]",
+    "response_hash": "sha256:789abc...",
+    "truncated": true,
+    "original_size_bytes": 256000
+  }
+}
+```
+
+**CRITICAL Redaction Requirements:**
+
+Redact these sensitive field types from response snippets:
+- Passwords, API keys, secrets, tokens
+- SSN, credit card numbers, CVV codes
+- Email addresses (in some contexts)
+- Phone numbers, addresses
+- Session IDs, JWTs, OAuth tokens
+- Any PII or credentials
+
+**Redaction Example:**
+```json
+// Before redaction
+{"user": {"password": "MySecret123", "ssn": "123-45-6789"}}
+
+// After redaction
+{"user": {"password": "[REDACTED]", "ssn": "[REDACTED]"}}
+```
 
 ### Phase 7: Classification Logic
 
@@ -254,8 +305,37 @@ if response.status_code == 200:
         return "FALSE_POSITIVE"  # Action was allowed (not a vulnerability)
 elif response.status_code in [401, 403]:
     return "FALSE_POSITIVE"  # Authorization working correctly
+elif mixed_results_requiring_manual_review:
+    return "PARTIAL"  # Some tests passed, others failed - needs human review
 else:
     return "UNVALIDATED"  # Ambiguous result (error, timeout, etc.)
+```
+
+**Status Type Definitions:**
+
+| Status | Meaning | When to Use |
+|--------|---------|-------------|
+| **VALIDATED** | Vulnerability confirmed | 200 OK received when accessing unauthorized resource/action |
+| **FALSE_POSITIVE** | Security working correctly | 401/403 received, access properly denied |
+| **PARTIAL** | Mixed results | Some operations succeeded, others failed; requires manual review |
+| **UNVALIDATED** | Test inconclusive | Error, timeout, or ambiguous response preventing classification |
+
+**PARTIAL Status Criteria:**
+- Multiple test variants with inconsistent results (some 200 OK, some 403)
+- Partial authorization bypass (e.g., read succeeds but write denied)
+- Role-dependent results that don't clearly indicate vulnerability
+- Complex multi-step operations with mixed outcomes
+
+**Example PARTIAL Scenario:**
+```python
+# Testing /api/document/{id} endpoint
+GET /api/document/456  → 200 OK (IDOR on read)
+PUT /api/document/456  → 403 Forbidden (write protected)
+DELETE /api/document/456  → 403 Forbidden (delete protected)
+
+# Classification: PARTIAL
+# Reason: Read access bypassed (IDOR), but modification/deletion properly blocked
+# Requires manual review to assess actual risk
 ```
 
 ## Output Guidelines
@@ -270,6 +350,11 @@ Authorization bypass on [endpoint] - [low_priv_user] successfully performed [hig
 **Format for FALSE_POSITIVE:**
 ```
 Authorization check working on [endpoint] - access properly denied with [status_code]. Evidence: [file_path]
+```
+
+**Format for PARTIAL:**
+```
+Partial authorization bypass on [endpoint] - [operation1] succeeded (200 OK) but [operation2] blocked ([status_code]). Requires manual review. Evidence: [file_path]
 ```
 
 **Format for UNVALIDATED:**
@@ -313,11 +398,21 @@ This skill validates:
 - **CWE-425:** Direct Request / Forced Browsing
 
 ## Safety Rules
+
+**Skill Responsibilities:**
 - ONLY test against --target-url provided by user
-- NEVER test production without explicit authorization
-- STOP if unexpected damage occurs
+- STOP immediately if unexpected damage occurs
 - NO exfiltration of real user data (capture evidence, not actual PII)
-- Log all actions to .securevibes/dast_audit.log (optional)
+- Redact sensitive data from all evidence
+- Log all test actions (optional: `.securevibes/dast_audit.log`)
+
+**Scanner Responsibilities (handled at infrastructure level):**
+- Production URL detection (blocks testing `.com`, `.net`, `api.`, `www.` domains)
+- User confirmation prompts before testing non-production targets
+- Target reachability checks before starting tests
+- `--allow-production` flag requirement for production testing
+
+**Important:** This skill focuses on testing methodology. Safety gates (production detection, confirmation prompts, reachability checks) are implemented by the SecureVibes scanner, not the skill itself.
 
 ## Error Handling
 - Target unreachable → Mark all UNVALIDATED
@@ -357,3 +452,9 @@ See `reference/` directory for implementation examples:
 - **`README.md`**: Usage guidance and adaptation notes
 
 These are reference implementations to adapt — not drop-in scripts. Each application requires tailored logic.
+
+### Additional Resources
+
+- [Agent Skills Guide](../../../docs/references/AGENT_SKILLS_GUIDE.md) - Comprehensive skill development guide
+- [Claude Agent SDK Guide](../../../docs/references/claude-agent-sdk-guide.md) - Complete SDK documentation
+- [DAST Guide](../../../docs/DAST_GUIDE.md) - DAST validation workflow
