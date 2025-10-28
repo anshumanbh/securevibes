@@ -412,6 +412,26 @@ When deciding whether to keep or remove code:
 # 3. No duplicate code
 ```
 
+#### D. Artifact Cleanup
+```bash
+# Monitor .securevibes/ artifacts:
+# Core artifacts (always created):
+# - SECURITY.md
+# - THREAT_MODEL.json
+# - VULNERABILITIES.json
+# - scan_results.json
+
+# Optional artifacts (only when --target-url provided):
+# - DAST_VALIDATION.json (created by DAST agent)
+# - DAST_TEST_ACCOUNTS.json (test accounts for DAST validation)
+
+# Cleanup old artifacts periodically:
+rm -rf .securevibes/*.old
+rm -rf .securevibes/*~
+
+# Keep artifacts in .gitignore to avoid committing scan results
+```
+
 ---
 
 ### 10. **Practical Implementation Plan**

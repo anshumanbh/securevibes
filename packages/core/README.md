@@ -50,7 +50,7 @@ Get your API key from: https://console.anthropic.com/
 - Threat Modeling (STRIDE) → `THREAT_MODEL.json`
 - Code Review → `VULNERABILITIES.json`
 - Report Generator → `scan_results.json`
-- DAST (optional) → `DAST_VALIDATION.json` (validates via HTTP when a matching skill exists)
+- DAST (optional) → `DAST_VALIDATION.json` (validates via HTTP when --target-url provided)
 
 ## 🌍 Supported Languages
 

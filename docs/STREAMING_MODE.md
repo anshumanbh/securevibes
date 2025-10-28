@@ -135,13 +135,32 @@ securevibes scan /path/to/large/repo
 ✅ Phase 4/4: Report Generation Complete
    Duration: 12.1s | Tools: 8 | Files: 1 read, 1 written
    Created: scan_results.json
+
+━━━ Phase 5/5: DAST Validation (Optional) ━━━
+
+ℹ️  Note: DAST phase only runs when --target-url is provided
+
+  🤖 Starting dast: Validate vulnerabilities via HTTP testing...
+  📖 Reading VULNERABILITIES.json
+  🔍 Loading skill: authorization-testing (CWE-639, CWE-269, CWE-862)
+  📖 Reading .securevibes/DAST_TEST_ACCOUNTS.json
+  🌐 Testing: http://localhost:3000/api/user/456 (IDOR validation)
+  🔐 Authenticating as user1 (ID: 123)
+  ✅ Baseline: GET /api/user/123 → 200 OK
+  ❌ Test: GET /api/user/456 → 200 OK (Expected 403) - VALIDATED
+  💾 Writing DAST_VALIDATION.json
+
+✅ Phase 5/5: DAST Validation Complete
+   Duration: 34.7s | Tools: 23 | Files: 2 read, 1 written
+   Created: DAST_VALIDATION.json
+   Validated: 3 vulnerabilities | False Positives: 1 | Partial: 0 | Unvalidated: 2
 ```
 
 ## Technical Details
 
 ### Architecture
 
-Streaming mode uses `ClaudeSDKClient` with three key hooks:
+Streaming mode uses `ClaudeSDKClient` with three key hooks to track progress across **5 agents** (4 required + 1 optional DAST):
 
 1. **PreToolUse** - Fires before each tool execution
    - Shows file reads, searches, writes in real-time
@@ -155,6 +174,7 @@ Streaming mode uses `ClaudeSDKClient` with three key hooks:
    - Provides deterministic phase boundaries
    - Reports duration, tool count, file operations
    - Eliminates need for file polling
+   - Tracks completion of all 5 phases (Phase 5 only if --target-url provided)
 
 ### Progress Tracking
 
@@ -213,6 +233,7 @@ This shows:
 | File operations | ✅ Visible (reads/writes) |
 | Cost updates | ✅ Real-time (debug mode) |
 | Agent narration | ✅ Available (debug mode) |
+| DAST phase | ⚠️ Optional (only with --target-url flag) |
 | Performance overhead | ~2-5% additional latency |
 | Memory usage | Low (~1-2 MB extra)
 

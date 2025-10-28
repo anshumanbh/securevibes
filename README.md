@@ -2,7 +2,7 @@
 
 **AI-Native Security System for Vibecoded Applications**
 
-SecureVibes uses **Claude's multi-agent architecture** to autonomously find security vulnerabilities in your codebase. Four specialized AI agents work together to deliver comprehensive, context-aware security analysis with concrete evidence.
+SecureVibes uses **Claude's multi-agent architecture** to autonomously find security vulnerabilities in your codebase. Five specialized AI agents (4 required + 1 optional DAST) work together to deliver comprehensive, context-aware security analysis with concrete evidence.
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
@@ -437,18 +437,20 @@ securevibes scan .
 
 ## 🏗️ How It Works
 
-SecureVibes uses a **multi-agent architecture** where Claude autonomously orchestrates 4 specialized agents:
+SecureVibes uses a **multi-agent architecture** where Claude autonomously orchestrates 5 specialized agents (4 required + 1 optional DAST):
 
 1. **Assessment Agent** → Analyzes architecture → `SECURITY.md`
 2. **Threat Modeling Agent** → Applies STRIDE → `THREAT_MODEL.json`
 3. **Code Review Agent** → Validates vulnerabilities → `VULNERABILITIES.json`
 4. **Report Generator** → Compiles results → `scan_results.json`
+5. **DAST Agent (Optional)** → Dynamic validation via HTTP → `DAST_VALIDATION.json` (requires `--target-url`)
 
 **Key Benefits:**
 - ✅ Claude intelligently adapts to your codebase
 - ✅ Agents build on each other's findings
 - ✅ Security thinking methodology (not just pattern matching)
 - ✅ Concrete evidence with file paths and line numbers
+- ✅ Optional dynamic validation for exploitability confirmation
 
 For detailed architecture, agent descriptions, and data flow, see [ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
