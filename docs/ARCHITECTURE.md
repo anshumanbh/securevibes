@@ -59,13 +59,24 @@ User Command (securevibes scan)
 │  • Creates VULNERABILITIES.json             │
 │  • Tools: Read, Grep, Glob, Write           │
 └─────────────────────────────────────────────┘
-        ↓ Claude generates report
+        ↓ Claude reads artifacts
 ┌─────────────────────────────────────────────┐
 │       Agent: report-generator               │
 │  • AgentDefinition configuration            │
 │  • Reads all artifacts                      │
 │  • Creates scan_results.json                │
 │  • Tools: Read, Write                       │
+└─────────────────────────────────────────────┘
+        ↓ (Optional: if --target-url provided)
+┌─────────────────────────────────────────────┐
+│            Agent: dast                      │
+│  • AgentDefinition configuration            │
+│  • Reads VULNERABILITIES.json               │
+│  • Dynamically validates via HTTP testing   │
+│  • Skill-gated (only runs with matching    │
+│    skill, e.g., authorization-testing)      │
+│  • Creates DAST_VALIDATION.json             │
+│  • Tools: Read, Write, Bash, Skill          │
 └─────────────────────────────────────────────┘
 ```
 
@@ -199,7 +210,53 @@ User Input → Views → Models → Database
 - All confirmed vulnerabilities
 - Severity breakdown
 
-### 5. Scanner (`scanner/scanner.py`)
+### 5. DAST Agent (Optional)
+
+**Purpose:** Dynamically validate vulnerabilities via HTTP testing using auto-discovered skills
+
+**Inputs:**
+- `VULNERABILITIES.json`
+- `--target-url` (required CLI flag)
+- Auto-bundled skills from `.claude/skills/dast/`
+
+**Outputs:** `DAST_VALIDATION.json` containing:
+```json
+[
+  {
+    "vulnerability_id": "...",
+    "cwe_id": "CWE-639",
+    "validation_status": "VALIDATED|FALSE_POSITIVE|PARTIAL|UNVALIDATED",
+    "test_details": {
+      "baseline": {...},
+      "test": {...},
+      "evidence": "..."
+    }
+  }
+]
+```
+
+**Tools Used:** Read, Write, Bash, Skill
+
+**Validation Statuses:**
+- **VALIDATED**: Vulnerability confirmed exploitable via HTTP testing (e.g., 200 OK on unauthorized access)
+- **FALSE_POSITIVE**: Security controls working correctly (e.g., 403 Forbidden)
+- **PARTIAL**: Mixed results requiring manual review (e.g., read succeeds but write blocked)
+- **UNVALIDATED**: Test inconclusive (error, timeout, or missing test accounts)
+
+**Skill-Gated Execution:**
+- Only runs when a matching skill exists for the CWE type
+- Example: `authorization-testing` skill validates CWE-639 (IDOR), CWE-269 (Privilege Escalation), CWE-862 (Missing Authorization)
+- Skills are auto-bundled from `.claude/skills/dast/` directory
+- If no matching skill exists, vulnerability is marked UNVALIDATED
+
+**Example:**
+When testing CWE-639 (IDOR), the `authorization-testing` skill:
+1. Authenticates as User A
+2. Attempts to access User B's resource
+3. Expected: 403 Forbidden
+4. Actual if vulnerable: 200 OK → Status: VALIDATED
+
+### 6. Scanner (`scanner/scanner.py`)
 
 **Purpose:** Configure agents and initiate Claude's orchestration with real-time progress tracking
 
@@ -222,10 +279,11 @@ All agents communicate by reading/writing files in `.securevibes/`:
 
 ```
 .securevibes/
-├── SECURITY.md           # Assessment output → Threat input
-├── THREAT_MODEL.json     # Threat output → Review input
-├── VULNERABILITIES.json  # Review output
-└── scan_results.json     # Final compiled results
+├── SECURITY.md            # Assessment output → Threat input
+├── THREAT_MODEL.json      # Threat output → Review input
+├── VULNERABILITIES.json   # Review output → Report/DAST input
+├── DAST_VALIDATION.json   # DAST output (optional, if --target-url provided)
+└── scan_results.json      # Final compiled results
 ```
 
 **Why Files?**
@@ -244,7 +302,9 @@ Repository → Assessment Agent → SECURITY.md
                                                        ↓
                                             Code Review Agent → VULNERABILITIES.json
                                                                       ↓
-                                                           scan_results.json
+                                                           Report Generator → scan_results.json
+                                                                      ↓ (Optional: if --target-url)
+                                                            DAST Agent → DAST_VALIDATION.json
 ```
 
 ---
@@ -282,6 +342,7 @@ export ANTHROPIC_API_KEY="your-api-key"
      - `SECUREVIBES_THREAT_MODELING_MODEL` (default: `sonnet`)
      - `SECUREVIBES_CODE_REVIEW_MODEL` (default: `sonnet`)
      - `SECUREVIBES_REPORT_GENERATOR_MODEL` (default: `sonnet`)
+     - `SECUREVIBES_DAST_MODEL` (default: `sonnet`)
    - **Max Turns**: Configurable via `SECUREVIBES_MAX_TURNS` (default: 50)
      - Increase (75-100) for large/complex codebases
      - Decrease (25-40) for small codebases or cost optimization
@@ -295,10 +356,11 @@ After a scan, SecureVibes creates these files in `.securevibes/`:
 
 ```
 .securevibes/
-├── SECURITY.md           # Assessment output → Threat modeling input
-├── THREAT_MODEL.json     # Threat modeling output → Code review input
-├── VULNERABILITIES.json  # Code review output → Report generator input
-└── scan_results.json     # Final compiled results
+├── SECURITY.md            # Assessment output → Threat modeling input
+├── THREAT_MODEL.json      # Threat modeling output → Code review input
+├── VULNERABILITIES.json   # Code review output → Report generator/DAST input
+├── DAST_VALIDATION.json   # DAST output (optional, if --target-url provided)
+└── scan_results.json      # Final compiled results
 ```
 
 ### SECURITY.md
@@ -364,6 +426,46 @@ Final compiled report:
 }
 ```
 
+### DAST_VALIDATION.json (Optional)
+Dynamic validation results (only created when `--target-url` is provided):
+```json
+[
+  {
+    "vulnerability_id": "VULN-001",
+    "cwe_id": "CWE-639",
+    "skill_used": "authorization-testing",
+    "validation_status": "VALIDATED",
+    "test_details": {
+      "baseline": {
+        "url": "http://target.com/api/user/123",
+        "method": "GET",
+        "status": 200,
+        "response_snippet": "{\"id\":123,\"email\":\"user1@test.com\"}",
+        "response_hash": "sha256:abc123...",
+        "truncated": false,
+        "original_size_bytes": 58
+      },
+      "test": {
+        "url": "http://target.com/api/user/456",
+        "method": "GET",
+        "status": 200,
+        "response_snippet": "{\"id\":456,\"email\":\"user2@test.com\"}",
+        "response_hash": "sha256:def456...",
+        "truncated": false,
+        "original_size_bytes": 58
+      },
+      "evidence": "User 123 accessed User 456's PII without authorization - IDOR confirmed"
+    }
+  }
+]
+```
+
+**Validation Statuses:**
+- **VALIDATED**: Vulnerability confirmed exploitable (HTTP test succeeded when it should have failed)
+- **FALSE_POSITIVE**: Security controls working correctly (access properly denied)
+- **PARTIAL**: Mixed results requiring manual review (some operations succeed, others fail)
+- **UNVALIDATED**: Test inconclusive (error, timeout, or missing prerequisites)
+
 ---
 
 ## Extending the System
@@ -404,7 +506,12 @@ SECUREVIBES_AGENTS = {
 orchestration_prompt = """
 ...existing phases...
 
-Phase 5: Fix Generation
+Phase 5: DAST Validation (Optional)
+- Use the 'dast' agent if --target-url is provided
+- This validates vulnerabilities via HTTP testing
+- Creates DAST_VALIDATION.json
+
+Phase 6: Fix Generation
 - Use the 'fix-generator' agent to create fixes
 - This should create FIXES.json
 """
