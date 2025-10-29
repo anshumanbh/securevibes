@@ -242,16 +242,16 @@ SecureVibes automatically detects and scans code in **11 programming languages**
 
 | Language | Extensions | Auto-Excluded Directories |
 |----------|-----------|---------------------------|
-| Python | `.py`, `.pyw` | `venv/`, `env/`, `.venv/`, `__pycache__/`, `.pytest_cache/`, `.tox/`, `.eggs/`, `*.egg-info/` |
-| JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` | `node_modules/`, `.npm/`, `.yarn/` |
+| Python | `.py` | `venv/`, `env/`, `.venv/`, `__pycache__/`, `.pytest_cache/`, `.tox/`, `.eggs/`, `*.egg-info/` |
+| JavaScript | `.js`, `.jsx` | `node_modules/`, `.npm/`, `.yarn/` |
 | TypeScript | `.ts`, `.tsx` | `node_modules/`, `.npm/`, `.yarn/`, `dist/`, `build/` |
 | Go | `.go` | `vendor/`, `bin/`, `pkg/` |
-| Ruby | `.rb`, `.rake` | `vendor/`, `.bundle/`, `tmp/` |
+| Ruby | `.rb` | `vendor/`, `.bundle/`, `tmp/` |
 | Java | `.java` | `target/`, `build/`, `.gradle/`, `.m2/` |
 | PHP | `.php` | `vendor/`, `.composer/` |
 | C# | `.cs` | `bin/`, `obj/`, `packages/` |
 | Rust | `.rs` | `target/` |
-| Kotlin | `.kt`, `.kts` | `build/`, `.gradle/` |
+| Kotlin | `.kt` | `build/`, `.gradle/` |
 | Swift | `.swift` | `.build/`, `.swiftpm/`, `Packages/` |
 
 **Smart Exclusions:**
