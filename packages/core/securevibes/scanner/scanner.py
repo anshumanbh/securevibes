@@ -698,7 +698,7 @@ class Scanner:
             from securevibes.reporters.markdown_reporter import MarkdownReporter
             md_output = MarkdownReporter.generate(scan_result)
             md_file = securevibes_dir / "scan_report.md"
-            with open(md_file, 'w') as f:
+            with open(md_file, 'w', encoding='utf-8') as f:
                 f.write(md_output)
             
             if self.debug:

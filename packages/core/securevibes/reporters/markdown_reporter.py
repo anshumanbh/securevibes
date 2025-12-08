@@ -22,7 +22,7 @@ class MarkdownReporter:
         output_file.parent.mkdir(parents=True, exist_ok=True)
         
         markdown = MarkdownReporter.generate(result)
-        output_file.write_text(markdown)
+        output_file.write_text(markdown, encoding='utf-8')
     
     @staticmethod
     def generate(result: 'ScanResult') -> str:
