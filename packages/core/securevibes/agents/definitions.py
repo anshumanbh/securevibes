@@ -9,9 +9,12 @@ from securevibes.config import config
 AGENT_PROMPTS = load_all_agent_prompts()
 
 
-def create_agent_definitions(cli_model: Optional[str] = None) -> Dict[str, AgentDefinition]:
+def create_agent_definitions(
+    cli_model: Optional[str] = None,
+    dast_target_url: Optional[str] = None
+) -> Dict[str, AgentDefinition]:
     """
-    Create agent definitions with optional CLI model override.
+    Create agent definitions with optional CLI model override and DAST target URL.
     
     This function allows the CLI --model flag to cascade down to all agents
     while still respecting per-agent environment variable overrides.
@@ -25,6 +28,9 @@ def create_agent_definitions(cli_model: Optional[str] = None) -> Dict[str, Agent
         cli_model: Optional model name from CLI --model flag.
                   If provided, becomes the default for all agents unless
                   overridden by per-agent environment variables.
+        dast_target_url: Optional target URL for DAST testing. If provided,
+                        the {target_url} placeholders in the DAST prompt will
+                        be substituted with this value.
     
     Returns:
         Dictionary mapping agent names to AgentDefinition objects
@@ -41,7 +47,18 @@ def create_agent_definitions(cli_model: Optional[str] = None) -> Dict[str, Agent
         agents = create_agent_definitions(cli_model="haiku")
         # Result: assessment/threat-modeling/report-generator use haiku
         #         code-review uses opus
+        
+        # With DAST target URL
+        agents = create_agent_definitions(dast_target_url="http://localhost:3000")
+        # Result: DAST prompt will have {target_url} replaced with the URL
     """
+    # Substitute target URL in DAST prompt if provided
+    # Using str.replace() instead of .format() because the prompt contains
+    # JSON examples with curly braces that would be misinterpreted by .format()
+    dast_prompt = AGENT_PROMPTS["dast"]
+    if dast_target_url:
+        dast_prompt = dast_prompt.replace("{target_url}", dast_target_url)
+    
     return {
         "assessment": AgentDefinition(
             description="Analyzes codebase architecture and creates comprehensive security documentation",
@@ -73,7 +90,7 @@ def create_agent_definitions(cli_model: Optional[str] = None) -> Dict[str, Agent
 
         "dast": AgentDefinition(
             description="Validates vulnerabilities via HTTP testing ONLY when a matching Agent Skill is available; otherwise reports UNVALIDATED",
-            prompt=AGENT_PROMPTS["dast"],
+            prompt=dast_prompt,
             tools=["Read", "Write", "Skill", "Bash"],
             model=config.get_agent_model("dast", cli_override=cli_model)
         )

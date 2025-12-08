@@ -295,6 +295,66 @@ class TestScannerDASTConfiguration:
         assert scanner.dast_config["accounts_path"] is None
 
 
+class TestDASTPromptTargetURLSubstitution:
+    """Test that target URL is correctly substituted in DAST prompt"""
+    
+    def test_target_url_substituted_in_prompt(self):
+        """Test that {target_url} placeholder is replaced with actual URL"""
+        from securevibes.agents.definitions import create_agent_definitions
+        
+        target_url = "http://localhost:3000"
+        agents = create_agent_definitions(dast_target_url=target_url)
+        
+        dast_prompt = agents["dast"].prompt
+        
+        # Verify the target URL is in the prompt
+        assert target_url in dast_prompt
+        # Verify the placeholder is NOT in the prompt
+        assert "{target_url}" not in dast_prompt
+        # Verify specific substituted lines
+        assert f"Target application is running at: {target_url}" in dast_prompt
+        assert f"ONLY test {target_url}" in dast_prompt
+    
+    def test_target_url_not_substituted_when_none(self):
+        """Test that {target_url} placeholder remains when no URL provided"""
+        from securevibes.agents.definitions import create_agent_definitions
+        
+        agents = create_agent_definitions(dast_target_url=None)
+        
+        dast_prompt = agents["dast"].prompt
+        
+        # Verify the placeholder is still in the prompt
+        assert "{target_url}" in dast_prompt
+    
+    def test_custom_target_url_substitution(self):
+        """Test custom target URL is correctly substituted"""
+        from securevibes.agents.definitions import create_agent_definitions
+        
+        custom_url = "http://aerocity-staging.bpbatam.go.id"
+        agents = create_agent_definitions(dast_target_url=custom_url)
+        
+        dast_prompt = agents["dast"].prompt
+        
+        # Verify custom URL is in the prompt
+        assert custom_url in dast_prompt
+        assert "{target_url}" not in dast_prompt
+        assert f"Target application is running at: {custom_url}" in dast_prompt
+        assert f"ONLY test {custom_url}" in dast_prompt
+    
+    def test_target_url_combined_with_model_override(self):
+        """Test target URL substitution works with model override"""
+        from securevibes.agents.definitions import create_agent_definitions
+        
+        target_url = "http://localhost:8080"
+        agents = create_agent_definitions(cli_model="haiku", dast_target_url=target_url)
+        
+        dast_prompt = agents["dast"].prompt
+        
+        # Verify URL substitution
+        assert target_url in dast_prompt
+        assert "{target_url}" not in dast_prompt
+
+
 class TestValidationStatus:
     """Test ValidationStatus enum and issue models"""
     
