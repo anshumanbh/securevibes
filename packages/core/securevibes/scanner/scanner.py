@@ -856,14 +856,36 @@ class Scanner:
                             issue_id = issue_data.get("threat_id") or issue_data.get("id") or f"ISSUE-{idx + 1}"
                             severity_str = issue_data["severity"].upper()
                             
+                            
+                            # Extract file path, handling nested affected_files
+                            file_path = issue_data.get("file_path")
+                            line_number = issue_data.get("line_number")
+                            code_snippet = issue_data.get("code_snippet")
+                            
+                            if (not file_path or not line_number) and issue_data.get("affected_files"):
+                                files = issue_data["affected_files"]
+                                if isinstance(files, list) and files:
+                                    first_file = files[0]
+                                    if not file_path:
+                                        file_path = first_file.get("path")
+                                    if not line_number:
+                                        # line_numbers can be a list or int
+                                        ln = first_file.get("line_numbers") or first_file.get("line_number")
+                                        if isinstance(ln, list) and ln:
+                                            line_number = ln[0]
+                                        elif isinstance(ln, int):
+                                            line_number = ln
+                                    if not code_snippet:
+                                        code_snippet = first_file.get("code_snippet")
+                            
                             issues.append(SecurityIssue(
                                 id=issue_id,
-                                title=issue_data["title"],
-                                description=issue_data["description"],
+                                title=issue_data.get("title", "Untitled Issue"),
+                                description=issue_data.get("description", "No description provided"),
                                 severity=Severity[severity_str],
-                                file_path=issue_data["file_path"],
-                                line_number=issue_data.get("line_number"),
-                                code_snippet=issue_data.get("code_snippet"),
+                                file_path=file_path or "N/A",
+                                line_number=line_number,
+                                code_snippet=code_snippet,
                                 cwe_id=issue_data.get("cwe_id"),
                                 recommendation=issue_data.get("recommendation")
                             ))
@@ -919,14 +941,36 @@ class Scanner:
                         issue_id = vuln.get("threat_id") or vuln.get("id") or f"VULN-{idx + 1}"
                         severity_str = vuln["severity"].upper()
                         
+                        
+                        # Extract file path, handling nested affected_files
+                        file_path = vuln.get("file_path")
+                        line_number = vuln.get("line_number")
+                        code_snippet = vuln.get("code_snippet")
+
+                        if (not file_path or not line_number) and vuln.get("affected_files"):
+                            files = vuln["affected_files"]
+                            if isinstance(files, list) and files:
+                                first_file = files[0]
+                                if not file_path:
+                                    file_path = first_file.get("path")
+                                if not line_number:
+                                    # line_numbers can be a list or int
+                                    ln = first_file.get("line_numbers") or first_file.get("line_number")
+                                    if isinstance(ln, list) and ln:
+                                        line_number = ln[0]
+                                    elif isinstance(ln, int):
+                                        line_number = ln
+                                if not code_snippet:
+                                    code_snippet = first_file.get("code_snippet")
+
                         issues.append(SecurityIssue(
                             id=issue_id,
-                            title=vuln["title"],
-                            description=vuln["description"],
+                            title=vuln.get("title", "Untitled Vulnerability"),
+                            description=vuln.get("description", "No description provided"),
                             severity=Severity[severity_str],
-                            file_path=vuln["file_path"],
-                            line_number=vuln.get("line_number"),
-                            code_snippet=vuln.get("code_snippet"),
+                            file_path=file_path or "N/A",
+                            line_number=line_number,
+                            code_snippet=code_snippet,
                             cwe_id=vuln.get("cwe_id"),
                             recommendation=vuln.get("recommendation")
                         ))
