@@ -602,9 +602,11 @@ class Scanner:
         # Configure agent options with hooks
         from claude_agent_sdk.types import HookMatcher
         
-        # Create agent definitions with CLI model override
+        # Create agent definitions with CLI model override and DAST target URL
         # This allows --model flag to cascade to all agents while respecting env vars
-        agents = create_agent_definitions(cli_model=self.model)
+        # The DAST target URL is passed to substitute {target_url} placeholders in the prompt
+        dast_url = self.dast_config.get("target_url") if self.dast_enabled else None
+        agents = create_agent_definitions(cli_model=self.model, dast_target_url=dast_url)
 
         # Skills configuration:
         # - Skills must be explicitly enabled via setting_sources=["project"]
