@@ -17,9 +17,18 @@
 
 ## Introduction
 
-Agent Skills are a powerful paradigm for extending Claude's capabilities in a modular, composable, and efficient manner. Unlike traditional function calling or tool definitions, Skills are **model-invoked**—Claude autonomously decides when to use them based on context, without requiring explicit user commands.
+Agent Skills are reusable, filesystem-based resources that provide Claude with domain-specific expertise: workflows, context, and best practices that transform general-purpose agents into specialists. Unlike prompts (conversation-level instructions for one-off tasks), Skills load on-demand and eliminate the need to repeatedly provide the same guidance across multiple conversations.
 
-This guide provides a comprehensive blueprint for creating, deploying, and using Agent Skills with the Claude Agent SDK. It synthesizes official documentation, best practices, and engineering insights to enable coding agents to build effective skills.
+Skills are **model-invoked**—Claude autonomously decides when to use them based on context, without requiring explicit user commands.
+
+**Key benefits**:
+- **Specialize Claude**: Tailor capabilities for domain-specific tasks
+- **Reduce repetition**: Create once, use automatically
+- **Compose capabilities**: Combine Skills to build complex workflows
+
+This guide provides a comprehensive blueprint for creating, deploying, and using Agent Skills across Claude's products. It synthesizes official documentation from [Anthropic's engineering blog](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills) and the [Claude Platform documentation](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview).
+
+> **Last Updated**: December 2025 (aligned with official documentation from October 2025)
 
 ---
 
@@ -30,9 +39,10 @@ This guide provides a comprehensive blueprint for creating, deploying, and using
 **Composable**: Skills work together automatically. Claude can combine multiple skills to accomplish complex tasks without manual orchestration.
 
 **Portable**: The same skill format works across:
-- Claude apps (Pro, Max, Team, Enterprise users)
-- Claude Code
-- Claude API (via Messages API and `/v1/skills` endpoint)
+- Claude apps on claude.ai (Pro, Max, Team, Enterprise users)
+- Claude Code CLI
+- Claude API (via Messages API with beta headers and `/v1/skills` endpoint)
+- Claude Agent SDK (Python and TypeScript)
 
 **Efficient**: Only minimal required information loads when relevant, using a progressive disclosure pattern to manage context windows effectively.
 
@@ -53,6 +63,95 @@ Skills are ideal for:
 - Code generation following specific patterns
 - Data processing with consistent rules
 - Tasks requiring organization-specific guidelines
+
+### Pre-built Agent Skills
+
+Anthropic provides pre-built Agent Skills for common document tasks:
+
+| Skill | Description | Available On |
+|-------|-------------|--------------|
+| **PowerPoint (pptx)** | Create presentations, edit slides, analyze content | claude.ai, API |
+| **Excel (xlsx)** | Create spreadsheets, analyze data, generate charts | claude.ai, API |
+| **Word (docx)** | Create documents, edit content, format text | claude.ai, API |
+| **PDF (pdf)** | Generate formatted PDF documents and reports | claude.ai, API |
+
+These Skills are available immediately without any setup. Claude automatically uses them when relevant to your request.
+
+### Where Skills Work
+
+Skills are available across Claude's products with different configuration requirements:
+
+| Platform | Pre-built Skills | Custom Skills | Configuration |
+|----------|-----------------|---------------|---------------|
+| **claude.ai** | Yes | Upload via Settings > Features | Automatic |
+| **Claude API** | Yes (via beta headers) | Upload via `/v1/skills` endpoint | Requires beta headers |
+| **Claude Code CLI** | No | Auto-discovered from filesystem | Automatic |
+| **Claude Agent SDK** | No | Filesystem-based | Requires `setting_sources` config |
+
+#### API Beta Headers
+
+Using Skills via the Claude API requires three beta headers:
+
+```python
+headers = {
+    "anthropic-beta": "code-execution-2025-08-25,skills-2025-10-02,files-api-2025-04-14"
+}
+```
+
+- `code-execution-2025-08-25` - Skills run in the code execution container
+- `skills-2025-10-02` - Enables Skills functionality
+- `files-api-2025-04-14` - Required for uploading/downloading files to/from the container
+
+### Runtime Environment Constraints
+
+The runtime environment available to your skill depends on where you use it:
+
+| Platform | Network Access | Package Installation |
+|----------|---------------|---------------------|
+| **claude.ai** | Varies (user/admin settings) | Yes (npm, PyPI, GitHub) |
+| **Claude API** | **No network access** | **No runtime install** (pre-installed packages only) |
+| **Claude Code** | Full network access | Local only (global install discouraged) |
+
+**Important API Limitation**: Skills on the Claude API cannot make external API calls or access the internet. Only pre-installed packages are available.
+
+### Cross-Surface Availability
+
+> **Warning**: Custom Skills do NOT sync across surfaces.
+
+Skills uploaded to one surface are not automatically available on others:
+- Skills uploaded to claude.ai must be separately uploaded to the API
+- Skills uploaded via the API are not available on claude.ai
+- Claude Code Skills are filesystem-based and separate from both
+
+You must manage and upload Skills separately for each surface where you want to use them.
+
+### Sharing Scope
+
+Skills have different sharing models depending on where you use them:
+
+| Platform | Sharing Scope |
+|----------|--------------|
+| **claude.ai** | Individual user only (each team member uploads separately) |
+| **Claude API** | Workspace-wide (all workspace members can access) |
+| **Claude Code** | Personal (`~/.claude/skills/`) or project-based (`.claude/skills/`) |
+
+> **Note**: claude.ai does not currently support centralized admin management or org-wide distribution of custom Skills.
+
+---
+
+## Security Considerations
+
+> **Important**: We strongly recommend using Skills only from trusted sources: those you created yourself or obtained from Anthropic.
+
+Skills provide Claude with new capabilities through instructions and code. While this makes them powerful, it also means a malicious Skill can direct Claude to invoke tools or execute code in ways that don't match the Skill's stated purpose.
+
+**Key security considerations**:
+
+- **Audit thoroughly**: Review all files bundled in the Skill: SKILL.md, scripts, images, and other resources. Look for unusual patterns like unexpected network calls, file access patterns, or operations that don't match the Skill's stated purpose
+- **External sources are risky**: Skills that fetch data from external URLs pose particular risk, as fetched content may contain malicious instructions. Even trustworthy Skills can be compromised if their external dependencies change over time
+- **Tool misuse**: Malicious Skills can invoke tools (file operations, bash commands, code execution) in harmful ways
+- **Data exposure**: Skills with access to sensitive data could be designed to leak information to external systems
+- **Treat like installing software**: Only use Skills from trusted sources. Be especially careful when integrating Skills into production systems with access to sensitive data or critical operations
 
 ---
 
@@ -155,14 +254,17 @@ Concrete examples of inputs and expected outputs.
 **name** (required):
 - Maximum 64 characters
 - Lowercase letters, numbers, and hyphens only
-- No reserved words
+- Cannot contain XML tags
+- Cannot contain reserved words: "anthropic", "claude"
 - Use gerund form (verb + -ing): `processing-pdfs`, `analyzing-spreadsheets`
 - Avoid vague names like `helper`, `utils`, `tool`
 
 **description** (required):
+- Must be non-empty
 - Maximum 1024 characters
+- Cannot contain XML tags
 - Specify **what** the skill does and **when** to use it
-- Write in third person
+- Write in third person (not "I can help you..." or "You can use this...")
 - Include specific trigger terms users might mention
 - Example: "Extract text and tables from PDFs, fill forms, merge documents. Use when working with PDF files or document extraction."
 
@@ -171,6 +273,7 @@ Concrete examples of inputs and expected outputs.
 - Enables read-only skills or limits scope
 - Example: `Read, Grep, Glob` (no file modification)
 - Example: `Read, Write, Edit, Bash` (full access)
+- **Note**: This field is only respected in Claude Code CLI; it is ignored by the Agent SDK
 
 ### Skill Types by Location
 
@@ -365,15 +468,19 @@ Claude should automatically detect and activate your skill based on the descript
 
 **Use progressive disclosure**: Move detailed reference material to separate files that Claude loads only when needed.
 
-### 2. Match Specificity to Task
+### 2. Set Appropriate Degrees of Freedom
 
-Choose the right level of freedom:
+Match the level of specificity to the task's fragility and variability:
 
 | Freedom Level | When to Use | Example |
 |---------------|-------------|---------|
-| **High** (text instructions) | Multiple valid approaches exist | "Follow our code review guidelines" |
-| **Medium** (pseudocode with parameters) | Preferred pattern exists | "Use this template: `function {name}({params}) { ... }`" |
-| **Low** (specific scripts) | Fragile operations requiring consistency | "Run `scripts/deploy.sh --env production`" |
+| **High** (text instructions) | Multiple valid approaches exist; decisions depend on context | "Follow our code review guidelines" |
+| **Medium** (pseudocode with parameters) | Preferred pattern exists; some variation acceptable | "Use this template: `function {name}({params}) { ... }`" |
+| **Low** (specific scripts) | Fragile operations; consistency critical | "Run `scripts/deploy.sh --env production`" |
+
+**Analogy**: Think of Claude as a robot exploring a path:
+- **Narrow bridge with cliffs on both sides**: There's only one safe way forward. Provide specific guardrails and exact instructions (low freedom). Example: database migrations that must run in exact sequence.
+- **Open field with no hazards**: Many paths lead to success. Give general direction and trust Claude to find the best route (high freedom). Example: code reviews where context determines the best approach.
 
 ### 3. Write Effective Descriptions
 
@@ -540,12 +647,15 @@ See `scripts/analyze.py` for the algorithm used to parse code structure.
 
 ### 11. Test Across Models
 
-Verify skills work with:
-- **Claude Haiku**: Fast, basic tasks
-- **Claude Sonnet**: Balanced performance
-- **Claude Opus**: Complex reasoning
+Skills act as additions to models, so effectiveness depends on the underlying model. Verify skills work with all models you plan to use:
 
-Effectiveness varies by model capability.
+| Model | Use Case | Testing Considerations |
+|-------|----------|----------------------|
+| **Claude Haiku** | Fast, economical tasks | Does the Skill provide enough guidance? |
+| **Claude Sonnet** | Balanced performance | Is the Skill clear and efficient? |
+| **Claude Opus** | Complex reasoning | Does the Skill avoid over-explaining? |
+
+What works perfectly for Opus might need more detail for Haiku. If you plan to use your Skill across multiple models, aim for instructions that work well with all of them.
 
 ---
 
@@ -555,14 +665,16 @@ Effectiveness varies by model capability.
 
 Skills work across multiple platforms with **different configuration requirements**:
 
-| Platform | Skills Loading | Configuration Method |
-|----------|---------------|----------------------|
-| **Claude Code CLI** | Automatic | Skills auto-discovered from `.claude/skills/` and `~/.claude/skills/` |
-| **Claude Messages API** | Built-in only | Document skills (xlsx, pdf, etc.) via `betas` parameter |
-| **Python Agent SDK** | **Explicit** | **MUST set `setting_sources=["user", "project"]`** |
-| **TypeScript Agent SDK** | **Explicit** | **MUST set `settingSources: ['user', 'project']`** |
+| Platform | Custom Skills | Pre-built Skills | Configuration |
+|----------|--------------|-----------------|---------------|
+| **Claude Code CLI** | Auto-discovered | No | Automatic from `.claude/skills/` and `~/.claude/skills/` |
+| **Claude Messages API** | Via `/v1/skills` endpoint | Yes (via beta headers) | Requires beta headers |
+| **Python Agent SDK** | Filesystem-based | No | **MUST set `setting_sources=["user", "project"]`** |
+| **TypeScript Agent SDK** | Filesystem-based | No | **MUST set `settingSources: ['user', 'project']`** |
 
-This section focuses on the **Python and TypeScript Agent SDKs** (`claude-agent-sdk`).
+This section focuses on the **Python and TypeScript Agent SDKs**.
+
+> **Note**: Unlike subagents (which can be defined programmatically), Skills must be created as filesystem artifacts. The SDK does not provide a programmatic API for registering Skills.
 
 ### Critical Configuration Requirements
 
@@ -580,36 +692,42 @@ This section focuses on the **Python and TypeScript Agent SDKs** (`claude-agent-
 #### Minimal Working Example
 
 ```python
-from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
+import asyncio
+from claude_agent_sdk import query, ClaudeAgentOptions
 
-async def use_skills():
+async def main():
     options = ClaudeAgentOptions(
+        # REQUIRED: Set working directory containing .claude/skills/
+        cwd="/path/to/project",
+        
         # REQUIRED: Enable filesystem settings
-        setting_sources=["project", "user"],  # Load from both .claude/skills/ and ~/.claude/skills/
-
+        setting_sources=["user", "project"],  # Load from both ~/.claude/skills/ and .claude/skills/
+        
         # REQUIRED: Include Skill tool
-        allowed_tools=["Skill", "Read", "Write", "Bash", "Edit", "Grep", "Glob"],
-
-        # REQUIRED: Set working directory containing .claude/
-        cwd="/path/to/your/project"
+        allowed_tools=["Skill", "Read", "Write", "Bash"]
     )
 
-    async with ClaudeSDKClient(options=options) as client:
-        # Claude will now detect and use your custom skills
-        await client.query("Create a new API endpoint for products")
+    # Claude will now detect and use your custom skills
+    async for message in query(
+        prompt="Help me process this PDF document",
+        options=options
+    ):
+        print(message)
 
-        async for msg in client.receive_response():
-            print(msg)
+asyncio.run(main())
 ```
 
 #### Project Skills Only (Team-Shared via Git)
 
 ```python
 options = ClaudeAgentOptions(
+    cwd="/path/to/project",
     setting_sources=["project"],  # ✅ Load only from .claude/skills/ in project
-    allowed_tools=["Skill", "Read", "Write", "Bash"],
-    cwd="/path/to/project"
+    allowed_tools=["Skill", "Read", "Write", "Bash"]
 )
+
+async for message in query(prompt="Analyze the codebase structure", options=options):
+    print(message)
 ```
 
 **Use case**: Share skills with team via version control. Everyone gets the same skills when they pull the repository.
@@ -618,10 +736,13 @@ options = ClaudeAgentOptions(
 
 ```python
 options = ClaudeAgentOptions(
+    cwd="/path/to/any/directory",  # Still needed for working directory context
     setting_sources=["user"],  # ✅ Load only from ~/.claude/skills/
-    allowed_tools=["Skill", "Read", "Write", "Bash"],
-    cwd="/path/to/any/directory"   # Still needed for working directory context
+    allowed_tools=["Skill", "Read", "Write", "Bash"]
 )
+
+async for message in query(prompt="Use my personal workflow", options=options):
+    print(message)
 ```
 
 **Use case**: Personal productivity skills you use across all projects, not shared with team.
@@ -630,10 +751,13 @@ options = ClaudeAgentOptions(
 
 ```python
 options = ClaudeAgentOptions(
-    setting_sources=["project", "user"],  # ✅ Load both project and personal skills
-    allowed_tools=["Skill", "Read", "Write", "Bash"],
-    cwd="/path/to/project"
+    cwd="/path/to/project",
+    setting_sources=["user", "project"],  # ✅ Load both personal and project skills
+    allowed_tools=["Skill", "Read", "Write", "Bash"]
 )
+
+async for message in query(prompt="Help me with this task", options=options):
+    print(message)
 ```
 
 **Use case**: Combine team-shared project skills with your personal workflow skills.
@@ -641,32 +765,28 @@ options = ClaudeAgentOptions(
 ### TypeScript Agent SDK Configuration
 
 ```typescript
-import { ClaudeSDKClient, ClaudeAgentOptions } from '@anthropic-ai/sdk';
+import { query, ClaudeAgentOptions } from 'claude-agent-sdk';
 
 async function useSkills() {
   const options: ClaudeAgentOptions = {
-    // REQUIRED: Enable filesystem settings
-    settingSources: ['user', 'project'],  // Loads from both ~/.claude and .claude/
-
-    // REQUIRED: Include Skill tool
-    allowedTools: ['Skill', 'Read', 'Write', 'Bash', 'Edit', 'Grep', 'Glob'],
-
     // REQUIRED: Set working directory
-    cwd: '/path/to/your/project'
+    cwd: '/path/to/project',
+    
+    // REQUIRED: Enable filesystem settings
+    settingSources: ['user', 'project'],  // Loads from both ~/.claude/skills/ and .claude/skills/
+    
+    // REQUIRED: Include Skill tool
+    allowedTools: ['Skill', 'Read', 'Write', 'Bash']
   };
 
-  const client = new ClaudeSDKClient(options);
-
   // Claude will now detect and use your custom skills
-  await client.query('Create a new API endpoint for products');
-
-  for await (const msg of client.receiveResponse()) {
-    console.log(msg);
+  for await (const message of query('Help me process this PDF document', options)) {
+    console.log(message);
   }
 }
 ```
 
-**Note**: In TypeScript, use `settingSources` array instead of separate boolean flags.
+**Note**: In TypeScript, use `settingSources` and `allowedTools` (camelCase) instead of the Python-style snake_case.
 
 ### SDK-Specific Limitations
 
@@ -1033,39 +1153,60 @@ if __name__ == "__main__":
 
 If you're using the general Claude Messages API (not the Agent SDK), skill support is different:
 
-#### Built-in Document Skills Only
+#### Pre-built Document Skills
 
 ```python
 import anthropic
 
 client = anthropic.Anthropic(api_key="your-api-key")
 
-# Claude Messages API supports built-in document skills
+# Claude Messages API supports pre-built document skills via beta headers
 response = client.messages.create(
-    model="claude-3-5-sonnet-20241022",
+    model="claude-sonnet-4-20250514",
     max_tokens=4096,
     messages=[
         {"role": "user", "content": "Create a financial dashboard in Excel"}
     ],
-    betas=["skills-2025-01-01"]  # Enable skills beta
+    betas=["code-execution-2025-08-25", "skills-2025-10-02", "files-api-2025-04-14"]
 )
 
-# Access generated file
-if hasattr(response.content[0], 'file_id'):
-    file_id = response.content[0].file_id
-    file_content = client.files.content(file_id)
-
-    with open("dashboard.xlsx", "wb") as f:
-        f.write(file_content)
+# Access generated file (if returned)
+for block in response.content:
+    if hasattr(block, 'file_id'):
+        file_content = client.files.content(block.file_id)
+        with open("dashboard.xlsx", "wb") as f:
+            f.write(file_content)
 ```
 
-**Available built-in skills**:
-- `xlsx`: Excel workbooks with formulas, charts, formatting
-- `pptx`: PowerPoint presentations
-- `pdf`: Formatted PDF documents
-- `docx`: Word documents
+**Available pre-built skills** (no custom upload needed):
 
-**Note**: Custom skills (your own SKILL.md files) are **NOT** available via the Messages API. They require the Agent SDK or Claude Code CLI.
+| Skill ID | Description |
+|----------|-------------|
+| `xlsx` | Excel workbooks with formulas, charts, formatting |
+| `pptx` | PowerPoint presentations |
+| `pdf` | Formatted PDF documents |
+| `docx` | Word documents |
+
+#### Custom Skills via API
+
+Custom Skills can be uploaded and managed via the `/v1/skills` endpoint:
+
+```python
+# Upload a custom skill
+with open("my-skill.zip", "rb") as f:
+    skill = client.skills.create(file=f)
+
+# Use the skill in a message by specifying the skill_id in container config
+response = client.messages.create(
+    model="claude-sonnet-4-20250514",
+    max_tokens=4096,
+    messages=[{"role": "user", "content": "Use my custom skill"}],
+    container={"skill_ids": [skill.id]},
+    betas=["code-execution-2025-08-25", "skills-2025-10-02", "files-api-2025-04-14"]
+)
+```
+
+**Note**: Custom Skills uploaded via the API are workspace-wide and accessible to all workspace members.
 
 ### Claude Code CLI (For Reference)
 
@@ -1138,10 +1279,13 @@ options = ClaudeAgentOptions(
 
 | Aspect | Agent SDK | Claude Code CLI | Messages API |
 |--------|-----------|----------------|--------------|
-| **Custom Skills** | ✅ Yes (explicit config) | ✅ Yes (automatic) | ❌ No |
-| **Built-in Skills** | ❌ No | ❌ No | ✅ Yes (document skills) |
-| **Configuration** | Required | Automatic | Via `betas` param |
+| **Custom Skills** | ✅ Yes (filesystem-based) | ✅ Yes (automatic discovery) | ✅ Yes (via `/v1/skills` endpoint) |
+| **Pre-built Skills** | ❌ No | ❌ No | ✅ Yes (pptx, xlsx, docx, pdf) |
+| **Configuration** | `setting_sources` + `allowed_tools` | Automatic | Beta headers + skill_ids |
 | **allowed-tools in SKILL.md** | ❌ Ignored | ✅ Respected | N/A |
+| **Network Access** | Depends on host | Full access | ❌ No network |
+| **Package Installation** | Depends on host | Local only | ❌ No runtime install |
+| **Sharing Scope** | N/A (filesystem) | Personal or project | Workspace-wide |
 | **Best For** | Programmatic integration | Interactive development | API-only integration |
 
 ---
@@ -1919,7 +2063,25 @@ dist/
 ```
 ```
 
-### 7. Skills with External API Integration
+### 7. MCP Tool References
+
+If your Skill uses MCP (Model Context Protocol) tools, always use fully qualified tool names to avoid "tool not found" errors.
+
+**Format**: `ServerName:tool_name`
+
+**Example**:
+```markdown
+Use the BigQuery:bigquery_schema tool to retrieve table schemas.
+Use the GitHub:create_issue tool to create issues.
+```
+
+Where:
+- `BigQuery` and `GitHub` are MCP server names
+- `bigquery_schema` and `create_issue` are the tool names within those servers
+
+Without the server prefix, Claude may fail to locate the tool, especially when multiple MCP servers are available.
+
+### 8. Skills with External API Integration
 
 Skills that interact with external services:
 
@@ -2007,12 +2169,27 @@ Agent Skills represent a paradigm shift in how we extend Claude's capabilities. 
 
 ### Resources
 
-- **Claude Agent SDK Guide**: [Complete SDK Documentation](references/claude-agent-sdk-guide.md) - Essential reading for using skills with the Python/TypeScript Agent SDK
-- **Official Documentation**: https://docs.claude.com/en/docs/claude-code/skills
+**Official Documentation**:
+- **Skills Overview**: https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview
+- **Best Practices**: https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices
+- **Quickstart Tutorial**: https://platform.claude.com/docs/en/agents-and-tools/agent-skills/quickstart
+- **API Skills Guide**: https://platform.claude.com/docs/en/build-with-claude/skills-guide
+- **SDK Skills**: https://platform.claude.com/docs/en/agent-sdk/skills
+- **Claude Code Skills**: https://code.claude.com/docs/en/skills
+
+**Code Resources**:
+- **Skills Cookbook**: https://github.com/anthropics/claude-cookbooks/tree/main/skills
 - **Skills Repository**: https://github.com/anthropics/skills
-- **Cookbooks**: https://github.com/anthropics/claude-cookbooks/tree/main/skills
-- **Best Practices**: https://docs.claude.com/en/docs/agents-and-tools/agent-skills/best-practices
+
+**Learning Resources**:
+- **Engineering Blog**: https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills
+- **Anthropic Academy**: https://www.anthropic.com/learn/build-with-claude
+
+**Help Center** (for claude.ai users):
+- [What are Skills?](https://support.claude.com/en/articles/12512176-what-are-skills)
+- [Using Skills in Claude](https://support.claude.com/en/articles/12512180-using-skills-in-claude)
+- [Creating custom Skills](https://support.claude.com/en/articles/12512198-creating-custom-skills)
 
 ---
 
-*This guide is a living document. As you build skills and discover new patterns, update it to reflect your learnings and share with the community.*
+*This guide is aligned with official Anthropic documentation as of October 2025. As the Skills platform evolves, refer to the official documentation for the latest updates.*
