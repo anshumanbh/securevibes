@@ -14,10 +14,14 @@
 11. [Slash Commands](#slash-commands)
 12. [Permissions & Security](#permissions--security)
 13. [Sessions & Context Management](#sessions--context-management)
-14. [Cost Tracking](#cost-tracking)
-15. [Error Handling](#error-handling)
-16. [Migration Guide](#migration-guide)
-17. [Best Practices](#best-practices)
+14. [Structured Outputs](#structured-outputs-v017)
+15. [Plugins](#plugins-v015)
+16. [Sandbox Configuration](#sandbox-configuration)
+17. [File Checkpointing](#file-checkpointing-v0115)
+18. [Cost Tracking](#cost-tracking)
+19. [Error Handling](#error-handling)
+20. [Migration Guide](#migration-guide)
+21. [Best Practices](#best-practices)
 
 ## Introduction
 
@@ -44,17 +48,25 @@ The Claude Agent Python SDK is a powerful toolkit for building AI agents with Cl
 
 ### Requirements
 - Python 3.10 or higher
-- Node.js (for Claude Code CLI)
-- Claude Code CLI 2.0.0+ installed globally (version checked automatically)
 
-### Installation Steps
+### Installation
 
 ```bash
-# Install Claude Code CLI globally
-npm install -g @anthropic-ai/claude-code
-
-# Install the Python SDK
 pip install claude-agent-sdk
+```
+
+> **Note (v0.1.8+)**: The Claude Code CLI is now **automatically bundled** with the package - no separate installation required! The SDK will use the bundled CLI by default.
+
+**Optional**: If you prefer to use a system-wide installation or a specific version:
+
+```bash
+# Install Claude Code separately (optional)
+curl -fsSL https://claude.ai/install.sh | bash
+
+# Or specify a custom path in your code
+options = ClaudeAgentOptions(cli_path="/path/to/claude")
+
+# Local CLI builds are also supported from ~/.claude/local/claude
 ```
 
 ### Authentication Options
@@ -103,6 +115,36 @@ anyio.run(main)
 
 ## Core Concepts
 
+### Choosing Between `query()` and `ClaudeSDKClient`
+
+The SDK provides two ways to interact with Claude Code:
+
+| Feature | `query()` | `ClaudeSDKClient` |
+|---------|-----------|-------------------|
+| **Session** | Creates new session each time | Reuses same session |
+| **Conversation** | Single exchange | Multiple exchanges in same context |
+| **Connection** | Managed automatically | Manual control |
+| **Streaming Input** | Supported | Supported |
+| **Interrupts** | Not supported | Supported |
+| **Hooks** | Not supported | Supported |
+| **Custom Tools** | Not supported | Supported |
+| **Continue Chat** | New session each time | Maintains conversation |
+| **Use Case** | One-off tasks | Continuous conversations |
+
+**When to Use `query()`**:
+- One-off questions where you don't need conversation history
+- Independent tasks that don't require context from previous exchanges
+- Simple automation scripts
+- When you want a fresh start each time
+
+**When to Use `ClaudeSDKClient`**:
+- Continuing conversations - when you need Claude to remember context
+- Follow-up questions - building on previous responses
+- Interactive applications - chat interfaces, REPLs
+- Response-driven logic - when next action depends on Claude's response
+- Session control - managing conversation lifecycle explicitly
+- Custom tools and hooks - requires ClaudeSDKClient
+
 ### Message Types
 The SDK uses strongly-typed messages for all interactions:
 - **UserMessage**: Input from the user
@@ -113,24 +155,11 @@ The SDK uses strongly-typed messages for all interactions:
 ### Content Blocks
 Messages contain different types of content:
 - **TextBlock**: Plain text content
+- **ThinkingBlock**: Thinking content (for models with thinking capability)
 - **ToolUseBlock**: Tool invocation requests
 - **ToolResultBlock**: Tool execution results
 
-### Streaming vs Single Mode
-
-**Streaming Mode** (Recommended):
-- Rich, interactive experiences
-- Real-time feedback
-- Full agent capabilities
-- Image uploads support
-- Tool integration
-- Context persistence
-
-**Single Mode**:
-- Simple one-shot responses
-- Stateless environments
-- Limited capabilities
-- No real-time interaction
+> **Important**: When iterating over messages, avoid using `break` to exit early as this can cause asyncio cleanup issues. Instead, let the iteration complete naturally or use flags to track when you've found what you need.
 
 ## Basic Usage - query()
 
@@ -172,6 +201,37 @@ async def main():
     ):
         # Process tool use and results
         pass
+```
+
+### Controlling Base Tool Availability (v0.1.12+)
+
+The `tools` option controls which tools are available at the base level:
+
+```python
+# Specific tools only
+options = ClaudeAgentOptions(
+    tools=["Read", "Edit", "Bash"]  # Only these tools available
+)
+
+# Disable all built-in tools
+options = ClaudeAgentOptions(
+    tools=[]  # No built-in tools (use with custom MCP tools)
+)
+
+# Use Claude Code's default toolset
+options = ClaudeAgentOptions(
+    tools={"type": "preset", "preset": "claude_code"}
+)
+```
+
+### API Beta Features (v0.1.12+)
+
+Enable Anthropic API beta features:
+
+```python
+options = ClaudeAgentOptions(
+    betas=["context-1m-2025-08-07"]  # Extended context window
+)
 ```
 
 ### Working with Different Directories
@@ -420,6 +480,21 @@ options = ClaudeAgentOptions(
 ## Hooks
 
 Hooks provide deterministic processing at specific points in the Claude agent loop.
+
+> **Note**: Hooks require `ClaudeSDKClient` - they are not supported with the `query()` function.
+
+### Supported Hook Events
+
+| Hook Event | Description |
+|------------|-------------|
+| `PreToolUse` | Called before tool execution |
+| `PostToolUse` | Called after tool execution |
+| `UserPromptSubmit` | Called when user submits a prompt |
+| `Stop` | Called when stopping execution |
+| `SubagentStop` | Called when a subagent stops |
+| `PreCompact` | Called before message compaction |
+
+> **Python SDK Limitation**: Due to setup limitations, the Python SDK does **not** support `SessionStart`, `SessionEnd`, and `Notification` hooks.
 
 ### Strongly-Typed Hook Inputs (SDK 0.1.3+)
 
@@ -1189,6 +1264,163 @@ async def explore_alternatives():
         await client.query("Continue with REST implementation")
 ```
 
+## Structured Outputs (v0.1.7+)
+
+Agents can return validated JSON matching your schema using the `output_format` option:
+
+```python
+from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
+
+options = ClaudeAgentOptions(
+    output_format={
+        "type": "json_schema",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "key_points": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                },
+                "sentiment": {
+                    "type": "string",
+                    "enum": ["positive", "negative", "neutral"]
+                }
+            },
+            "required": ["summary", "key_points", "sentiment"]
+        }
+    }
+)
+
+async for message in query(
+    prompt="Analyze this text and provide a structured analysis",
+    options=options
+):
+    if isinstance(message, ResultMessage) and message.result:
+        import json
+        analysis = json.loads(message.result)
+        print(f"Summary: {analysis['summary']}")
+        print(f"Sentiment: {analysis['sentiment']}")
+```
+
+See the [Structured Outputs documentation](https://platform.claude.com/docs/en/agent-sdk/structured-outputs) for more details.
+
+## Plugins (v0.1.5+)
+
+Load Claude Code plugins programmatically through the SDK:
+
+```python
+from claude_agent_sdk import query, ClaudeAgentOptions
+
+options = ClaudeAgentOptions(
+    plugins=[
+        {"type": "local", "path": "./my-plugin"},
+        {"type": "local", "path": "/absolute/path/to/plugin"}
+    ]
+)
+
+async for message in query(
+    prompt="Use my custom plugin",
+    options=options
+):
+    print(message)
+```
+
+For complete information on creating and using plugins, see [Plugins documentation](https://platform.claude.com/docs/en/agent-sdk/plugins).
+
+## Sandbox Configuration
+
+Configure sandbox behavior programmatically for command execution:
+
+### Basic Sandbox Usage
+
+```python
+from claude_agent_sdk import query, ClaudeAgentOptions
+
+sandbox_settings = {
+    "enabled": True,
+    "autoAllowBashIfSandboxed": True,  # Auto-approve bash commands when sandboxed
+    "excludedCommands": ["docker"],     # Commands that bypass sandbox
+}
+
+async for message in query(
+    prompt="Build and test my project",
+    options=ClaudeAgentOptions(sandbox=sandbox_settings)
+):
+    print(message)
+```
+
+### Sandbox Settings Reference
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `enabled` | `bool` | `False` | Enable sandbox mode for command execution |
+| `autoAllowBashIfSandboxed` | `bool` | `False` | Auto-approve bash commands when sandbox enabled |
+| `excludedCommands` | `list[str]` | `[]` | Commands that always bypass sandbox |
+| `allowUnsandboxedCommands` | `bool` | `False` | Allow model to request running commands outside sandbox |
+| `network` | `dict` | `None` | Network-specific sandbox configuration |
+| `ignoreViolations` | `dict` | `None` | Configure which violations to ignore |
+
+### Network Configuration
+
+```python
+sandbox_settings = {
+    "enabled": True,
+    "network": {
+        "allowLocalBinding": True,  # Allow binding to local ports
+        "allowUnixSockets": ["/var/run/docker.sock"],  # Allowed Unix sockets
+        "allowAllUnixSockets": False,
+        "httpProxyPort": 8080,  # Optional HTTP proxy port
+    }
+}
+```
+
+### Permissions Fallback for Unsandboxed Commands
+
+When `allowUnsandboxedCommands` is enabled, the model can request to run commands outside the sandbox:
+
+```python
+async def can_use_tool(tool: str, input: dict) -> bool:
+    if tool == "Bash" and input.get("dangerouslyDisableSandbox"):
+        # Model wants to run this command outside the sandbox
+        print(f"Unsandboxed command requested: {input.get('command')}")
+        return is_command_authorized(input.get("command"))
+    return True
+
+options = ClaudeAgentOptions(
+    sandbox={
+        "enabled": True,
+        "allowUnsandboxedCommands": True
+    },
+    can_use_tool=can_use_tool
+)
+```
+
+## File Checkpointing (v0.1.15+)
+
+Enable file change tracking and rewind capabilities:
+
+```python
+from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
+
+options = ClaudeAgentOptions(
+    enable_file_checkpointing=True,
+    allowed_tools=["Read", "Write", "Edit"]
+)
+
+async with ClaudeSDKClient(options=options) as client:
+    # Make some changes
+    await client.query("Create a new Python file with a hello world function")
+    async for msg in client.receive_response():
+        # Track user_message_id for potential rewind
+        if hasattr(msg, 'id'):
+            checkpoint_id = msg.id
+        print(msg)
+
+    # Later, if you want to revert changes
+    await client.rewind_files(checkpoint_id)
+```
+
 ## Cost Tracking
 
 ### Basic Usage Tracking
@@ -1259,6 +1491,23 @@ print("Cost Summary:", tracker.get_summary())
 
 ### Budget Management
 
+**Built-in Budget Control (v0.1.6+)**:
+
+The SDK now provides built-in budget control via `max_budget_usd`:
+
+```python
+from claude_agent_sdk import query, ClaudeAgentOptions
+
+options = ClaudeAgentOptions(
+    max_budget_usd=1.00  # Session automatically terminates when exceeded
+)
+
+async for message in query(prompt="Complex analysis task", options=options):
+    print(message)
+```
+
+**Custom Budget Manager** (for more control):
+
 ```python
 class BudgetManager:
     def __init__(self, max_budget_usd: float):
@@ -1283,6 +1532,16 @@ try:
         print(msg)
 except Exception as e:
     print(f"Stopped: {e}")
+```
+
+### Extended Thinking Control (v0.1.6+)
+
+Control the maximum tokens allocated for Claude's internal reasoning:
+
+```python
+options = ClaudeAgentOptions(
+    max_thinking_tokens=2000  # Limit reasoning tokens
+)
 ```
 
 ## Error Handling
@@ -1604,10 +1863,19 @@ The Claude Agent Python SDK provides a powerful, flexible framework for building
 
 ### Resources
 
+**Official Documentation**:
+- [SDK Overview](https://platform.claude.com/docs/en/agent-sdk/overview) - General SDK concepts
+- [Python SDK Reference](https://platform.claude.com/docs/en/agent-sdk/python) - Complete API documentation
+- [Structured Outputs](https://platform.claude.com/docs/en/agent-sdk/structured-outputs) - JSON schema validation
+- [Plugins](https://platform.claude.com/docs/en/agent-sdk/plugins) - Plugin development guide
+- [Skills](https://platform.claude.com/docs/en/agent-sdk/skills) - Agent Skills in the SDK
+- [Subagents](https://platform.claude.com/docs/en/agent-sdk/subagents) - Subagent configuration
+
+**Code Resources**:
 - [GitHub Repository](https://github.com/anthropics/claude-agent-sdk-python)
-- [Official Documentation](https://docs.anthropic.com/en/api/agent-sdk/overview)
 - [PyPI Package](https://pypi.org/project/claude-agent-sdk/)
 - [Issue Tracker](https://github.com/anthropics/claude-agent-sdk-python/issues)
+- [Examples](https://github.com/anthropics/claude-agent-sdk-python/tree/main/examples)
 
 ### Community & Support
 
@@ -1617,4 +1885,4 @@ The Claude Agent Python SDK provides a powerful, flexible framework for building
 
 ---
 
-*This guide covers Claude Agent SDK version 0.1.3 and above. For the latest updates and features, always refer to the official documentation.*
+*This guide covers Claude Agent SDK version 0.1.15 and above. For the latest updates and features, always refer to the [official documentation](https://platform.claude.com/docs/en/agent-sdk/python).*
