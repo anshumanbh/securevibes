@@ -839,174 +839,91 @@ class Scanner:
         results_file = securevibes_dir / SCAN_RESULTS_FILE
         vulnerabilities_file = securevibes_dir / VULNERABILITIES_FILE
 
-        scan_result = None
-
-        # Try scan_results.json first
-        if results_file.exists():
+        issues = []
+        
+        # Helper to load file content safely
+        def load_json_file(path: Path) -> Optional[Any]:
+            if not path.exists():
+                return None
             try:
-                with open(results_file) as f:
-                    results_data = json.load(f)
-                
-                issues_data = results_data.get("issues") or results_data.get("vulnerabilities")
-                
-                if issues_data and isinstance(issues_data, list):
-                    issues = []
-                    for idx, issue_data in enumerate(issues_data):
-                        try:
-                            issue_id = issue_data.get("threat_id") or issue_data.get("id") or f"ISSUE-{idx + 1}"
-                            severity_str = issue_data["severity"].upper()
-                            
-                            
-                            # Extract file path, handling nested affected_files
-                            file_path = issue_data.get("file_path")
-                            line_number = issue_data.get("line_number")
-                            code_snippet = issue_data.get("code_snippet")
-                            
-                            if (not file_path or not line_number) and issue_data.get("affected_files"):
-                                files = issue_data["affected_files"]
-                                if isinstance(files, list) and files:
-                                    first_file = files[0]
-                                    if not file_path:
-                                        file_path = first_file.get("path")
-                                    if not line_number:
-                                        # line_numbers can be a list or int
-                                        ln = first_file.get("line_numbers") or first_file.get("line_number")
-                                        if isinstance(ln, list) and ln:
-                                            line_number = ln[0]
-                                        elif isinstance(ln, int):
-                                            line_number = ln
-                                    if not code_snippet:
-                                        code_snippet = first_file.get("code_snippet")
-                            
-                            issues.append(SecurityIssue(
-                                id=issue_id,
-                                title=issue_data.get("title", "Untitled Issue"),
-                                description=issue_data.get("description", "No description provided"),
-                                severity=Severity[severity_str],
-                                file_path=file_path or "N/A",
-                                line_number=line_number,
-                                code_snippet=code_snippet,
-                                cwe_id=issue_data.get("cwe_id"),
-                                recommendation=issue_data.get("recommendation")
-                            ))
-                        except (KeyError, ValueError) as e:
-                            if self.debug:
-                                self.console.print(
-                                    f"⚠️  Warning: Failed to parse issue #{idx + 1}: {e}",
-                                    style="yellow"
-                                )
-                            continue
-
-                    scan_duration = time.time() - scan_start_time
-                    scan_result = ScanResult(
-                        repository_path=str(repo),
-                        issues=issues,
-                        files_scanned=files_scanned,
-                        scan_time_seconds=round(scan_duration, 2),
-                        total_cost_usd=self.total_cost
-                    )
-                    
-                    # Merge DAST validation results if available
-                    scan_result = self._merge_dast_results(scan_result, securevibes_dir)
-                    
-                    # Regenerate artifacts with merged validation data
-                    if scan_result.dast_enabled:
-                        self._regenerate_artifacts(scan_result, securevibes_dir)
-                    
-                    return scan_result
-                    
-            except (OSError, PermissionError, json.JSONDecodeError) as e:
+                with open(path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except (OSError, json.JSONDecodeError) as e:
                 if self.debug:
-                    self.console.print(
-                        f"⚠️  Warning: Cannot load {SCAN_RESULTS_FILE}: {e}",
-                        style="yellow"
-                    )
+                    self.console.print(f"⚠️  Warning: Failed to load {path.name}: {e}", style="yellow")
+                return None
 
-        # Fallback to VULNERABILITIES.json
-        if scan_result is None and vulnerabilities_file.exists():
-            try:
-                with open(vulnerabilities_file) as f:
-                    vulnerabilities_data = json.load(f)
+        # Try loading from files
+        data = load_json_file(results_file)
+        if data is None:
+            data = load_json_file(vulnerabilities_file)
+
+        if data is None:
+             raise RuntimeError(
+                f"Scan failed to generate results. Expected files not found:\n"
+                f"  - {results_file}\n"
+                f"  - {vulnerabilities_file}\n"
+                f"Check {securevibes_dir}/ for partial artifacts."
+            )
+
+        try:
+            # Use Pydantic to validate and parse
+            from securevibes.models.scan_output import ScanOutput
+            scan_output = ScanOutput.validate_input(data)
+
+            for idx, vuln in enumerate(scan_output.vulnerabilities):
+                # Map Pydantic model to domain model
                 
-                if isinstance(vulnerabilities_data, list):
-                    vulnerabilities = vulnerabilities_data
-                elif isinstance(vulnerabilities_data, dict) and "vulnerabilities" in vulnerabilities_data:
-                    vulnerabilities = vulnerabilities_data["vulnerabilities"]
-                else:
-                    raise ValueError(f"Unexpected format in {VULNERABILITIES_FILE}")
+                # Determine primary file info
+                file_path = vuln.file_path
+                line_number = vuln.line_number
+                code_snippet = vuln.code_snippet
 
-                issues = []
-                for idx, vuln in enumerate(vulnerabilities):
-                    try:
-                        issue_id = vuln.get("threat_id") or vuln.get("id") or f"VULN-{idx + 1}"
-                        severity_str = vuln["severity"].upper()
-                        
-                        
-                        # Extract file path, handling nested affected_files
-                        file_path = vuln.get("file_path")
-                        line_number = vuln.get("line_number")
-                        code_snippet = vuln.get("code_snippet")
+                # Fallback to affected_files if specific fields are empty
+                if (not file_path or not line_number) and vuln.affected_files:
+                    first = vuln.affected_files[0]
+                    file_path = file_path or first.file_path
+                    
+                    # Handle line number being list or int
+                    ln = first.line_number
+                    if isinstance(ln, list) and ln:
+                        ln = ln[0]
+                    line_number = line_number or ln
+                    
+                    code_snippet = code_snippet or first.code_snippet
 
-                        if (not file_path or not line_number) and vuln.get("affected_files"):
-                            files = vuln["affected_files"]
-                            if isinstance(files, list) and files:
-                                first_file = files[0]
-                                if not file_path:
-                                    file_path = first_file.get("path")
-                                if not line_number:
-                                    # line_numbers can be a list or int
-                                    ln = first_file.get("line_numbers") or first_file.get("line_number")
-                                    if isinstance(ln, list) and ln:
-                                        line_number = ln[0]
-                                    elif isinstance(ln, int):
-                                        line_number = ln
-                                if not code_snippet:
-                                    code_snippet = first_file.get("code_snippet")
+                issues.append(SecurityIssue(
+                    id=vuln.threat_id,
+                    title=vuln.title,
+                    description=vuln.description,
+                    severity=Severity[vuln.severity.upper()],
+                    file_path=file_path or "N/A",
+                    line_number=int(line_number) if line_number is not None else 0,
+                    code_snippet=code_snippet or "",
+                    cwe_id=vuln.cwe_id,
+                    recommendation=vuln.recommendation
+                ))
 
-                        issues.append(SecurityIssue(
-                            id=issue_id,
-                            title=vuln.get("title", "Untitled Vulnerability"),
-                            description=vuln.get("description", "No description provided"),
-                            severity=Severity[severity_str],
-                            file_path=file_path or "N/A",
-                            line_number=line_number,
-                            code_snippet=code_snippet,
-                            cwe_id=vuln.get("cwe_id"),
-                            recommendation=vuln.get("recommendation")
-                        ))
-                    except (KeyError, ValueError) as e:
-                        if self.debug:
-                            self.console.print(
-                                f"⚠️  Warning: Failed to parse vulnerability #{idx + 1}: {e}",
-                                style="yellow"
-                            )
-                        continue
+        except Exception as e:
+             if self.debug:
+                 self.console.print(f"❌ Error validating scan results schema: {e}", style="bold red")
+             raise RuntimeError(f"Failed to parse scan results: {e}")
 
-                scan_duration = time.time() - scan_start_time
-                scan_result = ScanResult(
-                    repository_path=str(repo),
-                    issues=issues,
-                    files_scanned=files_scanned,
-                    scan_time_seconds=round(scan_duration, 2),
-                    total_cost_usd=self.total_cost
-                )
-                
-                # Merge DAST validation results if available
-                scan_result = self._merge_dast_results(scan_result, securevibes_dir)
-                
-                # Regenerate artifacts with merged validation data
-                if scan_result.dast_enabled:
-                    self._regenerate_artifacts(scan_result, securevibes_dir)
-                
-                return scan_result
-                
-            except (OSError, PermissionError, json.JSONDecodeError, ValueError) as e:
-                raise RuntimeError(f"Failed to load {VULNERABILITIES_FILE}: {e}")
-
-        # No results found
-        raise RuntimeError(
-            f"Scan failed to generate results. Expected files not found:\n"
-            f"  - {results_file}\n"
-            f"  - {vulnerabilities_file}\n"
-            f"Check {securevibes_dir}/ for partial artifacts."
+        scan_duration = time.time() - scan_start_time
+        scan_result = ScanResult(
+            repository_path=str(repo),
+            issues=issues,
+            files_scanned=files_scanned,
+            scan_time_seconds=round(scan_duration, 2),
+            total_cost_usd=self.total_cost
         )
+        
+        # Merge DAST validation results if available
+        scan_result = self._merge_dast_results(scan_result, securevibes_dir)
+        
+        # Regenerate artifacts with merged validation data
+        if scan_result.dast_enabled:
+            self._regenerate_artifacts(scan_result, securevibes_dir)
+        
+        return scan_result
+
