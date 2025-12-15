@@ -79,26 +79,24 @@ class TestScanCommand:
         # Should complete (may fail if no API key, but command structure is valid)
         assert '--help' not in result.output  # Didn't fall back to help
     
+    @pytest.mark.skip(reason="Requires scanner/API - output path logic tested in test_output_paths.py")
     def test_scan_markdown_format_default(self, runner, test_repo):
         """Test that markdown is default format"""
         result = runner.invoke(cli, ['scan', str(test_repo)])
         # Should mention .md file or markdown
-        # May fail for other reasons but check output mentions markdown
-        pass  # Basic structure test
+        pass
     
+    @pytest.mark.skip(reason="Requires scanner/API - output path logic tested in test_output_paths.py")
     def test_scan_markdown_output_relative_path(self, runner, test_repo):
         """Test markdown output with relative filename saves to .securevibes/"""
-        # This test would require mocking the scanner to avoid actual API calls
-        # For now, we verify the command structure is accepted
         result = runner.invoke(cli, [
             'scan', str(test_repo),
             '--format', 'markdown',
             '--output', 'custom_report.md'
         ])
-        # Command should be syntactically valid
-        # Actual path logic is unit-tested separately
-        assert 'custom_report.md' in result.output or result.exit_code in [0, 1]
+        assert 'custom_report.md' in result.output or result.exit_code == 0
     
+    @pytest.mark.skip(reason="Requires scanner/API - output path logic tested in test_output_paths.py")
     def test_scan_markdown_output_absolute_path(self, runner, test_repo, tmp_path):
         """Test markdown output with absolute path preserves the path"""
         output_file = tmp_path / "absolute_report.md"
@@ -107,16 +105,15 @@ class TestScanCommand:
             '--format', 'markdown',
             '--output', str(output_file)
         ])
-        # Command should accept absolute paths
-        assert str(output_file) in result.output or result.exit_code in [0, 1]
+        assert str(output_file) in result.output or result.exit_code == 0
     
+    @pytest.mark.skip(reason="Requires scanner/API")
     def test_scan_table_format_still_works(self, runner, test_repo):
         """Test backward compatibility - table format still works"""
         result = runner.invoke(cli, [
             'scan', str(test_repo),
             '--format', 'table'
         ])
-        # Should accept table format
         pass
 
 
