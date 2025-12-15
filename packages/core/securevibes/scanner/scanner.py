@@ -859,7 +859,7 @@ class Scanner:
             data = load_json_file(vulnerabilities_file)
 
         if data is None:
-             raise RuntimeError(
+            raise RuntimeError(
                 f"Scan failed to generate results. Expected files not found:\n"
                 f"  - {results_file}\n"
                 f"  - {vulnerabilities_file}\n"
@@ -896,7 +896,7 @@ class Scanner:
                     id=vuln.threat_id,
                     title=vuln.title,
                     description=vuln.description,
-                    severity=Severity[vuln.severity.upper()],
+                    severity=vuln.severity,
                     file_path=file_path or "N/A",
                     line_number=int(line_number) if line_number is not None else 0,
                     code_snippet=code_snippet or "",
@@ -905,9 +905,9 @@ class Scanner:
                 ))
 
         except Exception as e:
-             if self.debug:
-                 self.console.print(f"❌ Error validating scan results schema: {e}", style="bold red")
-             raise RuntimeError(f"Failed to parse scan results: {e}")
+            if self.debug:
+                self.console.print(f"❌ Error validating scan results schema: {e}", style="bold red")
+            raise RuntimeError(f"Failed to parse scan results: {e}")
 
         scan_duration = time.time() - scan_start_time
         scan_result = ScanResult(

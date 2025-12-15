@@ -1,25 +1,9 @@
+"""Pydantic models for parsing and validating scan output JSON."""
+
 from typing import List, Optional, Union, Dict, Any
 from pydantic import BaseModel, Field, field_validator, model_validator
-from enum import Enum
 
-class Severity(str, Enum):
-    CRITICAL = "critical"
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
-    INFO = "info"
-
-    @classmethod
-    def _missing_(cls, value):
-        if isinstance(value, str):
-            value = value.lower()
-            if value == "informational":
-                return cls.INFO
-            # Try to match case-insensitively
-            for member in cls:
-                if member.value == value:
-                    return member
-        return None
+from securevibes.models.issue import Severity
 
 class AffectedFile(BaseModel):
     file_path: str = Field(..., description="Path to the affected file")

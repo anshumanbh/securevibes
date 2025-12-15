@@ -13,6 +13,18 @@ class Severity(str, Enum):
     LOW = "low"
     INFO = "info"
 
+    @classmethod
+    def _missing_(cls, value):
+        """Handle case-insensitive matching and aliases"""
+        if isinstance(value, str):
+            value = value.lower()
+            if value == "informational":
+                return cls.INFO
+            for member in cls:
+                if member.value == value:
+                    return member
+        return None
+
 
 class ValidationStatus(str, Enum):
     """DAST validation status"""
