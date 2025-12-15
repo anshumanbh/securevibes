@@ -41,8 +41,21 @@ pip install securevibes
 git clone https://github.com/anshumanbh/securevibes.git
 cd securevibes
 virtualenv env
+
+# Linux/macOS
 . env/bin/activate
+
+# Windows
+# Create & activate venv
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+
+# Install the core package in editable mode
+# Linux/macOS
 pip install -e packages/core
+
+# Windows
+pip install -e .\packages\core
 
 # Authenticate (choose one method)
 # Method 1: Session-based (recommended)
@@ -50,7 +63,11 @@ pip install -e packages/core
 claude  # Run interactive CLI, then type: /login
 
 # Method 2: API key
-export ANTHROPIC_API_KEY="your-api-key-here"  # Get from https://console.anthropic.com/
+# Linux/macOS
+export ANTHROPIC_API_KEY="your-api-key-here"
+
+# Windows (Set for *current* PowerShell session)
+$env:ANTHROPIC_API_KEY = "your-api-key-here"
 
 # Scan your project
 securevibes scan /path/to/code --debug

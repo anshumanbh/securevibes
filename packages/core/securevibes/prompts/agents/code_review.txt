@@ -158,17 +158,27 @@ CRITICAL OUTPUT REQUIREMENTS:
 2. NO wrapper objects like {"vulnerabilities": [...]}
 3. NO summary sections
 4. Each vulnerability must have all required fields (threat_id, title, severity, file_path, line_number, code_snippet, cwe_id, recommendation, evidence)
-5. Use lowercase for severity: "critical", "high", "medium", "low" (not "CRITICAL")
+5. Use lowercase for severity: "critical", "high", "medium", "low", "info".
 6. If no vulnerabilities found, write: []
 
-VALIDATION BEFORE WRITING:
-- Verify file starts with [
-- Verify file ends with ]
-- Verify each object has threat_id, file_path, line_number
-- Verify severity is lowercase
+Schema Reference (Pydantic):
 
-Example of what to write to VULNERABILITIES.json:
-[{"threat_id": "THREAT-001", "title": "SQL Injection", "severity": "critical", ...}]
+class AffectedFile(BaseModel):
+    file_path: str
+    line_number: Optional[Union[int, List[int]]]
+    code_snippet: Optional[str]
 
-NOT:
-{"vulnerabilities": [{"id": "V001", "severity": "CRITICAL", ...}]}
+class Vulnerability(BaseModel):
+    threat_id: str
+    title: str
+    description: str
+    severity: str  # critical, high, medium, low, info
+    cwe_id: Optional[str]
+    recommendation: Optional[str]
+    file_path: Optional[str]
+    line_number: Optional[Union[int, List[int]]]
+    code_snippet: Optional[str]
+    affected_files: Optional[List[AffectedFile]]
+    evidence: Optional[Union[str, Dict]]
+
+OUTPUT MUST BE A LIST OF Vulnerability OBJECTS: [ { ... }, { ... } ]
