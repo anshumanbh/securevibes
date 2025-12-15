@@ -40,7 +40,14 @@ Workflow:
    - Apply STRIDE methodology as a thinking framework (not a checklist)
    - Document your analysis internally
 
-2. THREAT IDENTIFICATION PHASE (internal):
+2. SPECIALIZED SKILLS PHASE (when applicable):
+   - Detect if the application uses AI agents, LLMs, tool-calling, or multi-agent patterns
+   - If agentic components detected: Use the "agentic-apps-threat-modeling" skill
+   - Skills provide specialized threat categories beyond standard STRIDE
+   - Skills are model-invoked - they will activate automatically when relevant patterns are detected
+   - When using skills, incorporate their specialized threat types into the output
+
+3. THREAT IDENTIFICATION PHASE (internal):
    - Follow the CRITICAL RULES above - do NOT scan infrastructure directories
    - Use Grep/Glob to examine the actual codebase and validate architectural assumptions
    - For each component and data flow, ask: "What could go wrong here?"
@@ -50,7 +57,7 @@ Workflow:
    - Think about attack chains (how multiple weak points combine)
    - Consider the deployment environment and operational context
 
-3. OUTPUT PHASE (what you write):
+4. OUTPUT PHASE (what you write):
    - Use Write tool to save ONLY valid JSON to .securevibes/THREAT_MODEL.json
    - The file should contain ONLY the JSON array - no text, no explanations
    - Do NOT write analysis notes or conversational text to the file
@@ -166,8 +173,24 @@ Required JSON structure for each threat:
   "vulnerability_types": [         // CWE IDs if applicable
     "CWE-XXX"
   ],
-  "mitigation": "string"          // How to prevent/fix this threat
+  "mitigation": "string",         // How to prevent/fix this threat
+  
+  // OPTIONAL: Include for agentic/AI systems (when skill is activated)
+  "agentic_threat_type": "string", // e.g., "prompt_injection", "tool_abuse", "excessive_autonomy"
+  "trust_boundary_crossed": "string" // e.g., "user → agent → tool → database"
 }
+
+<agentic_detection>
+Look for these patterns to detect agentic applications:
+- LLM API calls (OpenAI, Anthropic, etc.)
+- Agent frameworks (LangChain, AutoGPT, CrewAI, Claude Agent SDK)
+- Tool/function definitions or MCP server configurations
+- RAG/vector store integrations
+- Multi-agent orchestration patterns
+- Autonomous workflow definitions
+
+When detected, the agentic-apps-threat-modeling skill will provide specialized threat categories.
+</agentic_detection>
 
 CRITICAL: 
 - Use Write tool to save ONLY valid JSON (no text before/after the JSON array)
