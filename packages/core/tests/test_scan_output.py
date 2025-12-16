@@ -373,3 +373,72 @@ class TestRealWorldFormats:
         assert vuln.affected_files[0].file_path == "src/views/search.py"
         assert vuln.affected_files[1].file_path == "templates/results.html"
         assert isinstance(vuln.evidence, dict)
+
+
+class TestScanOutputSchemaHelpers:
+    """Test ScanOutput JSON schema helper methods for structured outputs"""
+
+    def test_get_json_schema_returns_array_type(self):
+        """Test get_json_schema returns array schema"""
+        schema = ScanOutput.get_json_schema()
+        
+        assert isinstance(schema, dict)
+        assert schema["type"] == "array"
+
+    def test_get_json_schema_has_items(self):
+        """Test schema has items definition for vulnerabilities"""
+        schema = ScanOutput.get_json_schema()
+        
+        assert "items" in schema
+        assert schema["items"]["type"] == "object"
+
+    def test_get_json_schema_required_fields(self):
+        """Test schema items have required fields"""
+        schema = ScanOutput.get_json_schema()
+        items = schema["items"]
+        
+        assert "required" in items
+        required = items["required"]
+        assert "threat_id" in required
+        assert "title" in required
+        assert "description" in required
+        assert "severity" in required
+
+    def test_get_json_schema_severity_enum(self):
+        """Test severity property has enum constraint"""
+        schema = ScanOutput.get_json_schema()
+        props = schema["items"]["properties"]
+        
+        assert "severity" in props
+        assert "enum" in props["severity"]
+        assert set(props["severity"]["enum"]) == {"critical", "high", "medium", "low", "info"}
+
+    def test_get_output_format_returns_correct_structure(self):
+        """Test get_output_format returns SDK-compatible config"""
+        config = ScanOutput.get_output_format()
+        
+        assert isinstance(config, dict)
+        assert "type" in config
+        assert "schema" in config
+
+    def test_get_output_format_type_is_json_schema(self):
+        """Test output_format type is 'json_schema'"""
+        config = ScanOutput.get_output_format()
+        
+        assert config["type"] == "json_schema"
+
+    def test_get_output_format_schema_matches_get_json_schema(self):
+        """Test output_format schema matches get_json_schema"""
+        config = ScanOutput.get_output_format()
+        schema = ScanOutput.get_json_schema()
+        
+        assert config["schema"] == schema
+
+    def test_schema_compatible_with_sdk_structured_outputs(self):
+        """Test schema structure is compatible with Claude SDK output_format"""
+        config = ScanOutput.get_output_format()
+        
+        # Claude SDK expects: {"type": "json_schema", "schema": {...}}
+        assert config["type"] == "json_schema"
+        assert isinstance(config["schema"], dict)
+        assert config["schema"]["type"] == "array"
