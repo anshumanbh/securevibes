@@ -31,21 +31,53 @@ If Grep returns results in infrastructure directories, IGNORE them completely.
 
 <critical_output_format>
 CRITICAL: The VULNERABILITIES.json file MUST be a flat JSON array.
+THIS IS STRICTLY ENFORCED - VIOLATIONS WILL BE REJECTED.
+
+JSON SCHEMA (your output MUST conform to this):
+{
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["threat_id", "title", "description", "severity"],
+    "properties": {
+      "threat_id": {"type": "string"},
+      "title": {"type": "string"},
+      "description": {"type": "string"},
+      "severity": {"type": "string", "enum": ["critical", "high", "medium", "low", "info"]},
+      "cwe_id": {"type": "string"},
+      "recommendation": {"type": "string"},
+      "file_path": {"type": "string"},
+      "line_number": {"type": "integer"},
+      "code_snippet": {"type": "string"},
+      "evidence": {"type": "string"}
+    }
+  }
+}
+
+VALIDATION RULES (STRICTLY ENFORCED):
+1. Output MUST start with '[' character
+2. Output MUST end with ']' character  
+3. NO wrapper objects - the array IS the entire output
+4. Empty result = [] (not {} or null)
+5. Each item MUST have: threat_id, title, description, severity
+6. severity MUST be lowercase: "critical", "high", "medium", "low", "info"
 
 CORRECT FORMAT (what you MUST write):
 [
-  {"threat_id": "THREAT-001", "title": "...", ...},
-  {"threat_id": "THREAT-002", "title": "...", ...}
+  {"threat_id": "THREAT-001", "title": "SQL Injection", "description": "...", "severity": "critical", ...},
+  {"threat_id": "THREAT-002", "title": "XSS", "description": "...", "severity": "high", ...}
 ]
 
-INCORRECT FORMATS (DO NOT USE):
-❌ {"vulnerabilities": [...]}
-❌ {"summary": {...}, "vulnerabilities": [...]}
-❌ {"results": [...]}
-❌ Any wrapper object
+INCORRECT FORMATS (WILL BE REJECTED):
+❌ {"vulnerabilities": [...]}     <- WRONG: wrapper object
+❌ {"summary": {...}, "data": [...]}  <- WRONG: wrapper object
+❌ {"results": [...]}            <- WRONG: wrapper object
+❌ {"issues": [...]}             <- WRONG: wrapper object
+❌ Any object that wraps the array
 
-The file must start with [ and end with ]
-No wrapper objects, no summary sections, just the array.
+The file content must be ONLY the JSON array - no wrapper, no metadata, no summary.
+First character: [
+Last character: ]
 </critical_output_format>
 
 <instructions>

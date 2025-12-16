@@ -4,6 +4,7 @@ from typing import List, Optional, Union, Dict, Any
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from securevibes.models.issue import Severity
+from securevibes.models.schemas import VULNERABILITIES_ARRAY_SCHEMA, get_output_format_config
 
 class AffectedFile(BaseModel):
     file_path: str = Field(..., description="Path to the affected file")
@@ -102,3 +103,36 @@ class ScanOutput(BaseModel):
                 return cls(vulnerabilities=[Vulnerability(**item) for item in data['issues']])
             return cls(**data)
         raise ValueError("Invalid input format for ScanOutput")
+
+    @classmethod
+    def get_json_schema(cls) -> Dict[str, Any]:
+        """
+        Get the JSON schema for vulnerabilities output.
+        
+        This schema is used for:
+        1. Claude SDK structured outputs (output_format option)
+        2. Validation hooks to enforce schema compliance
+        3. Documentation of expected output format
+        
+        Returns:
+            JSON Schema dict for flat vulnerabilities array
+        """
+        return VULNERABILITIES_ARRAY_SCHEMA
+
+    @classmethod
+    def get_output_format(cls) -> Dict[str, Any]:
+        """
+        Get the output_format configuration for Claude SDK structured outputs.
+        
+        Use this with ClaudeAgentOptions for guaranteed schema compliance:
+        
+            from securevibes.models.scan_output import ScanOutput
+            
+            options = ClaudeAgentOptions(
+                output_format=ScanOutput.get_output_format()
+            )
+        
+        Returns:
+            Dict compatible with SDK output_format parameter
+        """
+        return get_output_format_config()

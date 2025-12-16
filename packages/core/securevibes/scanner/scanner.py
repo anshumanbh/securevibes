@@ -27,7 +27,8 @@ from securevibes.scanner.hooks import (
     create_dast_security_hook,
     create_pre_tool_hook,
     create_post_tool_hook,
-    create_subagent_hook
+    create_subagent_hook,
+    create_json_validation_hook
 )
 
 # Constants for artifact paths
@@ -598,6 +599,7 @@ class Scanner:
         pre_tool_hook = create_pre_tool_hook(tracker, self.console, self.debug, detected_languages)
         post_tool_hook = create_post_tool_hook(tracker, self.console, self.debug)
         subagent_hook = create_subagent_hook(tracker)
+        json_validation_hook = create_json_validation_hook(self.console, self.debug)
 
         # Configure agent options with hooks
         from claude_agent_sdk.types import HookMatcher
@@ -629,8 +631,9 @@ class Scanner:
             model=self.model,
             hooks={
                 "PreToolUse": [
-                    HookMatcher(hooks=[dast_security_hook]),  # DAST security - blocks database tools
-                    HookMatcher(hooks=[pre_tool_hook])        # General pre-tool processing
+                    HookMatcher(hooks=[dast_security_hook]),     # DAST security - blocks database tools
+                    HookMatcher(hooks=[json_validation_hook]),   # JSON validation - fixes VULNERABILITIES.json format
+                    HookMatcher(hooks=[pre_tool_hook])           # General pre-tool processing
                 ],
                 "PostToolUse": [HookMatcher(hooks=[post_tool_hook])],
                 "SubagentStop": [HookMatcher(hooks=[subagent_hook])]
