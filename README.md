@@ -1,5 +1,8 @@
 # 🛡️ SecureVibes
 
+[![Run in Smithery](https://smithery.ai/badge/skills/anshumanbh)](https://smithery.ai/skills?ns=anshumanbh&utm_source=github&utm_medium=badge)
+
+
 **AI-Native Security System for Vibecoded Applications**
 
 SecureVibes uses **Claude's multi-agent architecture** to autonomously find security vulnerabilities in your codebase. Five specialized AI agents (4 required + 1 optional DAST) work together to deliver comprehensive, context-aware security analysis with concrete evidence.
