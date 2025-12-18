@@ -6,13 +6,15 @@ Provides hook creator functions that return async closures for:
 - Pre-tool processing (exclusions, write restrictions, logging)
 - Post-tool completion tracking
 - Sub-agent lifecycle events
+- JSON validation/auto-fix for vulnerability output
 """
 
 from pathlib import Path
-from typing import Dict, Any, Set, Optional
+from typing import Set
 from rich.console import Console
 
 from securevibes.config import ScanConfig
+from securevibes.models.schemas import fix_vulnerabilities_json, validate_vulnerabilities_json
 
 
 def create_dast_security_hook(tracker, console: Console, debug: bool):
@@ -224,3 +226,85 @@ def create_subagent_hook(tracker):
         return {}
     
     return subagent_hook
+
+
+def create_json_validation_hook(console: Console, debug: bool):
+    """
+    Create PreToolUse hook that validates and auto-fixes vulnerability JSON output.
+    
+    This hook intercepts Write operations to VULNERABILITIES.json and:
+    1. Validates the JSON conforms to the expected flat array schema
+    2. Auto-fixes common issues like wrapper objects {"vulnerabilities": [...]}
+    3. Logs warnings when fixes are applied
+    
+    This provides deterministic output enforcement complementing prompt-based guidance,
+    ensuring the code review agent's output always matches the expected schema.
+    
+    Args:
+        console: Rich console for output
+        debug: Whether to show debug messages
+    
+    Returns:
+        Async hook function compatible with ClaudeSDKClient PreToolUse hook
+    """
+    async def json_validation_hook(input_data: dict, tool_use_id: str, ctx: dict) -> dict:
+        tool_name = input_data.get("tool_name")
+        
+        # Only intercept Write operations
+        if tool_name != "Write":
+            return {}
+        
+        tool_input = input_data.get("tool_input", {})
+        file_path = tool_input.get("file_path", "")
+        
+        # Only validate VULNERABILITIES.json writes
+        if not file_path or "VULNERABILITIES.json" not in file_path:
+            return {}
+        
+        content = tool_input.get("content", "")
+        if not content:
+            return {}
+        
+        # Attempt to fix common format issues
+        fixed_content, was_modified = fix_vulnerabilities_json(content)
+        
+        if was_modified:
+            if debug:
+                console.print(
+                    "  🔧 Auto-fixed VULNERABILITIES.json format (unwrapped wrapper object)",
+                    style="yellow"
+                )
+            else:
+                console.print(
+                    "  ⚠️  Fixed JSON format in VULNERABILITIES.json",
+                    style="yellow"
+                )
+        
+        # Validate the (potentially fixed) content
+        is_valid, error_msg = validate_vulnerabilities_json(fixed_content)
+        
+        if not is_valid:
+            console.print(
+                f"  ❌ VULNERABILITIES.json validation failed: {error_msg}",
+                style="bold red"
+            )
+            # Don't block - let it write but warn
+            # The Pydantic validation in scanner.py will catch it later
+        elif debug:
+            console.print(
+                "  ✅ VULNERABILITIES.json schema validated",
+                style="green"
+            )
+        
+        # If content was modified, return updated input
+        if was_modified:
+            return {
+                "updatedInput": {
+                    **tool_input,
+                    "content": fixed_content
+                }
+            }
+        
+        return {}
+    
+    return json_validation_hook
