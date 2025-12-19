@@ -524,6 +524,8 @@ Built by [@anshumanbh](https://github.com/anshumanbh)
 
 🌟 Star the repo to follow along!
 
+💬 [Join our Discord](https://discord.gg/9cYqTBdC9h) to follow our journey!
+
 ---
 
 ## 🙏 Acknowledgments
