@@ -101,3 +101,4 @@ Skills are model-invoked. Do not hardcode skill names or paths in prompts.
 - [STRIDE Methodology](https://learn.microsoft.com/en-us/azure/security/develop/threat-modeling-tool-threats) - Microsoft STRIDE reference
 - [OWASP Threat Modeling](https://owasp.org/www-community/Threat_Modeling) - OWASP threat modeling resources
 
+
