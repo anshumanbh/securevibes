@@ -639,39 +639,56 @@ ${7*7}
 
 ## CWE Reference
 
-Full list of injection-related CWEs from OWASP A03:2021:
+Full list of injection-related CWEs from OWASP A03:2021 and A05:2025 (37 CWEs):
 
-| CWE | Name |
-|-----|------|
-| CWE-20 | Improper Input Validation |
-| CWE-74 | Injection (parent) |
-| CWE-77 | Command Injection |
-| CWE-78 | OS Command Injection |
-| CWE-79 | Cross-site Scripting (XSS) |
-| CWE-80 | Basic XSS |
-| CWE-83 | XSS in Attributes |
-| CWE-87 | Alternate XSS Syntax |
-| CWE-88 | Argument Injection |
-| CWE-89 | SQL Injection |
-| CWE-90 | LDAP Injection |
-| CWE-91 | XML/XPath Injection |
-| CWE-93 | CRLF Injection |
-| CWE-94 | Code Injection |
-| CWE-95 | Eval Injection |
-| CWE-96 | Static Code Injection |
-| CWE-97 | SSI Injection |
-| CWE-98 | PHP Remote File Inclusion |
-| CWE-99 | Resource Injection |
-| CWE-113 | HTTP Response Splitting |
-| CWE-116 | Improper Output Encoding |
-| CWE-138 | Special Element Neutralization |
-| CWE-184 | Incomplete Disallowed Inputs |
-| CWE-470 | Unsafe Reflection |
-| CWE-564 | Hibernate SQL Injection |
-| CWE-610 | External Reference |
-| CWE-643 | XPath Injection |
-| CWE-644 | HTTP Header Injection |
-| CWE-652 | XQuery Injection |
-| CWE-917 | Expression Language Injection |
-| CWE-943 | NoSQL Injection |
-| CWE-1336 | Template Injection (SSTI) |
+| CWE | Name | DAST Testable |
+|-----|------|---------------|
+| CWE-20 | Improper Input Validation | Partial |
+| CWE-74 | Injection (parent category) | Yes |
+| CWE-76 | Improper Neutralization of Equivalent Special Elements | Yes |
+| CWE-77 | Command Injection | Yes |
+| CWE-78 | OS Command Injection | Yes |
+| CWE-79 | Cross-site Scripting (XSS) | Yes |
+| CWE-80 | Basic XSS | Yes |
+| CWE-83 | XSS in Attributes | Yes |
+| CWE-86 | Improper Neutralization of Invalid Characters in Web Pages | Yes |
+| CWE-88 | Argument Injection | Yes |
+| CWE-89 | SQL Injection | Yes |
+| CWE-90 | LDAP Injection | Yes |
+| CWE-91 | XML/XPath Injection (Blind XPath) | Yes |
+| CWE-93 | CRLF Injection | Yes |
+| CWE-94 | Code Injection | Yes |
+| CWE-95 | Eval Injection | Yes |
+| CWE-96 | Static Code Injection | Partial |
+| CWE-97 | SSI Injection | Yes |
+| CWE-98 | PHP Remote File Inclusion | Yes |
+| CWE-99 | Resource Injection | Partial |
+| CWE-103 | Struts: Incomplete validate() Method | No (SAST) |
+| CWE-104 | Struts: Form Bean Does Not Extend Validation Class | No (SAST) |
+| CWE-112 | Missing XML Validation | Partial |
+| CWE-113 | HTTP Response Splitting | Yes |
+| CWE-114 | Process Control | Yes |
+| CWE-115 | Misinterpretation of Output | Partial |
+| CWE-116 | Improper Output Encoding | Yes |
+| CWE-129 | Improper Validation of Array Index | No (SAST) |
+| CWE-159 | Improper Handling of Invalid Use of Special Elements | Yes |
+| CWE-470 | Unsafe Reflection | Partial |
+| CWE-493 | Critical Public Variable Without Final Modifier | No (SAST) |
+| CWE-500 | Public Static Field Not Marked Final | No (SAST) |
+| CWE-564 | Hibernate SQL Injection | Yes |
+| CWE-610 | Externally Controlled Reference | Yes |
+| CWE-643 | XPath Injection | Yes |
+| CWE-644 | HTTP Header Injection | Yes |
+| CWE-917 | Expression Language Injection | Yes |
+
+**Additional CWEs (common but not in OWASP Top 10 list):**
+
+| CWE | Name | DAST Testable |
+|-----|------|---------------|
+| CWE-652 | XQuery Injection | Yes |
+| CWE-943 | NoSQL Injection | Yes |
+| CWE-1336 | Template Injection (SSTI) | Yes |
+
+**Note:** Some CWEs are primarily detectable via Static Analysis (SAST) rather than Dynamic Testing (DAST). This skill focuses on DAST-testable vulnerabilities.
+
+**Related:** LLM Prompt Injection is covered separately in [OWASP LLM Top 10 - LLM01:2025](https://genai.owasp.org/llmrisk/llm01-prompt-injection/).

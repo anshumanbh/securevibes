@@ -462,7 +462,9 @@ These are reference implementations to adapt — not drop-in scripts. Each appli
 
 ### Additional Resources
 
+- [OWASP A05:2025-Injection](https://owasp.org/Top10/2025/A05_2025-Injection/) (latest)
 - [OWASP A03:2021-Injection](https://owasp.org/Top10/2021/A03_2021-Injection/)
 - [OWASP SQL Injection Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html)
 - [OWASP XSS Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html)
+- [OWASP LLM Top 10 - Prompt Injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/) (LLM-specific)
 - [Agent Skills Guide](../../../docs/references/AGENT_SKILLS_GUIDE.md)
