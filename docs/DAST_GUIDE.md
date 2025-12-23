@@ -255,16 +255,17 @@ If `--dast` enabled, DAST agent:
 1. **Loads vulnerabilities**
    - Reads `.securevibes/VULNERABILITIES.json`
    - Determines eligibility based on available skills (model‑invoked)
-   - Validates only when a matching skill exists (currently: IDOR); others are marked UNVALIDATED with reason
+   - Validates only when a matching skill exists; others are marked UNVALIDATED with reason
 
 2. **Discovers skills**
    - Loads skills from `.claude/skills/dast/` (progressive disclosure)
-   - Skills are model‑invoked; currently includes `idor-testing`
+   - Skills are model‑invoked; includes `authorization-testing` (IDOR) and `injection-testing` (SQLi, XSS, Command Injection, SSTI)
 
 3. **Validates eligible findings**
-   - Follows methodology from the `authorization-testing` skill
-   - Baseline: User1 → own resource (expect 200)
-   - Test: User1 → User2’s resource (expect 401/403; 200 = vulnerable)
+   - Follows methodology from the matching skill (e.g., `authorization-testing` for IDOR, `injection-testing` for SQLi/XSS)
+   - Uses detection techniques appropriate to vulnerability type (time-based, error-based, boolean-based, reflection)
+   - Authorization testing: User1 → own resource (expect 200), User1 → User2's resource (expect 401/403)
+   - Injection testing: Send payloads, observe response timing/errors/content changes
 
 4. **Captures evidence**
    - Records minimal, redacted evidence in `.securevibes/DAST_VALIDATION.json`
@@ -286,9 +287,9 @@ If `--dast` enabled, DAST agent:
 
 | Status | Meaning | Display |
 |--------|---------|---------|
-| **VALIDATED** | Exploitable - 200 OK received when accessing other user's data | ✅ |
-| **FALSE_POSITIVE** | Not exploitable - 403/401 received (access control working) | ❌ |
-| **UNVALIDATED** | Could not test - endpoint unreachable, timeout, or error | ❓ |
+| **VALIDATED** | Exploitable - vulnerability confirmed (unauthorized access, injection executed, etc.) | ✅ |
+| **FALSE_POSITIVE** | Not exploitable - input properly sanitized or access control working | ❌ |
+| **UNVALIDATED** | Could not test - endpoint unreachable, timeout, or no matching skill | ❓ |
 | **PARTIAL** | Partially validated - mixed results requiring manual review | ⚠️ |
 
 ---
@@ -345,13 +346,19 @@ DAST uses Claude Agent SDK skills for modular, extensible testing:
 ```
 .claude/skills/dast/
 ├── authorization-testing/
-│   ├── SKILL.md                 # Core methodology (359 lines)
-│   ├── examples.md              # 10+ examples organized by category (443 lines)
+│   ├── SKILL.md                 # Core methodology
+│   ├── examples.md              # 10+ examples organized by category
 │   └── reference/               # Implementation examples
-│       ├── README.md            # Reference guide
-│       ├── auth_patterns.py     # Reusable authentication functions
-│       └── validate_idor.py     # Complete testing script
-└── (future: sqli-testing, xss-testing, etc.)
+│       ├── README.md
+│       ├── auth_patterns.py
+│       └── validate_idor.py
+└── injection-testing/
+    ├── SKILL.md                 # Core methodology (SQLi, XSS, Command Injection, SSTI)
+    ├── examples.md              # 10+ examples organized by injection type
+    └── reference/               # Implementation examples
+        ├── README.md
+        ├── injection_payloads.py
+        └── validate_injection.py
 ```
 
 ### Adding Custom Skills

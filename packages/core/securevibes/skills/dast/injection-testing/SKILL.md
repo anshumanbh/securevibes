@@ -480,4 +480,4 @@ These are reference implementations to adapt — not drop-in scripts. Each appli
 - [OWASP SQL Injection Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html)
 - [OWASP XSS Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html)
 - [OWASP LLM Top 10 - Prompt Injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/) (LLM-specific)
-- [Agent Skills Guide](../../../docs/references/AGENT_SKILLS_GUIDE.md)
+- [Agent Skills Guide](../../../../../../docs/references/AGENT_SKILLS_GUIDE.md)

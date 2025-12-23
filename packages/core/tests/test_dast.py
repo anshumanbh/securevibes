@@ -608,29 +608,41 @@ def test_setup_dast_skills_copies_to_target(tmp_path):
     # Verify skills were copied
     target_skills = tmp_path / ".claude" / "skills" / "dast"
     assert target_skills.exists()
+    
+    # Check authorization-testing skill
     assert (target_skills / "authorization-testing" / "SKILL.md").exists()
     assert (target_skills / "authorization-testing" / "reference" / "validate_idor.py").exists()
     assert (target_skills / "authorization-testing" / "reference" / "auth_patterns.py").exists()
+    
+    # Check injection-testing skill
+    assert (target_skills / "injection-testing" / "SKILL.md").exists()
+    assert (target_skills / "injection-testing" / "examples.md").exists()
+    assert (target_skills / "injection-testing" / "reference" / "validate_injection.py").exists()
+    assert (target_skills / "injection-testing" / "reference" / "injection_payloads.py").exists()
 
 
-def test_setup_dast_skills_skips_if_exists(tmp_path):
-    """Test that _setup_dast_skills skips copy if skills already exist"""
+def test_setup_dast_skills_always_syncs(tmp_path):
+    """Test that _setup_dast_skills always syncs skills (even if directory exists)"""
     from securevibes.scanner.scanner import Scanner
     
     scanner = Scanner(model="sonnet", debug=False)
     
-    # Create existing skills directory
+    # Create existing skills directory with custom file
     target_skills = tmp_path / ".claude" / "skills" / "dast"
     target_skills.mkdir(parents=True)
     marker_file = target_skills / "custom_skill.txt"
     marker_file.write_text("custom")
     
-    # Call setup - should skip
+    # Call setup - should sync new skills while preserving custom files
     scanner._setup_dast_skills(tmp_path)
     
-    # Verify it didn't overwrite
+    # Verify custom file is preserved (dirs_exist_ok=True preserves non-conflicting files)
     assert marker_file.exists()
     assert marker_file.read_text() == "custom"
+    
+    # Verify skills were synced
+    assert (target_skills / "authorization-testing" / "SKILL.md").exists()
+    assert (target_skills / "injection-testing" / "SKILL.md").exists()
 
 
 def test_setup_dast_skills_error_handling(tmp_path):
@@ -656,15 +668,24 @@ def test_bundled_skills_package_structure():
     import securevibes
     
     package_dir = Path(securevibes.__file__).parent
-    skills_dir = package_dir / "skills" / "dast" / "authorization-testing"
     
-    # Verify structure
-    assert skills_dir.exists(), "Skills directory not found in package"
-    assert (skills_dir / "SKILL.md").exists(), "SKILL.md missing"
-    assert (skills_dir / "reference" / "validate_idor.py").exists(), "validate_idor.py missing"
-    assert (skills_dir / "reference" / "auth_patterns.py").exists(), "auth_patterns.py missing"
-    assert (skills_dir / "reference" / "README.md").exists(), "reference README missing"
-    assert (skills_dir / "examples.md").exists(), "examples.md missing"
+    # Verify authorization-testing skill structure
+    auth_skills_dir = package_dir / "skills" / "dast" / "authorization-testing"
+    assert auth_skills_dir.exists(), "Authorization-testing skills directory not found in package"
+    assert (auth_skills_dir / "SKILL.md").exists(), "authorization-testing SKILL.md missing"
+    assert (auth_skills_dir / "reference" / "validate_idor.py").exists(), "validate_idor.py missing"
+    assert (auth_skills_dir / "reference" / "auth_patterns.py").exists(), "auth_patterns.py missing"
+    assert (auth_skills_dir / "reference" / "README.md").exists(), "authorization-testing reference README missing"
+    assert (auth_skills_dir / "examples.md").exists(), "authorization-testing examples.md missing"
+    
+    # Verify injection-testing skill structure
+    injection_skills_dir = package_dir / "skills" / "dast" / "injection-testing"
+    assert injection_skills_dir.exists(), "Injection-testing skills directory not found in package"
+    assert (injection_skills_dir / "SKILL.md").exists(), "injection-testing SKILL.md missing"
+    assert (injection_skills_dir / "examples.md").exists(), "injection-testing examples.md missing"
+    assert (injection_skills_dir / "reference" / "README.md").exists(), "injection-testing reference README missing"
+    assert (injection_skills_dir / "reference" / "validate_injection.py").exists(), "validate_injection.py missing"
+    assert (injection_skills_dir / "reference" / "injection_payloads.py").exists(), "injection_payloads.py missing"
 
 
 def test_merge_dast_results_basic(tmp_path):
@@ -969,6 +990,66 @@ async def test_dast_security_hook_only_applies_to_dast_phase():
     # Hook should return {} (allow) when not in DAST phase
     # The actual hook checks: if tracker.current_phase != "dast": return {}
     assert mock_tracker.current_phase != "dast"
+
+
+class TestInjectionValidationPathSafety:
+    """Test path validation in validate_injection.py reference script"""
+    
+    def test_output_path_within_cwd_allowed(self, tmp_path):
+        """Test that output path within current directory is allowed"""
+        from pathlib import Path
+        import os
+        
+        # Change to temp directory
+        original_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        
+        try:
+            output_path = Path("results.json").resolve()
+            cwd = Path.cwd().resolve()
+            
+            # Should be allowed - path is within cwd
+            assert output_path.is_relative_to(cwd)
+        finally:
+            os.chdir(original_cwd)
+    
+    def test_output_path_traversal_blocked(self, tmp_path):
+        """Test that path traversal attempts are detected"""
+        from pathlib import Path
+        import os
+        
+        # Change to temp directory
+        original_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        
+        try:
+            # Attempt path traversal
+            output_path = Path("../../../etc/malicious.json").resolve()
+            cwd = Path.cwd().resolve()
+            
+            # Should be blocked - path is outside cwd
+            assert not output_path.is_relative_to(cwd)
+        finally:
+            os.chdir(original_cwd)
+    
+    def test_absolute_path_outside_cwd_blocked(self, tmp_path):
+        """Test that absolute paths outside cwd are detected"""
+        from pathlib import Path
+        import os
+        
+        # Change to temp directory
+        original_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        
+        try:
+            # Attempt absolute path outside cwd (guaranteed to be outside tmp_path)
+            output_path = Path("/nonexistent/malicious.json").resolve()
+            cwd = Path.cwd().resolve()
+            
+            # Should be blocked - /nonexistent is definitely outside tmp_path
+            assert not output_path.is_relative_to(cwd)
+        finally:
+            os.chdir(original_cwd)
 
 
 if __name__ == "__main__":

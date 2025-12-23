@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -618,7 +619,9 @@ def run_injection_tests(
     test_functions = {
         "sqli_time": lambda: test_time_based_sqli(url, param, original_value, headers, timeout),
         "sqli_error": lambda: test_error_based_sqli(url, param, original_value, headers, timeout),
-        "sqli_boolean": lambda: test_boolean_based_sqli(url, param, original_value, headers, timeout),
+        "sqli_boolean": lambda: test_boolean_based_sqli(
+            url, param, original_value, headers, timeout
+        ),
         "xss": lambda: test_xss(url, param, headers, timeout),
         "cmdi": lambda: test_command_injection(url, param, original_value, headers, timeout),
         "ssti": lambda: test_ssti(url, param, headers, timeout),
@@ -664,7 +667,14 @@ def main():
         timeout=args.timeout,
     )
 
-    with open(args.output, "w") as f:
+    # Validate output path to prevent path traversal
+    output_path = Path(args.output).resolve()
+    cwd = Path.cwd().resolve()
+    if not output_path.is_relative_to(cwd):
+        print(f"Error: Output path must be within current directory: {cwd}")
+        return 1
+
+    with open(output_path, "w") as f:
         json.dump(results, f, indent=2)
 
     # Summary
@@ -674,7 +684,7 @@ def main():
     else:
         print("No injection vulnerabilities confirmed")
 
-    print(f"Results saved to {args.output}")
+    print(f"Results saved to {output_path}")
 
     return 0 if not validated else 1
 
