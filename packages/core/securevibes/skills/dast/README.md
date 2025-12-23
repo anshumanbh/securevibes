@@ -11,13 +11,20 @@ Skills provide specialized testing methodologies that the DAST agent uses to val
 ```
 .claude/skills/dast/
 ├── README.md                    # This file
-└── authorization-testing/       # Authorization failure validation
-    ├── SKILL.md                 # Core methodology (359 lines)
-    ├── examples.md              # 10+ examples organized by category (443 lines)
+├── authorization-testing/       # Authorization failure validation
+│   ├── SKILL.md                 # Core methodology
+│   ├── examples.md              # 10+ examples organized by category
+│   └── reference/               # Implementation examples
+│       ├── README.md            # Reference guide
+│       ├── auth_patterns.py     # Reusable authentication functions
+│       └── validate_idor.py     # Complete testing script
+└── injection-testing/           # Injection vulnerability validation
+    ├── SKILL.md                 # Core methodology
+    ├── examples.md              # 10+ examples organized by injection type
     └── reference/               # Implementation examples
         ├── README.md            # Reference guide
-        ├── auth_patterns.py     # Reusable authentication functions
-        └── validate_idor.py     # Complete testing script
+        ├── injection_payloads.py # Payload generation utilities
+        └── validate_injection.py # Complete testing script
 ```
 
 ## Current Skills
@@ -33,6 +40,18 @@ Skills provide specialized testing methodologies that the DAST agent uses to val
 - VULNERABILITIES.json with IDOR findings
 
 **Output**: Validation status (VALIDATED/FALSE_POSITIVE/UNVALIDATED) with evidence
+
+### injection-testing
+**Purpose**: Validate injection vulnerabilities including SQL, NoSQL, OS Command, LDAP, XPath, SSTI, and XSS by sending crafted payloads and observing application behavior.
+
+**Trigger**: CWE-89 (SQL Injection), CWE-78 (OS Command Injection), CWE-79 (XSS), CWE-90 (LDAP Injection), CWE-917 (Expression Language Injection), CWE-94 (Code Injection), CWE-643 (XPath Injection), CWE-1336 (SSTI)
+
+**Requirements**:
+- Target application running and reachable
+- Identified injection points (parameters, headers, body fields)
+- VULNERABILITIES.json with injection findings
+
+**Output**: Validation status (VALIDATED/FALSE_POSITIVE/PARTIAL/UNVALIDATED) with evidence
 
 ## Adding New Skills
 

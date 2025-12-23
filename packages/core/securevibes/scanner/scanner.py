@@ -272,10 +272,11 @@ class Scanner:
     
     def _setup_dast_skills(self, repo: Path):
         """
-        Copy DAST skills to target project for SDK discovery.
+        Sync DAST skills to target project for SDK discovery.
         
         Skills are bundled with SecureVibes package and automatically
-        copied to each project's .claude/skills/dast/ directory.
+        synced to each project's .claude/skills/dast/ directory.
+        Always syncs to ensure new skills are available.
         
         Args:
             repo: Target repository path
@@ -283,12 +284,6 @@ class Scanner:
         import shutil
         
         target_skills_dir = repo / ".claude" / "skills" / "dast"
-        
-        # Skip if skills already exist
-        if target_skills_dir.exists():
-            if self.debug:
-                self.console.print("  ✓ DAST skills already present", style="dim green")
-            return
         
         # Get skills from package installation
         package_skills_dir = Path(__file__).parent.parent / "skills" / "dast"
@@ -299,19 +294,24 @@ class Scanner:
                 "Package installation may be corrupted."
             )
         
-        # Copy skills to target project
+        # Count skills in package
+        package_skills = [d.name for d in package_skills_dir.iterdir() if d.is_dir()]
+        
+        # Sync skills to target project (always sync to pick up new skills)
         try:
             target_skills_dir.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(package_skills_dir, target_skills_dir, dirs_exist_ok=True)
             
             if self.debug:
                 self.console.print(
-                    f"  📦 Copied DAST skills to .claude/skills/dast/",
+                    f"  📦 Synced {len(package_skills)} DAST skill(s) to .claude/skills/dast/",
                     style="dim green"
                 )
+                for skill in package_skills:
+                    self.console.print(f"      - {skill}", style="dim")
         
         except (OSError, PermissionError) as e:
-            raise RuntimeError(f"Failed to copy DAST skills: {e}")
+            raise RuntimeError(f"Failed to sync DAST skills: {e}")
     
     async def scan_subagent(
         self,
