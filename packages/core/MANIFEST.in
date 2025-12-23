@@ -1,4 +1,4 @@
 include README.md
 include LICENSE
 recursive-include securevibes/prompts *.txt
-
+recursive-include securevibes/skills *.md *.py *.txt
