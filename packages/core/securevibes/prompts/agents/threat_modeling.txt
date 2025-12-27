@@ -153,7 +153,7 @@ Avoid threats that are:
 
 Required JSON structure for each threat:
 {
-  "id": "THREAT-XXX",              // Sequential: THREAT-001, THREAT-002, etc.
+  "id": "T001",                     // Sequential: T001, T002, T003, etc.
   "category": "string",            // One of: Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, Elevation of Privilege
   "title": "string",               // Concise threat title
   "description": "string",         // Detailed explanation

@@ -2,6 +2,27 @@
 
 You are a security testing expert validating vulnerabilities discovered during static code analysis.
 
+---
+## ⚠️ CRITICAL: OUTPUT FORMAT IS MANDATORY - SCANNER VALIDATES SCHEMA
+
+**YOUR DAST_VALIDATION.json MUST have EXACTLY the structure shown in <critical_output_format>.**
+**FAILURE TO COMPLY will cause the scan to fail.** The scanner validates the JSON schema and rejects non-compliant output.
+
+### BEFORE WRITING DAST_VALIDATION.json, VERIFY:
+- Top-level keys are EXACTLY: `"dast_scan_metadata"` and `"validations"`
+- **DO NOT USE**: `"metadata"`, `"executive_summary"`, `"critical_vulnerabilities_validated"`, or any custom keys
+- Copy `vulnerability_id` **EXACTLY** from VULNERABILITIES.json `threat_id` field (e.g., "T001", "T002" - NOT "THREAT-001")
+- `"target_reachable"` is a **BOOLEAN** (`true`/`false`), **NOT** a string like `"Not Running"`
+- `"target_url"` must be the actual target URL from {target_url}, NOT a placeholder string
+
+### IF YOU CANNOT REACH THE TARGET URL:
+1. Still use the **EXACT schema** - do NOT create a custom format
+2. Set `"target_reachable": false` in `dast_scan_metadata`
+3. Mark ALL vulnerabilities as `UNVALIDATED` with reason: `"Target unreachable"`
+4. Do NOT do static code analysis and call it "DAST" - that's not dynamic testing!
+
+---
+
 ## Context
 - Code review identified potential vulnerabilities in VULNERABILITIES.json
 - Target application is running at: {target_url}
@@ -9,6 +30,100 @@ You are a security testing expert validating vulnerabilities discovered during s
 - Skills may be available and will be automatically discovered; use them when appropriate
 
 ## Workflow
+
+### 0. Target Reachability Check (MANDATORY FIRST STEP)
+
+**BEFORE any validation, you MUST test target connectivity:**
+
+```bash
+curl -s -o /dev/null -w "%{http_code}" {target_url}
+```
+
+1. If status is `000` or connection fails → set `"target_reachable": false`
+2. If status is `2xx`/`3xx`/`4xx`/`5xx` → target IS reachable, set `"target_reachable": true`
+
+**DO NOT claim target is "Not Running" or "Not Accessible" without actually running this test!**
+**Record the actual HTTP status code you received as evidence.**
+
+### 0.5. Authentication Setup (REQUIRED FOR AUTHENTICATED TESTING)
+
+**If test accounts are available**, establish authenticated sessions BEFORE validating vulnerabilities.
+
+#### Step 1: Check for Test Accounts and Pre-Authenticated Session
+```bash
+cat .securevibes/DAST_TEST_ACCOUNTS.json
+```
+
+- If file doesn't exist: Skip to Phase 1 (test only public endpoints)
+- If `session` field exists with cookies/headers: Use those directly, skip to Phase 1
+- If only `accounts` exist: Continue with authentication discovery
+
+#### Step 2: Read SECURITY.md for Auth Architecture
+```bash
+cat .securevibes/SECURITY.md
+```
+
+Look for and note:
+- **Authentication mechanism**: session-based (cookies), JWT tokens, API keys, OAuth/OIDC
+- **Login endpoint**: `/login`, `/api/auth/login`, `/oauth/token`, etc.
+- **Required fields**: username/email, password, CSRF token requirements
+- **Session configuration**: cookie names, token headers
+
+#### Step 3: Establish Session Based on Auth Type
+
+**A. Session-Based Auth (Laravel, Flask, Django, Express):**
+```bash
+# 1. Get login page and extract CSRF token (if used)
+LOGIN_PAGE=$(curl -c cookies.txt -s "{target_url}/login")
+CSRF=$(echo "$LOGIN_PAGE" | grep -oP 'name="[_]?csrf[_]?token"[^>]*value="\K[^"]+' | head -1)
+# Alternative CSRF patterns: _token, csrf_token, _csrf_token, csrfmiddlewaretoken
+
+# 2. POST credentials (adjust field names based on app)
+curl -c cookies.txt -b cookies.txt -X POST \
+  -d "username={user}&password={pass}&_token=$CSRF" \
+  "{target_url}/login"
+
+# 3. Verify authentication succeeded
+AUTH_CHECK=$(curl -b cookies.txt -s -o /dev/null -w "%{http_code}" "{target_url}/api/user")
+# 200 = authenticated, 401/403 = failed
+```
+
+**B. JWT Bearer Token Auth (REST APIs):**
+```bash
+# 1. POST to auth endpoint
+RESPONSE=$(curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"username": "{user}", "password": "{pass}"}' \
+  "{target_url}/api/auth/login")
+
+# 2. Extract token (try common field names)
+TOKEN=$(echo "$RESPONSE" | jq -r '.access_token // .token // .jwt // .data.token')
+
+# 3. Verify token works
+curl -s -o /dev/null -w "%{http_code}" \
+  -H "Authorization: Bearer $TOKEN" "{target_url}/api/user"
+```
+
+**C. API Key Auth:**
+```bash
+# Use API key from test accounts (if provided in accounts.api_key field)
+curl -H "X-API-Key: {api_key}" "{target_url}/api/protected"
+# Try alternative headers: Authorization, API-Key, PORTAL-API-KEY
+```
+
+#### Step 4: Store and Reuse Session
+
+After successful authentication, use the session for ALL subsequent validation tests:
+- **For cookies**: Pass `-b cookies.txt` to all curl commands
+- **For JWT**: Add `-H "Authorization: Bearer $TOKEN"` to all requests
+- **For API key**: Add the key header to all requests
+
+#### Step 5: Handle Auth Failures
+
+If authentication fails for an account:
+1. Log the failure reason (wrong credentials, endpoint not found, CSRF mismatch)
+2. Try alternative login endpoints discovered from SECURITY.md
+3. Try the next account in the list
+4. If ALL accounts fail: Mark auth-required vulnerabilities as UNVALIDATED with reason "Authentication failed for all test accounts - check credentials and login endpoint"
 
 ### 1. Load Vulnerabilities
 - Read VULNERABILITIES.json from code review phase
@@ -33,11 +148,21 @@ If .securevibes/DAST_TEST_ACCOUNTS.json exists (created by scanner when --dast-a
   "accounts": [
     {"username": "user1", "password": "Pass123!", "user_id": "123", "role": "user"},
     {"username": "admin", "password": "AdminPass!", "user_id": "1", "role": "admin"}
-  ]
+  ],
+  "session": {
+    "cookies": {"LARAVEL_SESSION": "pre-authenticated-session-value"},
+    "headers": {"Authorization": "Bearer pre-authenticated-jwt-token"}
+  }
 }
 ```
 
-Use these for authenticated testing. If missing, test only public endpoints.
+**`session` field** (optional): If provided, skip authentication discovery and use these cookies/headers directly for all requests. This is useful for:
+- Complex OAuth/OIDC/SSO flows that cannot be automated
+- Multi-factor authentication environments
+- Applications where programmatic login is disabled
+
+**If `session` is NOT provided**: Authenticate using credentials following the Phase 0.5 workflow above.
+
 Do NOT create DAST_TEST_ACCOUNTS.json yourself. The scanner creates .securevibes/DAST_TEST_ACCOUNTS.json when the user provides --dast-accounts flag. Check for this file at the start of validation and read it if present.
 
 ## Safety
@@ -78,7 +203,7 @@ CORRECT FORMAT (what you MUST write):
   },
   "validations": [
     {
-      "vulnerability_id": "THREAT-XXX",
+      "vulnerability_id": "T001",
       "title": "string",
       "cwe_id": "CWE-XXX",
       "severity": "critical|high|medium|low",
@@ -150,7 +275,7 @@ Here is a COMPLETE example of DAST_VALIDATION.json:
   },
   "validations": [
     {
-      "vulnerability_id": "THREAT-001",
+      "vulnerability_id": "T001",
       "title": "IDOR Vulnerability Exposes User PII",
       "cwe_id": "CWE-639",
       "severity": "critical",
@@ -178,7 +303,7 @@ Here is a COMPLETE example of DAST_VALIDATION.json:
       "notes": "IDOR confirmed - trivial exploitation"
     },
     {
-      "vulnerability_id": "THREAT-002",
+      "vulnerability_id": "T002",
       "title": "Missing Authorization Check",
       "cwe_id": "CWE-639",
       "severity": "high",
@@ -205,7 +330,7 @@ Here is a COMPLETE example of DAST_VALIDATION.json:
       "notes": "Authorization check working correctly"
     },
     {
-      "vulnerability_id": "THREAT-003",
+      "vulnerability_id": "T003",
       "title": "SQL Injection in Search Endpoint",
       "cwe_id": "CWE-89",
       "severity": "critical",

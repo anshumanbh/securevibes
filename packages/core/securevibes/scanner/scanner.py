@@ -643,6 +643,12 @@ class Scanner:
         # Load orchestration prompt
         orchestration_prompt = load_prompt("main", category="orchestration")
 
+        # Substitute DAST target URL in orchestration prompt if DAST is enabled
+        if self.dast_enabled and self.dast_config.get("target_url"):
+            orchestration_prompt = orchestration_prompt.replace(
+                "{target_url}", self.dast_config["target_url"]
+            )
+
         # Execute scan with streaming progress
         try:
             async with ClaudeSDKClient(options=options) as client:
@@ -719,29 +725,100 @@ class Scanner:
                     style="yellow"
                 )
 
+    def _validate_dast_schema(self, dast_data: dict) -> tuple[bool, list[str]]:
+        """
+        Validate DAST_VALIDATION.json against required schema.
+
+        Args:
+            dast_data: Parsed JSON data from DAST_VALIDATION.json
+
+        Returns:
+            Tuple of (is_valid, list of error messages)
+        """
+        errors = []
+
+        # Check required top-level keys
+        if "dast_scan_metadata" not in dast_data:
+            errors.append("Missing required field: 'dast_scan_metadata' (found keys: " +
+                         ", ".join(dast_data.keys()) + ")")
+        if "validations" not in dast_data:
+            errors.append("Missing required field: 'validations'")
+
+        # Validate metadata fields if present
+        metadata = dast_data.get("dast_scan_metadata", {})
+        if metadata:
+            required_metadata = ["target_url", "scan_timestamp", "target_reachable"]
+            for field in required_metadata:
+                if field not in metadata:
+                    errors.append(f"Missing metadata field: '{field}'")
+
+            # Validate target_reachable is boolean, not string
+            if "target_reachable" in metadata and not isinstance(metadata["target_reachable"], bool):
+                errors.append(f"'target_reachable' must be boolean, got: {type(metadata['target_reachable']).__name__}")
+
+        # Validate validations array structure
+        validations = dast_data.get("validations", [])
+        if validations:
+            required_validation_fields = ["vulnerability_id", "validation_status", "tested_at"]
+            valid_statuses = {"VALIDATED", "FALSE_POSITIVE", "UNVALIDATED"}
+
+            for i, v in enumerate(validations[:5]):  # Check first 5 to avoid spam
+                for field in required_validation_fields:
+                    if field not in v:
+                        errors.append(f"Validation[{i}] missing required field: '{field}'")
+
+                # Validate status value
+                status = v.get("validation_status")
+                if status and status not in valid_statuses:
+                    errors.append(f"Validation[{i}] invalid status: '{status}' (must be VALIDATED/FALSE_POSITIVE/UNVALIDATED)")
+
+            if len(validations) > 5 and errors:
+                errors.append(f"... (checked first 5 of {len(validations)} validations)")
+
+        return len(errors) == 0, errors
+
     def _merge_dast_results(self, scan_result: ScanResult, securevibes_dir: Path) -> ScanResult:
         """
         Merge DAST validation data into scan results.
-        
+
         Args:
             scan_result: The base scan result with issues
             securevibes_dir: Path to .securevibes directory
-            
+
         Returns:
             Updated ScanResult with DAST validation merged
         """
         dast_file = securevibes_dir / "DAST_VALIDATION.json"
         if not dast_file.exists():
             return scan_result
-        
+
         try:
             with open(dast_file) as f:
                 dast_data = json.load(f)
-            
+
+            # Validate DAST output schema before processing
+            is_valid, validation_errors = self._validate_dast_schema(dast_data)
+            if not is_valid:
+                self.console.print(
+                    "\n⚠️  DAST_VALIDATION.json has invalid schema - cannot merge results",
+                    style="bold yellow"
+                )
+                for error in validation_errors:
+                    self.console.print(f"   • {error}", style="yellow")
+                self.console.print(
+                    "\n   The DAST agent did not follow the required output format.",
+                    style="yellow"
+                )
+                self.console.print(
+                    "   See dast.txt <critical_output_format> section for the correct schema.",
+                    style="dim"
+                )
+                return scan_result
+
             # Extract DAST metadata
             metadata = dast_data.get("dast_scan_metadata", {})
             validations = dast_data.get("validations", [])
-            
+
             if not validations:
                 return scan_result
             
