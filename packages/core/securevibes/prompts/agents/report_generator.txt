@@ -44,9 +44,9 @@ CRITICAL RULES:
 EXAMPLE:
 If VULNERABILITIES.json contains:
 [
-  {"threat_id": "THREAT-001", "title": "SQL Injection", "severity": "critical", ...},
-  {"threat_id": "THREAT-002", "title": "XSS", "severity": "high", ...},
-  {"threat_id": "THREAT-003", "title": "Weak Crypto", "severity": "medium", ...}
+  {"threat_id": "T001", "title": "SQL Injection", "severity": "critical", ...},
+  {"threat_id": "T002", "title": "XSS", "severity": "high", ...},
+  {"threat_id": "T003", "title": "Weak Crypto", "severity": "medium", ...}
 ]
 
 Then scan_results.json MUST be:
@@ -65,9 +65,9 @@ Then scan_results.json MUST be:
     "low": 0
   },
   "issues": [
-    {"threat_id": "THREAT-001", "title": "SQL Injection", "severity": "critical", ...},
-    {"threat_id": "THREAT-002", "title": "XSS", "severity": "high", ...},
-    {"threat_id": "THREAT-003", "title": "Weak Crypto", "severity": "medium", ...}
+    {"threat_id": "T001", "title": "SQL Injection", "severity": "critical", ...},
+    {"threat_id": "T002", "title": "XSS", "severity": "high", ...},
+    {"threat_id": "T003", "title": "Weak Crypto", "severity": "medium", ...}
   ]
 }
 
