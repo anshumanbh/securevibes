@@ -746,9 +746,14 @@ class Scanner:
             self.console.print(f"\n❌ Scan failed: {e}", style="bold red")
             raise
 
-        # Load and parse results
+        # Load and parse results based on scan mode
         try:
-            return self._load_scan_results(securevibes_dir, repo, files_scanned, scan_start_time)
+            if single_subagent:
+                return self._load_subagent_results(
+                    securevibes_dir, repo, files_scanned, scan_start_time, single_subagent
+                )
+            else:
+                return self._load_scan_results(securevibes_dir, repo, files_scanned, scan_start_time)
         except RuntimeError as e:
             self.console.print(f"❌ Error loading scan results: {e}", style="bold red")
             raise
@@ -896,6 +901,107 @@ class Scanner:
                     style="yellow"
                 )
             return scan_result
+
+    def _load_subagent_results(
+        self,
+        securevibes_dir: Path,
+        repo: Path,
+        files_scanned: int,
+        scan_start_time: float,
+        subagent: str
+    ) -> ScanResult:
+        """
+        Load results for a single subagent run.
+        
+        Different subagents produce different artifacts, so we need to
+        check for the appropriate file and return a partial result.
+        
+        Args:
+            securevibes_dir: Path to .securevibes directory
+            repo: Repository path
+            files_scanned: Number of files scanned
+            scan_start_time: Scan start timestamp
+            subagent: Name of the subagent that was run
+        
+        Returns:
+            ScanResult with appropriate data for the subagent
+        """
+        from securevibes.scanner.subagent_manager import SUBAGENT_ARTIFACTS
+        
+        artifact_info = SUBAGENT_ARTIFACTS.get(subagent)
+        if not artifact_info:
+            raise RuntimeError(f"Unknown subagent: {subagent}")
+        
+        expected_artifact = artifact_info["creates"]
+        artifact_path = securevibes_dir / expected_artifact
+        
+        if not artifact_path.exists():
+            raise RuntimeError(
+                f"Subagent '{subagent}' failed to create expected artifact:\n"
+                f"  - {artifact_path}\n"
+                f"Check {securevibes_dir}/ for partial artifacts."
+            )
+        
+        scan_duration = time.time() - scan_start_time
+        
+        # For subagents that produce JSON with vulnerabilities, load them
+        if subagent in ("code-review", "report-generator"):
+            # These produce files we can parse for issues
+            return self._load_scan_results(securevibes_dir, repo, files_scanned, scan_start_time)
+        
+        # For assessment and threat-modeling, return partial result
+        if subagent == "assessment":
+            self.console.print(
+                f"\n✅ Assessment complete. Created {expected_artifact}",
+                style="bold green"
+            )
+            self.console.print(
+                "   Run 'securevibes scan . --subagent threat-modeling' to continue.",
+                style="dim"
+            )
+        elif subagent == "threat-modeling":
+            # Count threats from THREAT_MODEL.json
+            threat_count = 0
+            try:
+                with open(artifact_path, 'r') as f:
+                    threats = json.load(f)
+                    if isinstance(threats, list):
+                        threat_count = len(threats)
+            except (json.JSONDecodeError, OSError):
+                pass
+            
+            self.console.print(
+                f"\n✅ Threat modeling complete. Created {expected_artifact} ({threat_count} threats)",
+                style="bold green"
+            )
+            self.console.print(
+                "   Run 'securevibes scan . --subagent code-review' to continue.",
+                style="dim"
+            )
+        elif subagent == "dast":
+            # Count validations from DAST_VALIDATION.json
+            validation_count = 0
+            try:
+                with open(artifact_path, 'r') as f:
+                    validations = json.load(f)
+                    if isinstance(validations, list):
+                        validation_count = len(validations)
+            except (json.JSONDecodeError, OSError):
+                pass
+            
+            self.console.print(
+                f"\n✅ DAST validation complete. Created {expected_artifact} ({validation_count} validations)",
+                style="bold green"
+            )
+        
+        # Return partial result with no issues (issues come from code-review)
+        return ScanResult(
+            repository_path=str(repo),
+            files_scanned=files_scanned,
+            scan_time_seconds=round(scan_duration, 2),
+            total_cost_usd=round(self.total_cost, 4),
+            issues=[]
+        )
 
     def _load_scan_results(
         self,
