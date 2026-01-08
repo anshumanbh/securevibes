@@ -72,14 +72,17 @@ class TestSubagentResultLoading:
     
     def test_threat_modeling_returns_threat_count(self, scanner, securevibes_dir, tmp_path):
         """Threat modeling returns threat count in output"""
-        # Create THREAT_MODEL.json with some threats
+        # Create THREAT_MODEL.json with wrapped format (as agent produces)
         threat_model = securevibes_dir / "THREAT_MODEL.json"
-        threats = [
-            {"id": "THREAT-001", "title": "Test threat 1"},
-            {"id": "THREAT-002", "title": "Test threat 2"},
-            {"id": "THREAT-003", "title": "Test threat 3"}
-        ]
-        threat_model.write_text(json.dumps(threats))
+        threat_data = {
+            "metadata": {"timestamp": "2026-01-08T10:00:00Z"},
+            "threats": [
+                {"id": "THREAT-001", "title": "Test threat 1"},
+                {"id": "THREAT-002", "title": "Test threat 2"},
+                {"id": "THREAT-003", "title": "Test threat 3"}
+            ]
+        }
+        threat_model.write_text(json.dumps(threat_data))
         
         result = scanner._load_subagent_results(
             securevibes_dir=securevibes_dir,
@@ -97,6 +100,27 @@ class TestSubagentResultLoading:
         
         # Result should still have no issues (threats != vulnerabilities)
         assert result.issues == []
+    
+    def test_threat_modeling_handles_flat_array_format(self, scanner, securevibes_dir, tmp_path):
+        """Threat modeling also handles flat array format"""
+        # Create THREAT_MODEL.json with flat array format
+        threat_model = securevibes_dir / "THREAT_MODEL.json"
+        threats = [
+            {"id": "THREAT-001", "title": "Test threat 1"},
+            {"id": "THREAT-002", "title": "Test threat 2"}
+        ]
+        threat_model.write_text(json.dumps(threats))
+        
+        scanner._load_subagent_results(
+            securevibes_dir=securevibes_dir,
+            repo=tmp_path,
+            files_scanned=10,
+            scan_start_time=datetime.now().timestamp(),
+            subagent="threat-modeling"
+        )
+        
+        output = scanner.console.file.getvalue()
+        assert "2 threats" in output
     
     def test_code_review_loads_vulnerabilities(self, scanner, securevibes_dir, tmp_path):
         """Code review delegates to _load_scan_results for full loading"""

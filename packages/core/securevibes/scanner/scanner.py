@@ -964,9 +964,12 @@ class Scanner:
             threat_count = 0
             try:
                 with open(artifact_path, 'r') as f:
-                    threats = json.load(f)
-                    if isinstance(threats, list):
-                        threat_count = len(threats)
+                    data = json.load(f)
+                    # Handle both flat array and wrapped object formats
+                    if isinstance(data, list):
+                        threat_count = len(data)
+                    elif isinstance(data, dict) and "threats" in data:
+                        threat_count = len(data["threats"])
             except (json.JSONDecodeError, OSError):
                 pass
             
