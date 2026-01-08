@@ -107,7 +107,14 @@ Before generating threats, scan the codebase for agentic patterns using these se
   "affected_components": ["[agent component]", "[input handler]"],
   "attack_scenario": "1. Attacker crafts input containing hidden instructions\n2. Input reaches agent without sanitization\n3. Agent interprets injected content as instructions\n4. Agent executes attacker's goal instead of intended task",
   "vulnerability_types": ["CWE-74", "CWE-77"],
-  "mitigation": "Implement input sanitization, use structured prompts with clear boundaries, add output validation, implement goal state monitoring"
+  "mitigation": "Implement input sanitization, use structured prompts with clear boundaries, add output validation, implement goal state monitoring",
+  "existing_controls": [],
+  "control_effectiveness": "none",
+  "attack_complexity": "low",
+  "likelihood": "high",
+  "impact": "critical",
+  "risk_score": "critical",
+  "residual_risk": "Without input sanitization or prompt boundaries, full goal hijack is possible"
 }
 ```
 
@@ -132,7 +139,14 @@ Before generating threats, scan the codebase for agentic patterns using these se
   "affected_components": ["[tool]", "[agent executor]"],
   "attack_scenario": "1. Attacker provides input referencing tool capabilities\n2. Agent invokes tool with attacker-controlled parameters\n3. Tool performs unintended action (data exfil, SSRF, etc.)",
   "vulnerability_types": ["CWE-918", "CWE-78", "CWE-22"],
-  "mitigation": "Implement least-privilege tool profiles, add input filtering, require human approval for sensitive actions, sandbox tool execution"
+  "mitigation": "Implement least-privilege tool profiles, add input filtering, require human approval for sensitive actions, sandbox tool execution",
+  "existing_controls": [],
+  "control_effectiveness": "none",
+  "attack_complexity": "medium",
+  "likelihood": "high",
+  "impact": "high",
+  "risk_score": "critical",
+  "residual_risk": "Tools with broad permissions can be exploited for data exfiltration or lateral movement"
 }
 ```
 
@@ -158,7 +172,14 @@ Before generating threats, scan the codebase for agentic patterns using these se
   "affected_components": ["[agent]", "[auth component]"],
   "attack_scenario": "1. Agent receives broad credentials for convenience\n2. Attacker exploits agent vulnerability\n3. Attacker gains access to all resources agent can access",
   "vulnerability_types": ["CWE-269", "CWE-250", "CWE-266"],
-  "mitigation": "Use per-task identities, implement JIT privileges, segment memory, validate delegation chains"
+  "mitigation": "Use per-task identities, implement JIT privileges, segment memory, validate delegation chains",
+  "existing_controls": [],
+  "control_effectiveness": "none",
+  "attack_complexity": "medium",
+  "likelihood": "medium",
+  "impact": "high",
+  "risk_score": "high",
+  "residual_risk": "Inherited credentials provide lateral movement opportunities if agent is compromised"
 }
 ```
 
@@ -184,7 +205,14 @@ Before generating threats, scan the codebase for agentic patterns using these se
   "affected_components": ["[external component]", "[integration point]"],
   "attack_scenario": "1. Attacker compromises third-party [component]\n2. Agent loads/uses compromised component\n3. Malicious code executes in agent context",
   "vulnerability_types": ["CWE-829", "CWE-494", "CWE-1104"],
-  "mitigation": "Vet dependencies, pin versions, verify model provenance, use SBOM/AIBOM, scan for vulnerabilities"
+  "mitigation": "Vet dependencies, pin versions, verify model provenance, use SBOM/AIBOM, scan for vulnerabilities",
+  "existing_controls": [],
+  "control_effectiveness": "none",
+  "attack_complexity": "high",
+  "likelihood": "medium",
+  "impact": "high",
+  "risk_score": "high",
+  "residual_risk": "Third-party components may contain backdoors or vulnerabilities not detected by standard scanning"
 }
 ```
 
@@ -209,7 +237,14 @@ Before generating threats, scan the codebase for agentic patterns using these se
   "affected_components": ["[code execution component]"],
   "attack_scenario": "1. Attacker crafts input that generates malicious code\n2. Agent passes generated code to execution engine\n3. Malicious code runs with agent's privileges",
   "vulnerability_types": ["CWE-94", "CWE-95", "CWE-78"],
-  "mitigation": "Disable unnecessary code execution, sandbox all generated code, validate code before execution, use allowlists"
+  "mitigation": "Disable unnecessary code execution, sandbox all generated code, validate code before execution, use allowlists",
+  "existing_controls": [],
+  "control_effectiveness": "none",
+  "attack_complexity": "low",
+  "likelihood": "high",
+  "impact": "critical",
+  "risk_score": "critical",
+  "residual_risk": "Code execution without sandboxing allows full system compromise"
 }
 ```
 
@@ -234,7 +269,14 @@ Before generating threats, scan the codebase for agentic patterns using these se
   "affected_components": ["[memory/RAG component]"],
   "attack_scenario": "1. Attacker injects crafted content into agent memory\n2. Malicious content persists across sessions\n3. Future interactions influenced by poisoned context",
   "vulnerability_types": ["CWE-472", "CWE-915"],
-  "mitigation": "Validate memory inputs, segment by user/tenant, apply TTLs, monitor for anomalies"
+  "mitigation": "Validate memory inputs, segment by user/tenant, apply TTLs, monitor for anomalies",
+  "existing_controls": [],
+  "control_effectiveness": "none",
+  "attack_complexity": "medium",
+  "likelihood": "medium",
+  "impact": "high",
+  "risk_score": "high",
+  "residual_risk": "Poisoned context can influence agent behavior across multiple sessions and users"
 }
 ```
 
@@ -259,7 +301,14 @@ Before generating threats, scan the codebase for agentic patterns using these se
   "affected_components": ["[agent A]", "[agent B]", "[communication layer]"],
   "attack_scenario": "1. Attacker intercepts/injects inter-agent messages\n2. Receiving agent trusts spoofed message\n3. Agent performs unauthorized action based on fake request",
   "vulnerability_types": ["CWE-290", "CWE-319", "CWE-345"],
-  "mitigation": "Use mTLS for agent communication, sign all messages, validate peer identities, encrypt channels"
+  "mitigation": "Use mTLS for agent communication, sign all messages, validate peer identities, encrypt channels",
+  "existing_controls": [],
+  "control_effectiveness": "none",
+  "attack_complexity": "medium",
+  "likelihood": "medium",
+  "impact": "high",
+  "risk_score": "high",
+  "residual_risk": "Spoofed inter-agent messages can trigger unauthorized actions across the agent network"
 }
 ```
 
@@ -284,7 +333,14 @@ Before generating threats, scan the codebase for agentic patterns using these se
   "affected_components": ["[origin component]", "[dependent components]"],
   "attack_scenario": "1. Attacker triggers failure in [component]\n2. Failure propagates to dependent agents\n3. System-wide outage or degradation occurs",
   "vulnerability_types": ["CWE-754", "CWE-400"],
-  "mitigation": "Implement circuit breakers, add bulkheads, validate outputs, apply timeouts and rate limits"
+  "mitigation": "Implement circuit breakers, add bulkheads, validate outputs, apply timeouts and rate limits",
+  "existing_controls": [],
+  "control_effectiveness": "none",
+  "attack_complexity": "medium",
+  "likelihood": "medium",
+  "impact": "medium",
+  "risk_score": "medium",
+  "residual_risk": "Tightly coupled agents without circuit breakers can cause system-wide outages"
 }
 ```
 
@@ -309,7 +365,14 @@ Before generating threats, scan the codebase for agentic patterns using these se
   "affected_components": ["[agent]", "[user interface]"],
   "attack_scenario": "1. Attacker manipulates agent output\n2. User trusts agent-presented information\n3. User takes harmful action based on false info",
   "vulnerability_types": ["CWE-451"],
-  "mitigation": "Add output attribution, show confidence levels, require human review for high-stakes decisions"
+  "mitigation": "Add output attribution, show confidence levels, require human review for high-stakes decisions",
+  "existing_controls": [],
+  "control_effectiveness": "none",
+  "attack_complexity": "low",
+  "likelihood": "medium",
+  "impact": "medium",
+  "risk_score": "medium",
+  "residual_risk": "Users may act on false information presented authoritatively by the agent"
 }
 ```
 
@@ -334,7 +397,14 @@ Before generating threats, scan the codebase for agentic patterns using these se
   "affected_components": ["[agent]"],
   "attack_scenario": "1. Agent behavior drifts from intended scope\n2. Rogue actions go undetected due to missing monitoring\n3. Agent causes damage before intervention",
   "vulnerability_types": ["CWE-778"],
-  "mitigation": "Maintain agent inventory, monitor behavior baselines, implement kill switches, use signed artifacts"
+  "mitigation": "Maintain agent inventory, monitor behavior baselines, implement kill switches, use signed artifacts",
+  "existing_controls": [],
+  "control_effectiveness": "none",
+  "attack_complexity": "medium",
+  "likelihood": "medium",
+  "impact": "high",
+  "risk_score": "high",
+  "residual_risk": "Without monitoring and kill switches, rogue agent behavior may go undetected"
 }
 ```
 
@@ -352,11 +422,27 @@ Generate additional threats in the same JSON format as the base threat model:
   "affected_components": ["component1", "component2"],
   "attack_scenario": "[Step-by-step attack]",
   "vulnerability_types": ["CWE-XXX"],
-  "mitigation": "[Specific recommendations]"
+  "mitigation": "[Specific recommendations]",
+  "existing_controls": ["[Controls found in codebase]"],
+  "control_effectiveness": "none|partial|substantial",
+  "attack_complexity": "low|medium|high",
+  "likelihood": "low|medium|high",
+  "impact": "low|medium|high|critical",
+  "risk_score": "low|medium|high|critical",
+  "residual_risk": "[Description of remaining risk after existing controls]"
 }
 ```
 
 **ID Convention**: Use `THREAT-ASI0X-NNN` where X is the ASI category number (1-10).
+
+**Risk Assessment Fields**:
+- `existing_controls`: List controls found in the codebase (e.g., sandboxing, rate limiting, input validation)
+- `control_effectiveness`: How well existing controls mitigate the threat
+- `attack_complexity`: Skill level required to exploit (low = script kiddie, high = expert)
+- `likelihood`: Probability of exploitation given controls and complexity
+- `impact`: Damage if successfully exploited
+- `risk_score`: Calculated from likelihood × impact matrix
+- `residual_risk`: What risk remains even with existing controls
 
 ## Workflow
 

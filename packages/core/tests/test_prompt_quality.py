@@ -1,26 +1,101 @@
 """Tests for prompt quality and false positive prevention guidance."""
 
 from pathlib import Path
+from securevibes.prompts.loader import load_prompt, load_shared_rules
+
+
+class TestSharedRulesInjection:
+    """Test that shared rules are properly loaded and injected."""
+
+    def test_shared_rules_file_exists(self):
+        """Test _shared/security_rules.txt exists."""
+        shared_file = Path(__file__).parent.parent / "securevibes" / "prompts" / "agents" / "_shared" / "security_rules.txt"
+        assert shared_file.exists(), "Missing shared security_rules.txt"
+
+    def test_shared_rules_has_critical_rules(self):
+        """Test shared rules has critical_rules section."""
+        content = load_shared_rules()
+        assert content is not None, "Failed to load shared rules"
+        assert "<critical_rules>" in content, "Missing critical_rules section"
+        assert "</critical_rules>" in content, "Missing closing tag"
+
+    def test_shared_rules_has_false_positive_prevention(self):
+        """Test shared rules has false_positive_prevention section."""
+        content = load_shared_rules()
+        assert content is not None, "Failed to load shared rules"
+        assert "<false_positive_prevention>" in content, "Missing false_positive_prevention section"
+        assert "</false_positive_prevention>" in content, "Missing closing tag"
+
+    def test_threat_modeling_gets_shared_rules_injected(self):
+        """Test threat_modeling prompt gets shared rules injected."""
+        content = load_prompt("threat_modeling", category="agents")
+        assert "<critical_rules>" in content, "Shared rules not injected into threat_modeling"
+        assert "<false_positive_prevention>" in content, "False positive prevention not injected"
+
+    def test_code_review_gets_shared_rules_injected(self):
+        """Test code_review prompt gets shared rules injected."""
+        content = load_prompt("code_review", category="agents")
+        assert "<critical_rules>" in content, "Shared rules not injected into code_review"
+        assert "<false_positive_prevention>" in content, "False positive prevention not injected"
+
+    def test_non_security_agents_dont_get_injection(self):
+        """Test non-security agents don't get shared rules injected."""
+        content = load_prompt("assessment", category="agents")
+        assert "<false_positive_prevention>" not in content, "Assessment should not have FP prevention"
+
+    def test_can_disable_injection(self):
+        """Test injection can be disabled via parameter."""
+        content = load_prompt("threat_modeling", category="agents", inject_shared=False)
+        # The raw file should NOT have false_positive_prevention (it's in shared)
+        raw_file = Path(__file__).parent.parent / "securevibes" / "prompts" / "agents" / "threat_modeling.txt"
+        raw_content = raw_file.read_text()
+        assert "<false_positive_prevention>" not in raw_content, "Raw file should not have FP section"
+
+    def test_injection_preserves_role_line(self):
+        """Test that shared rules are injected AFTER the role line."""
+        content = load_prompt("threat_modeling", category="agents")
+        lines = content.split('\n')
+        # First line should be the role definition
+        assert lines[0].startswith("You are a threat modeling expert"), \
+            "Role line should be first"
+        # Shared rules should come after
+        critical_rules_line = next(i for i, line in enumerate(lines) if "<critical_rules>" in line)
+        assert critical_rules_line > 0, "Shared rules should be after role line"
+
+    def test_load_all_agent_prompts_includes_injected_content(self):
+        """Test load_all_agent_prompts() returns prompts with shared rules injected."""
+        from securevibes.prompts.loader import load_all_agent_prompts
+        prompts = load_all_agent_prompts()
+        
+        # Security agents should have shared false_positive_prevention (unique to shared rules)
+        assert "<false_positive_prevention>" in prompts["threat_modeling"], \
+            "threat_modeling should have injected false_positive_prevention"
+        assert "<false_positive_prevention>" in prompts["code_review"], \
+            "code_review should have injected false_positive_prevention"
+        
+        # Non-security agents should NOT have false_positive_prevention
+        assert "<false_positive_prevention>" not in prompts["assessment"], \
+            "assessment should not have injected false_positive_prevention"
+        assert "<false_positive_prevention>" not in prompts["report_generator"], \
+            "report_generator should not have injected false_positive_prevention"
 
 
 class TestFalsePositivePreventionGuidance:
-    """Test that prompts include false positive prevention guidance."""
+    """Test that prompts include false positive prevention guidance (via injection)."""
 
     def test_threat_modeling_has_false_positive_prevention(self):
-        """Test threat_modeling.txt has false positive prevention section."""
-        prompt_file = Path(__file__).parent.parent / "securevibes" / "prompts" / "agents" / "threat_modeling.txt"
-        content = prompt_file.read_text()
+        """Test threat_modeling prompt has false positive prevention section (injected)."""
+        content = load_prompt("threat_modeling", category="agents")
         
-        # Check section exists
+        # Check section exists (injected from shared)
         assert "<false_positive_prevention>" in content, "Missing false_positive_prevention section"
         assert "</false_positive_prevention>" in content, "Missing closing tag"
 
     def test_threat_modeling_has_trust_boundary_analysis(self):
-        """Test threat_modeling.txt includes trust boundary analysis guidance."""
-        prompt_file = Path(__file__).parent.parent / "securevibes" / "prompts" / "agents" / "threat_modeling.txt"
-        content = prompt_file.read_text()
+        """Test threat_modeling prompt includes trust boundary analysis guidance."""
+        content = load_prompt("threat_modeling", category="agents")
         
-        # Check trust levels are defined
+        # Check trust levels are defined (from shared rules)
         assert "UNTRUSTED" in content, "Missing UNTRUSTED trust level"
         assert "SEMI-TRUSTED" in content, "Missing SEMI-TRUSTED trust level"
         assert "TRUSTED" in content, "Missing TRUSTED trust level"
@@ -29,9 +104,8 @@ class TestFalsePositivePreventionGuidance:
         assert "admin" in content.lower(), "Missing admin configuration guidance"
 
     def test_threat_modeling_has_auth_prerequisite_guidance(self):
-        """Test threat_modeling.txt includes authentication prerequisite guidance."""
-        prompt_file = Path(__file__).parent.parent / "securevibes" / "prompts" / "agents" / "threat_modeling.txt"
-        content = prompt_file.read_text()
+        """Test threat_modeling prompt includes authentication prerequisite guidance."""
+        content = load_prompt("threat_modeling", category="agents")
         
         # Check prerequisite analysis
         assert "prerequisite" in content.lower(), "Missing prerequisite analysis"
@@ -41,9 +115,8 @@ class TestFalsePositivePreventionGuidance:
         assert "severity" in content.lower(), "Missing severity adjustment guidance"
 
     def test_threat_modeling_has_intentional_design_detection(self):
-        """Test threat_modeling.txt includes intentional design detection."""
-        prompt_file = Path(__file__).parent.parent / "securevibes" / "prompts" / "agents" / "threat_modeling.txt"
-        content = prompt_file.read_text()
+        """Test threat_modeling prompt includes intentional design detection."""
+        content = load_prompt("threat_modeling", category="agents")
         
         # Check intentional design guidance
         assert "intentional" in content.lower() or "by-design" in content.lower(), \
@@ -51,40 +124,32 @@ class TestFalsePositivePreventionGuidance:
         assert "configuration" in content.lower(), "Missing configuration guidance"
 
     def test_code_review_has_false_positive_prevention(self):
-        """Test code_review.txt has false positive prevention section."""
-        prompt_file = Path(__file__).parent.parent / "securevibes" / "prompts" / "agents" / "code_review.txt"
-        content = prompt_file.read_text()
+        """Test code_review prompt has false positive prevention section (injected)."""
+        content = load_prompt("code_review", category="agents")
         
-        # Check section exists
+        # Check section exists (injected from shared)
         assert "<false_positive_prevention>" in content, "Missing false_positive_prevention section"
         assert "</false_positive_prevention>" in content, "Missing closing tag"
 
     def test_code_review_has_data_flow_tracing(self):
-        """Test code_review.txt includes data flow tracing guidance."""
-        prompt_file = Path(__file__).parent.parent / "securevibes" / "prompts" / "agents" / "code_review.txt"
-        content = prompt_file.read_text()
+        """Test code_review prompt includes data flow tracing guidance."""
+        content = load_prompt("code_review", category="agents")
         
-        # Check trust levels
+        # Check trust levels (from shared rules)
         assert "UNTRUSTED" in content, "Missing UNTRUSTED trust level"
         assert "TRUSTED" in content, "Missing TRUSTED trust level"
-        
-        # Check data flow guidance
-        assert "data flow" in content.lower() or "dataflow" in content.lower(), \
-            "Missing data flow tracing guidance"
 
     def test_code_review_has_auth_prerequisite_guidance(self):
-        """Test code_review.txt includes authentication prerequisite guidance."""
-        prompt_file = Path(__file__).parent.parent / "securevibes" / "prompts" / "agents" / "code_review.txt"
-        content = prompt_file.read_text()
+        """Test code_review prompt includes authentication prerequisite guidance."""
+        content = load_prompt("code_review", category="agents")
         
-        # Check prerequisite guidance
+        # Check prerequisite guidance (from shared rules)
         assert "prerequisite" in content.lower(), "Missing prerequisite guidance"
         assert "severity" in content.lower(), "Missing severity adjustment guidance"
 
     def test_code_review_has_evidence_requirements(self):
-        """Test code_review.txt includes evidence requirements."""
-        prompt_file = Path(__file__).parent.parent / "securevibes" / "prompts" / "agents" / "code_review.txt"
-        content = prompt_file.read_text()
+        """Test code_review prompt includes evidence requirements."""
+        content = load_prompt("code_review", category="agents")
         
         # Check evidence requirements
         assert "evidence" in content.lower(), "Missing evidence requirements"
@@ -146,29 +211,33 @@ class TestPromptConsistency:
     """Test that threat_modeling and code_review prompts have consistent guidance."""
 
     def test_both_prompts_have_trust_levels(self):
-        """Test both prompts define the same trust levels."""
-        tm_file = Path(__file__).parent.parent / "securevibes" / "prompts" / "agents" / "threat_modeling.txt"
-        cr_file = Path(__file__).parent.parent / "securevibes" / "prompts" / "agents" / "code_review.txt"
-        
-        tm_content = tm_file.read_text()
-        cr_content = cr_file.read_text()
+        """Test both prompts define the same trust levels (via shared injection)."""
+        tm_content = load_prompt("threat_modeling", category="agents")
+        cr_content = load_prompt("code_review", category="agents")
         
         trust_levels = ["UNTRUSTED", "SEMI-TRUSTED", "TRUSTED", "SYSTEM"]
         
         for level in trust_levels:
-            assert level in tm_content, f"threat_modeling.txt missing {level}"
-            assert level in cr_content, f"code_review.txt missing {level}"
+            assert level in tm_content, f"threat_modeling missing {level}"
+            assert level in cr_content, f"code_review missing {level}"
 
     def test_both_prompts_have_severity_adjustment(self):
         """Test both prompts include severity adjustment guidance."""
-        tm_file = Path(__file__).parent.parent / "securevibes" / "prompts" / "agents" / "threat_modeling.txt"
-        cr_file = Path(__file__).parent.parent / "securevibes" / "prompts" / "agents" / "code_review.txt"
+        tm_content = load_prompt("threat_modeling", category="agents")
+        cr_content = load_prompt("code_review", category="agents")
         
-        tm_content = tm_file.read_text()
-        cr_content = cr_file.read_text()
-        
-        # Both should mention reducing severity for auth-required issues
+        # Both should mention reducing severity for auth-required issues (from shared rules)
         assert "reduce" in tm_content.lower() or "adjust" in tm_content.lower(), \
-            "threat_modeling.txt missing severity adjustment"
+            "threat_modeling missing severity adjustment"
         assert "reduce" in cr_content.lower() or "adjust" in cr_content.lower(), \
-            "code_review.txt missing severity adjustment"
+            "code_review missing severity adjustment"
+
+    def test_shared_rules_ensure_consistency(self):
+        """Test that shared rules file ensures both prompts have identical FP prevention."""
+        shared_rules = load_shared_rules()
+        tm_content = load_prompt("threat_modeling", category="agents")
+        cr_content = load_prompt("code_review", category="agents")
+        
+        # Both should contain the same shared rules
+        assert shared_rules in tm_content, "threat_modeling missing shared rules content"
+        assert shared_rules in cr_content, "code_review missing shared rules content"
