@@ -1421,6 +1421,27 @@ async with ClaudeSDKClient(options=options) as client:
     await client.rewind_files(checkpoint_id)
 ```
 
+### UserMessage UUID Field (v0.1.17+)
+
+The `UserMessage` response type now includes a `uuid` field, making it easier to use the `rewind_files()` method:
+
+```python
+from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions, UserMessage
+
+async with ClaudeSDKClient(options=options) as client:
+    await client.query("Make changes to the codebase")
+    
+    async for msg in client.receive_response():
+        # UserMessage now has uuid field for direct checkpoint access
+        if isinstance(msg, UserMessage):
+            checkpoint_uuid = msg.uuid  # Direct access to message identifier
+            print(f"Checkpoint: {checkpoint_uuid}")
+        print(msg)
+    
+    # Use the uuid for rewinding
+    await client.rewind_files(checkpoint_uuid)
+```
+
 ## Cost Tracking
 
 ### Basic Usage Tracking
@@ -1637,6 +1658,31 @@ async def query_with_fallback(prompt: str):
             print(f"Option {i + 1} failed: {e}")
             if i == len(options_priority) - 1:
                 raise  # No more fallbacks
+```
+
+### Rate Limit Detection (v0.1.16+)
+
+The SDK now properly parses the `error` field in `AssistantMessage`, enabling applications to detect and handle API errors like rate limits:
+
+```python
+from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions, AssistantMessage
+
+async def handle_rate_limits():
+    async with ClaudeSDKClient(options=options) as client:
+        await client.query("Complex task")
+        
+        async for msg in client.receive_response():
+            if isinstance(msg, AssistantMessage):
+                # Check for errors (rate limits, etc.)
+                if hasattr(msg, 'error') and msg.error:
+                    error_type = msg.error.get('type', '')
+                    if 'rate_limit' in error_type:
+                        print(f"Rate limit hit: {msg.error}")
+                        # Implement backoff strategy
+                        await asyncio.sleep(60)
+                    else:
+                        print(f"API error: {msg.error}")
+            print(msg)
 ```
 
 ## Migration Guide
@@ -1885,4 +1931,4 @@ The Claude Agent Python SDK provides a powerful, flexible framework for building
 
 ---
 
-*This guide covers Claude Agent SDK version 0.1.15 and above. For the latest updates and features, always refer to the [official documentation](https://platform.claude.com/docs/en/agent-sdk/python).*
+*This guide covers Claude Agent SDK version 0.1.19 and above. For the latest updates and features, always refer to the [official documentation](https://platform.claude.com/docs/en/agent-sdk/python).*
