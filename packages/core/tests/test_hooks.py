@@ -276,31 +276,10 @@ class TestPreToolHook:
         
         # Should not block
         assert "override_result" not in result
-    
-    @pytest.mark.asyncio
-    async def test_logs_skill_invocations_in_debug(self, tracker, console):
-        """Test that Skill invocations are logged in debug mode"""
-        tracker.current_phase = "dast"
-        detected_languages = {'python'}
-        hook = create_pre_tool_hook(tracker, console, debug=True, detected_languages=detected_languages)
-        
-        input_data = {
-            "tool_name": "Skill",
-            "tool_input": {
-                "skill_name": "authorization-testing",
-                "prompt": "Test the API"
-            }
-        }
-        
-        result = await hook(input_data, "tool-123", {})
-        
-        # Should return empty (allow) and log to console
-        assert result == {}
-        
-        # Check console output
-        output = console.file.getvalue()
-        assert "SKILL INVOKED" in output
-        assert "authorization-testing" in output
+
+    # Note: test_logs_skill_invocations_in_debug removed - SDK auto-loads skills
+    # from .claude/skills/ without explicit Skill tool calls, so the logging
+    # code was dead code and has been removed.
 
 
 class TestPostToolHook:

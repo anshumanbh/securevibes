@@ -87,13 +87,8 @@ def create_pre_tool_hook(tracker, console: Console, debug: bool, detected_langua
         tool_name = input_data.get("tool_name")
         tool_input = input_data.get("tool_input", {})
 
-        # Log Skill tool invocations (debug mode)
-        if tool_name == "Skill" and debug:
-            skill_name = tool_input.get("skill_name", "unknown")
-            console.print(
-                f"  🎯 SKILL INVOKED: {skill_name}",
-                style="bold cyan"
-            )
+        # Note: Skill tool logging removed - SDK auto-loads skills from .claude/skills/
+        # without explicit Skill tool calls. Skill sync is logged in Scanner._setup_*_skills().
 
         # Block reads from infrastructure directories
         if tool_name in ["Read", "Grep", "Glob", "LS"]:

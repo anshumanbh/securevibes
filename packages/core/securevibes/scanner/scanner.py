@@ -144,18 +144,8 @@ class ProgressTracker:
             if path:
                 self.console.print(f"  📂 Listing directory", style="dim")
         
-        elif tool_name == "Skill":
-            # Log skill invocation - critical for debugging skill activation
-            skill_name = tool_input.get("name", tool_input.get("skill_name", ""))
-            if skill_name:
-                self.console.print(f"  🎯 Loading skill: {skill_name}", style="bold magenta")
-            else:
-                # Try to extract from path if name not provided
-                skill_path = tool_input.get("path", tool_input.get("skill_path", ""))
-                if skill_path:
-                    self.console.print(f"  🎯 Loading skill from: {skill_path}", style="bold magenta")
-                else:
-                    self.console.print(f"  🎯 Skill tool invoked", style="bold magenta")
+        # Note: Skill tool logging removed - SDK auto-loads skills from .claude/skills/
+        # without explicit Skill tool calls. Skill sync is logged in _setup_*_skills().
         
         # Show progress every 20 tools for activity indicator
         if self.tool_count % 20 == 0 and not self.debug:

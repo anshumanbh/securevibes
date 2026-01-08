@@ -38,8 +38,6 @@ Skills provide specialized threat modeling methodologies that augment the generi
 - `attack_complexity`, `likelihood`, `impact`, `risk_score`
 - `residual_risk`: Risk remaining after existing controls
 
-**Logging**: Skill activation is logged as `🎯 Loading skill: agentic-security-threat-modeling`
-
 ## How Skills Augment Threat Modeling
 
 The threat modeling agent follows a two-phase approach:
