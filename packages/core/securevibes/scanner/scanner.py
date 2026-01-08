@@ -144,6 +144,19 @@ class ProgressTracker:
             if path:
                 self.console.print(f"  📂 Listing directory", style="dim")
         
+        elif tool_name == "Skill":
+            # Log skill invocation - critical for debugging skill activation
+            skill_name = tool_input.get("name", tool_input.get("skill_name", ""))
+            if skill_name:
+                self.console.print(f"  🎯 Loading skill: {skill_name}", style="bold magenta")
+            else:
+                # Try to extract from path if name not provided
+                skill_path = tool_input.get("path", tool_input.get("skill_path", ""))
+                if skill_path:
+                    self.console.print(f"  🎯 Loading skill from: {skill_path}", style="bold magenta")
+                else:
+                    self.console.print(f"  🎯 Skill tool invoked", style="bold magenta")
+        
         # Show progress every 20 tools for activity indicator
         if self.tool_count % 20 == 0 and not self.debug:
             self.console.print(
@@ -312,6 +325,58 @@ class Scanner:
         
         except (OSError, PermissionError) as e:
             raise RuntimeError(f"Failed to sync DAST skills: {e}")
+    
+    def _setup_threat_modeling_skills(self, repo: Path):
+        """
+        Sync threat modeling skills to target project for SDK discovery.
+        
+        Skills are bundled with SecureVibes package and automatically
+        synced to each project's .claude/skills/threat-modeling/ directory.
+        Always syncs to ensure new skills are available.
+        
+        Args:
+            repo: Target repository path
+        """
+        import shutil
+        
+        target_skills_dir = repo / ".claude" / "skills" / "threat-modeling"
+        
+        # Get skills from package installation
+        package_skills_dir = Path(__file__).parent.parent / "skills" / "threat-modeling"
+        
+        if not package_skills_dir.exists():
+            if self.debug:
+                self.console.print(
+                    f"  ℹ️  No threat modeling skills found at {package_skills_dir}",
+                    style="dim"
+                )
+            return
+        
+        # Count skills in package
+        package_skills = [d.name for d in package_skills_dir.iterdir() if d.is_dir()]
+        
+        if not package_skills:
+            return
+        
+        # Sync skills to target project (always sync to pick up new skills)
+        try:
+            target_skills_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(package_skills_dir, target_skills_dir, dirs_exist_ok=True)
+            
+            if self.debug:
+                self.console.print(
+                    f"  📦 Synced {len(package_skills)} threat modeling skill(s) to .claude/skills/threat-modeling/",
+                    style="dim green"
+                )
+                for skill in package_skills:
+                    self.console.print(f"      - {skill}", style="dim")
+        
+        except (OSError, PermissionError) as e:
+            if self.debug:
+                self.console.print(
+                    f"  ⚠️  Warning: Failed to sync threat modeling skills: {e}",
+                    style="yellow"
+                )
     
     async def scan_subagent(
         self,
@@ -567,6 +632,19 @@ class Scanner:
         
         if needs_dast:
             self._setup_dast_skills(repo)
+
+        # Setup threat modeling skills if threat-modeling will be executed
+        if single_subagent:
+            needs_threat_modeling = single_subagent == "threat-modeling"
+        elif resume_from:
+            from securevibes.scanner.subagent_manager import SubAgentManager
+            manager = SubAgentManager(repo, quiet=False)
+            needs_threat_modeling = "threat-modeling" in manager.get_resume_subagents(resume_from)
+        else:
+            needs_threat_modeling = True  # Always needed for full scans
+        
+        if needs_threat_modeling:
+            self._setup_threat_modeling_skills(repo)
 
         # Verify skills are available (debug mode)
         if self.debug:

@@ -68,9 +68,9 @@ def create_agent_definitions(
         ),
 
         "threat-modeling": AgentDefinition(
-            description="Performs architecture-driven STRIDE threat modeling focused on realistic, high-impact threats",
+            description="Performs architecture-driven STRIDE threat modeling focused on realistic, high-impact threats, augmented with technology-specific skills for agentic AI, APIs, and other specialized architectures",
             prompt=AGENT_PROMPTS["threat_modeling"],
-            tools=["Read", "Grep", "Glob", "Write"],
+            tools=["Read", "Grep", "Glob", "Write", "Skill"],
             model=config.get_agent_model("threat_modeling", cli_override=cli_model)
         ),
 
