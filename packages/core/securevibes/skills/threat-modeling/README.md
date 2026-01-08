@@ -25,12 +25,20 @@ Skills provide specialized threat modeling methodologies that augment the generi
 
 **Trigger Patterns**: 
 - Agent orchestration frameworks (LangChain, AutoGen, CrewAI, Claude Agent SDK)
+- LLM API usage (Anthropic, OpenAI, custom implementations)
 - Tool/function definitions for LLMs
 - Multi-agent communication patterns
 - Memory/context management code
 - RAG implementations
+- Sandbox/container execution for AI
 
-**Output**: Additional threats mapped to OWASP ASI01-ASI10 categories
+**Output**: Additional threats with IDs like `THREAT-ASI01-001` mapped to OWASP ASI01-ASI10 categories, including risk assessment fields:
+- `existing_controls`: Controls found in codebase
+- `control_effectiveness`: none/partial/substantial
+- `attack_complexity`, `likelihood`, `impact`, `risk_score`
+- `residual_risk`: Risk remaining after existing controls
+
+**Logging**: Skill activation is logged as `🎯 Loading skill: agentic-security-threat-modeling`
 
 ## How Skills Augment Threat Modeling
 

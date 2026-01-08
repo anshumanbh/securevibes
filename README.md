@@ -16,7 +16,7 @@ SecureVibes uses **Claude's multi-agent architecture** to autonomously find secu
 ### True Agent Architecture
 - **🤖 Autonomous Orchestration**: Claude intelligently coordinates agents
 - **📐 Assessment Agent**: Maps your codebase architecture
-- **🎯 Threat Modeling Agent**: Architecture-driven STRIDE threat analysis
+- **🎯 Threat Modeling Agent**: Architecture-driven STRIDE threat analysis with technology-specific skills (agentic AI, APIs)
 - **🔍 Code Review Agent**: Security thinking methodology to find vulnerabilities
 - **🧪 DAST Agent**: Dynamic testing with auto-bundled skills
 - **📊 Report Generator**: Compiles comprehensive scan results

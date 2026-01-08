@@ -125,7 +125,7 @@ User Input → Views → Models → Database
 
 ### 2. Threat Modeling Agent
 
-**Purpose:** Identify specific threats using STRIDE methodology
+**Purpose:** Identify specific threats using STRIDE methodology, augmented with technology-specific skills
 
 **Inputs:** `SECURITY.md`
 
@@ -141,12 +141,26 @@ User Input → Views → Models → Database
     "affected_components": ["login", "database"],
     "attack_scenario": "...",
     "vulnerability_types": ["CWE-89"],
-    "mitigation": "..."
+    "mitigation": "...",
+    "existing_controls": ["Input validation on login form"],
+    "control_effectiveness": "partial",
+    "attack_complexity": "low",
+    "likelihood": "high",
+    "impact": "critical",
+    "risk_score": "critical",
+    "residual_risk": "Parameterized queries not used despite input validation"
   }
 ]
 ```
 
-**Tools Used:** Read, Write
+**Tools Used:** Read, Grep, Glob, Write, Skill
+
+**Skill-Augmented Analysis:**
+The threat modeling agent can load technology-specific skills to identify specialized threats:
+
+- **Agentic Security Skill**: When LLM/agent patterns are detected (Anthropic, OpenAI, LangChain, AutoGen, etc.), generates additional threats using OWASP ASI01-ASI10 categories with IDs like `THREAT-ASI01-001`
+- Skills are auto-discovered from `.claude/skills/threat-modeling/`
+- Skill activation is logged: `🎯 Loading skill: agentic-security-threat-modeling`
 
 **STRIDE Categories:**
 - **S**poofing - Impersonating users/systems
@@ -374,7 +388,7 @@ After a scan, SecureVibes creates these files in `.securevibes/`:
 - Existing security controls
 
 ### THREAT_MODEL.json
-Array of identified threats using STRIDE:
+Array of identified threats using STRIDE (and optionally OWASP ASI for agentic systems):
 ```json
 [
   {
@@ -385,10 +399,19 @@ Array of identified threats using STRIDE:
     "affected_components": [...],
     "attack_scenario": "...",
     "vulnerability_types": ["CWE-XXX"],
-    "mitigation": "..."
+    "mitigation": "...",
+    "existing_controls": ["Controls found in codebase"],
+    "control_effectiveness": "none|partial|substantial",
+    "attack_complexity": "low|medium|high",
+    "likelihood": "low|medium|high",
+    "impact": "low|medium|high|critical",
+    "risk_score": "low|medium|high|critical",
+    "residual_risk": "Risk remaining after existing controls"
   }
 ]
 ```
+
+**Note**: For agentic applications, additional threats with IDs like `THREAT-ASI01-001` are generated using OWASP ASI categories (ASI01-ASI10).
 
 ### VULNERABILITIES.json
 Array of confirmed vulnerabilities with evidence:
