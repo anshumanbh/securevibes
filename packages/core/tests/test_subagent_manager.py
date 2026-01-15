@@ -2,16 +2,14 @@
 
 import json
 import pytest
-from pathlib import Path
 from datetime import datetime, timedelta
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from securevibes.scanner.subagent_manager import (
     SubAgentManager,
-    ArtifactStatus,
     ScanMode,
     SUBAGENT_ARTIFACTS,
-    SUBAGENT_ORDER
+    SUBAGENT_ORDER,
 )
 
 
@@ -34,7 +32,7 @@ def manager(temp_repo):
 def test_check_artifact_missing(manager, temp_repo):
     """Test artifact check when file doesn't exist"""
     status = manager.check_artifact("VULNERABILITIES.json")
-    
+
     assert status.exists is False
     assert status.path is None
     assert status.valid is False
@@ -50,13 +48,13 @@ def test_check_artifact_valid_json(manager, temp_repo):
             "title": "SQL Injection",
             "description": "Test vulnerability",
             "file_path": "app.py",
-            "line_number": 10
+            "line_number": 10,
         }
     ]
     vuln_file.write_text(json.dumps(vulnerabilities, indent=2))
-    
+
     status = manager.check_artifact("VULNERABILITIES.json")
-    
+
     assert status.exists is True
     assert status.valid is True
     assert status.issue_count == 1
@@ -69,9 +67,9 @@ def test_check_artifact_invalid_json(manager, temp_repo):
     """Test artifact check with corrupted JSON"""
     vuln_file = temp_repo / ".securevibes" / "VULNERABILITIES.json"
     vuln_file.write_text("{ invalid json")
-    
+
     status = manager.check_artifact("VULNERABILITIES.json")
-    
+
     assert status.exists is True
     assert status.valid is False
     assert "Invalid JSON" in status.error
@@ -81,9 +79,9 @@ def test_check_artifact_empty_markdown(manager, temp_repo):
     """Test artifact check with empty markdown file"""
     security_file = temp_repo / ".securevibes" / "SECURITY.md"
     security_file.write_text("")
-    
+
     status = manager.check_artifact("SECURITY.md")
-    
+
     assert status.exists is True
     assert status.valid is False
     assert status.error == "Empty file"
@@ -93,9 +91,9 @@ def test_check_artifact_valid_markdown(manager, temp_repo):
     """Test artifact check with valid markdown"""
     security_file = temp_repo / ".securevibes" / "SECURITY.md"
     security_file.write_text("# Security Assessment\n\nThis is a test.")
-    
+
     status = manager.check_artifact("SECURITY.md")
-    
+
     assert status.exists is True
     assert status.valid is True
     assert status.error is None
@@ -105,15 +103,16 @@ def test_check_artifact_old_file(manager, temp_repo):
     """Test artifact age warning"""
     vuln_file = temp_repo / ".securevibes" / "VULNERABILITIES.json"
     vuln_file.write_text("[]")
-    
+
     # Modify timestamp to be 48 hours ago
     old_time = (datetime.now() - timedelta(hours=48)).timestamp()
     vuln_file.touch()
     import os
+
     os.utime(vuln_file, (old_time, old_time))
-    
+
     status = manager.check_artifact("VULNERABILITIES.json")
-    
+
     assert status.exists is True
     assert status.age_hours >= 47  # Allow some tolerance
 
@@ -121,7 +120,7 @@ def test_check_artifact_old_file(manager, temp_repo):
 def test_get_subagent_dependencies_assessment(manager):
     """Test dependencies for assessment sub-agent"""
     deps = manager.get_subagent_dependencies("assessment")
-    
+
     assert deps["creates"] == "SECURITY.md"
     assert deps["requires"] is None
 
@@ -129,7 +128,7 @@ def test_get_subagent_dependencies_assessment(manager):
 def test_get_subagent_dependencies_code_review(manager):
     """Test dependencies for code-review sub-agent"""
     deps = manager.get_subagent_dependencies("code-review")
-    
+
     assert deps["creates"] == "VULNERABILITIES.json"
     assert deps["requires"] == "THREAT_MODEL.json"
 
@@ -137,7 +136,7 @@ def test_get_subagent_dependencies_code_review(manager):
 def test_get_subagent_dependencies_dast(manager):
     """Test dependencies for dast sub-agent"""
     deps = manager.get_subagent_dependencies("dast")
-    
+
     assert deps["creates"] == "DAST_VALIDATION.json"
     assert deps["requires"] == "VULNERABILITIES.json"
 
@@ -151,21 +150,21 @@ def test_get_subagent_dependencies_invalid(manager):
 def test_get_resume_subagents_from_assessment(manager):
     """Test resume list from assessment"""
     subagents = manager.get_resume_subagents("assessment")
-    
+
     assert subagents == ["assessment", "threat-modeling", "code-review", "report-generator", "dast"]
 
 
 def test_get_resume_subagents_from_code_review(manager):
     """Test resume list from code-review"""
     subagents = manager.get_resume_subagents("code-review")
-    
+
     assert subagents == ["code-review", "report-generator", "dast"]
 
 
 def test_get_resume_subagents_from_dast(manager):
     """Test resume list from dast"""
     subagents = manager.get_resume_subagents("dast")
-    
+
     assert subagents == ["dast"]
 
 
@@ -178,7 +177,7 @@ def test_get_resume_subagents_invalid(manager):
 def test_validate_prerequisites_assessment(manager):
     """Test prerequisite validation for assessment (no prerequisites)"""
     is_valid, error = manager.validate_prerequisites("assessment")
-    
+
     assert is_valid is True
     assert error is None
 
@@ -186,7 +185,7 @@ def test_validate_prerequisites_assessment(manager):
 def test_validate_prerequisites_missing(manager, temp_repo):
     """Test prerequisite validation when file missing"""
     is_valid, error = manager.validate_prerequisites("threat-modeling")
-    
+
     assert is_valid is False
     assert "Missing prerequisite: SECURITY.md" in error
 
@@ -195,9 +194,9 @@ def test_validate_prerequisites_valid(manager, temp_repo):
     """Test prerequisite validation with valid file"""
     security_file = temp_repo / ".securevibes" / "SECURITY.md"
     security_file.write_text("# Security Assessment")
-    
+
     is_valid, error = manager.validate_prerequisites("threat-modeling")
-    
+
     assert is_valid is True
     assert error is None
 
@@ -206,52 +205,52 @@ def test_validate_prerequisites_invalid_json(manager, temp_repo):
     """Test prerequisite validation with corrupted file"""
     threat_file = temp_repo / ".securevibes" / "THREAT_MODEL.json"
     threat_file.write_text("{ invalid")
-    
+
     is_valid, error = manager.validate_prerequisites("code-review")
-    
+
     assert is_valid is False
     assert "Invalid prerequisite" in error
 
 
-@patch('click.prompt')
+@patch("click.prompt")
 def test_prompt_user_choice_use_existing(mock_prompt, manager, temp_repo):
     """Test user chooses to use existing artifact"""
     vuln_file = temp_repo / ".securevibes" / "VULNERABILITIES.json"
     vuln_file.write_text("[]")
-    
+
     mock_prompt.return_value = 1
-    
+
     status = manager.check_artifact("VULNERABILITIES.json")
     mode = manager.prompt_user_choice("dast", status, force=False)
-    
+
     assert mode == ScanMode.USE_EXISTING
 
 
-@patch('click.prompt')
+@patch("click.prompt")
 def test_prompt_user_choice_full_rescan(mock_prompt, manager, temp_repo):
     """Test user chooses full rescan"""
     vuln_file = temp_repo / ".securevibes" / "VULNERABILITIES.json"
     vuln_file.write_text("[]")
-    
+
     mock_prompt.return_value = 2
-    
+
     status = manager.check_artifact("VULNERABILITIES.json")
     mode = manager.prompt_user_choice("dast", status, force=False)
-    
+
     assert mode == ScanMode.FULL_RESCAN
 
 
-@patch('click.prompt')
+@patch("click.prompt")
 def test_prompt_user_choice_cancel(mock_prompt, manager, temp_repo):
     """Test user cancels"""
     vuln_file = temp_repo / ".securevibes" / "VULNERABILITIES.json"
     vuln_file.write_text("[]")
-    
+
     mock_prompt.return_value = 3
-    
+
     status = manager.check_artifact("VULNERABILITIES.json")
     mode = manager.prompt_user_choice("dast", status, force=False)
-    
+
     assert mode == ScanMode.CANCEL
 
 
@@ -259,10 +258,10 @@ def test_prompt_user_choice_force(manager, temp_repo):
     """Test force mode skips prompts"""
     vuln_file = temp_repo / ".securevibes" / "VULNERABILITIES.json"
     vuln_file.write_text("[]")
-    
+
     status = manager.check_artifact("VULNERABILITIES.json")
     mode = manager.prompt_user_choice("dast", status, force=True)
-    
+
     assert mode == ScanMode.USE_EXISTING
 
 
@@ -305,10 +304,9 @@ def test_format_size_megabytes(manager):
 def test_subagent_artifacts_structure():
     """Test SUBAGENT_ARTIFACTS has correct structure"""
     required_keys = ["creates", "requires", "description"]
-    
+
     for subagent, config in SUBAGENT_ARTIFACTS.items():
-        assert all(key in config for key in required_keys), \
-            f"{subagent} missing required keys"
+        assert all(key in config for key in required_keys), f"{subagent} missing required keys"
 
 
 def test_subagent_order_completeness():
@@ -326,14 +324,12 @@ def test_scan_results_json_structure(manager, temp_repo):
     results_file = temp_repo / ".securevibes" / "scan_results.json"
     results = {
         "repository_path": "/test",
-        "issues": [
-            {"id": "1", "severity": "high", "title": "Test"}
-        ]
+        "issues": [{"id": "1", "severity": "high", "title": "Test"}],
     }
     results_file.write_text(json.dumps(results, indent=2))
-    
+
     status = manager.check_artifact("scan_results.json")
-    
+
     assert status.exists is True
     assert status.valid is True
     assert status.issue_count == 1

@@ -47,10 +47,14 @@ Get your API key from: https://console.anthropic.com/
 ## 🤖 Agents
 
 - Assessment → `SECURITY.md`
-- Threat Modeling (STRIDE) → `THREAT_MODEL.json`
+- Threat Modeling (STRIDE + technology-specific skills) → `THREAT_MODEL.json`
 - Code Review → `VULNERABILITIES.json`
 - Report Generator → `scan_results.json`
 - DAST (optional) → `DAST_VALIDATION.json` (validates via HTTP when --target-url provided)
+
+## 🤖 Agentic Detection
+
+SecureVibes automatically detects agentic applications (LLM APIs, agent frameworks, tool execution) and requires OWASP ASI threats in threat models. Override with `--agentic` or `--no-agentic`.
 
 ## 🌍 Supported Languages
 
@@ -98,6 +102,10 @@ securevibes scan . --subagent report-generator
 securevibes scan . --subagent dast --target-url http://localhost:3000
   # Validates only when a matching skill is available (e.g., IDOR)
   # Writes .securevibes/DAST_VALIDATION.json; no ad‑hoc files in repo
+
+# Agentic detection override
+securevibes scan . --agentic      # Force ASI threat requirement
+securevibes scan . --no-agentic   # ASI threats optional
 
 # Works with any supported language:
 securevibes scan /path/to/go-app        # Go project

@@ -23,7 +23,7 @@ PHASE 2: THREAT MODELING
 - Use the 'threat-modeling' agent to search for threat patterns using STRIDE
 - Reads .securevibes/SECURITY.md
 - Creates .securevibes/THREAT_MODEL.json
-- Report: "Threat modeling complete" when done
+- Report: "Threat modeling complete" when done (do NOT include threat counts - counts will be calculated from the file)
 - WAIT for completion before proceeding
 
 PHASE 3: CODE REVIEW

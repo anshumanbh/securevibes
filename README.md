@@ -16,10 +16,16 @@ SecureVibes uses **Claude's multi-agent architecture** to autonomously find secu
 ### True Agent Architecture
 - **🤖 Autonomous Orchestration**: Claude intelligently coordinates agents
 - **📐 Assessment Agent**: Maps your codebase architecture
-- **🎯 Threat Modeling Agent**: Architecture-driven STRIDE threat analysis
+- **🎯 Threat Modeling Agent**: Architecture-driven STRIDE threat analysis with technology-specific skills (agentic AI, APIs)
 - **🔍 Code Review Agent**: Security thinking methodology to find vulnerabilities
 - **🧪 DAST Agent**: Dynamic testing with auto-bundled skills
 - **📊 Report Generator**: Compiles comprehensive scan results
+
+### Agentic Application Detection
+- **🤖 Automatic Detection**: Identifies agentic applications by scanning for LLM APIs, agent frameworks, and tool execution patterns
+- **🔒 ASI Threat Enforcement**: Requires OWASP ASI (Agentic Security Issues) threats in threat models for detected agentic apps
+- **🔄 Auto-Retry Validation**: Invalid threat models are rejected with guidance; agent retries once before failing
+- **⚙️ Override Flags**: Use `--agentic` or `--no-agentic` to force classification
 
 ### Multi-Language Support
 - **11 Languages**: Python, JavaScript, TypeScript, Go, Ruby, Java, PHP, C#, Rust, Kotlin, Swift
@@ -119,6 +125,18 @@ securevibes scan . --debug
 
 # Quiet mode
 securevibes scan . --quiet
+```
+
+### Agentic Detection Override
+
+SecureVibes automatically detects agentic applications and requires OWASP ASI threats in threat models. Override with:
+
+```bash
+# Force agentic classification (require ASI threats like THREAT-ASI01-xxx)
+securevibes scan . --agentic
+
+# Force non-agentic classification (ASI threats optional)
+securevibes scan . --no-agentic
 ```
 
 ### Running Individual Sub-Agents

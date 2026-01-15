@@ -12,6 +12,7 @@ from securevibes.reporters.json_reporter import JSONReporter
 # This ensures single source of truth - only update version in pyproject.toml
 try:
     from importlib.metadata import version
+
     __version__ = version("securevibes")
 except Exception:
     # Fallback for development/editable installs

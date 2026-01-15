@@ -6,9 +6,13 @@ import os
 import sqlite3
 
 
+# VULNERABLE: Hardcoded token (test fixture - not real)
+SECRET_TOKEN = "test-fake-token-xxxxxxxxxxxxx"
+
+
 def unsafe_query(user_id):
     """SQL Injection vulnerability"""
-    conn = sqlite3.connect('database.db')
+    conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
     # VULNERABLE: String concatenation in SQL
     query = f"SELECT * FROM users WHERE id = {user_id}"
@@ -26,14 +30,13 @@ def hardcoded_secret():
     """Hardcoded credentials"""
     # VULNERABLE: Hardcoded API key (test fixture - not real)
     API_KEY = "test-fake-key-1234567890abcdef"
-    SECRET_TOKEN = "test-fake-token-xxxxxxxxxxxxx"
     return API_KEY
 
 
 def path_traversal(user_file):
     """Path traversal vulnerability"""
     # VULNERABLE: No path validation
-    with open(f"/uploads/{user_file}", 'r') as f:
+    with open(f"/uploads/{user_file}", "r") as f:
         return f.read()
 
 
