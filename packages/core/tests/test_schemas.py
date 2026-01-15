@@ -1,7 +1,6 @@
 """Tests for JSON schema validation and auto-fix functionality."""
 
 import json
-import pytest
 
 from securevibes.models.schemas import (
     fix_vulnerabilities_json,
@@ -21,16 +20,16 @@ class TestFixVulnerabilitiesJson:
             "threat_id": threat_id,
             "title": title,
             "description": "Test vulnerability",
-            "severity": "high"
+            "severity": "high",
         }
 
     def test_flat_array_unchanged(self):
         """Flat array should pass through without modification."""
         vuln = self._make_valid_vuln()
         content = json.dumps([vuln])
-        
+
         fixed, modified = fix_vulnerabilities_json(content)
-        
+
         assert modified is False
         assert json.loads(fixed) == [vuln]
 
@@ -38,9 +37,9 @@ class TestFixVulnerabilitiesJson:
         """Wrapped {'vulnerabilities': [...]} should be unwrapped."""
         vuln = self._make_valid_vuln()
         content = json.dumps({"vulnerabilities": [vuln]})
-        
+
         fixed, modified = fix_vulnerabilities_json(content)
-        
+
         assert modified is True
         assert fixed.startswith("[")
         assert json.loads(fixed) == [vuln]
@@ -49,9 +48,9 @@ class TestFixVulnerabilitiesJson:
         """Wrapped {'issues': [...]} should be unwrapped."""
         vuln = self._make_valid_vuln()
         content = json.dumps({"issues": [vuln]})
-        
+
         fixed, modified = fix_vulnerabilities_json(content)
-        
+
         assert modified is True
         assert json.loads(fixed) == [vuln]
 
@@ -59,9 +58,9 @@ class TestFixVulnerabilitiesJson:
         """Wrapped {'results': [...]} should be unwrapped."""
         vuln = self._make_valid_vuln()
         content = json.dumps({"results": [vuln]})
-        
+
         fixed, modified = fix_vulnerabilities_json(content)
-        
+
         assert modified is True
         assert json.loads(fixed) == [vuln]
 
@@ -69,9 +68,9 @@ class TestFixVulnerabilitiesJson:
         """Wrapped {'findings': [...]} should be unwrapped."""
         vuln = self._make_valid_vuln()
         content = json.dumps({"findings": [vuln]})
-        
+
         fixed, modified = fix_vulnerabilities_json(content)
-        
+
         assert modified is True
         assert json.loads(fixed) == [vuln]
 
@@ -79,30 +78,30 @@ class TestFixVulnerabilitiesJson:
         """Wrapped {'data': [...]} should be unwrapped."""
         vuln = self._make_valid_vuln()
         content = json.dumps({"data": [vuln]})
-        
+
         fixed, modified = fix_vulnerabilities_json(content)
-        
+
         assert modified is True
         assert json.loads(fixed) == [vuln]
 
     def test_empty_string_returns_empty_array(self):
         """Empty string should return empty array."""
         fixed, modified = fix_vulnerabilities_json("")
-        
+
         assert modified is True
         assert fixed == "[]"
 
     def test_whitespace_only_returns_empty_array(self):
         """Whitespace-only string should return empty array."""
         fixed, modified = fix_vulnerabilities_json("   \n\t  ")
-        
+
         assert modified is True
         assert fixed == "[]"
 
     def test_empty_array_unchanged(self):
         """Empty array should pass through unchanged."""
         fixed, modified = fix_vulnerabilities_json("[]")
-        
+
         assert modified is False
         assert fixed == "[]"
 
@@ -110,31 +109,28 @@ class TestFixVulnerabilitiesJson:
         """Single vulnerability object should be wrapped in array."""
         vuln = self._make_valid_vuln()
         content = json.dumps(vuln)
-        
+
         fixed, modified = fix_vulnerabilities_json(content)
-        
+
         assert modified is True
         assert json.loads(fixed) == [vuln]
 
     def test_invalid_json_returns_unchanged(self):
         """Invalid JSON should be returned as-is."""
         content = "not valid json {"
-        
+
         fixed, modified = fix_vulnerabilities_json(content)
-        
+
         assert modified is False
         assert fixed == content
 
     def test_nested_wrapper_with_summary(self):
         """Nested wrapper with summary should extract array."""
         vuln = self._make_valid_vuln()
-        content = json.dumps({
-            "summary": {"total": 1},
-            "vulnerabilities": [vuln]
-        })
-        
+        content = json.dumps({"summary": {"total": 1}, "vulnerabilities": [vuln]})
+
         fixed, modified = fix_vulnerabilities_json(content)
-        
+
         assert modified is True
         assert json.loads(fixed) == [vuln]
 
@@ -143,12 +139,12 @@ class TestFixVulnerabilitiesJson:
         vulns = [
             self._make_valid_vuln("THREAT-001", "SQL Injection"),
             self._make_valid_vuln("THREAT-002", "XSS"),
-            self._make_valid_vuln("THREAT-003", "CSRF")
+            self._make_valid_vuln("THREAT-003", "CSRF"),
         ]
         content = json.dumps({"vulnerabilities": vulns})
-        
+
         fixed, modified = fix_vulnerabilities_json(content)
-        
+
         assert modified is True
         parsed = json.loads(fixed)
         assert len(parsed) == 3
@@ -165,22 +161,22 @@ class TestValidateVulnerabilitiesJson:
             "threat_id": "THREAT-001",
             "title": "SQL Injection",
             "description": "Test vulnerability",
-            "severity": "high"
+            "severity": "high",
         }
 
     def test_valid_flat_array(self):
         """Valid flat array should pass validation."""
         content = json.dumps([self._make_valid_vuln()])
-        
+
         is_valid, error = validate_vulnerabilities_json(content)
-        
+
         assert is_valid is True
         assert error is None
 
     def test_valid_empty_array(self):
         """Empty array should pass validation."""
         is_valid, error = validate_vulnerabilities_json("[]")
-        
+
         assert is_valid is True
         assert error is None
 
@@ -189,9 +185,9 @@ class TestValidateVulnerabilitiesJson:
         vuln = self._make_valid_vuln()
         del vuln["threat_id"]
         content = json.dumps([vuln])
-        
+
         is_valid, error = validate_vulnerabilities_json(content)
-        
+
         assert is_valid is False
         assert "threat_id" in error
 
@@ -200,9 +196,9 @@ class TestValidateVulnerabilitiesJson:
         vuln = self._make_valid_vuln()
         del vuln["title"]
         content = json.dumps([vuln])
-        
+
         is_valid, error = validate_vulnerabilities_json(content)
-        
+
         assert is_valid is False
         assert "title" in error
 
@@ -211,9 +207,9 @@ class TestValidateVulnerabilitiesJson:
         vuln = self._make_valid_vuln()
         del vuln["description"]
         content = json.dumps([vuln])
-        
+
         is_valid, error = validate_vulnerabilities_json(content)
-        
+
         assert is_valid is False
         assert "description" in error
 
@@ -222,9 +218,9 @@ class TestValidateVulnerabilitiesJson:
         vuln = self._make_valid_vuln()
         del vuln["severity"]
         content = json.dumps([vuln])
-        
+
         is_valid, error = validate_vulnerabilities_json(content)
-        
+
         assert is_valid is False
         assert "severity" in error
 
@@ -233,9 +229,9 @@ class TestValidateVulnerabilitiesJson:
         vuln = self._make_valid_vuln()
         vuln["severity"] = "INVALID"
         content = json.dumps([vuln])
-        
+
         is_valid, error = validate_vulnerabilities_json(content)
-        
+
         assert is_valid is False
         assert "severity" in error.lower()
 
@@ -245,31 +241,31 @@ class TestValidateVulnerabilitiesJson:
             vuln = self._make_valid_vuln()
             vuln["severity"] = severity
             content = json.dumps([vuln])
-            
+
             is_valid, error = validate_vulnerabilities_json(content)
-            
+
             assert is_valid is True, f"Severity '{severity}' should be valid"
 
     def test_wrapped_object_fails(self):
         """Wrapped object should fail (must start with '[')."""
         vuln = self._make_valid_vuln()
         content = json.dumps({"vulnerabilities": [vuln]})
-        
+
         is_valid, error = validate_vulnerabilities_json(content)
-        
+
         assert is_valid is False
         assert "[" in error
 
     def test_empty_string_fails(self):
         """Empty string should fail validation."""
         is_valid, error = validate_vulnerabilities_json("")
-        
+
         assert is_valid is False
 
     def test_invalid_json_fails(self):
         """Invalid JSON should fail validation."""
         is_valid, error = validate_vulnerabilities_json("not json")
-        
+
         assert is_valid is False
         # Fails first check (must start with '[') before JSON parsing
         assert error is not None
@@ -277,16 +273,16 @@ class TestValidateVulnerabilitiesJson:
     def test_invalid_json_array_fails(self):
         """Invalid JSON that starts with '[' should fail with JSON error."""
         is_valid, error = validate_vulnerabilities_json("[invalid json")
-        
+
         assert is_valid is False
         assert "Invalid JSON" in error
 
     def test_non_object_item_fails(self):
         """Non-object items in array should fail."""
         content = json.dumps(["string", 123])
-        
+
         is_valid, error = validate_vulnerabilities_json(content)
-        
+
         assert is_valid is False
         assert "not an object" in error
 
@@ -297,7 +293,7 @@ class TestGetOutputFormatConfig:
     def test_returns_correct_structure(self):
         """Should return dict with type and schema keys."""
         config = get_output_format_config()
-        
+
         assert isinstance(config, dict)
         assert "type" in config
         assert "schema" in config
@@ -305,13 +301,13 @@ class TestGetOutputFormatConfig:
     def test_type_is_json_schema(self):
         """Type should be 'json_schema'."""
         config = get_output_format_config()
-        
+
         assert config["type"] == "json_schema"
 
     def test_schema_is_array_schema(self):
         """Schema should be the vulnerabilities array schema."""
         config = get_output_format_config()
-        
+
         assert config["schema"] == VULNERABILITIES_ARRAY_SCHEMA
         assert config["schema"]["type"] == "array"
 
@@ -322,7 +318,7 @@ class TestSchemaStructure:
     def test_vulnerability_schema_has_required_fields(self):
         """Vulnerability schema should have correct required fields."""
         required = VULNERABILITY_SCHEMA["required"]
-        
+
         assert "threat_id" in required
         assert "title" in required
         assert "description" in required
@@ -331,7 +327,7 @@ class TestSchemaStructure:
     def test_vulnerability_schema_severity_enum(self):
         """Severity should have correct enum values."""
         severity_prop = VULNERABILITY_SCHEMA["properties"]["severity"]
-        
+
         assert "enum" in severity_prop
         assert set(severity_prop["enum"]) == {"critical", "high", "medium", "low", "info"}
 

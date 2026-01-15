@@ -11,40 +11,28 @@ class TestSeverityHandling:
     def test_severity_lowercase(self):
         """Test lowercase severity values"""
         vuln = Vulnerability(
-            threat_id="T-001",
-            title="Test",
-            description="Test desc",
-            severity="critical"
+            threat_id="T-001", title="Test", description="Test desc", severity="critical"
         )
         assert vuln.severity == Severity.CRITICAL
 
     def test_severity_uppercase(self):
         """Test uppercase severity values"""
         vuln = Vulnerability(
-            threat_id="T-001",
-            title="Test",
-            description="Test desc",
-            severity="HIGH"
+            threat_id="T-001", title="Test", description="Test desc", severity="HIGH"
         )
         assert vuln.severity == Severity.HIGH
 
     def test_severity_mixed_case(self):
         """Test mixed case severity values"""
         vuln = Vulnerability(
-            threat_id="T-001",
-            title="Test",
-            description="Test desc",
-            severity="Medium"
+            threat_id="T-001", title="Test", description="Test desc", severity="Medium"
         )
         assert vuln.severity == Severity.MEDIUM
 
     def test_severity_informational_alias(self):
         """Test 'informational' maps to INFO"""
         vuln = Vulnerability(
-            threat_id="T-001",
-            title="Test",
-            description="Test desc",
-            severity="informational"
+            threat_id="T-001", title="Test", description="Test desc", severity="informational"
         )
         assert vuln.severity == Severity.INFO
 
@@ -71,9 +59,7 @@ class TestAffectedFile:
     def test_with_code_snippet(self):
         """Test AffectedFile with code snippet"""
         af = AffectedFile(
-            file_path="src/db.py",
-            line_number=15,
-            code_snippet="query = f'SELECT * FROM {table}'"
+            file_path="src/db.py", line_number=15, code_snippet="query = f'SELECT * FROM {table}'"
         )
         assert af.code_snippet == "query = f'SELECT * FROM {table}'"
 
@@ -91,7 +77,7 @@ class TestVulnerability:
             file_path="src/db.py",
             line_number=42,
             cwe_id="CWE-89",
-            recommendation="Use parameterized queries"
+            recommendation="Use parameterized queries",
         )
         assert vuln.threat_id == "THREAT-001"
         assert vuln.severity == Severity.HIGH
@@ -99,21 +85,14 @@ class TestVulnerability:
 
     def test_id_alias_to_threat_id(self):
         """Test 'id' field maps to 'threat_id'"""
-        vuln = Vulnerability(**{
-            "id": "V-001",
-            "title": "Test",
-            "description": "Test desc",
-            "severity": "low"
-        })
+        vuln = Vulnerability(
+            **{"id": "V-001", "title": "Test", "description": "Test desc", "severity": "low"}
+        )
         assert vuln.threat_id == "V-001"
 
     def test_missing_id_gets_default(self):
         """Test missing id gets UNKNOWN-ID default"""
-        vuln = Vulnerability(**{
-            "title": "Test",
-            "description": "Test desc",
-            "severity": "low"
-        })
+        vuln = Vulnerability(**{"title": "Test", "description": "Test desc", "severity": "low"})
         assert vuln.threat_id == "UNKNOWN-ID"
 
     def test_line_number_list_takes_first(self):
@@ -123,90 +102,99 @@ class TestVulnerability:
             title="Test",
             description="Test",
             severity="medium",
-            line_number=[10, 15, 20]
+            line_number=[10, 15, 20],
         )
         assert vuln.line_number == 10
 
     def test_vulnerable_code_extraction(self):
         """Test extraction from vulnerable_code object"""
-        vuln = Vulnerability(**{
-            "threat_id": "T-001",
-            "title": "Test",
-            "description": "Test desc",
-            "severity": "high",
-            "vulnerable_code": {
-                "file": "src/auth.py",
-                "line_numbers": [42, 43],
-                "code_snippet": "password = request.form['pass']"
+        vuln = Vulnerability(
+            **{
+                "threat_id": "T-001",
+                "title": "Test",
+                "description": "Test desc",
+                "severity": "high",
+                "vulnerable_code": {
+                    "file": "src/auth.py",
+                    "line_numbers": [42, 43],
+                    "code_snippet": "password = request.form['pass']",
+                },
             }
-        })
+        )
         assert vuln.file_path == "src/auth.py"
         assert vuln.line_number == 42
         assert vuln.code_snippet == "password = request.form['pass']"
 
     def test_affected_files_string_list_conversion(self):
         """Test affected_files list of strings converts to AffectedFile objects"""
-        vuln = Vulnerability(**{
-            "threat_id": "T-001",
-            "title": "Test",
-            "description": "Test desc",
-            "severity": "medium",
-            "affected_files": ["src/a.py", "src/b.py", "src/c.py"]
-        })
+        vuln = Vulnerability(
+            **{
+                "threat_id": "T-001",
+                "title": "Test",
+                "description": "Test desc",
+                "severity": "medium",
+                "affected_files": ["src/a.py", "src/b.py", "src/c.py"],
+            }
+        )
         assert len(vuln.affected_files) == 3
         assert vuln.affected_files[0].file_path == "src/a.py"
         assert vuln.affected_files[1].file_path == "src/b.py"
 
     def test_affected_files_object_list(self):
         """Test affected_files list of objects"""
-        vuln = Vulnerability(**{
-            "threat_id": "T-001",
-            "title": "Test",
-            "description": "Test desc",
-            "severity": "low",
-            "affected_files": [
-                {"file_path": "src/a.py", "line_number": 10},
-                {"path": "src/b.py", "line_numbers": [20, 21]}
-            ]
-        })
+        vuln = Vulnerability(
+            **{
+                "threat_id": "T-001",
+                "title": "Test",
+                "description": "Test desc",
+                "severity": "low",
+                "affected_files": [
+                    {"file_path": "src/a.py", "line_number": 10},
+                    {"path": "src/b.py", "line_numbers": [20, 21]},
+                ],
+            }
+        )
         assert len(vuln.affected_files) == 2
         assert vuln.affected_files[0].line_number == 10
         assert vuln.affected_files[1].file_path == "src/b.py"
 
     def test_remediation_to_recommendation_string(self):
         """Test 'remediation' string maps to 'recommendation'"""
-        vuln = Vulnerability(**{
-            "threat_id": "T-001",
-            "title": "Test",
-            "description": "Test desc",
-            "severity": "high",
-            "remediation": "Fix the code by doing X"
-        })
+        vuln = Vulnerability(
+            **{
+                "threat_id": "T-001",
+                "title": "Test",
+                "description": "Test desc",
+                "severity": "high",
+                "remediation": "Fix the code by doing X",
+            }
+        )
         assert vuln.recommendation == "Fix the code by doing X"
 
     def test_remediation_to_recommendation_dict(self):
         """Test 'remediation' dict extracts 'recommendation' field"""
-        vuln = Vulnerability(**{
-            "threat_id": "T-001",
-            "title": "Test",
-            "description": "Test desc",
-            "severity": "high",
-            "remediation": {
-                "recommendation": "Use secure method",
-                "priority": "high"
+        vuln = Vulnerability(
+            **{
+                "threat_id": "T-001",
+                "title": "Test",
+                "description": "Test desc",
+                "severity": "high",
+                "remediation": {"recommendation": "Use secure method", "priority": "high"},
             }
-        })
+        )
         assert vuln.recommendation == "Use secure method"
 
     def test_proof_of_concept_to_evidence(self):
         """Test 'proof_of_concept' maps to 'evidence'"""
-        vuln = Vulnerability(**{
-            "threat_id": "T-001",
-            "title": "Test",
-            "description": "Test desc",
-            "severity": "critical",
-            "proof_of_concept": "curl -X POST http://..."
-        })
+        vuln = Vulnerability(
+            **{
+                "threat_id": "T-001",
+                "title": "Test",
+                "description": "Test desc",
+                "severity": "critical",
+                "proof_of_concept": "curl -X POST http://...",
+            }
+        )
         assert vuln.evidence == "curl -X POST http://..."
 
     def test_evidence_dict(self):
@@ -216,7 +204,7 @@ class TestVulnerability:
             title="Test",
             description="Test desc",
             severity="high",
-            evidence={"request": "GET /admin", "response": "200 OK"}
+            evidence={"request": "GET /admin", "response": "200 OK"},
         )
         assert isinstance(vuln.evidence, dict)
         assert vuln.evidence["request"] == "GET /admin"
@@ -228,18 +216,8 @@ class TestScanOutput:
     def test_validate_input_flat_list(self):
         """Test parsing flat list of vulnerabilities"""
         data = [
-            {
-                "threat_id": "T-001",
-                "title": "Issue 1",
-                "description": "Desc 1",
-                "severity": "high"
-            },
-            {
-                "threat_id": "T-002",
-                "title": "Issue 2",
-                "description": "Desc 2",
-                "severity": "low"
-            }
+            {"threat_id": "T-001", "title": "Issue 1", "description": "Desc 1", "severity": "high"},
+            {"threat_id": "T-002", "title": "Issue 2", "description": "Desc 2", "severity": "low"},
         ]
         result = ScanOutput.validate_input(data)
         assert len(result.vulnerabilities) == 2
@@ -254,7 +232,7 @@ class TestScanOutput:
                     "threat_id": "T-001",
                     "title": "Test",
                     "description": "Test desc",
-                    "severity": "critical"
+                    "severity": "critical",
                 }
             ]
         }
@@ -270,7 +248,7 @@ class TestScanOutput:
                     "threat_id": "T-001",
                     "title": "Test",
                     "description": "Test desc",
-                    "severity": "medium"
+                    "severity": "medium",
                 }
             ]
         }
@@ -309,7 +287,7 @@ class TestRealWorldFormats:
                 "code_snippet": "PASSWORD = 'admin123'",
                 "cwe_id": "CWE-798",
                 "recommendation": "Use environment variables",
-                "evidence": "Direct password assignment found"
+                "evidence": "Direct password assignment found",
             }
         ]
         result = ScanOutput.validate_input(data)
@@ -331,13 +309,13 @@ class TestRealWorldFormats:
                     "vulnerable_code": {
                         "file": "src/db.py",
                         "line_no": 42,
-                        "code": "query = f'SELECT * FROM users WHERE id={id}'"
+                        "code": "query = f'SELECT * FROM users WHERE id={id}'",
                     },
                     "remediation": {
                         "recommendation": "Use parameterized queries",
-                        "references": ["https://owasp.org/sql-injection"]
+                        "references": ["https://owasp.org/sql-injection"],
                     },
-                    "proof_of_concept": "id=1 OR 1=1"
+                    "proof_of_concept": "id=1 OR 1=1",
                 }
             ]
         }
@@ -359,12 +337,12 @@ class TestRealWorldFormats:
                 "severity": "high",
                 "affected_files": [
                     {"file_path": "src/views/search.py", "line_number": 25},
-                    {"path": "templates/results.html", "line_numbers": [10, 12]}
+                    {"path": "templates/results.html", "line_numbers": [10, 12]},
                 ],
                 "evidence": {
                     "url": "/search?q=<script>alert(1)</script>",
-                    "response": "200 OK with script reflected"
-                }
+                    "response": "200 OK with script reflected",
+                },
             }
         ]
         result = ScanOutput.validate_input(data)
@@ -381,14 +359,14 @@ class TestScanOutputSchemaHelpers:
     def test_get_json_schema_returns_array_type(self):
         """Test get_json_schema returns array schema"""
         schema = ScanOutput.get_json_schema()
-        
+
         assert isinstance(schema, dict)
         assert schema["type"] == "array"
 
     def test_get_json_schema_has_items(self):
         """Test schema has items definition for vulnerabilities"""
         schema = ScanOutput.get_json_schema()
-        
+
         assert "items" in schema
         assert schema["items"]["type"] == "object"
 
@@ -396,7 +374,7 @@ class TestScanOutputSchemaHelpers:
         """Test schema items have required fields"""
         schema = ScanOutput.get_json_schema()
         items = schema["items"]
-        
+
         assert "required" in items
         required = items["required"]
         assert "threat_id" in required
@@ -408,7 +386,7 @@ class TestScanOutputSchemaHelpers:
         """Test severity property has enum constraint"""
         schema = ScanOutput.get_json_schema()
         props = schema["items"]["properties"]
-        
+
         assert "severity" in props
         assert "enum" in props["severity"]
         assert set(props["severity"]["enum"]) == {"critical", "high", "medium", "low", "info"}
@@ -416,7 +394,7 @@ class TestScanOutputSchemaHelpers:
     def test_get_output_format_returns_correct_structure(self):
         """Test get_output_format returns SDK-compatible config"""
         config = ScanOutput.get_output_format()
-        
+
         assert isinstance(config, dict)
         assert "type" in config
         assert "schema" in config
@@ -424,20 +402,20 @@ class TestScanOutputSchemaHelpers:
     def test_get_output_format_type_is_json_schema(self):
         """Test output_format type is 'json_schema'"""
         config = ScanOutput.get_output_format()
-        
+
         assert config["type"] == "json_schema"
 
     def test_get_output_format_schema_matches_get_json_schema(self):
         """Test output_format schema matches get_json_schema"""
         config = ScanOutput.get_output_format()
         schema = ScanOutput.get_json_schema()
-        
+
         assert config["schema"] == schema
 
     def test_schema_compatible_with_sdk_structured_outputs(self):
         """Test schema structure is compatible with Claude SDK output_format"""
         config = ScanOutput.get_output_format()
-        
+
         # Claude SDK expects: {"type": "json_schema", "schema": {...}}
         assert config["type"] == "json_schema"
         assert isinstance(config["schema"], dict)
