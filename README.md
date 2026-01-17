@@ -1,5 +1,20 @@
 # 🛡️ SecureVibes
 
+<div align="center">
+
+### 🌐 [securevibes.ai](https://securevibes.ai) — Visit our website for docs, features & blog
+
+</div>
+
+<p align="center">
+  <a href="https://securevibes.ai/how-it-works">How It Works</a> •
+  <a href="https://securevibes.ai/features">Features</a> •
+  <a href="https://securevibes.ai/blog">Blog</a> •
+  <a href="https://discord.gg/9cYqTBdC9h">Discord</a>
+</p>
+
+---
+
 [![Run in Smithery](https://smithery.ai/badge/skills/anshumanbh)](https://smithery.ai/skills?ns=anshumanbh&utm_source=github&utm_medium=badge)
 
 
@@ -539,6 +554,8 @@ Contributions are welcome! We appreciate bug reports, feature requests, and code
 ## 👤 Author
 
 Built by [@anshumanbh](https://github.com/anshumanbh)
+
+🌐 [securevibes.ai](https://securevibes.ai) — Website, docs & blog
 
 🌟 Star the repo to follow along!
 

@@ -1,5 +1,11 @@
 # 🛡️ SecureVibes
 
+<div align="center">
+
+### 🌐 [securevibes.ai](https://securevibes.ai) — Website, docs & blog
+
+</div>
+
 **AI‑Native Security for Vibecoded Apps**
 
 SecureVibes uses Claude’s multi‑agent architecture to find security issues with concrete evidence. Agents coordinate to map your architecture, model threats, review code, and generate a clear report. An optional DAST phase validates exploitability via HTTP testing using auto‑discovered skills.
@@ -188,17 +194,20 @@ asyncio.run(main())
 
 This is a quick reference for PyPI users. For comprehensive documentation, visit:
 
-**📖 [Full Documentation on GitHub](https://github.com/anshumanbh/securevibes)**
+**🌐 [securevibes.ai](https://securevibes.ai)** — Full website with docs & blog
 
 Including:
-- 🏗️ [Architecture Deep Dive](https://github.com/anshumanbh/securevibes/blob/main/docs/ARCHITECTURE.md)
-- 🌊 [Streaming Mode Guide](https://github.com/anshumanbh/securevibes/blob/main/docs/STREAMING_MODE.md) - Real-time progress tracking
+- 📖 [How It Works](https://securevibes.ai/how-it-works)
+- ✨ [Features](https://securevibes.ai/features)
+- 📝 [Blog](https://securevibes.ai/blog)
 
 ---
 
 ## 👤 Author
 
 Built by [@anshumanbh](https://github.com/anshumanbh)
+
+🌐 [securevibes.ai](https://securevibes.ai) — Website, docs & blog
 
 🌟 **Star the repo** to follow development!
 
