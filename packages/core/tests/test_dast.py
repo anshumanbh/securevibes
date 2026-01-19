@@ -884,7 +884,7 @@ def test_regenerate_artifacts(tmp_path):
     assert data["issues"][0]["exploitability_score"] == 8.5
 
     # Verify Markdown contains validation badges
-    md_content = md_file.read_text()
+    md_content = md_file.read_text(encoding="utf-8")
     assert "✅" in md_content  # Validation badge
     assert "DAST" in md_content
 
