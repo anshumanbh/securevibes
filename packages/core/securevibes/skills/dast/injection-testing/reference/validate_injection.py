@@ -9,16 +9,15 @@ This module covers injection types NOT handled by dedicated skills:
 - Command Injection -> command-injection-testing
 
 CWE Coverage: CWE-1336, CWE-90, CWE-643, CWE-652, CWE-93, CWE-113,
-              CWE-917, CWE-1333, CWE-1236
+              CWE-917, CWE-1333, CWE-1236, CWE-94, CWE-95
 """
 
 import hashlib
 import json
-import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
-from urllib.parse import quote, urljoin
+from urllib.parse import urljoin
 
 # Type hints for requests (not imported to avoid dependency)
 
@@ -151,13 +150,9 @@ class InjectionValidator:
         # Get baseline with normal value
         try:
             if method.upper() == "GET":
-                _, baseline_body, _, _ = self._make_request(
-                    "GET", endpoint, params={param: "test"}
-                )
+                _, baseline_body, _, _ = self._make_request("GET", endpoint, params={param: "test"})
             else:
-                _, baseline_body, _, _ = self._make_request(
-                    "POST", endpoint, data={param: "test"}
-                )
+                _, baseline_body, _, _ = self._make_request("POST", endpoint, data={param: "test"})
             baseline_len = len(baseline_body)
         except Exception as e:
             return InjectionTestResult(
@@ -172,13 +167,9 @@ class InjectionValidator:
         # Test with wildcard
         try:
             if method.upper() == "GET":
-                _, test_body, _, _ = self._make_request(
-                    "GET", endpoint, params={param: "*"}
-                )
+                _, test_body, _, _ = self._make_request("GET", endpoint, params={param: "*"})
             else:
-                _, test_body, _, _ = self._make_request(
-                    "POST", endpoint, data={param: "*"}
-                )
+                _, test_body, _, _ = self._make_request("POST", endpoint, data={param: "*"})
             test_len = len(test_body)
         except Exception:
             return InjectionTestResult(
@@ -414,9 +405,7 @@ class InjectionValidator:
         # Get baseline
         try:
             if method.upper() == "GET":
-                _, baseline_body, _, _ = self._make_request(
-                    "GET", endpoint, params={param: "test"}
-                )
+                _, baseline_body, _, _ = self._make_request("GET", endpoint, params={param: "test"})
             baseline_len = len(baseline_body)
         except Exception as e:
             return InjectionTestResult(
@@ -432,9 +421,7 @@ class InjectionValidator:
         payload = "' or '1'='1"
         try:
             if method.upper() == "GET":
-                _, test_body, _, _ = self._make_request(
-                    "GET", endpoint, params={param: payload}
-                )
+                _, test_body, _, _ = self._make_request("GET", endpoint, params={param: payload})
             test_len = len(test_body)
         except Exception:
             return InjectionTestResult(
@@ -470,6 +457,128 @@ class InjectionValidator:
             test_details={"url": url, "param": param},
         )
 
+    def validate_xquery(
+        self,
+        endpoint: str,
+        param: str,
+        method: str = "GET",
+    ) -> InjectionTestResult:
+        """
+        Validate XQuery Injection.
+        CWE-652.
+        """
+        url = urljoin(self.base_url, endpoint)
+
+        # Get baseline
+        try:
+            if method.upper() == "GET":
+                _, baseline_body, _, _ = self._make_request("GET", endpoint, params={param: "test"})
+            else:
+                _, baseline_body, _, _ = self._make_request("POST", endpoint, data={param: "test"})
+            baseline_len = len(baseline_body)
+        except Exception as e:
+            return InjectionTestResult(
+                status="UNVALIDATED",
+                injection_type="xquery_injection",
+                cwe="CWE-652",
+                payload_used="",
+                evidence=f"Baseline failed: {str(e)}",
+                test_details={"url": url},
+            )
+
+        payloads = ["' or '1'='1", "') or ('1'='1"]
+
+        for payload in payloads:
+            try:
+                if method.upper() == "GET":
+                    _, test_body, _, _ = self._make_request(
+                        "GET", endpoint, params={param: payload}
+                    )
+                else:
+                    _, test_body, _, _ = self._make_request("POST", endpoint, data={param: payload})
+                test_len = len(test_body)
+            except Exception:
+                continue
+
+            if test_len > baseline_len * 2:
+                return InjectionTestResult(
+                    status="VALIDATED",
+                    injection_type="xquery_injection",
+                    cwe="CWE-652",
+                    payload_used=payload,
+                    evidence=f"XQuery injection: boolean bypass returned {test_len} vs {baseline_len} bytes",
+                    test_details={
+                        "url": url,
+                        "param": param,
+                        "baseline_length": baseline_len,
+                        "test_length": test_len,
+                    },
+                )
+
+        return InjectionTestResult(
+            status="FALSE_POSITIVE",
+            injection_type="xquery_injection",
+            cwe="CWE-652",
+            payload_used="multiple",
+            evidence="No XQuery injection indicators",
+            test_details={"url": url, "param": param},
+        )
+
+    def validate_js_eval(
+        self,
+        endpoint: str,
+        param: str,
+        method: str = "GET",
+    ) -> InjectionTestResult:
+        """
+        Validate JSON/JavaScript eval injection.
+
+        CWE-95 (Eval Injection) and CWE-94 (Code Injection).
+        """
+        url = urljoin(self.base_url, endpoint)
+
+        payloads = [
+            ("7*7", "49"),
+            ("Math.imul(7,7)", "49"),
+            ("['a','b'].length", "2"),
+        ]
+
+        for payload, expected in payloads:
+            try:
+                if method.upper() == "GET":
+                    _, response_body, _, _ = self._make_request(
+                        "GET", endpoint, params={param: payload}
+                    )
+                else:
+                    _, response_body, _, _ = self._make_request(
+                        "POST", endpoint, data={param: payload}
+                    )
+            except Exception:
+                continue
+
+            if expected in response_body and payload not in response_body:
+                return InjectionTestResult(
+                    status="VALIDATED",
+                    injection_type="js_eval_injection",
+                    cwe="CWE-95",
+                    payload_used=payload,
+                    evidence=f"JavaScript eval injection: {payload} evaluated to {expected}",
+                    test_details={
+                        "url": url,
+                        "param": param,
+                        "response_snippet": self._truncate_snippet(response_body),
+                    },
+                )
+
+        return InjectionTestResult(
+            status="FALSE_POSITIVE",
+            injection_type="js_eval_injection",
+            cwe="CWE-95",
+            payload_used="multiple",
+            evidence="No JavaScript eval injection indicators",
+            test_details={"url": url, "param": param},
+        )
+
 
 def validate_from_vulnerabilities(vulns_file: str, base_url: str) -> list[dict[str, Any]]:
     """Validate injection findings from VULNERABILITIES.json."""
@@ -484,9 +593,13 @@ def validate_from_vulnerabilities(vulns_file: str, base_url: str) -> list[dict[s
         "CWE-1336": validator.validate_ssti,
         "CWE-90": validator.validate_ldap,
         "CWE-643": validator.validate_xpath,
+        "CWE-652": validator.validate_xquery,
         "CWE-93": validator.validate_crlf,
         "CWE-113": validator.validate_crlf,
         "CWE-917": validator.validate_el,
+        "CWE-94": validator.validate_js_eval,
+        "CWE-95": validator.validate_js_eval,
+        "CWE-1333": validator.validate_redos,
     }
 
     for vuln in vulns:

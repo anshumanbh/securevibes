@@ -13,16 +13,18 @@ This file contains examples of miscellaneous injection vulnerabilities NOT cover
 1. [Server-Side Template Injection (SSTI)](#server-side-template-injection-ssti)
 2. [LDAP Injection](#ldap-injection)
 3. [XPath Injection](#xpath-injection)
-4. [CRLF / HTTP Header Injection](#crlf--http-header-injection)
-5. [Email Header Injection](#email-header-injection)
-6. [Expression Language Injection](#expression-language-injection)
-7. [GraphQL Injection](#graphql-injection)
-8. [CSV/Formula Injection](#csvformula-injection)
-9. [Regex Injection (ReDoS)](#regex-injection-redos)
-10. [ORM/HQL Injection](#ormhql-injection)
-11. [YAML/Config Injection](#yamlconfig-injection)
-12. [Shellshock Injection](#shellshock-injection)
-13. [Test Result Types](#test-result-types)
+4. [XQuery Injection](#xquery-injection)
+5. [CRLF / HTTP Header Injection](#crlf--http-header-injection)
+6. [Email Header Injection](#email-header-injection)
+7. [Expression Language Injection](#expression-language-injection)
+8. [JSON/JavaScript Eval Injection](#jsonjavascript-eval-injection)
+9. [GraphQL Injection](#graphql-injection)
+10. [CSV/Formula Injection](#csvformula-injection)
+11. [Regex Injection (ReDoS)](#regex-injection-redos)
+12. [ORM/HQL Injection](#ormhql-injection)
+13. [YAML/Config Injection](#yamlconfig-injection)
+14. [Shellshock Injection](#shellshock-injection)
+15. [Test Result Types](#test-result-types)
 
 ---
 
@@ -191,9 +193,45 @@ def get_user(username):
 
 ---
 
+## XQuery Injection
+
+### Example 6: Boolean-Based XQuery Injection
+
+**Scenario:** XQuery expression built using user input (e.g., BaseX, eXist-db, MarkLogic).
+
+**Vulnerability:**
+```python
+# VULNERABLE (pseudo-code)
+def find_user(name: str) -> str:
+    xquery = f"for $u in doc('users.xml')//user where $u/name = '{name}' return $u"
+    return xquery_engine.execute(xquery)
+```
+
+**Test:**
+1. Baseline: `GET /user?name=john` → 1 result
+2. Payload: `GET /user?name=' or '1'='1` → All users
+
+**Evidence:**
+```json
+{
+  "status": "VALIDATED",
+  "injection_type": "xquery_injection",
+  "cwe": "CWE-652",
+  "baseline": {"content_length": 210},
+  "test": {
+    "payload": "' or '1'='1",
+    "content_length": 6420
+  },
+  "evidence": "XQuery injection: boolean bypass returned all records",
+  "payload_used": "' or '1'='1"
+}
+```
+
+---
+
 ## CRLF / HTTP Header Injection
 
-### Example 6: Response Header Injection
+### Example 7: Response Header Injection
 
 **Scenario:** Redirect URL reflected in response headers.
 
@@ -232,7 +270,7 @@ def redirect():
 
 ---
 
-### Example 7: Set-Cookie Injection
+### Example 8: Set-Cookie Injection
 
 **Scenario:** Cookie injection via CRLF.
 
@@ -261,7 +299,7 @@ def redirect():
 
 ## Email Header Injection
 
-### Example 8: BCC Injection
+### Example 9: BCC Injection
 
 **Scenario:** Contact form with email header injection.
 
@@ -296,7 +334,7 @@ def send_contact_email(to_email, message):
 
 ## Expression Language Injection
 
-### Example 9: Spring EL Injection
+### Example 10: Spring EL Injection
 
 **Scenario:** Spring application with EL in user input.
 
@@ -331,7 +369,7 @@ public String page(@RequestParam String input, Model model) {
 
 ---
 
-### Example 10: OGNL Injection (Struts)
+### Example 11: OGNL Injection (Struts)
 
 **Scenario:** Apache Struts with OGNL evaluation.
 
@@ -356,9 +394,46 @@ public String page(@RequestParam String input, Model model) {
 
 ---
 
+## JSON/JavaScript Eval Injection
+
+### Example 12: Node.js eval() Injection
+
+**Scenario:** Backend evaluates a user-controlled expression.
+
+**Vulnerability:**
+```javascript
+// VULNERABLE
+app.get('/calc', (req, res) => {
+  const expr = req.query.expr;
+  const result = eval(expr);
+  res.json({ result });
+});
+```
+
+**Test:**
+1. Payload: `GET /calc?expr=7*7`
+2. Detection: Response contains `{"result":49}` (computed, not echoed)
+
+**Evidence:**
+```json
+{
+  "status": "VALIDATED",
+  "injection_type": "js_eval_injection",
+  "cwe": "CWE-95",
+  "test": {
+    "url": "http://target.com/calc?expr=7*7",
+    "response_snippet": "{\"result\":49}"
+  },
+  "evidence": "JavaScript eval injection: 7*7 evaluated server-side to 49",
+  "payload_used": "7*7"
+}
+```
+
+---
+
 ## GraphQL Injection
 
-### Example 11: GraphQL Introspection
+### Example 13: GraphQL Introspection
 
 **Scenario:** GraphQL API with introspection enabled.
 
@@ -395,7 +470,7 @@ POST /graphql
 
 ---
 
-### Example 12: GraphQL Query Injection
+### Example 14: GraphQL Query Injection
 
 **Scenario:** User input in GraphQL query without sanitization.
 
@@ -428,7 +503,7 @@ query {
 
 ## CSV/Formula Injection
 
-### Example 13: Formula in Exported CSV
+### Example 15: Formula in Exported CSV
 
 **Scenario:** User input exported to CSV without sanitization.
 
@@ -467,7 +542,7 @@ def export_csv():
 
 ## Regex Injection (ReDoS)
 
-### Example 14: Catastrophic Backtracking
+### Example 16: Catastrophic Backtracking
 
 **Scenario:** User-controlled regex pattern.
 
@@ -511,7 +586,7 @@ def search():
 
 ## ORM/HQL Injection
 
-### Example 15: Hibernate HQL Injection
+### Example 17: Hibernate HQL Injection
 
 **Scenario:** Concatenated HQL query.
 
@@ -546,7 +621,7 @@ Query query = session.createQuery(hql);
 
 ## YAML/Config Injection
 
-### Example 16: YAML Anchor Abuse
+### Example 18: YAML Anchor Abuse
 
 **Scenario:** User YAML input processed by application.
 
@@ -575,7 +650,7 @@ user_role: *admin_anchor
 
 ## Shellshock Injection
 
-### Example 17: CGI Shellshock
+### Example 19: CGI Shellshock
 
 **Scenario:** CGI script vulnerable to Shellshock (CVE-2014-6271).
 
@@ -661,9 +736,16 @@ User-Agent: () { :; }; echo; /bin/cat /etc/passwd
 | CWE-652 | XQuery Injection | Yes |
 | CWE-93 | CRLF Injection | Yes |
 | CWE-113 | HTTP Response Splitting | Yes |
+| CWE-644 | HTTP Header Injection (Scripting Syntax) | Yes |
 | CWE-917 | EL Injection | Yes |
 | CWE-1333 | ReDoS | Yes |
 | CWE-1236 | CSV/Formula Injection | Yes |
 | CWE-94 | Code Injection | Yes |
 | CWE-95 | Eval Injection | Yes |
+| CWE-89 | SQL Injection (via ORM/HQL/GraphQL sinks) | Yes |
+| CWE-943 | Improper Neutralization in Data Query Logic | Yes |
+| CWE-200 | Exposure of Sensitive Information | Yes |
+| CWE-502 | Deserialization of Untrusted Data (YAML) | Partial |
+| CWE-78 | OS Command Injection (Shellshock) | Yes |
+| CWE-400 | Uncontrolled Resource Consumption (DoS) | Partial |
 | CWE-74 | Injection (parent) | Yes |

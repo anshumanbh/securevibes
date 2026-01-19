@@ -1,6 +1,6 @@
 ---
 name: injection-testing
-description: Validate miscellaneous injection vulnerabilities NOT covered by dedicated skills. Covers SSTI, LDAP, XPath, XQuery, CRLF/HTTP Header, Email Header, GraphQL, Expression Language (EL/OGNL), ORM/HQL, CSV/Formula, Regex (ReDoS), YAML config, and Shellshock-style injection. Use when testing CWE-1336 (SSTI), CWE-90 (LDAP), CWE-643 (XPath), CWE-652 (XQuery), CWE-93/CWE-113 (CRLF/Header), CWE-917 (EL), CWE-1333 (ReDoS), CWE-1236 (CSV/Formula), and related injection classes.
+description: Validate miscellaneous injection vulnerabilities NOT covered by dedicated skills. Covers SSTI, LDAP, XPath, XQuery, CRLF/HTTP Header, Email Header, GraphQL, Expression Language (EL/OGNL), JSON/JavaScript eval injection, ORM/HQL, CSV/Formula, Regex (ReDoS), YAML config, and Shellshock-style injection. Use when testing CWE-1336 (SSTI), CWE-90 (LDAP), CWE-643 (XPath), CWE-652 (XQuery), CWE-93/CWE-113 (CRLF/Header), CWE-917 (EL), CWE-94/CWE-95 (Code/Eval injection), CWE-1333 (ReDoS), CWE-1236 (CSV/Formula), and related injection classes.
 allowed-tools: Read, Write, Bash
 ---
 
@@ -11,7 +11,7 @@ Validate miscellaneous injection vulnerabilities by sending crafted payloads to 
 - **Template evaluation** (SSTI)
 - **Query manipulation** (LDAP, XPath, XQuery, GraphQL, ORM/HQL)
 - **Header manipulation** (CRLF, HTTP Header, Email Header)
-- **Expression evaluation** (EL, OGNL, Spring EL)
+- **Expression/code evaluation** (EL, OGNL, Spring EL, JavaScript eval)
 - **Resource exhaustion** (ReDoS)
 - **Formula execution** (CSV/Spreadsheet injection)
 - **Config manipulation** (YAML, Environment variables)
@@ -144,7 +144,25 @@ Inject EL expressions in Java-based frameworks (Spring, JSP, OGNL).
 | JSP EL | `${7*7}`, `#{7*7}` | Standard Java EE |
 | MVEL | `${7*7}` | Used in some workflow engines |
 
-### 8. GraphQL Injection (CWE-74, CWE-89 variant)
+### 8. JSON/JavaScript Eval Injection (CWE-94, CWE-95)
+Inject JavaScript expressions into server-side evaluation contexts (Node.js or embedded JS engines) where user input is passed to `eval()`, `Function()`, `vm.runInNewContext`, or similar.
+
+**Detection Methods:**
+- **Math evaluation:** `7*7` returns `49` (computed, not echoed)
+- **Built-in evaluation:** `Math.imul(7,7)` returns `49`
+- **Structure evaluation:** `['a','b'].length` returns `2`
+
+**Test Payloads (detection-only):**
+```text
+7*7
+Math.imul(7,7)
+['a','b'].length
+JSON.stringify({a:1})
+```
+
+**Safety:** Treat any server-side JavaScript evaluation as high-risk; stop at detection-only payloads.
+
+### 9. GraphQL Injection (CWE-74, CWE-89 variant)
 Manipulate GraphQL queries for data exfiltration or DoS.
 
 **Detection Methods:**
@@ -161,7 +179,7 @@ query{user(id:"1' OR '1'='1"){name}}
 {user(id:1){friends{friends{friends{name}}}}}
 ```
 
-### 9. ORM/HQL Injection (CWE-89 variant, CWE-943)
+### 10. ORM/HQL Injection (CWE-89 variant, CWE-943)
 Inject into ORM queries beyond basic SQL (Hibernate HQL, JPA JPQL, Django ORM).
 
 **Detection Methods:**
@@ -176,7 +194,7 @@ Inject into ORM queries beyond basic SQL (Hibernate HQL, JPA JPQL, Django ORM).
 admin' AND (SELECT COUNT(*) FROM User)>0 AND '1'='1
 ```
 
-### 10. CSV/Formula Injection (CWE-1236)
+### 11. CSV/Formula Injection (CWE-1236)
 Inject spreadsheet formulas into exported CSV/Excel files.
 
 **Detection Methods:**
@@ -196,7 +214,7 @@ Inject spreadsheet formulas into exported CSV/Excel files.
 
 **Note:** Test only in isolated environments; formulas can execute on user machines.
 
-### 11. Regex Injection / ReDoS (CWE-1333)
+### 12. Regex Injection / ReDoS (CWE-1333)
 Inject patterns causing catastrophic backtracking in regex engines.
 
 **Detection Methods:**
@@ -214,7 +232,7 @@ Inject patterns causing catastrophic backtracking in regex engines.
 
 **Target input for (a+)+$:** `aaaaaaaaaaaaaaaaaaaaaaaa!`
 
-### 12. YAML/Config Injection (CWE-502 related)
+### 13. YAML/Config Injection (CWE-502 related)
 Inject YAML constructs for config manipulation (non-deserialization scenarios).
 
 **Detection Methods:**
@@ -231,7 +249,7 @@ admin: true
 override: value
 ```
 
-### 13. Shellshock/Environment Variable Injection (CWE-78 variant)
+### 14. Shellshock/Environment Variable Injection (CWE-78 variant)
 Inject into environment variables processed by bash.
 
 **Detection Methods:**
@@ -373,15 +391,25 @@ SSTI test incomplete on /template - all payloads returned literal text. Evidence
 - **CWE-917:** Improper Neutralization of Special Elements used in an Expression Language Statement (EL Injection)
 - **CWE-1333:** Inefficient Regular Expression Complexity (ReDoS)
 - **CWE-1236:** Improper Neutralization of Formula Elements in a CSV File (CSV/Formula Injection)
+- **CWE-94:** Improper Control of Generation of Code (Code Injection)
+- **CWE-95:** Improper Neutralization of Directives in Dynamically Evaluated Code (Eval Injection)
+
+**Additional CWEs commonly implicated by covered techniques:**
+- **CWE-200:** Exposure of Sensitive Information to an Unauthorized Actor (GraphQL introspection / verbose errors)
+- **CWE-400:** Uncontrolled Resource Consumption (GraphQL depth/batching and ReDoS impact)
+- **CWE-502:** Deserialization of Untrusted Data (unsafe YAML object deserialization)
+- **CWE-78:** OS Command Injection (Shellshock-style environment variable injection)
+- **CWE-89:** SQL Injection (ORM/HQL and GraphQL arguments reaching SQL sinks)
+- **CWE-564:** SQL Injection: Hibernate (HQL/JPQL variants)
+- **CWE-943:** Improper Neutralization of Special Elements in Data Query Logic (query-language injection class)
 
 **Related/Parent CWEs:**
 - **CWE-74:** Improper Neutralization of Special Elements in Output Used by a Downstream Component (Injection - parent)
-- **CWE-94:** Improper Control of Generation of Code (Code Injection)
-- **CWE-95:** Improper Neutralization of Directives in Dynamically Evaluated Code (Eval Injection)
 - **CWE-96:** Improper Neutralization of Directives in Statically Saved Code (Static Code Injection)
 - **CWE-97:** Improper Neutralization of Server-Side Includes (SSI Injection)
 - **CWE-99:** Improper Control of Resource Identifiers (Resource Injection)
 - **CWE-116:** Improper Encoding or Escaping of Output
+- **CWE-20:** Improper Input Validation
 
 **Related Attack Patterns:**
 - **CAPEC-250:** XML Injection

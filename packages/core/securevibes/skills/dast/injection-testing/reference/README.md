@@ -23,11 +23,17 @@ from injection_payloads import (
     ssti_payloads,
     ldap_payloads,
     xpath_payloads,
+    xquery_payloads,
     crlf_payloads,
+    email_header_payloads,
     el_payloads,
+    javascript_eval_payloads,
     graphql_payloads,
     csv_formula_payloads,
-    redos_payloads
+    redos_payloads,
+    orm_hql_payloads,
+    yaml_config_payloads,
+    shellshock_payloads,
 )
 
 # Get SSTI detection payloads
@@ -61,6 +67,14 @@ print(result.to_dict())
 # Test CRLF injection
 result = validator.validate_crlf("/redirect", "url")
 print(result.to_dict())
+
+# Test XQuery injection
+result = validator.validate_xquery("/user", "name")
+print(result.to_dict())
+
+# Test JavaScript eval injection
+result = validator.validate_js_eval("/calc", "expr")
+print(result.to_dict())
 ```
 
 ## Injection Types Covered
@@ -70,11 +84,17 @@ print(result.to_dict())
 | SSTI | `ssti_payloads()` | Math evaluation (49 from 7*7) |
 | LDAP | `ldap_payloads()` | Content length change with wildcard |
 | XPath | `xpath_payloads()` | Boolean-based / error-based |
+| XQuery | `xquery_payloads()` | Boolean-based / error-based |
 | CRLF | `crlf_payloads()` | Header injection detection |
+| Email Header | `email_header_payloads()` | BCC/CC header injection |
 | EL/OGNL | `el_payloads()` | Math evaluation |
+| JS Eval | `javascript_eval_payloads()` | Math evaluation |
 | GraphQL | `graphql_payloads()` | Introspection / schema exposure |
 | CSV Formula | `csv_formula_payloads()` | Formula in export |
 | ReDoS | `redos_payloads()` | Response time increase |
+| ORM/HQL | `orm_hql_payloads()` | Boolean-based / syntax errors |
+| YAML/Config | `yaml_config_payloads()` | Anchor/merge key abuse |
+| Shellshock | `shellshock_payloads()` | Header-based env var injection |
 
 ## CWE Coverage
 
@@ -84,9 +104,17 @@ print(result.to_dict())
 - **CWE-652:** XQuery Injection
 - **CWE-93:** CRLF Injection
 - **CWE-113:** HTTP Response Splitting
+- **CWE-644:** HTTP Header Injection (Scripting Syntax)
 - **CWE-917:** Expression Language Injection
 - **CWE-1333:** ReDoS
 - **CWE-1236:** CSV/Formula Injection
+- **CWE-94:** Code Injection
+- **CWE-95:** Eval Injection
+- **CWE-200:** Exposure of Sensitive Information (GraphQL introspection)
+- **CWE-502:** Deserialization of Untrusted Data (YAML)
+- **CWE-78:** OS Command Injection (Shellshock)
+- **CWE-89:** SQL Injection (ORM/HQL/GraphQL sinks)
+- **CWE-943:** Improper Neutralization in Data Query Logic
 
 ## Safety Notes
 
