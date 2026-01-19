@@ -158,7 +158,8 @@ def create_pre_tool_hook(tracker, console: Console, debug: bool, detected_langua
                         p.name == "DAST_VALIDATION.json" and p.parent.name == ".securevibes"
                     )
                     # Allow ephemeral temp writes under /tmp for helper code/data
-                    allowed_tmp = str(p).startswith("/tmp/")
+                    normalized_path = file_path.replace("\\", "/")
+                    allowed_tmp = normalized_path.startswith("/tmp/")
                     allowed = allowed_artifact or allowed_tmp
                 except Exception:
                     allowed = False
