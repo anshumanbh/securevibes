@@ -6,9 +6,8 @@ This directory contains reference implementations for injection vulnerability te
 
 ### injection_payloads.py
 
-Payload generation utilities organized by injection type:
+Payload generation utilities organized by **non-SQL** injection type:
 
-- `get_sqli_payloads(detection, db_type)` - SQL injection payloads (time/error/boolean)
 - `get_cmdi_payloads(os_type, detection)` - OS command injection payloads
 - `get_xss_payloads(context)` - XSS payloads for different contexts
 - `get_nosql_payloads(db_type)` - NoSQL injection payloads (MongoDB operators)
@@ -19,23 +18,22 @@ Payload generation utilities organized by injection type:
 
 **Usage:**
 ```python
-from injection_payloads import get_sqli_payloads
+from injection_payloads import get_cmdi_payloads
 
-# Get MySQL time-based payloads
-payloads = get_sqli_payloads(detection="time", db_type="mysql")
+# Get Linux time-based command injection payloads
+payloads = get_cmdi_payloads(os_type="linux", detection="time")
 for p in payloads:
     print(f"Payload: {p['payload']}, Expected delay: {p['delay']}s")
 ```
 
 ### validate_injection.py
 
-Complete injection testing script with:
+Complete **non-SQL** injection testing script with:
 
-- Time-based SQL injection detection
-- Error-based SQL injection detection
 - Reflected XSS detection
 - OS command injection detection
 - SSTI detection
+- NoSQL/LDAP/XPath/EL cases (baseline hooks)
 - Response truncation and hashing
 - Sensitive data redaction
 
@@ -45,7 +43,7 @@ python validate_injection.py \
     --url "http://target.com/api/search" \
     --param "q" \
     --value "test" \
-    --types "sqli_time,sqli_error,xss" \
+    --types "cmdi,xss,ssti" \
     --output results.json
 ```
 
@@ -98,11 +96,7 @@ def get_custom_payloads():
 Adjust detection patterns for your application:
 
 ```python
-# Add application-specific error patterns
-SQL_ERROR_PATTERNS.extend([
-    r"custom_error_pattern",
-    r"your_framework_error",
-])
+Update regex patterns in `validate_injection.py` to match your stack (e.g., framework-specific template or command errors).
 ```
 
 ## Safety Reminders

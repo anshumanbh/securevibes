@@ -1,46 +1,20 @@
 ---
 name: injection-testing
-description: Validate injection vulnerabilities including SQL, NoSQL, OS Command, LDAP, XPath, SSTI, and XSS. Test by sending crafted payloads to user-controlled input fields and observing application behavior. Use when testing CWE-89 (SQL Injection), CWE-78 (OS Command Injection), CWE-79 (XSS), CWE-90 (LDAP Injection), CWE-917 (Expression Language Injection), CWE-94 (Code Injection), CWE-643 (XPath Injection), or related injection findings.
+description: Validate non-SQL injection vulnerabilities including OS Command, LDAP, XPath, SSTI, XSS, NoSQL, and related classes. Test by sending crafted payloads to user-controlled inputs and observing application behavior. Use when testing CWE-78 (OS Command Injection), CWE-79 (XSS), CWE-90 (LDAP Injection), CWE-917 (Expression Language Injection), CWE-94 (Code Injection), CWE-643 (XPath Injection), CWE-652 (XQuery Injection), CWE-93 (CRLF Injection), CWE-77 (Command Injection), CWE-74 (Injection - generic), and CWE-943 (NoSQL Injection).
 allowed-tools: Read, Write, Bash
 ---
 
 # Injection Testing Skill
 
 ## Purpose
-Validate injection vulnerabilities by sending crafted payloads to user-controlled inputs and observing:
-- **Response time differences** (time-based detection)
+Validate non-SQL injection vulnerabilities by sending crafted payloads to user-controlled inputs and observing:
+- **Response time differences** (time-based detection for command injection)
 - **Error messages** (error-based detection)
 - **Content changes** (boolean-based detection)
 - **Payload reflection** (XSS detection)
 
 ## Vulnerability Types Covered
-
-### 1. SQL Injection (CWE-89)
-Inject SQL syntax into queries via user input.
-
-**Detection Methods:**
-- **Time-based:** `' OR SLEEP(5)--` causes 5+ second delay (MySQL/PostgreSQL/MSSQL)
-- **Error-based:** `'` causes SQL syntax error in response
-- **Boolean-based:** `' OR '1'='1` vs `' OR '1'='2` different responses (recommended for SQLite)
-
-**Database-Specific Notes:**
-
-| Database | Time-Based | Error-Based | Boolean-Based |
-|----------|------------|-------------|---------------|
-| MySQL | `SLEEP(5)` | ✓ | ✓ |
-| PostgreSQL | `pg_sleep(5)` | ✓ | ✓ |
-| MSSQL | `WAITFOR DELAY` | ✓ | ✓ |
-| **SQLite** | ❌ No SLEEP | ✓ `sqlite3.OperationalError` | ✓ **Recommended** |
-
-**SQLite Detection:** SQLite has no `SLEEP()` function. Use:
-- **Error-based:** Look for `sqlite3.OperationalError`, `near "...": syntax error`
-- **Boolean-based:** Compare `' OR '1'='1` (returns data) vs `' OR '1'='2` (no data)
-
-**Test Pattern:** Send payload in parameter, observe response time/content/errors
-**Expected if secure:** Input escaped/parameterized, no behavior change
-**Actual if vulnerable:** Delay, SQL error, or content change
-
-### 2. OS Command Injection (CWE-78)
+### 1. OS Command Injection (CWE-78)
 Execute system commands via user input.
 
 **Detection Methods:**
@@ -52,7 +26,7 @@ Execute system commands via user input.
 **Expected if secure:** Input sanitized, command not executed
 **Actual if vulnerable:** Delay, marker in output, or system errors
 
-### 3. NoSQL Injection (CWE-943)
+### 2. NoSQL Injection (CWE-943)
 Manipulate NoSQL queries via operators or JSON payloads.
 
 **Detection Methods:**
@@ -63,7 +37,7 @@ Manipulate NoSQL queries via operators or JSON payloads.
 **Expected if secure:** Operators treated as literal strings
 **Actual if vulnerable:** Query behavior changes, auth bypass
 
-### 4. Cross-Site Scripting - XSS (CWE-79)
+### 3. Cross-Site Scripting - XSS (CWE-79)
 Inject client-side scripts that execute in browser context.
 
 **Detection Methods:**
@@ -75,7 +49,7 @@ Inject client-side scripts that execute in browser context.
 **Expected if secure:** Input HTML-encoded (`&lt;script&gt;`)
 **Actual if vulnerable:** Raw `<script>` tags in response
 
-### 5. LDAP Injection (CWE-90)
+### 4. LDAP Injection (CWE-90)
 Manipulate LDAP queries via special characters.
 
 **Detection Methods:**
@@ -86,7 +60,7 @@ Manipulate LDAP queries via special characters.
 **Expected if secure:** Characters escaped, normal results
 **Actual if vulnerable:** All records returned or filter bypassed
 
-### 6. Server-Side Template Injection - SSTI (CWE-1336)
+### 5. Server-Side Template Injection - SSTI (CWE-1336)
 Inject template expressions that execute on server.
 
 **Detection Methods:**
@@ -98,14 +72,14 @@ Inject template expressions that execute on server.
 - Twig: `{{7*7}}`, `{{_self.env}}`
 - Freemarker: `${7*7}`, `<#assign x=7*7>${x}`
 
-### 7. Expression Language Injection (CWE-917)
+### 6. Expression Language Injection (CWE-917)
 Inject EL expressions in Java-based frameworks.
 
 **Detection Methods:**
 - **Math evaluation:** `${7*7}` or `#{7*7}` returns `49`
 - **Object access:** `${applicationScope}` leaks data
 
-### 8. XPath Injection (CWE-643)
+### 7. XPath Injection (CWE-643)
 Manipulate XPath queries in XML-based applications.
 
 **Detection Methods:**
@@ -136,13 +110,14 @@ Map vulnerabilities to payload categories:
 
 | CWE | Vulnerability | Primary Detection | Payload Category |
 |-----|---------------|-------------------|------------------|
-| CWE-89 | SQL Injection | Time/Error/Boolean | SQLi payloads |
 | CWE-78 | OS Command Injection | Time/Output | Command payloads |
 | CWE-79 | XSS | Reflection | Script payloads |
 | CWE-90 | LDAP Injection | Boolean | LDAP payloads |
 | CWE-917 | EL Injection | Math evaluation | EL payloads |
 | CWE-643 | XPath Injection | Boolean/Error | XPath payloads |
 | CWE-94 | Code Injection | Execution | Code payloads |
+| CWE-652 | XQuery Injection | Boolean/Error | XQuery payloads |
+| CWE-943 | NoSQL Injection | Operator/Boolean | NoSQL payloads |
 
 ### Phase 3: Establish Baseline
 
@@ -168,45 +143,6 @@ baseline_status = baseline_response.status_code
 2. Send injection payload → Record time, content, status
 3. Compare results → Detect anomalies
 4. Classify based on detection type
-```
-
-#### SQL Injection Test
-
-```python
-# Time-based SQLi
-payload = "123' OR SLEEP(5)--"
-test_start = time.time()
-test_response = requests.get(f"{target}/api/users?id={payload}")
-test_time = time.time() - test_start
-
-if test_time > baseline_time + 4.5:  # 5 second delay detected
-    classification = "VALIDATED"
-    evidence = f"Time-based SQLi confirmed: {test_time:.2f}s delay"
-```
-
-```python
-# Error-based SQLi
-payload = "123'"
-test_response = requests.get(f"{target}/api/users?id={payload}")
-
-sql_errors = ["sql syntax", "mysql", "postgresql", "sqlite", "oracle", 
-              "unclosed quotation", "quoted string not properly terminated"]
-if any(err in test_response.text.lower() for err in sql_errors):
-    classification = "VALIDATED"
-    evidence = "Error-based SQLi: SQL error message in response"
-```
-
-```python
-# Boolean-based SQLi
-true_payload = "123' OR '1'='1"
-false_payload = "123' OR '1'='2"
-
-true_response = requests.get(f"{target}/api/users?id={true_payload}")
-false_response = requests.get(f"{target}/api/users?id={false_payload}")
-
-if len(true_response.text) != len(false_response.text):
-    classification = "VALIDATED"
-    evidence = f"Boolean-based SQLi: Content length differs ({len(true_response.text)} vs {len(false_response.text)})"
 ```
 
 #### Command Injection Test
@@ -331,24 +267,24 @@ Capture minimal structured evidence with redaction:
 ```json
 {
   "status": "VALIDATED",
-  "injection_type": "sql_injection_time_based",
-  "cwe": "CWE-89",
+  "injection_type": "os_command_injection",
+  "cwe": "CWE-78",
   "baseline": {
-    "url": "http://target.com/api/users?id=123",
+    "url": "http://target.com/api/ping?host=127.0.0.1",
     "method": "GET",
     "status": 200,
-    "response_time_seconds": 0.15,
+    "response_time_seconds": 0.4,
     "response_hash": "sha256:abc123..."
   },
   "test": {
-    "url": "http://target.com/api/users?id=123' OR SLEEP(5)--",
+    "url": "http://target.com/api/ping?host=127.0.0.1; sleep 5",
     "method": "GET",
     "status": 200,
-    "response_time_seconds": 5.23,
+    "response_time_seconds": 5.6,
     "response_hash": "sha256:def456..."
   },
-  "evidence": "Time-based SQL injection: 5.08s delay with SLEEP(5) payload",
-  "payload_used": "123' OR SLEEP(5)--"
+  "evidence": "Command injection: sleep payload caused ~5s delay",
+  "payload_used": "127.0.0.1; sleep 5"
 }
 ```
 
@@ -368,10 +304,9 @@ Same as authorization testing - redact passwords, tokens, PII from response snip
 ## Payload Safety Rules
 
 **Safe Payloads (Detection Only):**
-- Time delays: `SLEEP()`, `WAITFOR DELAY`, `pg_sleep()`
-- Math operations: `7*7`, string concatenation
+- Time delays: `sleep 5`, `ping -c 5 127.0.0.1`
+- Math operations or template evaluation: `7*7`, string concatenation
 - Echo markers: `echo INJECTION_TEST_MARKER`
-- Ping localhost: `ping -c 5 127.0.0.1`
 
 **NEVER Use Destructive Payloads:**
 - ❌ `DROP TABLE`, `DELETE FROM`, `TRUNCATE`
@@ -401,11 +336,6 @@ Injection test incomplete on [endpoint] - [reason]. Evidence: [file_path]
 
 **Examples:**
 
-**SQL Injection (time-based):**
-```
-SQL injection on /api/users - SLEEP(5) payload caused 5.2s delay. Database query manipulation possible.
-```
-
 **Command Injection:**
 ```
 OS command injection on /api/ping - sleep payload caused 5.1s delay. Remote code execution possible.
@@ -418,8 +348,7 @@ Reflected XSS on /search - <script> tag reflected unencoded. Session hijacking r
 
 ## CWE Mapping
 
-This skill validates injection vulnerabilities from OWASP A03:2021:
-- **CWE-89:** SQL Injection
+This skill validates non-SQL injection vulnerabilities:
 - **CWE-78:** OS Command Injection
 - **CWE-79:** Cross-site Scripting (XSS)
 - **CWE-90:** LDAP Injection
@@ -431,6 +360,7 @@ This skill validates injection vulnerabilities from OWASP A03:2021:
 - **CWE-652:** XQuery Injection
 - **CWE-77:** Command Injection (generic)
 - **CWE-74:** Injection (parent category)
+- **CWE-943:** NoSQL Injection
 
 See `examples.md` for comprehensive CWE list.
 
@@ -457,11 +387,11 @@ See `examples.md` for comprehensive CWE list.
 ## Examples
 
 For comprehensive injection-specific examples with payloads and evidence, see `examples.md`:
-- **SQL Injection:** Time-based, error-based, boolean-based, UNION-based
 - **Command Injection:** Linux/Windows variants, different separators
 - **XSS:** Reflected, DOM, stored, attribute context
 - **NoSQL Injection:** MongoDB operator injection
 - **SSTI:** Jinja2, Twig, Freemarker detection
+- **LDAP/XPath/EL:** Filter manipulation and boolean/error cases
 - **Test Result Types:** FALSE_POSITIVE, UNVALIDATED, PARTIAL scenarios
 
 ## Reference Implementations
@@ -477,7 +407,8 @@ These are reference implementations to adapt — not drop-in scripts. Each appli
 
 - [OWASP A05:2025-Injection](https://owasp.org/Top10/2025/A05_2025-Injection/) (latest)
 - [OWASP A03:2021-Injection](https://owasp.org/Top10/2021/A03_2021-Injection/)
-- [OWASP SQL Injection Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html)
 - [OWASP XSS Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html)
-- [OWASP LLM Top 10 - Prompt Injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/) (LLM-specific)
+- [OWASP Command Injection Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Command_Injection_Prevention_Cheat_Sheet.html)
+- [OWASP SSTI Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Template_Injection_Prevention_Cheat_Sheet.html)
+- [OWASP LDAP Injection Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/LDAP_Injection_Prevention_Cheat_Sheet.html)
 - [Agent Skills Guide](../../../../../../docs/references/AGENT_SKILLS_GUIDE.md)

