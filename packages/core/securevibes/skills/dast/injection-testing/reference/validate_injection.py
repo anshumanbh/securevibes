@@ -1,358 +1,536 @@
-#!/usr/bin/env python3
 """
-Reference example: Non-SQL injection validation pattern.
+Miscellaneous injection validation script.
 
-These helpers illustrate payloads, detection, and classification for command
-injection, reflected XSS, and SSTI. Adapt to the target application's
-endpoints, parameters, and context before use.
+This module covers injection types NOT handled by dedicated skills:
+- SQL Injection -> sql-injection-testing
+- NoSQL Injection -> nosql-injection-testing
+- XSS -> xss-testing
+- XXE -> xxe-testing
+- Command Injection -> command-injection-testing
+
+CWE Coverage: CWE-1336, CWE-90, CWE-643, CWE-652, CWE-93, CWE-113,
+              CWE-917, CWE-1333, CWE-1236
 """
-import argparse
+
 import hashlib
 import json
 import re
 import time
-from pathlib import Path
-from typing import Any, Dict, List, Optional
-from urllib.parse import quote
+from dataclasses import dataclass, field
+from typing import Any, Optional
+from urllib.parse import quote, urljoin
 
-import requests
-
-MAX_RESPONSE_SIZE = 8 * 1024
-
-CMD_ERROR_PATTERNS = [
-    r"sh: .+: not found",
-    r"command not found",
-    r"is not recognized as an internal or external command",
-    r"/bin/sh:",
-    r"syntax error near unexpected token",
-]
+# Type hints for requests (not imported to avoid dependency)
 
 
-def redact_sensitive_fields(data: Any) -> Any:
-    sensitive_keys = [
-        "password",
-        "passwd",
-        "secret",
-        "token",
-        "api_key",
-        "access_token",
-        "refresh_token",
-        "ssn",
-        "credit_card",
-        "cvv",
-        "private_key",
-        "authorization",
-    ]
+@dataclass
+class InjectionTestResult:
+    """Result of an injection test."""
 
-    if isinstance(data, dict):
-        redacted = {}
-        for key, value in data.items():
-            if any(s in key.lower() for s in sensitive_keys):
-                redacted[key] = "[REDACTED]"
-            elif isinstance(value, (dict, list)):
-                redacted[key] = redact_sensitive_fields(value)
-            else:
-                redacted[key] = value
-        return redacted
-    if isinstance(data, list):
-        return [redact_sensitive_fields(item) for item in data]
-    return data
+    status: str  # VALIDATED, FALSE_POSITIVE, PARTIAL, UNVALIDATED
+    injection_type: str
+    cwe: str
+    payload_used: str
+    evidence: str
+    test_details: dict = field(default_factory=dict)
 
-
-def truncate_and_hash(response_text: str) -> tuple:
-    full_hash = hashlib.sha256(response_text.encode()).hexdigest()
-    truncated = response_text[:MAX_RESPONSE_SIZE]
-    metadata = {
-        "truncated": len(response_text) > MAX_RESPONSE_SIZE,
-        "original_size_bytes": len(response_text),
-    }
-    return truncated, f"sha256:{full_hash}", metadata
-
-
-def has_cmd_errors(content: str) -> bool:
-    for pattern in CMD_ERROR_PATTERNS:
-        if re.search(pattern, content, re.IGNORECASE):
-            return True
-    return False
-
-
-def test_xss(
-    url: str,
-    param: str,
-    headers: Optional[Dict] = None,
-    timeout: int = 30,
-) -> Dict[str, Any]:
-    """
-    Test for reflected XSS.
-
-    Returns:
-        Test result dictionary with status and evidence
-    """
-    payloads = [
-        "<script>alert(1)</script>",
-        "<img src=x onerror=alert(1)>",
-        "<svg onload=alert(1)>",
-        '" onmouseover="alert(1)',
-    ]
-
-    for payload in payloads:
-        try:
-            test_url = f"{url}?{param}={quote(payload)}"
-            test_resp = requests.get(test_url, headers=headers, timeout=timeout)
-        except requests.RequestException:
-            continue
-
-        if payload in test_resp.text:
-            test_snippet, test_hash, test_meta = truncate_and_hash(test_resp.text)
-
-            return {
-                "status": "VALIDATED",
-                "injection_type": "xss_reflected",
-                "cwe": "CWE-79",
-                "test": {
-                    "url": test_url,
-                    "method": "GET",
-                    "status": test_resp.status_code,
-                    "response_snippet": test_snippet[:500],
-                    "response_hash": test_hash,
-                    **test_meta,
-                },
-                "evidence": "Reflected XSS: payload in response unencoded",
-                "payload_used": payload,
-            }
-
-    return {
-        "status": "FALSE_POSITIVE",
-        "injection_type": "xss",
-        "evidence": "Payload properly encoded or not reflected",
-    }
-
-
-def test_command_injection(
-    url: str,
-    param: str,
-    original_value: str,
-    headers: Optional[Dict] = None,
-    timeout: int = 30,
-    delay_threshold: float = 4.5,
-) -> Dict[str, Any]:
-    payloads = [
-        f"{original_value}; sleep 5",
-        f"{original_value}| sleep 5",
-        f"{original_value}& sleep 5",
-        f"{original_value}`sleep 5`",
-        f"{original_value}$(sleep 5)",
-    ]
-
-    try:
-        baseline_start = time.time()
-        baseline_url = f"{url}?{param}={quote(original_value)}"
-        baseline_resp = requests.get(baseline_url, headers=headers, timeout=timeout)
-        baseline_time = time.time() - baseline_start
-    except requests.RequestException as e:
+    def to_dict(self) -> dict:
         return {
-            "status": "UNVALIDATED",
-            "reason": f"Baseline request failed: {str(e)}",
-            "evidence": None,
+            "status": self.status,
+            "injection_type": self.injection_type,
+            "cwe": self.cwe,
+            "payload_used": self.payload_used,
+            "evidence": self.evidence,
+            "test": self.test_details,
         }
 
-    baseline_snippet, baseline_hash, baseline_meta = truncate_and_hash(baseline_resp.text)
-    baseline = {
-        "url": baseline_url,
-        "method": "GET",
-        "status": baseline_resp.status_code,
-        "response_time_seconds": round(baseline_time, 3),
-        "response_hash": baseline_hash,
-        **baseline_meta,
-    }
 
-    for payload in payloads:
+class InjectionValidator:
+    """Validates miscellaneous injection vulnerabilities."""
+
+    def __init__(
+        self,
+        base_url: str,
+        timeout: int = 10,
+        verify_ssl: bool = True,
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self.verify_ssl = verify_ssl
+
+    def _make_request(
+        self,
+        method: str,
+        endpoint: str,
+        params: Optional[dict] = None,
+        data: Optional[dict] = None,
+        headers: Optional[dict] = None,
+    ) -> tuple[int, str, dict, float]:
+        """Make HTTP request. Implement with actual HTTP client."""
+        raise NotImplementedError("Implement with HTTP client library")
+
+    def _hash_response(self, content: str) -> str:
+        return f"sha256:{hashlib.sha256(content.encode()).hexdigest()[:16]}"
+
+    def _truncate_snippet(self, content: str, max_len: int = 500) -> str:
+        return content[:max_len] + "..." if len(content) > max_len else content
+
+    def validate_ssti(
+        self,
+        endpoint: str,
+        param: str,
+        method: str = "GET",
+    ) -> InjectionTestResult:
+        """
+        Validate Server-Side Template Injection.
+        CWE-1336.
+        """
+        url = urljoin(self.base_url, endpoint)
+
+        # Detection payloads by engine
+        payloads = [
+            ("{{7*7}}", "49", "jinja2/twig"),
+            ("${7*7}", "49", "freemarker/thymeleaf"),
+            ("#{7*7}", "49", "jsp_el"),
+            ("<%= 7*7 %>", "49", "erb"),
+            ("{7*7}", "49", "smarty"),
+            ("{{7*'7'}}", "7777777", "jinja2"),
+        ]
+
+        for payload, expected, engine in payloads:
+            try:
+                if method.upper() == "GET":
+                    params = {param: payload}
+                    status_code, response_body, _, _ = self._make_request(
+                        "GET", endpoint, params=params
+                    )
+                else:
+                    data = {param: payload}
+                    status_code, response_body, _, _ = self._make_request(
+                        "POST", endpoint, data=data
+                    )
+            except Exception:
+                continue
+
+            if expected in response_body and payload not in response_body:
+                return InjectionTestResult(
+                    status="VALIDATED",
+                    injection_type=f"ssti_{engine.split('/')[0]}",
+                    cwe="CWE-1336",
+                    payload_used=payload,
+                    evidence=f"SSTI ({engine}): {payload} evaluated to {expected}",
+                    test_details={
+                        "url": url,
+                        "param": param,
+                        "engine": engine,
+                        "response_snippet": self._truncate_snippet(response_body),
+                    },
+                )
+
+        return InjectionTestResult(
+            status="FALSE_POSITIVE",
+            injection_type="ssti",
+            cwe="CWE-1336",
+            payload_used="multiple",
+            evidence="No SSTI indicators - payloads rendered as literal text",
+            test_details={"url": url, "param": param},
+        )
+
+    def validate_ldap(
+        self,
+        endpoint: str,
+        param: str,
+        method: str = "GET",
+    ) -> InjectionTestResult:
+        """
+        Validate LDAP Injection.
+        CWE-90.
+        """
+        url = urljoin(self.base_url, endpoint)
+
+        # Get baseline with normal value
         try:
-            test_start = time.time()
-            test_url = f"{url}?{param}={quote(payload)}"
-            test_resp = requests.get(test_url, headers=headers, timeout=timeout + 10)
-            test_time = time.time() - test_start
-        except requests.Timeout:
-            test_time = timeout + 10
-            test_resp = None
-        except requests.RequestException:
-            continue
+            if method.upper() == "GET":
+                _, baseline_body, _, _ = self._make_request(
+                    "GET", endpoint, params={param: "test"}
+                )
+            else:
+                _, baseline_body, _, _ = self._make_request(
+                    "POST", endpoint, data={param: "test"}
+                )
+            baseline_len = len(baseline_body)
+        except Exception as e:
+            return InjectionTestResult(
+                status="UNVALIDATED",
+                injection_type="ldap_injection",
+                cwe="CWE-90",
+                payload_used="",
+                evidence=f"Baseline request failed: {str(e)}",
+                test_details={"url": url, "error": str(e)},
+            )
+
+        # Test with wildcard
+        try:
+            if method.upper() == "GET":
+                _, test_body, _, _ = self._make_request(
+                    "GET", endpoint, params={param: "*"}
+                )
+            else:
+                _, test_body, _, _ = self._make_request(
+                    "POST", endpoint, data={param: "*"}
+                )
+            test_len = len(test_body)
+        except Exception:
+            return InjectionTestResult(
+                status="UNVALIDATED",
+                injection_type="ldap_injection",
+                cwe="CWE-90",
+                payload_used="*",
+                evidence="Test request failed",
+                test_details={"url": url},
+            )
+
+        # Check for significant content increase (wildcard returned more data)
+        if test_len > baseline_len * 3:
+            return InjectionTestResult(
+                status="VALIDATED",
+                injection_type="ldap_injection",
+                cwe="CWE-90",
+                payload_used="*",
+                evidence=f"LDAP injection: wildcard returned {test_len} bytes vs {baseline_len}",
+                test_details={
+                    "url": url,
+                    "param": param,
+                    "baseline_length": baseline_len,
+                    "test_length": test_len,
+                },
+            )
+
+        return InjectionTestResult(
+            status="FALSE_POSITIVE",
+            injection_type="ldap_injection",
+            cwe="CWE-90",
+            payload_used="*",
+            evidence="No LDAP injection indicators - wildcard treated as literal",
+            test_details={"url": url, "param": param},
+        )
+
+    def validate_crlf(
+        self,
+        endpoint: str,
+        param: str,
+        method: str = "GET",
+    ) -> InjectionTestResult:
+        """
+        Validate CRLF / HTTP Header Injection.
+        CWE-93, CWE-113.
+        """
+        url = urljoin(self.base_url, endpoint)
+
+        payloads = [
+            ("%0d%0aX-Injected:true", "X-Injected"),
+            ("%0aX-Injected:true", "X-Injected"),
+            ("\r\nX-Injected:true", "X-Injected"),
+        ]
+
+        for payload, expected_header in payloads:
+            try:
+                if method.upper() == "GET":
+                    _, _, response_headers, _ = self._make_request(
+                        "GET", endpoint, params={param: payload}
+                    )
+                else:
+                    _, _, response_headers, _ = self._make_request(
+                        "POST", endpoint, data={param: payload}
+                    )
+            except Exception:
+                continue
+
+            # Check if our header was injected
+            if expected_header.lower() in [h.lower() for h in response_headers.keys()]:
+                return InjectionTestResult(
+                    status="VALIDATED",
+                    injection_type="crlf_header_injection",
+                    cwe="CWE-113",
+                    payload_used=payload,
+                    evidence=f"CRLF injection: {expected_header} header injected",
+                    test_details={
+                        "url": url,
+                        "param": param,
+                        "injected_header": expected_header,
+                        "response_headers": dict(response_headers),
+                    },
+                )
+
+        return InjectionTestResult(
+            status="FALSE_POSITIVE",
+            injection_type="crlf_header_injection",
+            cwe="CWE-113",
+            payload_used="multiple",
+            evidence="No CRLF injection - headers not injectable",
+            test_details={"url": url, "param": param},
+        )
+
+    def validate_el(
+        self,
+        endpoint: str,
+        param: str,
+        method: str = "GET",
+    ) -> InjectionTestResult:
+        """
+        Validate Expression Language Injection.
+        CWE-917.
+        """
+        url = urljoin(self.base_url, endpoint)
+
+        payloads = [
+            ("${7*7}", "49", "spring/generic"),
+            ("#{7*7}", "49", "jsp_el"),
+            ("%{7*7}", "49", "ognl"),
+        ]
+
+        for payload, expected, framework in payloads:
+            try:
+                if method.upper() == "GET":
+                    _, response_body, _, _ = self._make_request(
+                        "GET", endpoint, params={param: payload}
+                    )
+                else:
+                    _, response_body, _, _ = self._make_request(
+                        "POST", endpoint, data={param: payload}
+                    )
+            except Exception:
+                continue
+
+            if expected in response_body and payload not in response_body:
+                return InjectionTestResult(
+                    status="VALIDATED",
+                    injection_type=f"el_injection_{framework.split('/')[0]}",
+                    cwe="CWE-917",
+                    payload_used=payload,
+                    evidence=f"EL injection ({framework}): {payload} evaluated to {expected}",
+                    test_details={
+                        "url": url,
+                        "param": param,
+                        "framework": framework,
+                        "response_snippet": self._truncate_snippet(response_body),
+                    },
+                )
+
+        return InjectionTestResult(
+            status="FALSE_POSITIVE",
+            injection_type="el_injection",
+            cwe="CWE-917",
+            payload_used="multiple",
+            evidence="No EL injection indicators",
+            test_details={"url": url, "param": param},
+        )
+
+    def validate_redos(
+        self,
+        endpoint: str,
+        pattern_param: str,
+        input_param: str,
+        method: str = "GET",
+    ) -> InjectionTestResult:
+        """
+        Validate ReDoS (Regex Denial of Service).
+        CWE-1333.
+        """
+        url = urljoin(self.base_url, endpoint)
+
+        # Get baseline
+        try:
+            start = time.time()
+            if method.upper() == "GET":
+                self._make_request(
+                    "GET", endpoint, params={pattern_param: "test", input_param: "test"}
+                )
+            baseline_time = time.time() - start
+        except Exception as e:
+            return InjectionTestResult(
+                status="UNVALIDATED",
+                injection_type="redos",
+                cwe="CWE-1333",
+                payload_used="",
+                evidence=f"Baseline failed: {str(e)}",
+                test_details={"url": url},
+            )
+
+        # Evil pattern
+        evil_pattern = "(a+)+$"
+        evil_input = "a" * 25 + "!"
+
+        try:
+            start = time.time()
+            if method.upper() == "GET":
+                self._make_request(
+                    "GET",
+                    endpoint,
+                    params={pattern_param: evil_pattern, input_param: evil_input},
+                )
+            test_time = time.time() - start
+        except Exception:
+            test_time = self.timeout  # Timeout indicates possible ReDoS
 
         delay = test_time - baseline_time
-        output_indicator = has_cmd_errors(test_resp.text) if test_resp else False
-
-        if delay >= delay_threshold or output_indicator:
-            test_snippet, test_hash, test_meta = truncate_and_hash(test_resp.text if test_resp else "")
-            return {
-                "status": "VALIDATED",
-                "injection_type": "os_command_injection",
-                "cwe": "CWE-78",
-                "baseline": baseline,
-                "test": {
-                    "url": test_url,
-                    "method": "GET",
-                    "status": test_resp.status_code if test_resp else None,
-                    "response_time_seconds": round(test_time, 3),
-                    "response_snippet": test_snippet[:500],
-                    "response_hash": test_hash,
-                    **test_meta,
+        if delay >= 3.0:  # 3+ second delay
+            return InjectionTestResult(
+                status="VALIDATED",
+                injection_type="redos",
+                cwe="CWE-1333",
+                payload_used=evil_pattern,
+                evidence=f"ReDoS: {delay:.1f}s delay with catastrophic backtracking pattern",
+                test_details={
+                    "url": url,
+                    "pattern": evil_pattern,
+                    "input_length": len(evil_input),
+                    "baseline_time_ms": int(baseline_time * 1000),
+                    "test_time_ms": int(test_time * 1000),
                 },
-                "evidence": "Command injection indicators (delay or command output)",
-                "payload_used": payload,
-            }
+            )
 
-    return {
-        "status": "FALSE_POSITIVE",
-        "injection_type": "os_command_injection",
-        "baseline": baseline,
-        "evidence": "No significant time delay or command output detected",
-    }
+        return InjectionTestResult(
+            status="FALSE_POSITIVE",
+            injection_type="redos",
+            cwe="CWE-1333",
+            payload_used=evil_pattern,
+            evidence="No ReDoS - regex engine handles pattern efficiently",
+            test_details={"url": url},
+        )
 
+    def validate_xpath(
+        self,
+        endpoint: str,
+        param: str,
+        method: str = "GET",
+    ) -> InjectionTestResult:
+        """
+        Validate XPath Injection.
+        CWE-643.
+        """
+        url = urljoin(self.base_url, endpoint)
 
-def test_ssti(
-    url: str,
-    param: str,
-    headers: Optional[Dict] = None,
-    timeout: int = 30,
-) -> Dict[str, Any]:
-    """
-    Test for Server-Side Template Injection.
-
-    Returns:
-        Test result dictionary with status and evidence
-    """
-    payloads = [
-        ("{{7*7}}", "49", ["jinja2", "twig"]),
-        ("${7*7}", "49", ["freemarker", "velocity"]),
-        ("<%= 7*7 %>", "49", ["erb", "ejs"]),
-        ("#{7*7}", "49", ["ruby"]),
-    ]
-
-    for payload, expected, engines in payloads:
+        # Get baseline
         try:
-            test_url = f"{url}?{param}={quote(payload)}"
-            test_resp = requests.get(test_url, headers=headers, timeout=timeout)
-        except requests.RequestException:
-            continue
+            if method.upper() == "GET":
+                _, baseline_body, _, _ = self._make_request(
+                    "GET", endpoint, params={param: "test"}
+                )
+            baseline_len = len(baseline_body)
+        except Exception as e:
+            return InjectionTestResult(
+                status="UNVALIDATED",
+                injection_type="xpath_injection",
+                cwe="CWE-643",
+                payload_used="",
+                evidence=f"Baseline failed: {str(e)}",
+                test_details={"url": url},
+            )
 
-        if expected in test_resp.text:
-            test_snippet, test_hash, test_meta = truncate_and_hash(test_resp.text)
+        # Boolean bypass
+        payload = "' or '1'='1"
+        try:
+            if method.upper() == "GET":
+                _, test_body, _, _ = self._make_request(
+                    "GET", endpoint, params={param: payload}
+                )
+            test_len = len(test_body)
+        except Exception:
+            return InjectionTestResult(
+                status="UNVALIDATED",
+                injection_type="xpath_injection",
+                cwe="CWE-643",
+                payload_used=payload,
+                evidence="Test request failed",
+                test_details={"url": url},
+            )
 
-            return {
-                "status": "VALIDATED",
-                "injection_type": f"ssti_{engines[0]}",
-                "cwe": "CWE-1336",
-                "test": {
-                    "url": test_url,
-                    "method": "GET",
-                    "status": test_resp.status_code,
-                    "response_snippet": test_snippet[:500],
-                    "response_hash": test_hash,
-                    **test_meta,
+        if test_len > baseline_len * 2:
+            return InjectionTestResult(
+                status="VALIDATED",
+                injection_type="xpath_injection",
+                cwe="CWE-643",
+                payload_used=payload,
+                evidence=f"XPath injection: boolean bypass returned {test_len} vs {baseline_len} bytes",
+                test_details={
+                    "url": url,
+                    "param": param,
+                    "baseline_length": baseline_len,
+                    "test_length": test_len,
                 },
-                "evidence": f"SSTI: {payload} evaluated to {expected}",
-                "payload_used": payload,
-                "possible_engines": engines,
-            }
+            )
 
-    return {
-        "status": "FALSE_POSITIVE",
-        "injection_type": "ssti",
-        "evidence": "Template expressions not evaluated",
+        return InjectionTestResult(
+            status="FALSE_POSITIVE",
+            injection_type="xpath_injection",
+            cwe="CWE-643",
+            payload_used=payload,
+            evidence="No XPath injection indicators",
+            test_details={"url": url, "param": param},
+        )
+
+
+def validate_from_vulnerabilities(vulns_file: str, base_url: str) -> list[dict[str, Any]]:
+    """Validate injection findings from VULNERABILITIES.json."""
+    with open(vulns_file) as f:
+        vulns = json.load(f)
+
+    validator = InjectionValidator(base_url)
+    results = []
+
+    # Map CWEs to validation methods
+    cwe_validators = {
+        "CWE-1336": validator.validate_ssti,
+        "CWE-90": validator.validate_ldap,
+        "CWE-643": validator.validate_xpath,
+        "CWE-93": validator.validate_crlf,
+        "CWE-113": validator.validate_crlf,
+        "CWE-917": validator.validate_el,
     }
 
-
-def run_injection_tests(
-    url: str,
-    param: str,
-    original_value: str,
-    injection_types: List[str],
-    headers: Optional[Dict] = None,
-    timeout: int = 30,
-) -> Dict[str, Any]:
-    """
-    Run multiple injection tests.
-
-    Args:
-        url: Target URL
-        param: Parameter to test
-        original_value: Original parameter value
-        injection_types: List of injection types to test
-        headers: Optional request headers
-        timeout: Request timeout
-
-    Returns:
-        Combined results dictionary
-    """
-    results = {}
-
-    test_functions = {
-        "xss": lambda: test_xss(url, param, headers, timeout),
-        "cmdi": lambda: test_command_injection(url, param, original_value, headers, timeout),
-        "ssti": lambda: test_ssti(url, param, headers, timeout),
-    }
-
-    for injection_type in injection_types:
-        if injection_type in test_functions:
-            results[injection_type] = test_functions[injection_type]()
+    for vuln in vulns:
+        cwe = vuln.get("cwe")
+        if cwe in cwe_validators:
+            endpoint = vuln.get("endpoint", "/")
+            param = vuln.get("param", "input")
+            result = cwe_validators[cwe](endpoint, param)
+            results.append(result.to_dict())
 
     return results
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Injection Validation Script")
-    parser.add_argument("--url", required=True, help="Target URL (without params)")
-    parser.add_argument("--param", required=True, help="Parameter to test")
-    parser.add_argument("--value", default="1", help="Original parameter value")
-    parser.add_argument(
-        "--types",
-        default="cmdi,xss,ssti",
-        help="Comma-separated injection types",
-    )
-    parser.add_argument("--timeout", type=int, default=30, help="Request timeout")
-    parser.add_argument("--output", required=True, help="Output JSON file")
-    parser.add_argument("--header", action="append", help="Headers (key:value)")
-
-    args = parser.parse_args()
-
-    headers = {}
-    if args.header:
-        for h in args.header:
-            key, value = h.split(":", 1)
-            headers[key.strip()] = value.strip()
-
-    injection_types = [t.strip() for t in args.types.split(",")]
-
-    results = run_injection_tests(
-        url=args.url,
-        param=args.param,
-        original_value=args.value,
-        injection_types=injection_types,
-        headers=headers if headers else None,
-        timeout=args.timeout,
-    )
-
-    # Validate output path to prevent path traversal
-    output_path = Path(args.output).resolve()
-    cwd = Path.cwd().resolve()
-    if not output_path.is_relative_to(cwd):
-        print(f"Error: Output path must be within current directory: {cwd}")
-        return 1
-
-    with open(output_path, "w") as f:
-        json.dump(results, f, indent=2)
-
-    # Summary
-    validated = [k for k, v in results.items() if v.get("status") == "VALIDATED"]
-    if validated:
-        print(f"VALIDATED: {', '.join(validated)}")
-    else:
-        print("No injection vulnerabilities confirmed")
-
-    print(f"Results saved to {output_path}")
-
-    return 0 if not validated else 1
-
-
 if __name__ == "__main__":
-    exit(main())
+    print("Injection Validator - Example Usage")
+    print("=" * 50)
+    print(
+        """
+from validate_injection import InjectionValidator
+
+validator = InjectionValidator("http://target.com")
+
+# Test SSTI
+result = validator.validate_ssti("/greet", "name")
+print(result.to_dict())
+
+# Test LDAP injection
+result = validator.validate_ldap("/search", "user")
+print(result.to_dict())
+
+# Test CRLF injection
+result = validator.validate_crlf("/redirect", "url")
+print(result.to_dict())
+
+# Test EL injection
+result = validator.validate_el("/page", "input")
+print(result.to_dict())
+
+# Test XPath injection
+result = validator.validate_xpath("/user", "name")
+print(result.to_dict())
+
+# Test ReDoS
+result = validator.validate_redos("/search", "pattern", "text")
+print(result.to_dict())
+    """
+    )

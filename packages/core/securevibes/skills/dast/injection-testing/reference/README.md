@@ -1,119 +1,97 @@
-# Injection Testing Reference Implementations
+# Injection Testing Reference (Miscellaneous)
 
-This directory contains reference implementations for injection vulnerability testing. These are **examples to adapt**, not drop-in scripts that run across all applications.
+Reference implementations for miscellaneous injection testing.
 
-## Files
+**Note:** This covers injection types NOT handled by dedicated skills:
+- SQL Injection → use `sql-injection-testing`
+- NoSQL Injection → use `nosql-injection-testing`
+- XSS → use `xss-testing`
+- XXE → use `xxe-testing`
+- Command Injection → use `command-injection-testing`
 
-### injection_payloads.py
+## Contents
 
-Payload generation utilities organized by **non-SQL** injection type:
+- `injection_payloads.py` - Payload generators for various injection types
+- `validate_injection.py` - Injection validation workflow script
 
-- `get_cmdi_payloads(os_type, detection)` - OS command injection payloads
-- `get_xss_payloads(context)` - XSS payloads for different contexts
-- `get_nosql_payloads(db_type)` - NoSQL injection payloads (MongoDB operators)
-- `get_ssti_payloads(engine)` - Template injection payloads
-- `get_ldap_payloads()` - LDAP injection payloads
-- `get_xpath_payloads()` - XPath injection payloads
-- `get_el_payloads()` - Expression Language injection payloads
+## Usage
 
-**Usage:**
-```python
-from injection_payloads import get_cmdi_payloads
-
-# Get Linux time-based command injection payloads
-payloads = get_cmdi_payloads(os_type="linux", detection="time")
-for p in payloads:
-    print(f"Payload: {p['payload']}, Expected delay: {p['delay']}s")
-```
-
-### validate_injection.py
-
-Complete **non-SQL** injection testing script with:
-
-- Reflected XSS detection
-- OS command injection detection
-- SSTI detection
-- NoSQL/LDAP/XPath/EL cases (baseline hooks)
-- Response truncation and hashing
-- Sensitive data redaction
-
-**Usage:**
-```bash
-python validate_injection.py \
-    --url "http://target.com/api/search" \
-    --param "q" \
-    --value "test" \
-    --types "cmdi,xss,ssti" \
-    --output results.json
-```
-
-## Adaptation Notes
-
-### 1. Authentication
-
-Add authentication headers as needed:
-
-```bash
-python validate_injection.py \
-    --url "http://target.com/api/search" \
-    --param "q" \
-    --value "test" \
-    --header "Authorization: Bearer eyJhbG..." \
-    --header "Cookie: session=abc123" \
-    --output results.json
-```
-
-### 2. POST Requests
-
-The reference script uses GET requests. For POST testing, modify `validate_injection.py`:
+### Payload Generation
 
 ```python
-# Instead of:
-test_resp = requests.get(test_url, headers=headers, timeout=timeout)
-
-# Use:
-test_resp = requests.post(
-    url,
-    json={"param": payload},  # or data= for form data
-    headers=headers,
-    timeout=timeout
+from injection_payloads import (
+    ssti_payloads,
+    ldap_payloads,
+    xpath_payloads,
+    crlf_payloads,
+    el_payloads,
+    graphql_payloads,
+    csv_formula_payloads,
+    redos_payloads
 )
+
+# Get SSTI detection payloads
+for payload in ssti_payloads():
+    print(payload)
+
+# Get LDAP injection payloads
+for payload in ldap_payloads():
+    print(payload)
+
+# Get CRLF injection payloads
+for payload in crlf_payloads():
+    print(payload)
 ```
 
-### 3. Custom Payloads
-
-Extend `injection_payloads.py` with application-specific payloads:
+### Validation
 
 ```python
-def get_custom_payloads():
-    return [
-        {"payload": "custom_payload_here", "type": "custom"},
-    ]
+from validate_injection import InjectionValidator
+
+validator = InjectionValidator(base_url="http://target.com")
+
+# Test SSTI
+result = validator.validate_ssti("/greet", "name")
+print(result.to_dict())
+
+# Test LDAP injection
+result = validator.validate_ldap("/search", "user")
+print(result.to_dict())
+
+# Test CRLF injection
+result = validator.validate_crlf("/redirect", "url")
+print(result.to_dict())
 ```
 
-### 4. Response Analysis
+## Injection Types Covered
 
-Adjust detection patterns for your application:
+| Type | Payload Module | Detection Method |
+|------|----------------|------------------|
+| SSTI | `ssti_payloads()` | Math evaluation (49 from 7*7) |
+| LDAP | `ldap_payloads()` | Content length change with wildcard |
+| XPath | `xpath_payloads()` | Boolean-based / error-based |
+| CRLF | `crlf_payloads()` | Header injection detection |
+| EL/OGNL | `el_payloads()` | Math evaluation |
+| GraphQL | `graphql_payloads()` | Introspection / schema exposure |
+| CSV Formula | `csv_formula_payloads()` | Formula in export |
+| ReDoS | `redos_payloads()` | Response time increase |
 
-```python
-Update regex patterns in `validate_injection.py` to match your stack (e.g., framework-specific template or command errors).
-```
+## CWE Coverage
 
-## Safety Reminders
+- **CWE-1336:** Server-Side Template Injection (SSTI)
+- **CWE-90:** LDAP Injection
+- **CWE-643:** XPath Injection
+- **CWE-652:** XQuery Injection
+- **CWE-93:** CRLF Injection
+- **CWE-113:** HTTP Response Splitting
+- **CWE-917:** Expression Language Injection
+- **CWE-1333:** ReDoS
+- **CWE-1236:** CSV/Formula Injection
 
-1. **Only test authorized targets** - Never run against production without permission
-2. **Use detection-only payloads** - No destructive operations (DROP, DELETE, rm -rf)
-3. **Respect rate limits** - Add delays between requests if needed
-4. **Log all actions** - Keep audit trail of test requests
+## Safety Notes
 
-## Dependencies
-
-```bash
-pip install requests
-```
-
-## Related Resources
-
-- [SKILL.md](../SKILL.md) - Full testing methodology
-- [examples.md](../examples.md) - Comprehensive injection examples
-- [OWASP Testing Guide](https://owasp.org/www-project-web-security-testing-guide/)
+- Use detection-only payloads (math eval, timing, markers)
+- NEVER execute destructive commands via SSTI/EL
+- Do not exfiltrate real data
+- CSV formula testing only in isolated environments
+- Respect rate limits

