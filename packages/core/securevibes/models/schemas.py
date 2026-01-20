@@ -63,7 +63,18 @@ VULNERABILITY_SCHEMA: Dict[str, Any] = {
             "description": "Proof this is exploitable",
         },
     },
-    "required": ["threat_id", "title", "description", "severity"],
+    "required": [
+        "threat_id",
+        "title",
+        "description",
+        "severity",
+        "file_path",
+        "line_number",
+        "code_snippet",
+        "cwe_id",
+        "recommendation",
+        "evidence",
+    ],
     "additionalProperties": False,
 }
 
@@ -322,7 +333,7 @@ def validate_vulnerabilities_json(content: str) -> Tuple[bool, Optional[str]]:
         return False, "Output must be a JSON array"
 
     # Validate each vulnerability
-    required_fields = {"threat_id", "title", "description", "severity"}
+    required_fields = set(VULNERABILITY_SCHEMA["required"])
     valid_severities = {"critical", "high", "medium", "low", "info"}
 
     for i, vuln in enumerate(data):

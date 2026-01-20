@@ -162,6 +162,12 @@ class TestValidateVulnerabilitiesJson:
             "title": "SQL Injection",
             "description": "Test vulnerability",
             "severity": "high",
+            "file_path": "app.py",
+            "line_number": 42,
+            "code_snippet": "cursor.execute(query)",
+            "cwe_id": "CWE-89",
+            "recommendation": "Use parameterized queries",
+            "evidence": "User input concatenated into SQL query",
         }
 
     def test_valid_flat_array(self):
@@ -223,6 +229,72 @@ class TestValidateVulnerabilitiesJson:
 
         assert is_valid is False
         assert "severity" in error
+
+    def test_missing_file_path(self):
+        """Missing file_path should fail validation."""
+        vuln = self._make_valid_vuln()
+        del vuln["file_path"]
+        content = json.dumps([vuln])
+
+        is_valid, error = validate_vulnerabilities_json(content)
+
+        assert is_valid is False
+        assert "file_path" in error
+
+    def test_missing_line_number(self):
+        """Missing line_number should fail validation."""
+        vuln = self._make_valid_vuln()
+        del vuln["line_number"]
+        content = json.dumps([vuln])
+
+        is_valid, error = validate_vulnerabilities_json(content)
+
+        assert is_valid is False
+        assert "line_number" in error
+
+    def test_missing_code_snippet(self):
+        """Missing code_snippet should fail validation."""
+        vuln = self._make_valid_vuln()
+        del vuln["code_snippet"]
+        content = json.dumps([vuln])
+
+        is_valid, error = validate_vulnerabilities_json(content)
+
+        assert is_valid is False
+        assert "code_snippet" in error
+
+    def test_missing_cwe_id(self):
+        """Missing cwe_id should fail validation."""
+        vuln = self._make_valid_vuln()
+        del vuln["cwe_id"]
+        content = json.dumps([vuln])
+
+        is_valid, error = validate_vulnerabilities_json(content)
+
+        assert is_valid is False
+        assert "cwe_id" in error
+
+    def test_missing_recommendation(self):
+        """Missing recommendation should fail validation."""
+        vuln = self._make_valid_vuln()
+        del vuln["recommendation"]
+        content = json.dumps([vuln])
+
+        is_valid, error = validate_vulnerabilities_json(content)
+
+        assert is_valid is False
+        assert "recommendation" in error
+
+    def test_missing_evidence(self):
+        """Missing evidence should fail validation."""
+        vuln = self._make_valid_vuln()
+        del vuln["evidence"]
+        content = json.dumps([vuln])
+
+        is_valid, error = validate_vulnerabilities_json(content)
+
+        assert is_valid is False
+        assert "evidence" in error
 
     def test_invalid_severity_value(self):
         """Invalid severity value should fail validation."""
@@ -323,6 +395,12 @@ class TestSchemaStructure:
         assert "title" in required
         assert "description" in required
         assert "severity" in required
+        assert "file_path" in required
+        assert "line_number" in required
+        assert "code_snippet" in required
+        assert "cwe_id" in required
+        assert "recommendation" in required
+        assert "evidence" in required
 
     def test_vulnerability_schema_severity_enum(self):
         """Severity should have correct enum values."""

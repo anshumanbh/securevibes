@@ -424,6 +424,12 @@ class TestJsonValidationHook:
             "title": "SQL Injection",
             "description": "Test vulnerability",
             "severity": "high",
+            "file_path": "app.py",
+            "line_number": 42,
+            "code_snippet": "cursor.execute(query)",
+            "cwe_id": "CWE-89",
+            "recommendation": "Use parameterized queries",
+            "evidence": "User input concatenated into SQL query",
         }
 
     @pytest.mark.asyncio
