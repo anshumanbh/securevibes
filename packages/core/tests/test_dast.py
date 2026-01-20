@@ -719,9 +719,13 @@ def test_bundled_skills_package_structure():
 
     # Verify nosql-injection-testing skill structure
     nosql_skills_dir = dast_skills_dir / "nosql-injection-testing"
-    assert nosql_skills_dir.exists(), "nosql-injection-testing skills directory not found in package"
+    assert (
+        nosql_skills_dir.exists()
+    ), "nosql-injection-testing skills directory not found in package"
     assert (nosql_skills_dir / "SKILL.md").exists(), "nosql-injection-testing SKILL.md missing"
-    assert (nosql_skills_dir / "examples.md").exists(), "nosql-injection-testing examples.md missing"
+    assert (
+        nosql_skills_dir / "examples.md"
+    ).exists(), "nosql-injection-testing examples.md missing"
 
     # Verify xss-testing skill structure
     xss_skills_dir = dast_skills_dir / "xss-testing"
@@ -737,9 +741,13 @@ def test_bundled_skills_package_structure():
 
     # Verify command-injection-testing skill structure
     cmd_skills_dir = dast_skills_dir / "command-injection-testing"
-    assert cmd_skills_dir.exists(), "command-injection-testing skills directory not found in package"
+    assert (
+        cmd_skills_dir.exists()
+    ), "command-injection-testing skills directory not found in package"
     assert (cmd_skills_dir / "SKILL.md").exists(), "command-injection-testing SKILL.md missing"
-    assert (cmd_skills_dir / "examples.md").exists(), "command-injection-testing examples.md missing"
+    assert (
+        cmd_skills_dir / "examples.md"
+    ).exists(), "command-injection-testing examples.md missing"
 
 
 def test_merge_dast_results_basic(tmp_path):

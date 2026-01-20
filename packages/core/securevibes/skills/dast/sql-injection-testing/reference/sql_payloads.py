@@ -2,6 +2,7 @@
 SQL injection payload helpers grouped by detection type and database.
 These are reference payloads; adjust to the target application's context.
 """
+
 from typing import Any, Dict, List
 
 

