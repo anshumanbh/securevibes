@@ -2,6 +2,22 @@
 
 This document provides reference materials for detecting agentic patterns and mapping threats to OWASP ASI categories.
 
+## Table of Contents
+- [Framework Detection Patterns](#framework-detection-patterns)
+  - [LangChain](#langchain)
+  - [AutoGen](#autogen)
+  - [CrewAI](#crewai)
+  - [Claude Agent SDK](#claude-agent-sdk)
+  - [OpenAI Assistants](#openai-assistants)
+  - [Semantic Kernel](#semantic-kernel)
+  - [MCP (Model Context Protocol)](#mcp-model-context-protocol)
+- [OWASP ASI Category Quick Reference](#owasp-asi-category-quick-reference)
+- [Threat ID Convention](#threat-id-convention)
+- [Severity Guidelines](#severity-guidelines)
+  - [ASI-Specific Severity Defaults](#asi-specific-severity-defaults)
+- [Integration with STRIDE](#integration-with-stride)
+- [References](#references)
+
 ## Framework Detection Patterns
 
 Use these patterns with Grep to detect agentic architectures in codebases.

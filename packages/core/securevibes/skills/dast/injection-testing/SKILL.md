@@ -282,7 +282,6 @@ Analyze for potential injection vectors:
 - **Search/filter features:** Often use LDAP, XPath, or custom queries
 
 ### Phase 2: Establish Baseline
-
 Send normal request and record:
 - Response time (for time-based detection)
 - Response content/length (for boolean-based detection)
@@ -379,7 +378,6 @@ SSTI test incomplete on /template - all payloads returned literal text. Evidence
 ```
 
 ## CWE Mapping
-
 **Primary CWEs (DAST-testable):**
 - **CWE-1336:** Improper Neutralization of Special Elements Used in a Template Engine (SSTI)
 - **CWE-90:** Improper Neutralization of Special Elements used in an LDAP Query (LDAP Injection)

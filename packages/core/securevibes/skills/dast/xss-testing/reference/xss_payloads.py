@@ -104,7 +104,7 @@ def javascript_payloads(quote_char: str = "'") -> Generator[str, None, None]:
             '";alert(1)//',
             '";alert(1);"',
             '"-alert(1)-"',
-            '\";alert(1)//',
+            '";alert(1)//',
             "</script><script>alert(1)</script>",
             '"+alert(1)+"',
         ]

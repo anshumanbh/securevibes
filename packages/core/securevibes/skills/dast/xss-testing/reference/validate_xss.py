@@ -141,9 +141,7 @@ class XSSValidator:
 
         # Check for JavaScript context
         if re.search(r"<script[^>]*>", before, re.IGNORECASE):
-            if "</script>" in after or not re.search(
-                r"</script>", before, re.IGNORECASE
-            ):
+            if "</script>" in after or not re.search(r"</script>", before, re.IGNORECASE):
                 return "javascript"
 
         # Check for attribute context
@@ -218,14 +216,10 @@ class XSSValidator:
         try:
             if method.upper() == "GET":
                 params = {param: payload}
-                status_code, response_body, _ = self._make_request(
-                    "GET", endpoint, params=params
-                )
+                status_code, response_body, _ = self._make_request("GET", endpoint, params=params)
             else:
                 data = {param: payload}
-                status_code, response_body, _ = self._make_request(
-                    "POST", endpoint, data=data
-                )
+                status_code, response_body, _ = self._make_request("POST", endpoint, data=data)
         except Exception as e:
             return XSSTestResult(
                 status="UNVALIDATED",
@@ -281,9 +275,7 @@ class XSSValidator:
                 test_details={
                     "url": url,
                     "status": status_code,
-                    "response_snippet": self._truncate_snippet(
-                        response_body, payload[:20]
-                    ),
+                    "response_snippet": self._truncate_snippet(response_body, payload[:20]),
                 },
             )
 
@@ -314,9 +306,7 @@ class XSSValidator:
         try:
             # Submit payload
             data = {submit_param: payload}
-            submit_status, _, _ = self._make_request(
-                submit_method, submit_endpoint, data=data
-            )
+            submit_status, _, _ = self._make_request(submit_method, submit_endpoint, data=data)
 
             # Retrieve and check
             _, retrieve_body, _ = self._make_request("GET", retrieve_endpoint)
@@ -420,9 +410,7 @@ class XSSValidator:
         return result
 
 
-def validate_from_vulnerabilities(
-    vulns_file: str, base_url: str
-) -> list[dict[str, Any]]:
+def validate_from_vulnerabilities(vulns_file: str, base_url: str) -> list[dict[str, Any]]:
     """
     Validate XSS findings from VULNERABILITIES.json.
 

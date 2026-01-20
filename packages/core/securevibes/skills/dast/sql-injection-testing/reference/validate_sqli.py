@@ -71,7 +71,9 @@ def has_sql_errors(content: str) -> bool:
     return False
 
 
-def baseline_request(url: str, param: str, value: str, headers: Optional[Dict], timeout: int) -> Dict[str, Any]:
+def baseline_request(
+    url: str, param: str, value: str, headers: Optional[Dict], timeout: int
+) -> Dict[str, Any]:
     baseline_url = f"{url}?{param}={quote(value)}"
     start = time.time()
     resp = requests.get(baseline_url, headers=headers, timeout=timeout)
@@ -88,7 +90,9 @@ def baseline_request(url: str, param: str, value: str, headers: Optional[Dict], 
     }
 
 
-def test_time_based(url: str, param: str, value: str, headers: Optional[Dict], timeout: int, db: str) -> Dict[str, Any]:
+def test_time_based(
+    url: str, param: str, value: str, headers: Optional[Dict], timeout: int, db: str
+) -> Dict[str, Any]:
     baseline = baseline_request(url, param, value, headers, timeout)
     payloads = get_time_payloads(db)
 
@@ -133,7 +137,9 @@ def test_time_based(url: str, param: str, value: str, headers: Optional[Dict], t
     }
 
 
-def test_error_based(url: str, param: str, value: str, headers: Optional[Dict], timeout: int, db: str) -> Dict[str, Any]:
+def test_error_based(
+    url: str, param: str, value: str, headers: Optional[Dict], timeout: int, db: str
+) -> Dict[str, Any]:
     baseline = baseline_request(url, param, value, headers, timeout)
     for entry in get_error_payloads(db):
         payload = value + entry["payload"]
@@ -169,7 +175,9 @@ def test_error_based(url: str, param: str, value: str, headers: Optional[Dict], 
     }
 
 
-def test_boolean_based(url: str, param: str, value: str, headers: Optional[Dict], timeout: int) -> Dict[str, Any]:
+def test_boolean_based(
+    url: str, param: str, value: str, headers: Optional[Dict], timeout: int
+) -> Dict[str, Any]:
     baseline = baseline_request(url, param, value, headers, timeout)
     payload_pairs = get_boolean_payloads()
 
@@ -225,7 +233,9 @@ def test_boolean_based(url: str, param: str, value: str, headers: Optional[Dict]
     }
 
 
-def test_union_based(url: str, param: str, value: str, headers: Optional[Dict], timeout: int) -> Dict[str, Any]:
+def test_union_based(
+    url: str, param: str, value: str, headers: Optional[Dict], timeout: int
+) -> Dict[str, Any]:
     baseline = baseline_request(url, param, value, headers, timeout)
     for entry in get_union_payloads():
         payload = value + entry["payload"]
@@ -263,7 +273,9 @@ def test_union_based(url: str, param: str, value: str, headers: Optional[Dict], 
     }
 
 
-def test_stacked(url: str, param: str, value: str, headers: Optional[Dict], timeout: int, db: str) -> Dict[str, Any]:
+def test_stacked(
+    url: str, param: str, value: str, headers: Optional[Dict], timeout: int, db: str
+) -> Dict[str, Any]:
     baseline = baseline_request(url, param, value, headers, timeout)
     for entry in get_stacked_payloads(db):
         payload = entry["payload"]
@@ -306,7 +318,15 @@ def test_stacked(url: str, param: str, value: str, headers: Optional[Dict], time
     }
 
 
-def run_tests(url: str, param: str, value: str, injection_types: List[str], headers: Optional[Dict], timeout: int, db: str) -> Dict[str, Any]:
+def run_tests(
+    url: str,
+    param: str,
+    value: str,
+    injection_types: List[str],
+    headers: Optional[Dict],
+    timeout: int,
+    db: str,
+) -> Dict[str, Any]:
     tests = {
         "time": lambda: test_time_based(url, param, value, headers, timeout, db),
         "error": lambda: test_error_based(url, param, value, headers, timeout, db),
@@ -343,7 +363,11 @@ def main() -> int:
         default="time,error,boolean,union",
         help="Comma-separated injection types (time,error,boolean,union,stacked)",
     )
-    parser.add_argument("--db", default="generic", help="Database type (mysql, postgres, mssql, oracle, sqlite, generic)")
+    parser.add_argument(
+        "--db",
+        default="generic",
+        help="Database type (mysql, postgres, mssql, oracle, sqlite, generic)",
+    )
     parser.add_argument("--timeout", type=int, default=30, help="Request timeout seconds")
     parser.add_argument("--output", required=True, help="Output JSON file")
     parser.add_argument("--header", action="append", help="Headers (key:value)")

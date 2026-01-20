@@ -14,7 +14,6 @@ CWE Coverage: CWE-78, CWE-77, CWE-88
 import hashlib
 import json
 import re
-import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 from urllib.parse import quote, urljoin
@@ -130,9 +129,7 @@ class CommandInjectionValidator:
     ) -> Optional[tuple[str, str]]:
         """Check if response contains command execution output."""
         patterns = (
-            self.LINUX_OUTPUT_PATTERNS
-            if platform == "linux"
-            else self.WINDOWS_OUTPUT_PATTERNS
+            self.LINUX_OUTPUT_PATTERNS if platform == "linux" else self.WINDOWS_OUTPUT_PATTERNS
         )
         for pattern, desc in patterns:
             match = re.search(pattern, response, re.IGNORECASE)
@@ -192,7 +189,7 @@ class CommandInjectionValidator:
                     status_code, response_body, _, response_time = self._make_request(
                         "POST", endpoint, data=data
                     )
-            except Exception as e:
+            except Exception:
                 continue
 
             # Check for command output
@@ -260,15 +257,15 @@ class CommandInjectionValidator:
             else:
                 data = {param: base_value or "test"}
                 _, _, _, baseline_time = self._make_request("POST", endpoint, data=data)
-        except Exception as e:
+        except Exception as exc:
             return CommandInjectionTestResult(
                 status="UNVALIDATED",
                 injection_type="command_injection_time",
                 cwe="CWE-78",
                 platform=platform,
                 payload_used="",
-                evidence=f"Baseline request failed: {str(e)}",
-                test_details={"url": url, "error": str(e)},
+                evidence=f"Baseline request failed: {str(exc)}",
+                test_details={"url": url, "error": str(exc)},
             )
 
         # Platform-specific delay payloads

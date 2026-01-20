@@ -1,6 +1,6 @@
 ---
 name: authorization-testing
-description: Validate authorization failures including IDOR, privilege escalation, and missing access controls. Test by attempting unauthorized access with lower-privileged credentials. Use when testing CWE-639 (IDOR), CWE-269 (Privilege Escalation), CWE-862 (Missing Authorization), CWE-863 (Incorrect Authorization), CWE-284 (Access Control), CWE-285 (Improper Authorization), or CWE-425 (Direct Request/Forced Browsing) findings.
+description: Validate authorization failures including IDOR, privilege escalation, and missing access controls. Test by attempting unauthorized access with lower-privileged credentials. Use when testing CWE-639 (IDOR), CWE-269 (Improper Privilege Management), CWE-862 (Missing Authorization), CWE-863 (Incorrect Authorization), CWE-284 (Improper Access Control), CWE-285 (Improper Authorization), or CWE-425 (Direct Request / Forced Browsing) findings.
 allowed-tools: Read, Write, Bash
 ---
 
