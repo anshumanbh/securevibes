@@ -9,7 +9,14 @@ Reference implementations for miscellaneous injection testing.
 - XXE → use `xxe-testing`
 - Command Injection → use `command-injection-testing`
 
-## Contents
+## Table of Contents
+- [Files](#files)
+- [Usage](#usage)
+- [Injection Types Covered](#injection-types-covered)
+- [CWE Coverage](#cwe-coverage)
+- [Safety Notes](#safety-notes)
+
+## Files
 
 - `injection_payloads.py` - Payload generators for various injection types
 - `validate_injection.py` - Injection validation workflow script

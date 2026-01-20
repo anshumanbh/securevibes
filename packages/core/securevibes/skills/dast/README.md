@@ -30,7 +30,7 @@ Each skill directory contains:
 ### authorization-testing
 **Purpose**: Validate authorization failures including IDOR, privilege escalation, and missing access controls through HTTP-based exploitation attempts.
 
-**Trigger**: CWE-639 (IDOR), CWE-269 (Privilege Escalation), CWE-862 (Missing Authorization), CWE-863 (Incorrect Authorization), CWE-284 (Access Control), CWE-285 (Improper Authorization), CWE-425 (Forced Browsing)
+**Trigger**: CWE-639 (IDOR), CWE-269 (Improper Privilege Management), CWE-862 (Missing Authorization), CWE-863 (Incorrect Authorization), CWE-284 (Improper Access Control), CWE-285 (Improper Authorization), CWE-425 (Direct Request / Forced Browsing)
 
 **Requirements**:
 - Target application running and reachable
@@ -63,7 +63,7 @@ Each skill directory contains:
 ### xxe-testing
 **Purpose**: Validate XML External Entity vulnerabilities including file disclosure, SSRF, and denial of service.
 
-**Trigger**: CWE-611 (XXE), CWE-776 (XInclude), CWE-827 (Improper DTD)
+**Trigger**: CWE-611 (XXE), CWE-776 (Entity Expansion DoS), CWE-827 (Improper Control of Document Type Definition)
 
 **Output**: Validation status with evidence of entity expansion or external resource access
 
@@ -75,9 +75,9 @@ Each skill directory contains:
 **Output**: Validation status with evidence of command execution
 
 ### injection-testing
-**Purpose**: Validate miscellaneous injection vulnerabilities including SSTI, LDAP, XPath, XQuery, CRLF, Expression Language, GraphQL, ORM/HQL, CSV/Formula injection, ReDoS, YAML deserialization, and Shellshock.
+**Purpose**: Validate miscellaneous injection vulnerabilities not covered by dedicated skills (SSTI, LDAP, XPath, XQuery, CRLF/HTTP headers, Expression Language, GraphQL, ORM/HQL, CSV/Formula injection, ReDoS, YAML config, and Shellshock).
 
-**Trigger**: CWE-90 (LDAP), CWE-643 (XPath), CWE-652 (XQuery), CWE-93 (CRLF), CWE-917 (EL), CWE-1336 (SSTI), CWE-94/95 (Code/Eval Injection)
+**Trigger**: CWE-1336 (SSTI), CWE-90 (LDAP), CWE-643 (XPath), CWE-652 (XQuery), CWE-93/CWE-113 (CRLF/Header Injection), CWE-917 (Expression Language), CWE-94/CWE-95 (Code/Eval Injection), CWE-1333 (ReDoS), CWE-1236 (CSV/Formula)
 
 **Output**: Validation status (VALIDATED/FALSE_POSITIVE/PARTIAL/UNVALIDATED) with evidence
 
