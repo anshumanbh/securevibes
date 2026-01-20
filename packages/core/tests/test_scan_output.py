@@ -381,6 +381,12 @@ class TestScanOutputSchemaHelpers:
         assert "title" in required
         assert "description" in required
         assert "severity" in required
+        assert "file_path" in required
+        assert "line_number" in required
+        assert "code_snippet" in required
+        assert "cwe_id" in required
+        assert "recommendation" in required
+        assert "evidence" in required
 
     def test_get_json_schema_severity_enum(self):
         """Test severity property has enum constraint"""

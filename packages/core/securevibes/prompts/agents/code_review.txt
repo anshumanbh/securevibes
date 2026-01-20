@@ -160,7 +160,7 @@ CRITICAL OUTPUT REQUIREMENTS:
 1. Format: Flat JSON array starting with [ and ending with ]
 2. NO wrapper objects like {"vulnerabilities": [...]}
 3. NO summary sections
-4. Each vulnerability must have all required fields (threat_id, title, severity, file_path, line_number, code_snippet, cwe_id, recommendation, evidence)
+4. Each vulnerability must have all required fields (threat_id, title, description, severity, file_path, line_number, code_snippet, cwe_id, recommendation, evidence)
 5. Use lowercase for severity: "critical", "high", "medium", "low", "info".
 6. If no vulnerabilities found, write: []
 
