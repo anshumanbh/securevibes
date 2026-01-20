@@ -624,6 +624,13 @@ def test_setup_dast_skills_copies_to_target(tmp_path):
     assert (target_skills / "injection-testing" / "reference" / "validate_injection.py").exists()
     assert (target_skills / "injection-testing" / "reference" / "injection_payloads.py").exists()
 
+    # Check new injection skills
+    assert (target_skills / "sql-injection-testing" / "SKILL.md").exists()
+    assert (target_skills / "nosql-injection-testing" / "SKILL.md").exists()
+    assert (target_skills / "xss-testing" / "SKILL.md").exists()
+    assert (target_skills / "xxe-testing" / "SKILL.md").exists()
+    assert (target_skills / "command-injection-testing" / "SKILL.md").exists()
+
 
 def test_setup_dast_skills_always_syncs(tmp_path):
     """Test that _setup_dast_skills always syncs skills (even if directory exists)"""
@@ -647,6 +654,11 @@ def test_setup_dast_skills_always_syncs(tmp_path):
     # Verify skills were synced
     assert (target_skills / "authorization-testing" / "SKILL.md").exists()
     assert (target_skills / "injection-testing" / "SKILL.md").exists()
+    assert (target_skills / "sql-injection-testing" / "SKILL.md").exists()
+    assert (target_skills / "nosql-injection-testing" / "SKILL.md").exists()
+    assert (target_skills / "xss-testing" / "SKILL.md").exists()
+    assert (target_skills / "xxe-testing" / "SKILL.md").exists()
+    assert (target_skills / "command-injection-testing" / "SKILL.md").exists()
 
 
 def test_setup_dast_skills_error_handling(tmp_path):
@@ -671,9 +683,10 @@ def test_bundled_skills_package_structure():
     import securevibes
 
     package_dir = Path(securevibes.__file__).parent
+    dast_skills_dir = package_dir / "skills" / "dast"
 
     # Verify authorization-testing skill structure
-    auth_skills_dir = package_dir / "skills" / "dast" / "authorization-testing"
+    auth_skills_dir = dast_skills_dir / "authorization-testing"
     assert auth_skills_dir.exists(), "Authorization-testing skills directory not found in package"
     assert (auth_skills_dir / "SKILL.md").exists(), "authorization-testing SKILL.md missing"
     assert (auth_skills_dir / "reference" / "validate_idor.py").exists(), "validate_idor.py missing"
@@ -683,8 +696,8 @@ def test_bundled_skills_package_structure():
     ).exists(), "authorization-testing reference README missing"
     assert (auth_skills_dir / "examples.md").exists(), "authorization-testing examples.md missing"
 
-    # Verify injection-testing skill structure
-    injection_skills_dir = package_dir / "skills" / "dast" / "injection-testing"
+    # Verify injection-testing skill structure (miscellaneous injections)
+    injection_skills_dir = dast_skills_dir / "injection-testing"
     assert injection_skills_dir.exists(), "Injection-testing skills directory not found in package"
     assert (injection_skills_dir / "SKILL.md").exists(), "injection-testing SKILL.md missing"
     assert (injection_skills_dir / "examples.md").exists(), "injection-testing examples.md missing"
@@ -697,6 +710,36 @@ def test_bundled_skills_package_structure():
     assert (
         injection_skills_dir / "reference" / "injection_payloads.py"
     ).exists(), "injection_payloads.py missing"
+
+    # Verify sql-injection-testing skill structure
+    sql_skills_dir = dast_skills_dir / "sql-injection-testing"
+    assert sql_skills_dir.exists(), "sql-injection-testing skills directory not found in package"
+    assert (sql_skills_dir / "SKILL.md").exists(), "sql-injection-testing SKILL.md missing"
+    assert (sql_skills_dir / "examples.md").exists(), "sql-injection-testing examples.md missing"
+
+    # Verify nosql-injection-testing skill structure
+    nosql_skills_dir = dast_skills_dir / "nosql-injection-testing"
+    assert nosql_skills_dir.exists(), "nosql-injection-testing skills directory not found in package"
+    assert (nosql_skills_dir / "SKILL.md").exists(), "nosql-injection-testing SKILL.md missing"
+    assert (nosql_skills_dir / "examples.md").exists(), "nosql-injection-testing examples.md missing"
+
+    # Verify xss-testing skill structure
+    xss_skills_dir = dast_skills_dir / "xss-testing"
+    assert xss_skills_dir.exists(), "xss-testing skills directory not found in package"
+    assert (xss_skills_dir / "SKILL.md").exists(), "xss-testing SKILL.md missing"
+    assert (xss_skills_dir / "examples.md").exists(), "xss-testing examples.md missing"
+
+    # Verify xxe-testing skill structure
+    xxe_skills_dir = dast_skills_dir / "xxe-testing"
+    assert xxe_skills_dir.exists(), "xxe-testing skills directory not found in package"
+    assert (xxe_skills_dir / "SKILL.md").exists(), "xxe-testing SKILL.md missing"
+    assert (xxe_skills_dir / "examples.md").exists(), "xxe-testing examples.md missing"
+
+    # Verify command-injection-testing skill structure
+    cmd_skills_dir = dast_skills_dir / "command-injection-testing"
+    assert cmd_skills_dir.exists(), "command-injection-testing skills directory not found in package"
+    assert (cmd_skills_dir / "SKILL.md").exists(), "command-injection-testing SKILL.md missing"
+    assert (cmd_skills_dir / "examples.md").exists(), "command-injection-testing examples.md missing"
 
 
 def test_merge_dast_results_basic(tmp_path):
@@ -884,7 +927,7 @@ def test_regenerate_artifacts(tmp_path):
     assert data["issues"][0]["exploitability_score"] == 8.5
 
     # Verify Markdown contains validation badges
-    md_content = md_file.read_text()
+    md_content = md_file.read_text(encoding="utf-8")
     assert "✅" in md_content  # Validation badge
     assert "DAST" in md_content
 

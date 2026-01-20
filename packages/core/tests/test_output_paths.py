@@ -1,6 +1,6 @@
 """Tests for output path handling logic"""
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 class TestMarkdownOutputPaths:
@@ -21,7 +21,7 @@ class TestMarkdownOutputPaths:
         else:
             result = path / ".securevibes" / "scan_report.md"
 
-        assert str(result) == ".securevibes/scan_report.md"
+        assert result.as_posix() == ".securevibes/scan_report.md"
 
     def test_relative_filename_to_securevibes(self):
         """Test relative filename saves to .securevibes/"""
@@ -34,7 +34,7 @@ class TestMarkdownOutputPaths:
         else:
             result = output_path
 
-        assert str(result) == ".securevibes/custom_report.md"
+        assert result.as_posix() == ".securevibes/custom_report.md"
 
     def test_relative_path_with_directory(self):
         """Test relative path with subdirectory"""
@@ -47,7 +47,7 @@ class TestMarkdownOutputPaths:
         else:
             result = output_path
 
-        assert str(result) == ".securevibes/reports/security_scan.md"
+        assert result.as_posix() == ".securevibes/reports/security_scan.md"
 
     def test_absolute_path_preserved(self):
         """Test absolute path is preserved as-is"""
@@ -60,7 +60,7 @@ class TestMarkdownOutputPaths:
         else:
             result = output_path
 
-        assert str(result) == "/tmp/report.md"
+        assert result.as_posix() == "/tmp/report.md"
 
     def test_different_scan_directory(self):
         """Test with different scan directory path"""
@@ -73,7 +73,7 @@ class TestMarkdownOutputPaths:
         else:
             result = output_path
 
-        assert str(result) == "/path/to/project/.securevibes/my_report.md"
+        assert result.as_posix() == "/path/to/project/.securevibes/my_report.md"
 
     def test_nested_relative_path(self):
         """Test deeply nested relative path"""
@@ -86,14 +86,13 @@ class TestMarkdownOutputPaths:
         else:
             result = output_path
 
-        assert str(result) == ".securevibes/reports/2024/january/scan.md"
+        assert result.as_posix() == ".securevibes/reports/2024/january/scan.md"
 
     def test_windows_style_absolute_path(self):
         """Test Windows-style absolute path detection"""
         # Unix absolute path
         output_unix = "/tmp/report.md"
-        output_path = Path(output_unix)
-        assert output_path.is_absolute()
+        assert PurePosixPath(output_unix).is_absolute()
 
         # Note: Windows paths like C:\... would also be detected as absolute
         # by Path.is_absolute() on the respective platform
@@ -117,7 +116,7 @@ class TestOutputPathEdgeCases:
             result = output_path
 
         # Results in .securevibes/ directory
-        assert ".securevibes" in str(result)
+        assert ".securevibes" in result.as_posix()
 
     def test_dot_relative_path(self):
         """Test paths starting with ./"""
@@ -131,7 +130,7 @@ class TestOutputPathEdgeCases:
             result = output_path
 
         # Should still be relative and go to .securevibes
-        assert ".securevibes" in str(result)
+        assert ".securevibes" in result.as_posix()
 
     def test_parent_directory_reference(self):
         """Test paths with ../"""
@@ -145,4 +144,4 @@ class TestOutputPathEdgeCases:
             result = output_path
 
         # Should be prefixed with .securevibes
-        assert ".securevibes" in str(result)
+        assert ".securevibes" in result.as_posix()

@@ -12,20 +12,18 @@ Skills provide specialized testing methodologies that the DAST agent uses to val
 .claude/skills/dast/
 ├── README.md                    # This file
 ├── authorization-testing/       # Authorization failure validation
-│   ├── SKILL.md                 # Core methodology
-│   ├── examples.md              # 10+ examples organized by category
-│   └── reference/               # Implementation examples
-│       ├── README.md            # Reference guide
-│       ├── auth_patterns.py     # Reusable authentication functions
-│       └── validate_idor.py     # Complete testing script
-└── injection-testing/           # Injection vulnerability validation
-    ├── SKILL.md                 # Core methodology
-    ├── examples.md              # 10+ examples organized by injection type
-    └── reference/               # Implementation examples
-        ├── README.md            # Reference guide
-        ├── injection_payloads.py # Payload generation utilities
-        └── validate_injection.py # Complete testing script
+├── command-injection-testing/   # OS command injection validation
+├── injection-testing/           # Miscellaneous injection validation
+├── nosql-injection-testing/     # NoSQL injection validation
+├── sql-injection-testing/       # SQL injection validation
+├── xss-testing/                 # Cross-site scripting validation
+└── xxe-testing/                 # XML external entity validation
 ```
+
+Each skill directory contains:
+- `SKILL.md` - Core methodology and instructions
+- `examples.md` - Real-world examples organized by category
+- `reference/` - Implementation examples and helper scripts
 
 ## Current Skills
 
@@ -41,15 +39,45 @@ Skills provide specialized testing methodologies that the DAST agent uses to val
 
 **Output**: Validation status (VALIDATED/FALSE_POSITIVE/UNVALIDATED) with evidence
 
+### sql-injection-testing
+**Purpose**: Validate SQL injection vulnerabilities through error-based, union-based, boolean-based, and time-based detection techniques.
+
+**Trigger**: CWE-89 (SQL Injection), CWE-564 (SQL Injection: Hibernate)
+
+**Output**: Validation status with evidence including database type detection and exploitation proof
+
+### nosql-injection-testing
+**Purpose**: Validate NoSQL injection vulnerabilities in MongoDB, CouchDB, and other NoSQL databases.
+
+**Trigger**: CWE-943 (NoSQL Injection)
+
+**Output**: Validation status with evidence of query manipulation or data exfiltration
+
+### xss-testing
+**Purpose**: Validate Cross-Site Scripting vulnerabilities including reflected, stored, and DOM-based XSS.
+
+**Trigger**: CWE-79 (XSS), CWE-80 through CWE-87 (XSS variants)
+
+**Output**: Validation status with evidence of script execution context
+
+### xxe-testing
+**Purpose**: Validate XML External Entity vulnerabilities including file disclosure, SSRF, and denial of service.
+
+**Trigger**: CWE-611 (XXE), CWE-776 (XInclude), CWE-827 (Improper DTD)
+
+**Output**: Validation status with evidence of entity expansion or external resource access
+
+### command-injection-testing
+**Purpose**: Validate OS command injection vulnerabilities through various shell metacharacter and argument injection techniques.
+
+**Trigger**: CWE-78 (OS Command Injection), CWE-77 (Command Injection), CWE-88 (Argument Injection)
+
+**Output**: Validation status with evidence of command execution
+
 ### injection-testing
-**Purpose**: Validate injection vulnerabilities including SQL, NoSQL, OS Command, LDAP, XPath, SSTI, and XSS by sending crafted payloads and observing application behavior.
+**Purpose**: Validate miscellaneous injection vulnerabilities including SSTI, LDAP, XPath, XQuery, CRLF, Expression Language, GraphQL, ORM/HQL, CSV/Formula injection, ReDoS, YAML deserialization, and Shellshock.
 
-**Trigger**: CWE-89 (SQL Injection), CWE-78 (OS Command Injection), CWE-79 (XSS), CWE-90 (LDAP Injection), CWE-917 (Expression Language Injection), CWE-94 (Code Injection), CWE-643 (XPath Injection), CWE-1336 (SSTI)
-
-**Requirements**:
-- Target application running and reachable
-- Identified injection points (parameters, headers, body fields)
-- VULNERABILITIES.json with injection findings
+**Trigger**: CWE-90 (LDAP), CWE-643 (XPath), CWE-652 (XQuery), CWE-93 (CRLF), CWE-917 (EL), CWE-1336 (SSTI), CWE-94/95 (Code/Eval Injection)
 
 **Output**: Validation status (VALIDATED/FALSE_POSITIVE/PARTIAL/UNVALIDATED) with evidence
 
