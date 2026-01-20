@@ -624,6 +624,13 @@ def test_setup_dast_skills_copies_to_target(tmp_path):
     assert (target_skills / "injection-testing" / "reference" / "validate_injection.py").exists()
     assert (target_skills / "injection-testing" / "reference" / "injection_payloads.py").exists()
 
+    # Check new injection skills
+    assert (target_skills / "sql-injection-testing" / "SKILL.md").exists()
+    assert (target_skills / "nosql-injection-testing" / "SKILL.md").exists()
+    assert (target_skills / "xss-testing" / "SKILL.md").exists()
+    assert (target_skills / "xxe-testing" / "SKILL.md").exists()
+    assert (target_skills / "command-injection-testing" / "SKILL.md").exists()
+
 
 def test_setup_dast_skills_always_syncs(tmp_path):
     """Test that _setup_dast_skills always syncs skills (even if directory exists)"""
@@ -647,6 +654,11 @@ def test_setup_dast_skills_always_syncs(tmp_path):
     # Verify skills were synced
     assert (target_skills / "authorization-testing" / "SKILL.md").exists()
     assert (target_skills / "injection-testing" / "SKILL.md").exists()
+    assert (target_skills / "sql-injection-testing" / "SKILL.md").exists()
+    assert (target_skills / "nosql-injection-testing" / "SKILL.md").exists()
+    assert (target_skills / "xss-testing" / "SKILL.md").exists()
+    assert (target_skills / "xxe-testing" / "SKILL.md").exists()
+    assert (target_skills / "command-injection-testing" / "SKILL.md").exists()
 
 
 def test_setup_dast_skills_error_handling(tmp_path):
