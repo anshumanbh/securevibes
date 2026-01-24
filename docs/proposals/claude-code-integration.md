@@ -1,24 +1,31 @@
-# SecureVibes Claude Code Integration Spec
+# SecureVibes AI Agent Integration Spec
 
 **Status:** Proposal  
 **Author:** SecureVibes Team  
 **Created:** 2026-01-24  
-**Version:** 2.0.0 (MCP-first revision)
+**Version:** 3.0.0 (Universal agent support: Claude Code + Codex)
 
 ---
 
 ## TL;DR
 
-SecureVibes as **MCP tools** that Claude Code can invoke directly. No terminal commands needed — Claude just calls `securevibes_scan` and gets structured findings.
+SecureVibes as **native tools** for AI coding agents. Works with both **Claude Code (MCP)** and **OpenAI Codex (Responses API)**. No terminal commands needed — agents just call `securevibes_scan` and get structured findings.
 
 ```typescript
-// What Claude sees:
+// What AI agents see:
 {
   securevibes_scan: (options) => Finding[],
   securevibes_findings: (scanId) => Finding[],
   securevibes_fix: (findingId) => FixSuggestion
 }
 ```
+
+**Supported Agents:**
+| Agent | Protocol | Status |
+|-------|----------|--------|
+| Claude Code | MCP | ✅ Primary |
+| Codex CLI | MCP + Responses API | ✅ Supported |
+| Future agents | MCP | 🔮 Ready |
 
 ---
 
@@ -29,8 +36,9 @@ SecureVibes as **MCP tools** that Claude Code can invoke directly. No terminal c
 3. [User Stories (MCP-First)](#3-user-stories-mcp-first)
 4. [CLI Commands (Secondary)](#4-cli-commands-secondary)
 5. [Architecture](#5-architecture)
-6. [Implementation Roadmap](#6-implementation-roadmap)
-7. [Future Enhancements](#7-future-enhancements)
+6. [Codex Compatibility](#6-codex-compatibility)
+7. [Implementation Roadmap](#7-implementation-roadmap)
+8. [Future Enhancements](#8-future-enhancements)
 
 ---
 
@@ -249,23 +257,30 @@ These CLI commands are thin wrappers around the MCP tools.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                      Claude Code                                │
+│                    AI Coding Agents                             │
+│  ┌──────────────────────┐    ┌──────────────────────┐          │
+│  │ Claude Code          │    │ Codex CLI            │          │
+│  │  → MCP Client        │    │  → MCP + Responses   │          │
+│  └──────────┬───────────┘    └──────────┬───────────┘          │
+│             │                           │                       │
+│             └─────────────┬─────────────┘                       │
+│                           ▼                                     │
 │  ┌─────────────────────────────────────────────────────────┐   │
-│  │ Claude Agent                                             │   │
-│  │  → User asks for security review                        │   │
-│  │  → Calls securevibes_scan MCP tool                      │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                          ↓                                      │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │ MCP Client (built into Claude Code)                     │   │
-│  │  → SecureVibes MCP Server                               │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                          ↓                                      │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │ SecureVibes MCP Server (NEW)                            │   │
-│  │  → Wraps existing securevibes CLI                       │   │
-│  │  → Handles auth, queuing, result formatting             │   │
-│  │  → Returns JSON that Claude can parse                   │   │
+│  │ SecureVibes Agent Server (NEW)                          │   │
+│  │                                                          │   │
+│  │  ┌─────────────────┐    ┌─────────────────────────┐     │   │
+│  │  │ MCP Endpoint    │    │ Responses API Endpoint  │     │   │
+│  │  │ (Claude Code)   │    │ (Codex CLI)             │     │   │
+│  │  └────────┬────────┘    └────────────┬────────────┘     │   │
+│  │           │                          │                   │   │
+│  │           └──────────┬───────────────┘                   │   │
+│  │                      ▼                                   │   │
+│  │           ┌─────────────────────┐                        │   │
+│  │           │ Shared Tool Layer   │                        │   │
+│  │           │ • securevibes_scan  │                        │   │
+│  │           │ • securevibes_fix   │                        │   │
+│  │           │ • securevibes_auto  │                        │   │
+│  │           └─────────────────────┘                        │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                          ↓                                      │
 │  ┌─────────────────────────────────────────────────────────┐   │
@@ -276,13 +291,13 @@ These CLI commands are thin wrappers around the MCP tools.
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 5.1 MCP Server Responsibilities
+### 5.1 Server Responsibilities
 
-1. **Tool registration** — Expose functions Claude can call
-2. **Auth** — Validate API key from SecureVibes platform
-3. **Queuing** — Handle scan requests, polling for completion
-4. **Formatting** — Convert findings to Claude-readable JSON
-5. **Error handling** — Graceful failures with actionable messages
+1. **Dual protocol support** — MCP for Claude Code, Responses API for Codex
+2. **Tool registration** — Same tools exposed via both protocols
+3. **Auth** — Validate API key from SecureVibes platform
+4. **Streaming** — SSE progress updates for long-running scans
+5. **Formatting** — Convert findings to agent-readable JSON
 
 ### 5.2 Integration with Existing Codebase
 
@@ -293,15 +308,119 @@ Reuses existing `packages/core`:
 - Configuration
 
 New code:
-- `packages/mcp-server/` (NEW)
-  - `main.py` — MCP server entry
-  - `tools.py` — Tool definitions
+- `packages/agent-server/` (NEW)
+  - `main.py` — Server entry (MCP + HTTP)
+  - `mcp/` — MCP protocol handlers
+  - `responses/` — Responses API handlers
+  - `tools.py` — Shared tool definitions
+  - `stream.py` — SSE streaming support
   - `auth.py` — API key validation
-  - `formatters.py` — Finding → JSON conversion
 
 ---
 
-## 6. Implementation Roadmap
+## 6. Codex Compatibility
+
+OpenAI Codex CLI uses MCP tools but also supports the Responses API directly. This section covers Codex-specific integration.
+
+**Reference:** [Unrolling the Codex Agent Loop](https://openai.com/index/unrolling-the-codex-agent-loop/)
+
+### 6.1 AGENTS.md Integration
+
+Codex reads `AGENTS.md` for project-level instructions. Provide a security-focused snippet:
+
+```markdown
+## Security Review (SecureVibes)
+
+When reviewing code or PRs:
+1. Run `securevibes_scan` to check for security vulnerabilities
+2. Address all critical/high findings before approving
+3. Use `securevibes_fix` to generate remediation suggestions
+
+Security policy:
+- No PR approval with unresolved critical findings
+- High findings require explicit acknowledgment
+- Medium/low can be tracked as tech debt
+```
+
+**Deliverables:**
+- Ship `agents-snippet.md` template in docs/
+- Include in MCP server install instructions
+
+### 6.2 Responses API Endpoint
+
+For native Codex integration without MCP:
+
+```
+POST /v1/responses
+Authorization: Bearer <SECUREVIBES_API_KEY>
+
+{
+  "tools": [
+    {
+      "name": "securevibes_scan",
+      "description": "Scan code for security vulnerabilities",
+      "parameters": { ... }
+    }
+  ],
+  "input": [
+    { "role": "user", "content": "scan this directory for vulnerabilities" }
+  ]
+}
+```
+
+**Response (SSE stream):**
+```
+data: {"type": "response.output_item.added", "item": {"type": "function_call", "name": "securevibes_scan"}}
+data: {"type": "response.function_call_arguments.delta", "delta": "{\"path\": \".\"}"}
+data: {"type": "response.output_item.done", "item": {"output": "{\"findings\": [...]}"}}
+```
+
+### 6.3 Streaming Support
+
+Both Claude Code and Codex benefit from streaming progress:
+
+```typescript
+// Streaming response
+securevibes_scan() → 
+  { type: "progress", percent: 10, agent: "threat-model" } →
+  { type: "progress", percent: 40, agent: "code-review" } →
+  { type: "finding", finding: { severity: "high", ... } } →
+  { type: "complete", summary: { critical: 0, high: 1 } }
+```
+
+**Benefits:**
+- Reduced perceived latency
+- Findings appear as discovered
+- Progress visibility for long scans
+
+### 6.4 Auto-Remediate Loop
+
+Codex's agent loop repeats until the model produces a final response. SecureVibes supports this pattern:
+
+```typescript
+securevibes_auto_remediate({
+  path: ".",
+  max_iterations: 3,
+  exit_on: "no_critical_high"
+})
+
+// Loop: scan → fix → re-scan → fix → re-scan
+// Exit when: no critical/high findings OR max iterations
+```
+
+### 6.5 Compatibility Matrix
+
+| Feature | Claude Code | Codex CLI |
+|---------|-------------|-----------|
+| MCP tools | ✅ | ✅ |
+| Responses API | ❌ | ✅ |
+| AGENTS.md | ❌ | ✅ |
+| Streaming | ✅ | ✅ |
+| Auto-remediate | ✅ | ✅ |
+
+---
+
+## 7. Implementation Roadmap
 
 ### Phase 1: MCP Server (Weeks 1-2)
 - [ ] Set up MCP server structure
@@ -315,21 +434,27 @@ New code:
 - [ ] `securevibes_status` tool
 - [ ] JSON schema validation
 
-### Phase 3: Advanced Features (Weeks 3-4)
+### Phase 3: Streaming + Codex (Weeks 3-4)
+- [ ] SSE streaming support
+- [ ] Responses API endpoint (`/v1/responses`)
+- [ ] AGENTS.md snippet and docs
+- [ ] Test with Codex CLI
+
+### Phase 4: Advanced Features (Weeks 4-5)
 - [ ] `securevibes_auto_remediate` tool
 - [ ] PR integration
 - [ ] Rate limiting, caching
 - [ ] Error handling polish
 
-### Phase 4: Polish (Weeks 4-6)
-- [ ] Documentation
+### Phase 5: Polish (Weeks 5-6)
+- [ ] Documentation for both Claude Code and Codex
 - [ ] Publish to MCP registry
-- [ ] Claude Code marketplace listing
-- [ ] User testing
+- [ ] Marketplace listings
+- [ ] User testing with both agents
 
 ---
 
-## 7. Future Enhancements
+## 8. Future Enhancements
 
 ### v1.1
 - Streaming responses (progress updates)
