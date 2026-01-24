@@ -11,12 +11,12 @@ Skill-first distribution of SecureVibes that preserves the CLI subagent workflow
 ## Workflow
 
 ### Full Security Review (default)
-1. **Assessment**: use `prompts/agents/assessment.txt` and `methodology/assessment.md`
+1. **Assessment**: use `prompts/agents/assessment.txt`
 2. **Threat Modeling**: use `prompts/agents/threat_modeling.txt`,
-   `skills/threat-modeling/agentic-security/`, and `methodology/threat-modeling.md`
-3. **Code Review**: use `prompts/agents/code_review.txt` and `methodology/code-review.md`
+   `skills/threat-modeling/agentic-security/`
+3. **Code Review**: use `prompts/agents/code_review.txt`
 4. **Report Generator**: use `prompts/agents/report_generator.txt` and
-   `methodology/output-format.md`
+   output rules embedded in the prompt
 5. **DAST (optional)**: use `prompts/agents/dast.txt` and `skills/dast/` when tool access exists
 
 ### Quick Scan
