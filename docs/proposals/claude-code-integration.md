@@ -3,470 +3,528 @@
 **Status:** Proposal  
 **Author:** SecureVibes Team  
 **Created:** 2026-01-24  
-**Version:** 3.0.0 (Universal agent support: Claude Code + Codex)
+**Version:** 4.0.0 (Skill-first architecture)
 
 ---
 
 ## TL;DR
 
-SecureVibes as **native tools** for AI coding agents. Works with both **Claude Code (MCP)** and **OpenAI Codex (Responses API)**. No terminal commands needed — agents just call `securevibes_scan` and get structured findings.
+SecureVibes as a **Claude Code skill** — not an MCP server wrapping a CLI wrapping Claude. The prompts and methodology ARE the product. Claude Code handles orchestration natively.
 
-```typescript
-// What AI agents see:
-{
-  securevibes_scan: (options) => Finding[],
-  securevibes_findings: (scanId) => Finding[],
-  securevibes_fix: (findingId) => FixSuggestion
-}
+```
+Before (wrapper-on-wrapper):
+Claude Code → MCP Server → SecureVibes CLI → Claude CLI
+                    ↑                              ↑
+              Unnecessary              Redundant Claude call
+
+After (skill-first):
+Claude Code + SecureVibes Skill → Done
 ```
 
-**Supported Agents:**
-| Agent | Protocol | Status |
-|-------|----------|--------|
-| Claude Code | MCP | ✅ Primary |
-| Codex CLI | MCP + Responses API | ✅ Supported |
-| Future agents | MCP | 🔮 Ready |
+**MCP only needed for:** Platform integration (save findings, dashboard, history)
 
 ---
 
 ## Table of Contents
 
-1. [Overview and Motivation](#1-overview-and-motivation)
-2. [MCP Tools (Primary Interface)](#2-mcp-tools-primary-interface)
-3. [User Stories (MCP-First)](#3-user-stories-mcp-first)
-4. [CLI Commands (Secondary)](#4-cli-commands-secondary)
-5. [Architecture](#5-architecture)
+1. [Why Skill-First](#1-why-skill-first)
+2. [Skill Architecture](#2-skill-architecture)
+3. [Skill Contents](#3-skill-contents)
+4. [Orchestration Flow](#4-orchestration-flow)
+5. [Platform Integration (Optional MCP)](#5-platform-integration-optional-mcp)
 6. [Codex Compatibility](#6-codex-compatibility)
-7. [Implementation Roadmap](#7-implementation-roadmap)
-8. [Future Enhancements](#8-future-enhancements)
+7. [Implementation Plan](#7-implementation-plan)
+8. [Migration Path](#8-migration-path)
 
 ---
 
-## 1. Overview and Motivation
+## 1. Why Skill-First
 
-### 1.1 The Problem
+### 1.1 The Problem with MCP-First
 
-Current workflow:
-```
-Developer in Claude Code → "Review my code" → Claude reviews → "Run SecureVibes" 
-→ Exit Claude Code → Run securevibes CLI → Parse results → Context switch back
-```
-
-This is broken. Context-switching kills flow.
-
-### 1.2 The Solution: MCP-Native Integration
-
-Claude should be able to invoke SecureVibes **as a tool**, not as a terminal command:
+SecureVibes CLI is essentially a Claude wrapper with prompts. Building an MCP server that calls SecureVibes CLI means:
 
 ```
-Developer: "Review this PR for security issues"
-Claude: 
-  → Calls securevibes_scan({ pr: 123 })
-  → Gets structured findings
-  → Addresses them inline
-  → Developer never leaves the conversation
+Claude Code → MCP → SecureVibes CLI → Claude API
 ```
 
-**Key insight:** Claude already has tools. SecureVibes should be one of them.
+This is redundant. We're asking Claude to call a tool that calls Claude.
 
-### 1.3 How Greptile Does It
+### 1.2 What SecureVibes Actually Provides
 
-Greptile's Claude Code plugin:
-1. User asks Claude to review code
-2. Claude calls Greptile tool → gets findings
-3. Claude addresses findings in its response
-4. User sees integrated review + fixes
+| Component | What It Is | Can Be a Skill? |
+|-----------|------------|-----------------|
+| Threat modeling | Prompts + STRIDE methodology | ✅ Yes |
+| Code review | Prompts + security patterns | ✅ Yes |
+| Assessment | Prompts + checklist | ✅ Yes |
+| Orchestration | Sequential agent execution | ✅ Claude Code does this natively |
+| Output format | Structured findings (JSON) | ✅ Yes (prompt instructions) |
 
-**We want the same pattern for security.**
+**Conclusion:** The value is in the prompts and methodology. Package that as a skill.
 
-### 1.4 Goals
+### 1.3 When MCP Is Actually Needed
 
-| Goal | Description |
-|------|-------------|
-| **MCP-first** | Tools Claude can invoke, not commands to type |
-| **Zero terminal** | Developer never leaves Claude Code |
-| **Conversational** | "Fix this" → Claude uses securevibes_fix |
-| **Claude-native** | Feels like a built-in capability |
+MCP makes sense for things Claude can't do with prompts alone:
 
-### 1.5 Non-Goals (v1)
-
-- Real-time continuous monitoring (future)
-- IDE plugins (separate project)
-- GitHub App (separate project)
-- DAST (requires infrastructure)
+| Feature | Needs MCP? | Why |
+|---------|------------|-----|
+| Run security scan | ❌ No | It's just prompts |
+| Save findings to platform | ✅ Yes | External API call |
+| Query scan history | ✅ Yes | External data |
+| CVE/vulnerability lookup | ✅ Yes | External database |
+| SBOM scanning | ✅ Yes | External tooling |
 
 ---
 
-## 2. MCP Tools (Primary Interface)
+## 2. Skill Architecture
 
-These are the tools Claude Code will see and can invoke.
+### 2.1 Directory Structure
 
-### 2.1 Tool Definitions
+```
+securevibes-skill/
+├── SKILL.md                    # Main entry point
+├── methodology/
+│   ├── threat-modeling.md      # STRIDE, attack trees, etc.
+│   ├── code-review.md          # Security patterns, CWEs
+│   ├── assessment.md           # Security checklist
+│   └── output-format.md        # How to structure findings
+├── prompts/
+│   ├── threat-model-prompt.md  # Detailed prompt for threat modeling
+│   ├── code-review-prompt.md   # Detailed prompt for code review
+│   └── assessment-prompt.md    # Detailed prompt for assessment
+├── examples/
+│   ├── sample-findings.json    # Example output format
+│   └── sample-threat-model.md  # Example threat model
+└── reference/
+    ├── cwe-top-25.md           # Common weaknesses
+    ├── owasp-top-10.md         # OWASP reference
+    └── severity-guide.md       # How to rate severity
+```
 
-```typescript
-namespace SecureVibes {
+### 2.2 SKILL.md (Entry Point)
 
-  // Primary: Run a security scan
-  type securevibes_scan = (_: {
-    // Scan target - mutually exclusive
-    path?: string,           // Local directory (default: ".")
-    pr?: number,             // GitHub PR number
-    diff?: string,           // Diff/patch content
-    commit?: string,         // Specific commit
-    
-    // Options
-    severity?: ("critical" | "high" | "medium" | "low")[],
-    agents?: ("assessment" | "threat-modeling" | "code-review")[],
-    timeout?: number,        // Max seconds (default: 300)
-  }) => {
-    scan_id: string,
-    status: "queued" | "running" | "completed" | "failed",
-    summary: {
-      critical: number,
-      high: number,
-      medium: number,
-      low: number,
-    },
-    findings: Finding[],
-    scan_url: string,        // Link to platform dashboard
-  };
+```markdown
+# SecureVibes Security Review Skill
 
-  // Query findings from a completed scan
-  type securevibes_findings = (_: {
-    scan_id: string,
-    severity?: string[],
-    status?: "open" | "resolved" | "ignored",
-    limit?: number,
-  }) => {
-    findings: Finding[],
-    total: number,
-  };
+## Description
+Comprehensive security review using threat modeling, code review, and security assessment.
 
-  // Get fix suggestion for a finding
-  type securevibes_fix = (_: {
-    finding_id: string,
-    scan_id?: string,
-    apply?: boolean,         // Claude wants to apply fix directly
-  }) => {
-    finding: Finding,
-    suggested_fix: {
-      description: string,
-      code_change: {
-        before: string,
-        after: string,
+## When to Use
+- User asks for security review
+- User asks about vulnerabilities
+- PR review with security focus
+- Threat modeling request
+
+## Workflow
+
+### Quick Scan (default)
+1. Read the code/PR
+2. Run code-review methodology
+3. Output findings in structured format
+
+### Full Security Review
+1. **Assessment**: High-level security posture
+2. **Threat Modeling**: STRIDE analysis, attack surface
+3. **Code Review**: Line-by-line vulnerability scan
+4. **Findings**: Compiled, deduplicated, prioritized
+
+## Output Format
+Always output findings as:
+- Severity: critical/high/medium/low
+- CWE ID (if applicable)
+- Location: file:line
+- Description: What's wrong
+- Remediation: How to fix
+- Confidence: high/medium/low
+
+## Sub-Methodologies
+- [Threat Modeling](methodology/threat-modeling.md)
+- [Code Review](methodology/code-review.md)
+- [Assessment](methodology/assessment.md)
+```
+
+---
+
+## 3. Skill Contents
+
+### 3.1 Threat Modeling Methodology
+
+```markdown
+# Threat Modeling Methodology
+
+## Approach: STRIDE
+
+For each component/data flow, analyze:
+
+| Threat | Question | Example |
+|--------|----------|---------|
+| **S**poofing | Can attacker impersonate? | Auth bypass, session hijacking |
+| **T**ampering | Can attacker modify data? | SQL injection, file manipulation |
+| **R**epudiation | Can attacker deny actions? | Missing audit logs |
+| **I**nformation Disclosure | Can attacker access secrets? | Data exposure, verbose errors |
+| **D**enial of Service | Can attacker disrupt service? | Resource exhaustion |
+| **E**levation of Privilege | Can attacker gain access? | Privilege escalation |
+
+## Process
+
+1. **Identify assets**: What are we protecting?
+2. **Map attack surface**: Entry points, data flows
+3. **Apply STRIDE**: For each entry point
+4. **Prioritize**: By impact and likelihood
+5. **Document**: Threats and mitigations
+
+## Output Format
+
+For each threat:
+```json
+{
+  "threat": "SQL Injection in user search",
+  "stride_category": "Tampering",
+  "entry_point": "GET /api/users?search=",
+  "impact": "high",
+  "likelihood": "medium",
+  "mitigation": "Use parameterized queries"
+}
+```
+```
+
+### 3.2 Code Review Methodology
+
+```markdown
+# Security Code Review Methodology
+
+## Focus Areas
+
+### 1. Input Validation
+- [ ] All user input sanitized
+- [ ] SQL queries parameterized
+- [ ] File paths validated
+- [ ] Command injection prevented
+
+### 2. Authentication & Authorization
+- [ ] Auth checks on all endpoints
+- [ ] Session management secure
+- [ ] Password handling correct
+- [ ] RBAC properly implemented
+
+### 3. Data Protection
+- [ ] Secrets not hardcoded
+- [ ] Encryption at rest/transit
+- [ ] PII handled correctly
+- [ ] Logs don't leak sensitive data
+
+### 4. Error Handling
+- [ ] Errors don't leak info
+- [ ] Failures are secure defaults
+- [ ] Exceptions properly caught
+
+## Output Format
+
+For each finding:
+```json
+{
+  "severity": "high",
+  "cwe": "CWE-89",
+  "title": "SQL Injection",
+  "location": "api/users.py:42",
+  "code": "query = f\"SELECT * FROM users WHERE name = '{name}'\"",
+  "description": "User input directly concatenated into SQL query",
+  "remediation": "Use parameterized query: cursor.execute('SELECT * FROM users WHERE name = ?', (name,))",
+  "confidence": "high"
+}
+```
+```
+
+### 3.3 Output Format Specification
+
+```markdown
+# SecureVibes Output Format
+
+## Findings Array
+
+```json
+{
+  "scan_type": "full_review",
+  "timestamp": "2026-01-24T10:00:00Z",
+  "summary": {
+    "critical": 0,
+    "high": 2,
+    "medium": 5,
+    "low": 3
+  },
+  "findings": [
+    {
+      "id": "SV-001",
+      "severity": "high",
+      "cwe": "CWE-89",
+      "title": "SQL Injection in user search",
+      "location": {
+        "file": "api/users.py",
+        "line": 42,
+        "snippet": "query = f\"SELECT * FROM users WHERE name = '{name}'\""
       },
-      explanation: string,
-    },
-    confidence: number,
-  };
-
-  // Get scan status
-  type securevibes_status = (_: {
-    scan_id?: string,
-  }) => {
-    configured: boolean,
-    api_key_valid: boolean,
-    recent_scans: { scan_id: string, status: string, created_at: string }[],
-  };
-
-  // Auto-fix workflow - scan, get findings, fix, re-scan
-  type securevibes_auto_remediate = (_: {
-    path: string,
-    max_iterations?: number,  // default: 3
-  }) => {
-    iterations: number,
-    findings_resolved: number,
-    findings_remaining: number,
-    final_scan_url: string,
-  };
+      "description": "User-controlled input is directly interpolated into SQL query without sanitization.",
+      "impact": "Attacker can read/modify/delete database contents",
+      "remediation": {
+        "description": "Use parameterized queries",
+        "code": "cursor.execute('SELECT * FROM users WHERE name = ?', (name,))"
+      },
+      "confidence": "high",
+      "references": [
+        "https://cwe.mitre.org/data/definitions/89.html",
+        "https://owasp.org/www-community/attacks/SQL_Injection"
+      ]
+    }
+  ]
 }
 ```
 
-### 2.2 Example Conversation
+## Severity Definitions
 
-```
-User: "Review my PR #456 for security issues"
-
-Claude (internally):
-  → calls securevibes_scan({ pr: 456, agents: ["code-review"] })
-  → receives 3 findings (1 critical, 2 medium)
-  → shows findings to user with line numbers and descriptions
-  → user says "Fix the SQL injection"
-  → Claude calls securevibes_fix({ finding_id: "sv-123", apply: true })
-  → Claude applies the fix
-  → Claude re-runs scan to verify
+| Severity | Criteria |
+|----------|----------|
+| Critical | RCE, auth bypass, data breach imminent |
+| High | SQLi, XSS, privilege escalation |
+| Medium | Information disclosure, missing security headers |
+| Low | Best practice violations, minor issues |
 ```
 
 ---
 
-## 3. User Stories (MCP-First)
+## 4. Orchestration Flow
 
-### US-1: Conversational Security Review
-> **As a developer**, I want to ask Claude to "check this for security issues" and have Claude invoke SecureVibes automatically.
-> 
-> **Acceptance:**
-> - [ ] Claude calls `securevibes_scan` without terminal
-> - [ ] Findings appear in conversation
-> - [ ] Critical issues highlighted
+Claude Code handles orchestration natively. The skill just teaches the methodology.
 
-### US-2: Fix What You Find
-> **As a developer**, I want to say "fix this vulnerability" and have Claude apply the fix.
-> 
-> **Acceptance:**
-> - [ ] Claude calls `securevibes_fix({ id: "sv-123", apply: true })`
-> - [ ] Fix is applied to codebase
-> - [ ] Claude re-scans to verify
+### 4.1 User Request → Claude Code Response
 
-### US-3: PR Review Automation
-> **As a developer**, I want Claude to automatically scan PRs when reviewing.
-> 
-> **Acceptance:**
-> - [ ] Claude Code triggers scan on PR open
-> - [ ] Findings appear in PR review comment
-> - [ ] Auto-approve if no critical findings
+```
+User: "Review this PR for security issues"
 
-### US-4: Iterative Remediation
-> **As a developer**, I want Claude to keep fixing until clean.
-> 
-> **Acceptance:**
-> - [ ] Call `securevibes_auto_remediate`
-> - [ ] Claude iterates: scan → fix → scan → fix
-> - [ ] Returns summary of what was fixed
+Claude Code (with SecureVibes skill):
+1. Reads SKILL.md → understands workflow
+2. Reads code-review.md → knows methodology  
+3. Applies methodology to PR
+4. Outputs findings in specified format
+```
+
+### 4.2 Full Review Flow
+
+```
+User: "Do a full security review of this codebase"
+
+Claude Code:
+1. SKILL.md says: Assessment → Threat Model → Code Review → Compile
+2. Runs assessment (reads assessment.md)
+3. Runs threat modeling (reads threat-modeling.md)
+4. Runs code review (reads code-review.md)
+5. Compiles and deduplicates findings
+6. Outputs in specified format
+```
+
+### 4.3 Example Conversation
+
+```
+User: "Check src/api/ for security vulnerabilities"
+
+Claude: I'll perform a security code review using the SecureVibes methodology.
+
+**Scanning src/api/...**
+
+## Findings
+
+### 🔴 HIGH: SQL Injection (CWE-89)
+**Location:** `src/api/users.py:42`
+```python
+query = f"SELECT * FROM users WHERE name = '{name}'"
+```
+**Issue:** User input directly concatenated into SQL query
+**Fix:** Use parameterized query:
+```python
+cursor.execute('SELECT * FROM users WHERE name = ?', (name,))
+```
+
+### 🟡 MEDIUM: Missing Rate Limiting
+**Location:** `src/api/auth.py:15`
+**Issue:** Login endpoint has no rate limiting
+**Fix:** Add rate limiting middleware (e.g., 5 attempts per minute)
+
+---
+**Summary:** 1 high, 1 medium, 0 low
+```
 
 ---
 
-## 4. CLI Commands (Secondary)
+## 5. Platform Integration (Optional MCP)
 
-For power users who want terminal access (optional convenience):
+MCP is **only** needed for features that require external state or APIs.
 
-```bash
-securevibes scan .                          # Scan current directory
-securevibes scan --pr 123                   # Scan GitHub PR
-securevibes scan --diff < patch_file        # Scan diff/patch
-securevibes findings --scan-id <id>         # List findings
-securevibes fix <finding-id>                # Generate fix
-securevibes status                          # Config status
-securevibes auto-remediate --path .         # Iterative fix loop
+### 5.1 When to Use MCP
+
+| Feature | Implementation |
+|---------|----------------|
+| Save findings to SecureVibes Platform | MCP tool: `securevibes_save_findings` |
+| Query scan history | MCP tool: `securevibes_history` |
+| CVE/NVD lookup | MCP tool: `securevibes_cve_lookup` |
+| SBOM scanning | MCP tool: `securevibes_sbom_scan` |
+| Team dashboard | MCP tool: `securevibes_dashboard` |
+
+### 5.2 MCP Tools (Platform Features Only)
+
+```typescript
+// Only for platform integration, NOT for running scans
+
+securevibes_save_findings({
+  findings: Finding[],
+  project: string,
+  branch?: string
+}) → { scan_id: string, dashboard_url: string }
+
+securevibes_history({
+  project: string,
+  limit?: number
+}) → { scans: Scan[] }
+
+securevibes_cve_lookup({
+  cve_id: string
+}) → { cve: CVEDetails }
 ```
 
-These CLI commands are thin wrappers around the MCP tools.
-
----
-
-## 5. Architecture
+### 5.3 Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    AI Coding Agents                             │
-│  ┌──────────────────────┐    ┌──────────────────────┐          │
-│  │ Claude Code          │    │ Codex CLI            │          │
-│  │  → MCP Client        │    │  → MCP + Responses   │          │
-│  └──────────┬───────────┘    └──────────┬───────────┘          │
-│             │                           │                       │
-│             └─────────────┬─────────────┘                       │
-│                           ▼                                     │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │ SecureVibes Agent Server (NEW)                          │   │
-│  │                                                          │   │
-│  │  ┌─────────────────┐    ┌─────────────────────────┐     │   │
-│  │  │ MCP Endpoint    │    │ Responses API Endpoint  │     │   │
-│  │  │ (Claude Code)   │    │ (Codex CLI)             │     │   │
-│  │  └────────┬────────┘    └────────────┬────────────┘     │   │
-│  │           │                          │                   │   │
-│  │           └──────────┬───────────────┘                   │   │
-│  │                      ▼                                   │   │
-│  │           ┌─────────────────────┐                        │   │
-│  │           │ Shared Tool Layer   │                        │   │
-│  │           │ • securevibes_scan  │                        │   │
-│  │           │ • securevibes_fix   │                        │   │
-│  │           │ • securevibes_auto  │                        │   │
-│  │           └─────────────────────┘                        │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                          ↓                                      │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │ Existing SecureVibes Platform                           │   │
-│  │  → Same scan logic, agents, findings                    │   │
-│  │  → No changes needed                                    │   │
-│  └─────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│ Claude Code                                                 │
+│                                                             │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ SecureVibes Skill (installed)                       │   │
+│  │  → Methodology, prompts, output format              │   │
+│  │  → Claude Code handles orchestration                │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                          ↓                                  │
+│            [Findings generated locally]                     │
+│                          ↓                                  │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ SecureVibes MCP (optional)                          │   │
+│  │  → Save findings to platform                        │   │
+│  │  → Query history                                    │   │
+│  │  → CVE lookup                                       │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                          ↓                                  │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ SecureVibes Platform                                │   │
+│  │  → Dashboard, history, team features                │   │
+│  └─────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
 ```
-
-### 5.1 Server Responsibilities
-
-1. **Dual protocol support** — MCP for Claude Code, Responses API for Codex
-2. **Tool registration** — Same tools exposed via both protocols
-3. **Auth** — Validate API key from SecureVibes platform
-4. **Streaming** — SSE progress updates for long-running scans
-5. **Formatting** — Convert findings to agent-readable JSON
-
-### 5.2 Integration with Existing Codebase
-
-Reuses existing `packages/core`:
-- Scanning logic
-- Agent definitions
-- Finding models
-- Configuration
-
-New code:
-- `packages/agent-server/` (NEW)
-  - `main.py` — Server entry (MCP + HTTP)
-  - `mcp/` — MCP protocol handlers
-  - `responses/` — Responses API handlers
-  - `tools.py` — Shared tool definitions
-  - `stream.py` — SSE streaming support
-  - `auth.py` — API key validation
 
 ---
 
 ## 6. Codex Compatibility
 
-OpenAI Codex CLI uses MCP tools but also supports the Responses API directly. This section covers Codex-specific integration.
+### 6.1 AGENTS.md for Codex
 
-**Reference:** [Unrolling the Codex Agent Loop](https://openai.com/index/unrolling-the-codex-agent-loop/)
-
-### 6.1 AGENTS.md Integration
-
-Codex reads `AGENTS.md` for project-level instructions. Provide a security-focused snippet:
+Codex uses AGENTS.md for project-level instructions. Include SecureVibes methodology:
 
 ```markdown
+# AGENTS.md
+
 ## Security Review (SecureVibes)
 
-When reviewing code or PRs:
-1. Run `securevibes_scan` to check for security vulnerabilities
-2. Address all critical/high findings before approving
-3. Use `securevibes_fix` to generate remediation suggestions
+When reviewing code or PRs for security:
 
-Security policy:
-- No PR approval with unresolved critical findings
-- High findings require explicit acknowledgment
-- Medium/low can be tracked as tech debt
+1. Follow the SecureVibes methodology:
+   - Input validation (SQLi, XSS, command injection)
+   - Auth & authorization checks
+   - Data protection (secrets, encryption)
+   - Error handling (info leakage)
+
+2. Output findings as structured JSON with:
+   - severity (critical/high/medium/low)
+   - cwe (if applicable)
+   - location (file:line)
+   - description, remediation, confidence
+
+3. Policy:
+   - Block PRs with critical findings
+   - Require acknowledgment for high findings
+   - Track medium/low as tech debt
 ```
 
-**Deliverables:**
-- Ship `agents-snippet.md` template in docs/
-- Include in MCP server install instructions
+### 6.2 Skill Distribution
 
-### 6.2 Responses API Endpoint
-
-For native Codex integration without MCP:
-
-```
-POST /v1/responses
-Authorization: Bearer <SECUREVIBES_API_KEY>
-
-{
-  "tools": [
-    {
-      "name": "securevibes_scan",
-      "description": "Scan code for security vulnerabilities",
-      "parameters": { ... }
-    }
-  ],
-  "input": [
-    { "role": "user", "content": "scan this directory for vulnerabilities" }
-  ]
-}
-```
-
-**Response (SSE stream):**
-```
-data: {"type": "response.output_item.added", "item": {"type": "function_call", "name": "securevibes_scan"}}
-data: {"type": "response.function_call_arguments.delta", "delta": "{\"path\": \".\"}"}
-data: {"type": "response.output_item.done", "item": {"output": "{\"findings\": [...]}"}}
-```
-
-### 6.3 Streaming Support
-
-Both Claude Code and Codex benefit from streaming progress:
-
-```typescript
-// Streaming response
-securevibes_scan() → 
-  { type: "progress", percent: 10, agent: "threat-model" } →
-  { type: "progress", percent: 40, agent: "code-review" } →
-  { type: "finding", finding: { severity: "high", ... } } →
-  { type: "complete", summary: { critical: 0, high: 1 } }
-```
-
-**Benefits:**
-- Reduced perceived latency
-- Findings appear as discovered
-- Progress visibility for long scans
-
-### 6.4 Auto-Remediate Loop
-
-Codex's agent loop repeats until the model produces a final response. SecureVibes supports this pattern:
-
-```typescript
-securevibes_auto_remediate({
-  path: ".",
-  max_iterations: 3,
-  exit_on: "no_critical_high"
-})
-
-// Loop: scan → fix → re-scan → fix → re-scan
-// Exit when: no critical/high findings OR max iterations
-```
-
-### 6.5 Compatibility Matrix
-
-| Feature | Claude Code | Codex CLI |
-|---------|-------------|-----------|
-| MCP tools | ✅ | ✅ |
-| Responses API | ❌ | ✅ |
-| AGENTS.md | ❌ | ✅ |
-| Streaming | ✅ | ✅ |
-| Auto-remediate | ✅ | ✅ |
+| Platform | Installation |
+|----------|-------------|
+| Claude Code | Install skill via marketplace or local path |
+| Codex CLI | Add to AGENTS.md or $CODEX_HOME/skills/ |
+| Both | Skill files are portable |
 
 ---
 
-## 7. Implementation Roadmap
+## 7. Implementation Plan
 
-### Phase 1: MCP Server (Weeks 1-2)
-- [ ] Set up MCP server structure
-- [ ] Implement `securevibes_scan` tool
-- [ ] Basic auth flow
-- [ ] Test with Claude Code dev mode
+### Phase 1: Core Skill (Week 1-2)
+- [ ] Create skill directory structure
+- [ ] Write SKILL.md entry point
+- [ ] Write threat-modeling.md methodology
+- [ ] Write code-review.md methodology
+- [ ] Write output-format.md specification
+- [ ] Test with Claude Code
 
-### Phase 2: Core Tools (Weeks 2-3)
-- [ ] `securevibes_findings` tool
-- [ ] `securevibes_fix` tool
-- [ ] `securevibes_status` tool
-- [ ] JSON schema validation
+### Phase 2: Reference Materials (Week 2-3)
+- [ ] Add CWE top 25 reference
+- [ ] Add OWASP top 10 reference
+- [ ] Add severity guide
+- [ ] Add example findings
+- [ ] Add example threat models
 
-### Phase 3: Streaming + Codex (Weeks 3-4)
-- [ ] SSE streaming support
-- [ ] Responses API endpoint (`/v1/responses`)
-- [ ] AGENTS.md snippet and docs
-- [ ] Test with Codex CLI
+### Phase 3: Platform MCP (Week 3-4) — Optional
+- [ ] `securevibes_save_findings` tool
+- [ ] `securevibes_history` tool
+- [ ] Platform API integration
+- [ ] Dashboard connection
 
-### Phase 4: Advanced Features (Weeks 4-5)
-- [ ] `securevibes_auto_remediate` tool
-- [ ] PR integration
-- [ ] Rate limiting, caching
-- [ ] Error handling polish
-
-### Phase 5: Polish (Weeks 5-6)
-- [ ] Documentation for both Claude Code and Codex
-- [ ] Publish to MCP registry
-- [ ] Marketplace listings
-- [ ] User testing with both agents
+### Phase 4: Distribution (Week 4-5)
+- [ ] Claude Code marketplace submission
+- [ ] Codex AGENTS.md template
+- [ ] Documentation
+- [ ] Installation guide
 
 ---
 
-## 8. Future Enhancements
+## 8. Migration Path
 
-### v1.1
-- Streaming responses (progress updates)
-- Diff-aware scanning (only changed files)
-- Custom policy enforcement
+### For Existing SecureVibes CLI Users
 
-### v1.5
-- Real-time monitoring mode
-- Team workspaces
-- Compliance reporting
+The CLI continues to work. The skill is an **additional** integration path.
 
-### v2.0
-- IDE plugins (VS Code, JetBrains)
-- GitHub App integration
-- Custom agent definitions
+```
+Before: securevibes scan .
+After:  Claude Code + skill (same methodology, no CLI needed)
+```
+
+### For New Users
+
+1. Install SecureVibes skill in Claude Code
+2. Ask Claude to "review this code for security"
+3. Done — no CLI, no API key, no setup
+
+### Platform Users
+
+1. Install skill + MCP
+2. Scans run locally via skill
+3. Findings sync to platform via MCP
+4. Dashboard shows history, trends, team data
+
+---
+
+## Summary
+
+| Component | What It Is | Status |
+|-----------|------------|--------|
+| SecureVibes Skill | Prompts, methodology, output format | **Primary** |
+| Claude Code | Orchestration, execution | Uses skill |
+| SecureVibes MCP | Platform integration only | **Optional** |
+| SecureVibes CLI | Legacy / standalone | Still works |
+| SecureVibes Platform | Dashboard, history, teams | Separate product |
+
+**The skill IS the product for AI agent users.**
