@@ -1,0 +1,64 @@
+id: "fp-parameterized-query-001"
+name: "Should NOT Flag Parameterized Queries as SQLi"
+description: |
+  Tests that SecureVibes correctly identifies parameterized queries
+  as secure and does not report false positives. This is a critical
+  capability for maintaining user trust.
+  
+  Reference: Anthropic guide emphasizes "Test both the cases where a 
+  behavior should occur and where it shouldn't."
+
+category: "capability"
+tags: ["false-positive", "sqli", "negative-test", "javascript", "node"]
+
+fixture:
+  source: "secure-express-app"
+
+scanner_options:
+  model: "sonnet"
+
+expected_outcome:
+  # Should NOT find SQLi in the secure database code
+  no_vulnerabilities_matching:
+    - cwe_id: "CWE-89"
+      file_path_contains: "database.js"
+  
+  # May find other issues - that's fine (e.g., missing rate limiting)
+  allowed_findings:
+    - severity: ["LOW", "MEDIUM", "HIGH"]
+      # These are acceptable as long as they're not SQLi false positives
+
+graders:
+  - type: artifact_exists
+    files:
+      - ".securevibes/scan_results.json"
+  
+  - type: no_false_positive
+    cwe_ids: ["CWE-89"]
+    files: ["database.js", "queries.js"]
+  
+  - type: llm_rubric
+    rubric: |
+      Verify the agent correctly identified parameterized queries as secure:
+      
+      5 - Excellent: No SQLi reported for database.js, or explicitly
+          noted as secure/not vulnerable. May have found other valid issues.
+      
+      4 - Good: No SQLi reported for the secure files.
+      
+      3 - Adequate: SQLi mentioned but marked as low risk or 
+          "requires investigation" rather than definite vulnerability.
+      
+      2 - Poor: SQLi reported with medium severity for secure code.
+      
+      1 - Fail: SQLi reported as HIGH/CRITICAL for parameterized queries.
+    
+    min_score: 4
+    assertions:
+      - "Parameterized queries in database.js are NOT flagged as vulnerable"
+      - "If database patterns are discussed, they're noted as secure"
+
+tracked_metrics:
+  - n_turns
+  - scan_time_seconds
+  - cost_usd
