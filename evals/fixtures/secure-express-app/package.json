@@ -1,0 +1,15 @@
+{
+  "name": "secure-express-app",
+  "version": "1.0.0",
+  "description": "Secure Express app for eval testing",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "helmet": "^7.1.0",
+    "express-rate-limit": "^7.1.5",
+    "sqlite3": "^5.1.7"
+  }
+}

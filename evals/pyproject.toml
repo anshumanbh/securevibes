@@ -1,0 +1,26 @@
+[project]
+name = "securevibes-evals"
+version = "0.1.0"
+description = "Evaluation framework for SecureVibes AI security agents"
+requires-python = ">=3.10"
+dependencies = [
+    "securevibes",
+    "pyyaml>=6.0",
+    "jsonschema>=4.0",
+    "rich>=13.0",
+    "click>=8.0",
+    "anthropic>=0.40.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[project.scripts]
+securevibes-eval = "harness.runner:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
