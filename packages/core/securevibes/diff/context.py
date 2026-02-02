@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 import json
 import re
 from typing import Dict, Iterable, List
+
+logger = logging.getLogger(__name__)
+
+# Truncation limits for context extraction.
+# These limits prevent excessively large prompts while still providing
+# meaningful context to the LLM for security analysis.
+# - DEFAULT_CONTEXT_LIMIT: Used when no relevant sections are found (fallback)
+# - MATCHED_SECTIONS_LIMIT: Used when matching sections are extracted (allows more content)
+DEFAULT_CONTEXT_LIMIT = 4000
+MATCHED_SECTIONS_LIMIT = 8000
 
 
 IGNORE_TOKENS = {
@@ -53,7 +64,7 @@ def extract_relevant_architecture(security_md_path: Path, changed_files: List[st
 
     tokens = _build_tokens(changed_files)
     if not tokens:
-        return text[:4000].strip()
+        return text[:DEFAULT_CONTEXT_LIMIT].strip()
 
     sections: List[Dict[str, str]] = []
     current_heading = ""
@@ -78,10 +89,10 @@ def extract_relevant_architecture(security_md_path: Path, changed_files: List[st
             matched_sections.append(f"{section['heading']}\n{section['content']}".strip())
 
     if not matched_sections:
-        return text[:4000].strip()
+        return text[:DEFAULT_CONTEXT_LIMIT].strip()
 
     combined_text = "\n\n".join(matched_sections).strip()
-    return combined_text[:8000].strip()
+    return combined_text[:MATCHED_SECTIONS_LIMIT].strip()
 
 
 def _load_threat_model(threat_model_path: Path) -> List[Dict[str, object]]:
@@ -90,7 +101,8 @@ def _load_threat_model(threat_model_path: Path) -> List[Dict[str, object]]:
         return []
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        logger.warning("Failed to parse threat model at %s: %s", threat_model_path, e)
         return []
     if isinstance(data, list):
         return [item for item in data if isinstance(item, dict)]
@@ -165,7 +177,8 @@ def check_vuln_overlap(vulns_path: Path, changed_files: List[str]) -> List[Dict[
         return []
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        logger.warning("Failed to parse vulnerabilities at %s: %s", vulns_path, e)
         return []
     if not isinstance(data, list):
         return []

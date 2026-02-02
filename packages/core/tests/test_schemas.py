@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from securevibes.models.schemas import (
     fix_pr_vulnerabilities_json,
     fix_vulnerabilities_json,
@@ -11,6 +13,25 @@ from securevibes.models.schemas import (
     VULNERABILITY_SCHEMA,
     VULNERABILITIES_ARRAY_SCHEMA,
 )
+
+
+@pytest.fixture
+def valid_pr_vuln():
+    """Fixture providing a valid PR vulnerability dict for testing."""
+    return {
+        "threat_id": "THREAT-001",
+        "finding_type": "new_threat",
+        "title": "Gateway URL injection",
+        "description": "Test description",
+        "severity": "high",
+        "file_path": "ui/app.ts",
+        "line_number": 10,
+        "code_snippet": "const gatewayUrl = params.get('gatewayUrl')",
+        "attack_scenario": "Attacker controls gatewayUrl",
+        "evidence": "Token sent to attacker",
+        "cwe_id": "CWE-918",
+        "recommendation": "Validate URL input",
+    }
 
 
 class TestFixVulnerabilitiesJson:
@@ -420,72 +441,37 @@ class TestSchemaStructure:
 class TestFixPrVulnerabilitiesJson:
     """Tests for fix_pr_vulnerabilities_json() auto-fix function."""
 
-    def _make_valid_pr_vuln(self):
-        return {
-            "threat_id": "THREAT-001",
-            "finding_type": "new_threat",
-            "title": "Gateway URL injection",
-            "description": "Test description",
-            "severity": "high",
-            "file_path": "ui/app.ts",
-            "line_number": 10,
-            "code_snippet": "const gatewayUrl = params.get('gatewayUrl')",
-            "attack_scenario": "Attacker controls gatewayUrl",
-            "evidence": "Token sent to attacker",
-            "cwe_id": "CWE-918",
-            "recommendation": "Validate URL input",
-        }
-
-    def test_wrapped_pr_vulns_unwrapped(self):
-        vuln = self._make_valid_pr_vuln()
-        content = json.dumps({"vulnerabilities": [vuln]})
+    def test_wrapped_pr_vulns_unwrapped(self, valid_pr_vuln):
+        content = json.dumps({"vulnerabilities": [valid_pr_vuln]})
 
         fixed, modified = fix_pr_vulnerabilities_json(content)
 
         assert modified is True
-        assert json.loads(fixed) == [vuln]
+        assert json.loads(fixed) == [valid_pr_vuln]
 
-    def test_flat_pr_array_unchanged(self):
-        vuln = self._make_valid_pr_vuln()
-        content = json.dumps([vuln])
+    def test_flat_pr_array_unchanged(self, valid_pr_vuln):
+        content = json.dumps([valid_pr_vuln])
 
         fixed, modified = fix_pr_vulnerabilities_json(content)
 
         assert modified is False
-        assert json.loads(fixed) == [vuln]
+        assert json.loads(fixed) == [valid_pr_vuln]
 
 
 class TestValidatePrVulnerabilitiesJson:
     """Tests for validate_pr_vulnerabilities_json() validation function."""
 
-    def _make_valid_pr_vuln(self):
-        return {
-            "threat_id": "THREAT-001",
-            "finding_type": "new_threat",
-            "title": "Gateway URL injection",
-            "description": "Test description",
-            "severity": "high",
-            "file_path": "ui/app.ts",
-            "line_number": 10,
-            "code_snippet": "const gatewayUrl = params.get('gatewayUrl')",
-            "attack_scenario": "Attacker controls gatewayUrl",
-            "evidence": "Token sent to attacker",
-            "cwe_id": "CWE-918",
-            "recommendation": "Validate URL input",
-        }
-
-    def test_valid_pr_vuln(self):
-        content = json.dumps([self._make_valid_pr_vuln()])
+    def test_valid_pr_vuln(self, valid_pr_vuln):
+        content = json.dumps([valid_pr_vuln])
 
         is_valid, error = validate_pr_vulnerabilities_json(content)
 
         assert is_valid is True
         assert error is None
 
-    def test_missing_required_field(self):
-        vuln = self._make_valid_pr_vuln()
-        del vuln["attack_scenario"]
-        content = json.dumps([vuln])
+    def test_missing_required_field(self, valid_pr_vuln):
+        del valid_pr_vuln["attack_scenario"]
+        content = json.dumps([valid_pr_vuln])
 
         is_valid, error = validate_pr_vulnerabilities_json(content)
 

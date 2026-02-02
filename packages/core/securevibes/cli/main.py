@@ -18,7 +18,7 @@ from securevibes.diff.extractor import (
     get_diff_from_file,
     get_diff_from_git_range,
 )
-from securevibes.diff.parser import parse_unified_diff
+from securevibes.diff.parser import DiffContext, parse_unified_diff
 
 console = Console()
 
@@ -351,7 +351,6 @@ def scan(
     help="Output format (default: markdown)",
 )
 @click.option("--output", "-o", type=click.Path(), help="Output file path")
-@click.option("--force", is_flag=True, help="Skip confirmation prompts")
 @click.option("--debug", is_flag=True, help="Show verbose diagnostic output")
 @click.option(
     "--severity",
@@ -369,7 +368,6 @@ def pr_review(
     model: str,
     format: str,
     output: Optional[str],
-    force: bool,
     debug: bool,
     severity: str,
 ):
@@ -607,7 +605,7 @@ async def _run_pr_review(
     repo: Path,
     model: str,
     debug: bool,
-    diff_context,
+    diff_context: DiffContext,
     known_vulns_path: Optional[Path],
     severity_threshold: str,
 ):

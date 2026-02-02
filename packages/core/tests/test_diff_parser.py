@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from securevibes.diff.extractor import get_diff_from_commits
+from securevibes.diff.extractor import (
+    get_diff_from_commits,
+    get_diff_from_git_range,
+    _validate_git_ref,
+)
 from securevibes.diff.parser import extract_changed_code_with_context, parse_unified_diff
 
 
@@ -91,3 +95,77 @@ def test_get_diff_from_commits_error(monkeypatch):
 
     with pytest.raises(RuntimeError, match="bad revision"):
         get_diff_from_commits(Path("."), "bad..range")
+
+
+class TestGitRefValidation:
+    """Tests for git ref validation to prevent command injection."""
+
+    def test_valid_branch_names(self):
+        """Valid branch names should pass validation."""
+        valid_refs = [
+            "main",
+            "feature/add-login",
+            "fix-123",
+            "release_v1.0",
+            "HEAD",
+            "HEAD~1",
+            "HEAD^2",
+            "origin/main",
+            "refs/heads/main",
+        ]
+        for ref in valid_refs:
+            _validate_git_ref(ref)  # Should not raise
+
+    def test_valid_commit_ranges(self):
+        """Valid commit ranges should pass validation."""
+        valid_ranges = [
+            "abc123..def456",
+            "main...feature",
+            "HEAD~1..HEAD",
+            "v1.0..v2.0",
+        ]
+        for ref in valid_ranges:
+            _validate_git_ref(ref)  # Should not raise
+
+    def test_invalid_refs_with_shell_metacharacters(self):
+        """Refs with shell metacharacters should be rejected."""
+        invalid_refs = [
+            "main; rm -rf /",
+            "branch$(whoami)",
+            "branch`id`",
+            "branch|cat /etc/passwd",
+            "branch & echo pwned",
+            "branch\nmalicious",
+            "branch'injection",
+            'branch"injection',
+        ]
+        for ref in invalid_refs:
+            with pytest.raises(ValueError, match="Invalid git ref"):
+                _validate_git_ref(ref)
+
+    def test_empty_ref_rejected(self):
+        """Empty refs should be rejected."""
+        with pytest.raises(ValueError, match="cannot be empty"):
+            _validate_git_ref("")
+
+    def test_get_diff_from_git_range_validates_refs(self, monkeypatch):
+        """get_diff_from_git_range should validate refs before execution."""
+        # Ensure subprocess.run is never called for invalid refs
+        def fail_if_called(*_args, **_kwargs):
+            pytest.fail("subprocess.run should not be called for invalid refs")
+
+        monkeypatch.setattr("securevibes.diff.extractor.subprocess.run", fail_if_called)
+
+        with pytest.raises(ValueError, match="Invalid git ref"):
+            get_diff_from_git_range(Path("."), "main; rm -rf /", "HEAD")
+
+    def test_get_diff_from_commits_validates_range(self, monkeypatch):
+        """get_diff_from_commits should validate the range before execution."""
+
+        def fail_if_called(*_args, **_kwargs):
+            pytest.fail("subprocess.run should not be called for invalid refs")
+
+        monkeypatch.setattr("securevibes.diff.extractor.subprocess.run", fail_if_called)
+
+        with pytest.raises(ValueError, match="Invalid git ref"):
+            get_diff_from_commits(Path("."), "abc$(id)..def")
