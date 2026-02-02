@@ -55,13 +55,17 @@ For each changed file:
    - Where does data flow after being accepted?
    - What security assumptions are being made?
 
-## CRITICAL: gatewayUrl Pattern
+## Heuristic: Untrusted Destination + Sensitive Data
 
-For vulnerabilities like the gatewayUrl issue, detect this pattern:
-1. New parameter/input being parsed from untrusted source (URL, form, etc.)
-2. Parameter controls sensitive operation (connection target, file path, etc.)
-3. No validation before use
-4. Sensitive data (tokens, credentials) flows to the controlled destination
+Use this as a heuristic (not proof). Only report if the diff shows concrete evidence.
+Look for this pattern:
+1. New parameter/input comes from an untrusted source (URL, form, header, etc.)
+2. That input controls a sensitive destination (URL/host, file path, queue, bucket, etc.)
+3. No validation/allowlist/canonicalization before use
+4. Sensitive data or privileged requests flow to the controlled destination
+
+Abstract example (illustrative only):
+- Untrusted "target" decides where a request is sent, and auth tokens are attached
 
 ## OUTPUT FORMAT
 
