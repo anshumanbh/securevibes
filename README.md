@@ -142,6 +142,21 @@ securevibes scan . --debug
 securevibes scan . --quiet
 ```
 
+### PR Review
+
+PR review compares diffs against existing scan artifacts in `.securevibes/`:
+
+```bash
+# Compare branches
+securevibes pr-review . --base main --head feature-branch
+
+# Commit range
+securevibes pr-review . --range abc123~1..abc123
+
+# Patch file
+securevibes pr-review . --diff changes.patch
+```
+
 ### Agentic Detection Override
 
 SecureVibes automatically detects agentic applications and requires OWASP ASI threats in threat models. Override with:

@@ -202,6 +202,10 @@ class MarkdownReporter:
                 if issue.cwe_id:
                     lines.append(f"**CWE:** {issue.cwe_id}  ")
                 lines.append(f"**Severity:** {icon} {issue.severity.value.capitalize()}")
+                if issue.finding_type:
+                    lines.append(
+                        f"**Finding Type:** {issue.finding_type.replace('_', ' ').title()}"
+                    )
 
                 # DAST validation status
                 if result.dast_enabled and issue.validation_status:
@@ -225,6 +229,18 @@ class MarkdownReporter:
                 lines.append("")
                 lines.append(issue.description)
                 lines.append("")
+
+                if issue.attack_scenario:
+                    lines.append("**Attack Scenario:**")
+                    lines.append("")
+                    lines.append(issue.attack_scenario)
+                    lines.append("")
+
+                if issue.evidence and not result.dast_enabled:
+                    lines.append("**Evidence:**")
+                    lines.append("")
+                    lines.append(issue.evidence)
+                    lines.append("")
 
                 # Code snippet if available
                 if issue.code_snippet:

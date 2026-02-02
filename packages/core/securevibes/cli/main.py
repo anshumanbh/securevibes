@@ -13,6 +13,12 @@ from rich import box
 from securevibes import __version__
 from securevibes.models.issue import Severity
 from securevibes.scanner.scanner import Scanner
+from securevibes.diff.extractor import (
+    get_diff_from_commits,
+    get_diff_from_file,
+    get_diff_from_git_range,
+)
+from securevibes.diff.parser import parse_unified_diff
 
 console = Console()
 
@@ -330,6 +336,162 @@ def scan(
         sys.exit(1)
 
 
+@cli.command("pr-review")
+@click.argument("path", type=click.Path(exists=True), default=".")
+@click.option("--base", help="Base branch/commit (e.g., main)")
+@click.option("--head", help="Head branch/commit (e.g., feature-branch)")
+@click.option("--range", "commit_range", help="Commit range (e.g., abc123~1..abc123)")
+@click.option("--diff", "diff_file", type=click.Path(exists=True), help="Path to diff/patch file")
+@click.option("--model", "-m", default="sonnet", help="Claude model to use (e.g., sonnet, haiku)")
+@click.option(
+    "--format",
+    "-f",
+    type=click.Choice(["markdown", "json", "table"]),
+    default="markdown",
+    help="Output format (default: markdown)",
+)
+@click.option("--output", "-o", type=click.Path(), help="Output file path")
+@click.option("--force", is_flag=True, help="Skip confirmation prompts")
+@click.option("--debug", is_flag=True, help="Show verbose diagnostic output")
+@click.option(
+    "--severity",
+    "-s",
+    type=click.Choice(["critical", "high", "medium", "low"]),
+    default="medium",
+    help="Minimum severity to report",
+)
+def pr_review(
+    path: str,
+    base: Optional[str],
+    head: Optional[str],
+    commit_range: Optional[str],
+    diff_file: Optional[str],
+    model: str,
+    format: str,
+    output: Optional[str],
+    force: bool,
+    debug: bool,
+    severity: str,
+):
+    """
+    Review a PR diff for security vulnerabilities.
+
+    Examples:
+
+        securevibes pr-review . --base main --head feature-branch
+
+        securevibes pr-review . --range abc123~1..abc123
+
+        securevibes pr-review . --diff changes.patch
+    """
+    try:
+        repo = Path(path).resolve()
+        securevibes_dir = repo / ".securevibes"
+        required_artifacts = ["SECURITY.md", "THREAT_MODEL.json"]
+        missing = [a for a in required_artifacts if not (securevibes_dir / a).exists()]
+        if missing:
+            console.print(f"[bold red]❌ Missing required artifacts:[/bold red] {missing}")
+            console.print("Run 'securevibes scan' first to generate base artifacts.")
+            sys.exit(1)
+
+        if diff_file:
+            diff_content = get_diff_from_file(Path(diff_file))
+        elif commit_range:
+            diff_content = get_diff_from_commits(repo, commit_range)
+        elif base and head:
+            diff_content = get_diff_from_git_range(repo, base, head)
+        else:
+            console.print("[bold red]❌ Must specify --base/--head, --range, or --diff[/bold red]")
+            sys.exit(1)
+
+        if not diff_content.strip():
+            console.print("[yellow]No changes found in diff.[/yellow]")
+            sys.exit(0)
+
+        diff_context = parse_unified_diff(diff_content)
+        if not diff_context.changed_files:
+            console.print("[yellow]No changed files found in diff.[/yellow]")
+            sys.exit(0)
+
+        known_vulns_path = securevibes_dir / "VULNERABILITIES.json"
+        known_vulns = known_vulns_path if known_vulns_path.exists() else None
+
+        result = asyncio.run(
+            _run_pr_review(
+                repo,
+                model,
+                debug,
+                diff_context,
+                known_vulns,
+                severity,
+            )
+        )
+
+        # Safety filter by severity threshold (defense in depth)
+        if severity:
+            min_severity = Severity(severity)
+            severity_order = ["info", "low", "medium", "high", "critical"]
+            min_index = severity_order.index(min_severity.value)
+            result.issues = [
+                issue
+                for issue in result.issues
+                if severity_order.index(issue.severity.value) >= min_index
+            ]
+
+        if format == "markdown":
+            from securevibes.reporters.markdown_reporter import MarkdownReporter
+
+            if output:
+                output_path = Path(output)
+                if not output_path.is_absolute():
+                    output_path = repo / ".securevibes" / output
+                try:
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    MarkdownReporter.save(result, output_path)
+                    console.print(f"\n✅ PR review report saved to: {output_path}")
+                except (IOError, OSError, PermissionError) as e:
+                    console.print(f"[bold red]❌ Error writing output file:[/bold red] {e}")
+                    sys.exit(1)
+            else:
+                default_path = repo / ".securevibes" / "pr_review_report.md"
+                try:
+                    MarkdownReporter.save(result, default_path)
+                    console.print(f"\n📄 PR review report: [cyan]{default_path}[/cyan]")
+                except (IOError, OSError, PermissionError) as e:
+                    console.print(f"[bold red]❌ Error writing report:[/bold red] {e}")
+                    sys.exit(1)
+
+        elif format == "json":
+            import json
+
+            output_data = result.to_dict()
+            if output:
+                try:
+                    output_path = Path(output)
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    output_path.write_text(json.dumps(output_data, indent=2))
+                    console.print(f"\n✅ Results saved to: {output}")
+                except (IOError, OSError, PermissionError) as e:
+                    console.print(f"[bold red]❌ Error writing output file:[/bold red] {e}")
+                    sys.exit(1)
+            else:
+                console.print_json(data=output_data)
+
+        else:
+            _display_table_results(result, quiet=False)
+
+        if result.critical_count > 0:
+            sys.exit(2)
+        if result.high_count > 0:
+            sys.exit(1)
+        sys.exit(0)
+
+    except Exception as e:
+        console.print(f"\n[bold red]❌ Error:[/bold red] {e}", style="red")
+        console.print("\n[dim]Run with --help for usage information[/dim]")
+        sys.exit(1)
+
+
 def _is_production_url(url: str) -> bool:
     """Detect if a URL appears to be a production system"""
     url_lower = url.lower()
@@ -439,6 +601,24 @@ async def _run_scan(
         result = await scanner.scan(str(repo_path))
 
     return result
+
+
+async def _run_pr_review(
+    repo: Path,
+    model: str,
+    debug: bool,
+    diff_context,
+    known_vulns_path: Optional[Path],
+    severity_threshold: str,
+):
+    """Run the PR review with the configured scanner."""
+    scanner = Scanner(model=model, debug=debug)
+    return await scanner.pr_review(
+        str(repo),
+        diff_context,
+        known_vulns_path,
+        severity_threshold,
+    )
 
 
 def _display_table_results(result, quiet: bool):

@@ -117,6 +117,11 @@ securevibes scan . --no-agentic   # ASI threats optional
 securevibes scan /path/to/go-app        # Go project
 securevibes scan /path/to/ruby-app      # Ruby project
 securevibes scan /path/to/mixed-stack   # Multi-language project
+
+# PR review (requires prior scan artifacts in .securevibes/)
+securevibes pr-review . --base main --head feature-branch
+securevibes pr-review . --range abc123~1..abc123
+securevibes pr-review . --diff changes.patch
 ```
 
 ---

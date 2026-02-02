@@ -3,8 +3,10 @@
 import json
 
 from securevibes.models.schemas import (
+    fix_pr_vulnerabilities_json,
     fix_vulnerabilities_json,
     validate_vulnerabilities_json,
+    validate_pr_vulnerabilities_json,
     get_output_format_config,
     VULNERABILITY_SCHEMA,
     VULNERABILITIES_ARRAY_SCHEMA,
@@ -413,3 +415,79 @@ class TestSchemaStructure:
         """Array schema should use vulnerability schema as items."""
         assert VULNERABILITIES_ARRAY_SCHEMA["type"] == "array"
         assert VULNERABILITIES_ARRAY_SCHEMA["items"] == VULNERABILITY_SCHEMA
+
+
+class TestFixPrVulnerabilitiesJson:
+    """Tests for fix_pr_vulnerabilities_json() auto-fix function."""
+
+    def _make_valid_pr_vuln(self):
+        return {
+            "threat_id": "THREAT-001",
+            "finding_type": "new_threat",
+            "title": "Gateway URL injection",
+            "description": "Test description",
+            "severity": "high",
+            "file_path": "ui/app.ts",
+            "line_number": 10,
+            "code_snippet": "const gatewayUrl = params.get('gatewayUrl')",
+            "attack_scenario": "Attacker controls gatewayUrl",
+            "evidence": "Token sent to attacker",
+            "cwe_id": "CWE-918",
+            "recommendation": "Validate URL input",
+        }
+
+    def test_wrapped_pr_vulns_unwrapped(self):
+        vuln = self._make_valid_pr_vuln()
+        content = json.dumps({"vulnerabilities": [vuln]})
+
+        fixed, modified = fix_pr_vulnerabilities_json(content)
+
+        assert modified is True
+        assert json.loads(fixed) == [vuln]
+
+    def test_flat_pr_array_unchanged(self):
+        vuln = self._make_valid_pr_vuln()
+        content = json.dumps([vuln])
+
+        fixed, modified = fix_pr_vulnerabilities_json(content)
+
+        assert modified is False
+        assert json.loads(fixed) == [vuln]
+
+
+class TestValidatePrVulnerabilitiesJson:
+    """Tests for validate_pr_vulnerabilities_json() validation function."""
+
+    def _make_valid_pr_vuln(self):
+        return {
+            "threat_id": "THREAT-001",
+            "finding_type": "new_threat",
+            "title": "Gateway URL injection",
+            "description": "Test description",
+            "severity": "high",
+            "file_path": "ui/app.ts",
+            "line_number": 10,
+            "code_snippet": "const gatewayUrl = params.get('gatewayUrl')",
+            "attack_scenario": "Attacker controls gatewayUrl",
+            "evidence": "Token sent to attacker",
+            "cwe_id": "CWE-918",
+            "recommendation": "Validate URL input",
+        }
+
+    def test_valid_pr_vuln(self):
+        content = json.dumps([self._make_valid_pr_vuln()])
+
+        is_valid, error = validate_pr_vulnerabilities_json(content)
+
+        assert is_valid is True
+        assert error is None
+
+    def test_missing_required_field(self):
+        vuln = self._make_valid_pr_vuln()
+        del vuln["attack_scenario"]
+        content = json.dumps([vuln])
+
+        is_valid, error = validate_pr_vulnerabilities_json(content)
+
+        assert is_valid is False
+        assert "attack_scenario" in error
