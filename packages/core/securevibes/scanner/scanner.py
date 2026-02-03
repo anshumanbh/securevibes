@@ -1037,7 +1037,8 @@ Only report findings at or above: {severity_threshold}
                 )
             else:
                 return self._load_scan_results(
-                    securevibes_dir, repo, files_scanned, scan_start_time
+                    securevibes_dir, repo, files_scanned, scan_start_time,
+                    single_subagent, resume_from
                 )
         except RuntimeError as e:
             self.console.print(f"❌ Error loading scan results: {e}", style="bold red")
@@ -1290,7 +1291,8 @@ Only report findings at or above: {severity_threshold}
         )
 
     def _load_scan_results(
-        self, securevibes_dir: Path, repo: Path, files_scanned: int, scan_start_time: float
+        self, securevibes_dir: Path, repo: Path, files_scanned: int, scan_start_time: float,
+        single_subagent: Optional[str] = None, resume_from: Optional[str] = None
     ) -> ScanResult:
         """
         Load and parse scan results from agent-generated files.
