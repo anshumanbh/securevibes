@@ -155,7 +155,23 @@ securevibes pr-review . --range abc123~1..abc123
 
 # Patch file
 securevibes pr-review . --diff changes.patch
+
+# Output formats (default: markdown)
+securevibes pr-review . --base main --head feature-branch --format markdown
+securevibes pr-review . --base main --head feature-branch --format json --output pr_review.json
+securevibes pr-review . --base main --head feature-branch --format table
+
+# Filter by severity
+securevibes pr-review . --base main --head feature-branch --severity high
+
+# Model + debug
+securevibes pr-review . --base main --head feature-branch --model haiku --debug
 ```
+
+PR review artifacts (written to `.securevibes/`):
+- `DIFF_CONTEXT.json` (parsed diff summary)
+- `PR_VULNERABILITIES.json` (raw findings)
+- `pr_review_report.md` (default markdown report)
 
 ### Agentic Detection Override
 
@@ -464,6 +480,9 @@ export SECUREVIBES_CODE_REVIEW_MODEL="opus"  # Use opus for maximum accuracy
 
 # Report Generator - JSON formatting
 export SECUREVIBES_REPORT_GENERATOR_MODEL="sonnet"
+
+# PR Code Review Agent - PR diff analysis
+export SECUREVIBES_PR_CODE_REVIEW_MODEL="sonnet"
 ```
 
 **Available models:** `haiku` (fast/cheap), `sonnet` (balanced), `opus` (thorough/expensive)

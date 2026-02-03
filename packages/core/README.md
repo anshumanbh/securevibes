@@ -122,7 +122,20 @@ securevibes scan /path/to/mixed-stack   # Multi-language project
 securevibes pr-review . --base main --head feature-branch
 securevibes pr-review . --range abc123~1..abc123
 securevibes pr-review . --diff changes.patch
+
+# PR review output formats (default: markdown)
+securevibes pr-review . --base main --head feature-branch --format markdown
+securevibes pr-review . --base main --head feature-branch --format json --output pr_review.json
+securevibes pr-review . --base main --head feature-branch --format table
+
+# PR review severity threshold
+securevibes pr-review . --base main --head feature-branch --severity high
 ```
+
+PR review artifacts (written to `.securevibes/`):
+- `DIFF_CONTEXT.json` (parsed diff summary)
+- `PR_VULNERABILITIES.json` (raw findings)
+- `pr_review_report.md` (default markdown report)
 
 ---
 
@@ -164,6 +177,7 @@ Override specific agent models via environment variables:
 # Override specific agent models (overrides CLI --model flag)
 export SECUREVIBES_CODE_REVIEW_MODEL="opus"  # Max accuracy
 export SECUREVIBES_THREAT_MODELING_MODEL="sonnet"
+export SECUREVIBES_PR_CODE_REVIEW_MODEL="sonnet"
 
 # Control analysis depth (default: 50)
 export SECUREVIBES_MAX_TURNS=75  # Deeper analysis
