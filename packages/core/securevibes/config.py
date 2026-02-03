@@ -206,6 +206,7 @@ class AgentConfig:
         "assessment": "sonnet",  # Fast architecture analysis
         "threat_modeling": "sonnet",  # Fast pattern reconnaissance
         "code_review": "sonnet",  # Deep security validation
+        "pr_code_review": "sonnet",  # PR diff security review
         "report_generator": "sonnet",  # Accurate report compilation
     }
 
@@ -226,6 +227,7 @@ class AgentConfig:
             SECUREVIBES_ASSESSMENT_MODEL
             SECUREVIBES_THREAT_MODELING_MODEL
             SECUREVIBES_CODE_REVIEW_MODEL
+            SECUREVIBES_PR_CODE_REVIEW_MODEL
             SECUREVIBES_REPORT_GENERATOR_MODEL
 
         Args:

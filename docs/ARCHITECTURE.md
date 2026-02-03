@@ -209,7 +209,26 @@ The threat modeling agent can load technology-specific skills to identify specia
 8. Only report CONFIRMED vulnerabilities with complete evidence
 9. Distinguish real issues from false positives
 
-### 4. Report Generator Agent
+### 4. PR Code Review Agent
+
+**Purpose:** Review PR diffs for new vulnerabilities using prior scan artifacts
+
+**Inputs:**
+- `SECURITY.md`
+- `THREAT_MODEL.json`
+- `VULNERABILITIES.json` (optional, for dedupe)
+- `DIFF_CONTEXT.json` (parsed diff summary)
+
+**Outputs:** `PR_VULNERABILITIES.json` containing PR-specific findings
+
+**Tools Used:** Read, Grep, Glob, Write
+
+**Notes:**
+- Invoked by `securevibes pr-review`
+- Focuses on changed code only
+- Respects the configured severity threshold
+
+### 5. Report Generator Agent
 
 **Purpose:** Generate final scan report from all security artifacts
 
@@ -224,7 +243,7 @@ The threat modeling agent can load technology-specific skills to identify specia
 - All confirmed vulnerabilities
 - Severity breakdown
 
-### 5. DAST Agent (Optional)
+### 6. DAST Agent (Optional)
 
 **Purpose:** Dynamically validate vulnerabilities via HTTP testing using auto-discovered skills
 
@@ -276,6 +295,7 @@ When testing CWE-639 (IDOR), the `authorization-testing` skill:
 
 **Key Methods:**
 - `scan(repo_path)` - Full security scan with all agents
+- `pr_review(repo_path, diff_context, known_vulns_path, severity_threshold)` - PR diff review
 
 **Responsibilities:**
 - Configure `ClaudeAgentOptions` with agent definitions and hooks
@@ -300,6 +320,15 @@ All agents communicate by reading/writing files in `.securevibes/`:
 └── scan_results.json      # Final compiled results
 ```
 
+PR review artifacts (created by `securevibes pr-review`):
+
+```
+.securevibes/
+├── DIFF_CONTEXT.json       # Parsed diff summary
+├── PR_VULNERABILITIES.json # PR review findings
+└── pr_review_report.md     # Default markdown report
+```
+
 **Why Files?**
 - ✅ Reliable - no text parsing
 - ✅ Inspectable - view any stage
@@ -319,6 +348,16 @@ Repository → Assessment Agent → SECURITY.md
                                                            Report Generator → scan_results.json
                                                                       ↓ (Optional: if --target-url)
                                                             DAST Agent → DAST_VALIDATION.json
+```
+
+PR review flow (requires prior scan artifacts):
+
+```
+Diff/Range/Patch → DIFF_CONTEXT.json
+                           ↓
+                PR Code Review Agent → PR_VULNERABILITIES.json
+                           ↓
+                 Markdown Reporter → pr_review_report.md
 ```
 
 ---
@@ -355,6 +394,7 @@ export ANTHROPIC_API_KEY="your-api-key"
      - `SECUREVIBES_ASSESSMENT_MODEL` (default: `sonnet`)
      - `SECUREVIBES_THREAT_MODELING_MODEL` (default: `sonnet`)
      - `SECUREVIBES_CODE_REVIEW_MODEL` (default: `sonnet`)
+     - `SECUREVIBES_PR_CODE_REVIEW_MODEL` (default: `sonnet`)
      - `SECUREVIBES_REPORT_GENERATOR_MODEL` (default: `sonnet`)
      - `SECUREVIBES_DAST_MODEL` (default: `sonnet`)
    - **Max Turns**: Configurable via `SECUREVIBES_MAX_TURNS` (default: 50)
@@ -375,6 +415,15 @@ After a scan, SecureVibes creates these files in `.securevibes/`:
 ├── VULNERABILITIES.json   # Code review output → Report generator/DAST input
 ├── DAST_VALIDATION.json   # DAST output (optional, if --target-url provided)
 └── scan_results.json      # Final compiled results
+```
+
+PR review creates these files in `.securevibes/`:
+
+```
+.securevibes/
+├── DIFF_CONTEXT.json       # Parsed diff summary
+├── PR_VULNERABILITIES.json # PR review findings
+└── pr_review_report.md     # Default markdown report
 ```
 
 ### SECURITY.md
@@ -427,6 +476,38 @@ Array of confirmed vulnerabilities with evidence:
     "cwe_id": "CWE-XXX",
     "recommendation": "How to fix",
     "evidence": "Why this is exploitable"
+  }
+]
+```
+
+### DIFF_CONTEXT.json (PR Review)
+Parsed diff summary written by `pr-review`:
+```json
+{
+  "files": [...],
+  "added_lines": 12,
+  "removed_lines": 3,
+  "changed_files": ["path/to/file.py"]
+}
+```
+
+### PR_VULNERABILITIES.json (PR Review)
+PR-specific findings tied to changed lines:
+```json
+[
+  {
+    "threat_id": "THREAT-XXX",
+    "finding_type": "new_threat|threat_enabler|mitigation_removal",
+    "title": "Vulnerability title",
+    "description": "...",
+    "severity": "critical|high|medium|low",
+    "file_path": "relative/path/to/file.py",
+    "line_number": 42,
+    "code_snippet": "actual vulnerable code",
+    "attack_scenario": "...",
+    "evidence": "...",
+    "cwe_id": "CWE-XXX",
+    "recommendation": "How to fix"
   }
 ]
 ```

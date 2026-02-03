@@ -6,7 +6,7 @@ from typing import Dict, Optional
 PROMPTS_DIR = Path(__file__).parent
 
 # Agents that should have shared security rules injected
-SECURITY_AGENTS = {"threat_modeling", "code_review"}
+SECURITY_AGENTS = {"threat_modeling", "code_review", "pr_code_review"}
 
 
 def load_shared_rules() -> Optional[str]:
@@ -78,6 +78,7 @@ def load_all_agent_prompts() -> Dict[str, str]:
             "assessment": load_prompt("assessment"),
             "threat_modeling": load_prompt("threat_modeling"),
             "code_review": load_prompt("code_review"),
+            "pr_code_review": load_prompt("pr_code_review"),
             "report_generator": load_prompt("report_generator"),
             "dast": load_prompt("dast"),
         }

@@ -85,6 +85,52 @@ VULNERABILITIES_ARRAY_SCHEMA: Dict[str, Any] = {
     "description": "Flat array of vulnerability objects - no wrapper",
 }
 
+# JSON Schema for PR review vulnerabilities
+PR_VULNERABILITY_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "threat_id": {"type": "string"},
+        "finding_type": {
+            "type": "string",
+            "enum": ["new_threat", "threat_enabler", "mitigation_removal"],
+        },
+        "title": {"type": "string"},
+        "description": {"type": "string"},
+        "severity": {
+            "type": "string",
+            "enum": ["critical", "high", "medium", "low"],
+        },
+        "file_path": {"type": "string"},
+        "line_number": {"type": "integer"},
+        "code_snippet": {"type": "string"},
+        "attack_scenario": {"type": "string"},
+        "evidence": {"type": "string"},
+        "cwe_id": {"type": "string"},
+        "recommendation": {"type": "string"},
+    },
+    "required": [
+        "threat_id",
+        "finding_type",
+        "title",
+        "description",
+        "severity",
+        "file_path",
+        "line_number",
+        "code_snippet",
+        "attack_scenario",
+        "evidence",
+        "cwe_id",
+        "recommendation",
+    ],
+    "additionalProperties": False,
+}
+
+PR_VULNERABILITIES_ARRAY_SCHEMA: Dict[str, Any] = {
+    "type": "array",
+    "items": PR_VULNERABILITY_SCHEMA,
+    "description": "Flat array of PR vulnerability objects - no wrapper",
+}
+
 # Common wrapper keys that agents mistakenly use
 WRAPPER_KEYS = ["vulnerabilities", "issues", "results", "findings", "data"]
 
@@ -305,6 +351,52 @@ def fix_vulnerabilities_json(content: str) -> Tuple[str, bool]:
     return content, False
 
 
+def fix_pr_vulnerabilities_json(content: str) -> Tuple[str, bool]:
+    """
+    Fix common JSON format issues in PR vulnerability output.
+
+    Handles:
+    1. Wrapped arrays: {"vulnerabilities": [...]} -> [...]
+    2. Nested wrappers: {"summary": {...}, "findings": [...]} -> [...]
+    3. Already correct flat arrays: [...] -> [...] (no change)
+
+    Args:
+        content: Raw JSON string from agent output
+
+    Returns:
+        Tuple of (fixed_content, was_modified)
+    """
+    if not content or not content.strip():
+        return "[]", True
+
+    content = content.strip()
+
+    if content.startswith("["):
+        return content, False
+
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        return content, False
+
+    if isinstance(data, list):
+        return json.dumps(data, indent=2), False
+
+    if isinstance(data, dict):
+        for key in WRAPPER_KEYS:
+            if key in data and isinstance(data[key], list):
+                return json.dumps(data[key], indent=2), True
+
+        for value in data.values():
+            if isinstance(value, list):
+                return json.dumps(value, indent=2), True
+
+        if "threat_id" in data or "title" in data:
+            return json.dumps([data], indent=2), True
+
+    return content, False
+
+
 def validate_vulnerabilities_json(content: str) -> Tuple[bool, Optional[str]]:
     """
     Validate that JSON content matches the vulnerabilities array schema.
@@ -349,6 +441,55 @@ def validate_vulnerabilities_json(content: str) -> Tuple[bool, Optional[str]]:
         severity = vuln.get("severity", "").lower()
         if severity not in valid_severities:
             return False, f"Item {i} has invalid severity: {vuln.get('severity')}"
+
+    return True, None
+
+
+def validate_pr_vulnerabilities_json(content: str) -> Tuple[bool, Optional[str]]:
+    """
+    Validate that JSON content matches the PR vulnerabilities array schema.
+
+    Args:
+        content: JSON string to validate
+
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    if not content or not content.strip():
+        return False, "Empty content"
+
+    content = content.strip()
+
+    if not content.startswith("["):
+        return False, "Output must be a flat JSON array starting with '['"
+
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as e:
+        return False, f"Invalid JSON: {e}"
+
+    if not isinstance(data, list):
+        return False, "Output must be a JSON array"
+
+    required_fields = set(PR_VULNERABILITY_SCHEMA["required"])
+    valid_severities = {"critical", "high", "medium", "low"}
+    valid_finding_types = {"new_threat", "threat_enabler", "mitigation_removal"}
+
+    for i, vuln in enumerate(data):
+        if not isinstance(vuln, dict):
+            return False, f"Item {i} is not an object"
+
+        missing = required_fields - set(vuln.keys())
+        if missing:
+            return False, f"Item {i} missing required fields: {missing}"
+
+        severity = str(vuln.get("severity", "")).lower()
+        if severity not in valid_severities:
+            return False, f"Item {i} has invalid severity: {vuln.get('severity')}"
+
+        finding_type = str(vuln.get("finding_type", "")).lower()
+        if finding_type not in valid_finding_types:
+            return False, f"Item {i} has invalid finding_type: {vuln.get('finding_type')}"
 
     return True, None
 

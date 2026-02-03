@@ -54,9 +54,15 @@ class TestAgentDefinitions:
         """Default SECUREVIBES_AGENTS dict should exist"""
         assert SECUREVIBES_AGENTS is not None
         assert isinstance(SECUREVIBES_AGENTS, dict)
-        assert (
-            len(SECUREVIBES_AGENTS) == 5
-        )  # assessment, threat-modeling, code-review, report-generator, dast
+        expected_agents = {
+            "assessment",
+            "threat-modeling",
+            "code-review",
+            "pr-code-review",
+            "report-generator",
+            "dast",
+        }
+        assert set(SECUREVIBES_AGENTS.keys()) == expected_agents
 
     def test_agent_definition_structure(self, monkeypatch):
         """Agent definitions should have correct structure"""
