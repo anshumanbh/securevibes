@@ -16,8 +16,10 @@ from rich.console import Console
 from securevibes.config import ScanConfig
 from securevibes.models.schemas import (
     fix_threat_model_json,
+    fix_pr_vulnerabilities_json,
     fix_vulnerabilities_json,
     validate_threat_model_json,
+    validate_pr_vulnerabilities_json,
     validate_vulnerabilities_json,
 )
 
@@ -273,29 +275,62 @@ def create_json_validation_hook(console: Console, debug: bool):
         if not content:
             return {}
 
+        is_pr_review = "PR_VULNERABILITIES.json" in file_path
+
         # Attempt to fix common format issues
-        fixed_content, was_modified = fix_vulnerabilities_json(content)
+        if is_pr_review:
+            fixed_content, was_modified = fix_pr_vulnerabilities_json(content)
+        else:
+            fixed_content, was_modified = fix_vulnerabilities_json(content)
 
         if was_modified:
             if debug:
+                if is_pr_review:
+                    console.print(
+                        "  🔧 Auto-fixed PR_VULNERABILITIES.json format (unwrapped wrapper object)",
+                        style="yellow",
+                    )
+                else:
+                    console.print(
+                        "  🔧 Auto-fixed VULNERABILITIES.json format (unwrapped wrapper object)",
+                        style="yellow",
+                    )
+            else:
                 console.print(
-                    "  🔧 Auto-fixed VULNERABILITIES.json format (unwrapped wrapper object)",
+                    (
+                        "  ⚠️  Fixed JSON format in PR_VULNERABILITIES.json"
+                        if is_pr_review
+                        else "  ⚠️  Fixed JSON format in VULNERABILITIES.json"
+                    ),
                     style="yellow",
                 )
-            else:
-                console.print("  ⚠️  Fixed JSON format in VULNERABILITIES.json", style="yellow")
 
         # Validate the (potentially fixed) content
-        is_valid, error_msg = validate_vulnerabilities_json(fixed_content)
+        if is_pr_review:
+            is_valid, error_msg = validate_pr_vulnerabilities_json(fixed_content)
+        else:
+            is_valid, error_msg = validate_vulnerabilities_json(fixed_content)
 
         if not is_valid:
             console.print(
-                f"  ❌ VULNERABILITIES.json validation failed: {error_msg}", style="bold red"
+                (
+                    f"  ❌ PR_VULNERABILITIES.json validation failed: {error_msg}"
+                    if is_pr_review
+                    else f"  ❌ VULNERABILITIES.json validation failed: {error_msg}"
+                ),
+                style="bold red",
             )
             # Don't block - let it write but warn
             # The Pydantic validation in scanner.py will catch it later
         elif debug:
-            console.print("  ✅ VULNERABILITIES.json schema validated", style="green")
+            console.print(
+                (
+                    "  ✅ PR_VULNERABILITIES.json schema validated"
+                    if is_pr_review
+                    else "  ✅ VULNERABILITIES.json schema validated"
+                ),
+                style="green",
+            )
 
         # If content was modified, return updated input
         if was_modified:

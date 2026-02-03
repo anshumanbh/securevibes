@@ -424,6 +424,9 @@ When deciding whether to keep or remove code:
 # Optional artifacts (only when --target-url provided):
 # - DAST_VALIDATION.json (created by DAST agent)
 # - DAST_TEST_ACCOUNTS.json (test accounts for DAST validation)
+# - DIFF_CONTEXT.json (created by pr-review)
+# - PR_VULNERABILITIES.json (created by pr-review)
+# - pr_review_report.md (default markdown report from pr-review)
 
 # Cleanup old artifacts periodically:
 rm -rf .securevibes/*.old

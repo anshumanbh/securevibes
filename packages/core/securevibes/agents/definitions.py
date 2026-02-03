@@ -94,6 +94,12 @@ def create_agent_definitions(
             tools=["Read", "Grep", "Glob", "Write"],
             model=config.get_agent_model("code_review", cli_override=cli_model),
         ),
+        "pr-code-review": AgentDefinition(
+            description="Analyzes PR diffs for new vulnerabilities with architecture and threat context",
+            prompt=AGENT_PROMPTS["pr_code_review"],
+            tools=["Read", "Grep", "Glob", "Write"],
+            model=config.get_agent_model("pr_code_review", cli_override=cli_model),
+        ),
         "report-generator": AgentDefinition(
             description="JSON file processor that reformats VULNERABILITIES.json to scan_results.json",
             prompt=AGENT_PROMPTS["report_generator"],

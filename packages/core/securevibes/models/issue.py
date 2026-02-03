@@ -56,6 +56,11 @@ class SecurityIssue:
     exploitability_score: Optional[float] = None
     validated_at: Optional[str] = None
 
+    # PR review fields
+    finding_type: Optional[str] = None
+    attack_scenario: Optional[str] = None
+    evidence: Optional[str] = None
+
     def to_dict(self) -> dict:
         """Convert to dictionary"""
         base_dict = {
@@ -69,6 +74,13 @@ class SecurityIssue:
             "recommendation": self.recommendation,
             "cwe_id": self.cwe_id,
         }
+
+        if self.finding_type:
+            base_dict["finding_type"] = self.finding_type
+        if self.attack_scenario:
+            base_dict["attack_scenario"] = self.attack_scenario
+        if self.evidence:
+            base_dict["evidence"] = self.evidence
 
         # Include DAST fields if present
         if self.validation_status:

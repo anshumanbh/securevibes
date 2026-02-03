@@ -44,35 +44,6 @@ Review with 'git status' or 'git diff --cached' if needed."
 
 ---
 
-## Security Analysis Workflow
-
-### Code Generation with Corridor
-
-**CRITICAL: Before generating any code:**
-
-1. ✅ **Generate a plan** - Always create a detailed plan before writing code
-2. ✅ **Use Corridor tool** - ALWAYS analyze the plan using Corridor's MCP Server
-3. ✅ **Review analysis** - Consider Corridor's security recommendations
-4. ✅ **Generate code** - Implement with security best practices
-
-**Corridor Integration:**
-- Use the `corridor___Corridor` tool to analyze implementation plans
-- Provide context about the feature type (e.g., "API endpoint", "authentication", "file upload")
-- Review Corridor's security guidance before proceeding with implementation
-- Apply recommended security patterns and vulnerability prevention
-
-**Example workflow:**
-```
-User request → Generate plan → Corridor analysis → Review feedback → Generate code → Test
-```
-
-**Never:**
-- ❌ Generate code without a plan
-- ❌ Skip Corridor analysis for "simple" changes
-- ❌ Ignore security recommendations from Corridor
-
----
-
 ## Code Style
 
 ### Python Standards

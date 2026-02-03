@@ -18,11 +18,13 @@ from claude_agent_sdk.types import (
 
 from securevibes.agents.definitions import create_agent_definitions
 from securevibes.models.result import ScanResult
-from securevibes.models.issue import SecurityIssue
+from securevibes.models.issue import SecurityIssue, Severity
 from securevibes.prompts.loader import load_prompt
 from securevibes.config import config, LanguageConfig, ScanConfig
 from securevibes.scanner.subagent_manager import SubAgentManager, ScanMode
 from securevibes.scanner.detection import collect_agentic_detection_files, detect_agentic_patterns
+from securevibes.diff.context import extract_relevant_architecture, filter_relevant_threats
+from securevibes.diff.parser import DiffContext
 from securevibes.scanner.hooks import (
     create_dast_security_hook,
     create_pre_tool_hook,
@@ -37,6 +39,8 @@ SECUREVIBES_DIR = ".securevibes"
 SECURITY_FILE = "SECURITY.md"
 THREAT_MODEL_FILE = "THREAT_MODEL.json"
 VULNERABILITIES_FILE = "VULNERABILITIES.json"
+PR_VULNERABILITIES_FILE = "PR_VULNERABILITIES.json"
+DIFF_CONTEXT_FILE = "DIFF_CONTEXT.json"
 SCAN_RESULTS_FILE = "scan_results.json"
 
 
@@ -67,6 +71,7 @@ class ProgressTracker:
             "assessment": "1/4: Architecture Assessment",
             "threat-modeling": "2/4: Threat Modeling (STRIDE Analysis)",
             "code-review": "3/4: Code Review (Security Analysis)",
+            "pr-code-review": "PR Review: Code Review",
             "report-generator": "4/4: Report Generation",
             "dast": "5/5: DAST Validation",
         }
@@ -83,6 +88,7 @@ class ProgressTracker:
             "assessment": "Architecture Assessment",
             "threat-modeling": "Threat Modeling (STRIDE Analysis)",
             "code-review": "Code Review (Security Analysis)",
+            "pr-code-review": "PR Review (Security Analysis)",
             "report-generator": "Report Generation",
             "dast": "DAST Validation",
         }
@@ -208,6 +214,10 @@ class ProgressTracker:
             Path(f).name for f in self.files_written
         ]:
             self.console.print(f"   Created: {SCAN_RESULTS_FILE}", style="green")
+        elif agent_name == "pr-code-review" and PR_VULNERABILITIES_FILE in [
+            Path(f).name for f in self.files_written
+        ]:
+            self.console.print(f"   Created: {PR_VULNERABILITIES_FILE}", style="green")
         elif agent_name == "dast" and "DAST_VALIDATION.json" in [
             Path(f).name for f in self.files_written
         ]:
@@ -578,6 +588,184 @@ class Scanner:
                     target_accounts.write_text(accounts_file.read_text())
 
         return await self._execute_scan(repo)
+
+    async def pr_review(
+        self,
+        repo_path: str,
+        diff_context: DiffContext,
+        known_vulns_path: Optional[Path],
+        severity_threshold: str,
+    ) -> ScanResult:
+        """
+        Run context-aware PR security review.
+
+        Args:
+            repo_path: Path to repository to scan
+            diff_context: Parsed diff context
+            known_vulns_path: Optional path to VULNERABILITIES.json for dedupe
+            severity_threshold: Minimum severity to report
+        """
+        repo = Path(repo_path).resolve()
+        if not repo.exists():
+            raise ValueError(f"Repository path does not exist: {repo_path}")
+
+        securevibes_dir = repo / SECUREVIBES_DIR
+        try:
+            securevibes_dir.mkdir(exist_ok=True)
+        except (OSError, PermissionError) as e:
+            raise RuntimeError(f"Failed to create output directory {securevibes_dir}: {e}")
+
+        scan_start_time = time.time()
+
+        diff_context_path = securevibes_dir / DIFF_CONTEXT_FILE
+        diff_context_path.write_text(json.dumps(diff_context.to_json(), indent=2))
+
+        architecture_context = extract_relevant_architecture(
+            securevibes_dir / SECURITY_FILE,
+            diff_context.changed_files,
+        )
+
+        relevant_threats = filter_relevant_threats(
+            securevibes_dir / THREAT_MODEL_FILE,
+            diff_context.changed_files,
+        )
+
+        known_vulns = []
+        if known_vulns_path and known_vulns_path.exists():
+            try:
+                raw_known = known_vulns_path.read_text(encoding="utf-8")
+                parsed = json.loads(raw_known)
+                if isinstance(parsed, list):
+                    known_vulns = parsed
+            except (OSError, json.JSONDecodeError):
+                known_vulns = []
+
+        agents = create_agent_definitions(cli_model=self.model)
+        pr_agent = agents["pr-code-review"]
+
+        contextualized_prompt = f"""{pr_agent.prompt}
+
+## ARCHITECTURE CONTEXT (from SECURITY.md)
+{architecture_context}
+
+## RELEVANT EXISTING THREATS (from THREAT_MODEL.json)
+{json.dumps(relevant_threats, indent=2)}
+
+## KNOWN VULNERABILITIES (optional, from VULNERABILITIES.json)
+{json.dumps(known_vulns, indent=2)}
+
+## DIFF TO ANALYZE
+The diff has been written to DIFF_CONTEXT.json. Read it to see the changes.
+Changed files: {diff_context.changed_files}
+
+## SEVERITY THRESHOLD
+Only report findings at or above: {severity_threshold}
+"""
+
+        pr_agent.prompt = contextualized_prompt
+
+        tracker = ProgressTracker(self.console, debug=self.debug, single_subagent="pr-code-review")
+        tracker.current_phase = "pr-code-review"
+        detected_languages = LanguageConfig.detect_languages(repo) if repo else set()
+        pre_tool_hook = create_pre_tool_hook(tracker, self.console, self.debug, detected_languages)
+        post_tool_hook = create_post_tool_hook(tracker, self.console, self.debug)
+        subagent_hook = create_subagent_hook(tracker)
+        json_validation_hook = create_json_validation_hook(self.console, self.debug)
+
+        from claude_agent_sdk.types import HookMatcher
+
+        options = ClaudeAgentOptions(
+            agents=agents,
+            cwd=str(repo),
+            setting_sources=["project"],
+            allowed_tools=["Read", "Write", "Grep", "Glob", "LS"],
+            max_turns=config.get_max_turns(),
+            permission_mode="bypassPermissions",
+            model=self.model,
+            hooks={
+                "PreToolUse": [
+                    HookMatcher(hooks=[json_validation_hook]),
+                    HookMatcher(hooks=[pre_tool_hook]),
+                ],
+                "PostToolUse": [HookMatcher(hooks=[post_tool_hook])],
+                "SubagentStop": [HookMatcher(hooks=[subagent_hook])],
+            },
+        )
+
+        orchestration_prompt = load_prompt("pr_review", category="orchestration")
+
+        try:
+            async with ClaudeSDKClient(options=options) as client:
+                await client.query(orchestration_prompt)
+                async for message in client.receive_messages():
+                    if isinstance(message, AssistantMessage):
+                        for block in message.content:
+                            if isinstance(block, TextBlock):
+                                tracker.on_assistant_text(block.text)
+                    elif isinstance(message, ResultMessage):
+                        if message.total_cost_usd:
+                            self.total_cost = message.total_cost_usd
+                        break
+        except Exception as e:
+            self.console.print(f"\n❌ PR review failed: {e}", style="bold red")
+            raise
+
+        pr_vulns_path = securevibes_dir / PR_VULNERABILITIES_FILE
+        if not pr_vulns_path.exists():
+            return ScanResult(
+                repository_path=str(repo),
+                issues=[],
+                files_scanned=len(diff_context.changed_files),
+                scan_time_seconds=round(time.time() - scan_start_time, 2),
+                total_cost_usd=round(self.total_cost, 4),
+            )
+
+        try:
+            pr_vulns = json.loads(pr_vulns_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            raise RuntimeError(f"Failed to parse {PR_VULNERABILITIES_FILE}: {e}")
+
+        if known_vulns:
+            pr_vulns = dedupe_pr_vulns(pr_vulns, known_vulns)
+
+        issues = []
+        for vuln in pr_vulns if isinstance(pr_vulns, list) else []:
+            if not isinstance(vuln, dict):
+                continue
+            line_value = vuln.get("line_number")
+            try:
+                line_number = int(line_value) if line_value is not None else 0
+            except (TypeError, ValueError):
+                line_number = 0
+            try:
+                severity = Severity(vuln.get("severity", "medium"))
+            except ValueError:
+                severity = Severity.MEDIUM
+
+            issues.append(
+                SecurityIssue(
+                    id=str(vuln.get("threat_id", "UNKNOWN")),
+                    title=str(vuln.get("title", "")),
+                    description=str(vuln.get("description", "")),
+                    severity=severity,
+                    file_path=str(vuln.get("file_path", "")),
+                    line_number=line_number,
+                    code_snippet=str(vuln.get("code_snippet", "")),
+                    cwe_id=vuln.get("cwe_id"),
+                    recommendation=vuln.get("recommendation"),
+                    finding_type=vuln.get("finding_type"),
+                    attack_scenario=vuln.get("attack_scenario"),
+                    evidence=vuln.get("evidence"),
+                )
+            )
+
+        return ScanResult(
+            repository_path=str(repo),
+            issues=issues,
+            files_scanned=len(diff_context.changed_files),
+            scan_time_seconds=round(time.time() - scan_start_time, 2),
+            total_cost_usd=round(self.total_cost, 4),
+        )
 
     async def _execute_scan(
         self, repo: Path, single_subagent: Optional[str] = None, resume_from: Optional[str] = None
@@ -1161,6 +1349,7 @@ class Scanner:
                         code_snippet=code_snippet or "",
                         cwe_id=vuln.cwe_id,
                         recommendation=vuln.recommendation,
+                        evidence=str(vuln.evidence) if vuln.evidence is not None else None,
                     )
                 )
 
@@ -1188,3 +1377,22 @@ class Scanner:
             self._regenerate_artifacts(scan_result, securevibes_dir)
 
         return scan_result
+
+
+def dedupe_pr_vulns(pr_vulns: list[dict], known_vulns: list[dict]) -> list[dict]:
+    """Drop PR findings that match known issues by file + threat_id/title."""
+    known_keys = set()
+    for vuln in known_vulns:
+        if not isinstance(vuln, dict):
+            continue
+        key = (vuln.get("file_path"), vuln.get("threat_id") or vuln.get("title"))
+        known_keys.add(key)
+
+    filtered: list[dict] = []
+    for vuln in pr_vulns:
+        if not isinstance(vuln, dict):
+            continue
+        key = (vuln.get("file_path"), vuln.get("threat_id") or vuln.get("title"))
+        if key not in known_keys:
+            filtered.append(vuln)
+    return filtered

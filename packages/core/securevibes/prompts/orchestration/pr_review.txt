@@ -1,0 +1,16 @@
+Perform a context-aware PR security review.
+
+PHASE: PR CODE REVIEW
+- Announce: "Starting PR Code Review"
+- Use the 'pr-code-review' agent to analyze the diff
+- Reads .securevibes/DIFF_CONTEXT.json, SECURITY.md, THREAT_MODEL.json
+- Reads .securevibes/VULNERABILITIES.json if present (dedupe)
+- Creates .securevibes/PR_VULNERABILITIES.json
+- Report: "PR code review complete" when done
+
+CRITICAL RULES:
+- Execute ONLY the pr-code-review agent (no other phases)
+- WAIT for completion before finishing
+- VERIFY PR_VULNERABILITIES.json exists after completion
+- Do NOT delegate work to other agents via Task tool
+- Keep responses brief - focus on invoking the agent and reporting completion
