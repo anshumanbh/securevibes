@@ -33,6 +33,14 @@ from securevibes.scanner.hooks import (
     create_json_validation_hook,
     create_threat_model_validation_hook,
 )
+from securevibes.scanner.artifacts import update_pr_review_artifacts
+from securevibes.scanner.state import (
+    build_full_scan_entry,
+    get_repo_branch,
+    get_repo_head_commit,
+    update_scan_state,
+    utc_timestamp,
+)
 
 # Constants for artifact paths
 SECUREVIBES_DIR = ".securevibes"
@@ -42,6 +50,7 @@ VULNERABILITIES_FILE = "VULNERABILITIES.json"
 PR_VULNERABILITIES_FILE = "PR_VULNERABILITIES.json"
 DIFF_CONTEXT_FILE = "DIFF_CONTEXT.json"
 SCAN_RESULTS_FILE = "scan_results.json"
+SCAN_STATE_FILE = "scan_state.json"
 
 
 class ProgressTracker:
@@ -595,6 +604,7 @@ class Scanner:
         diff_context: DiffContext,
         known_vulns_path: Optional[Path],
         severity_threshold: str,
+        update_artifacts: bool = False,
     ) -> ScanResult:
         """
         Run context-aware PR security review.
@@ -727,6 +737,14 @@ Only report findings at or above: {severity_threshold}
 
         if known_vulns:
             pr_vulns = dedupe_pr_vulns(pr_vulns, known_vulns)
+
+        if update_artifacts and isinstance(pr_vulns, list):
+            update_result = update_pr_review_artifacts(securevibes_dir, pr_vulns)
+            if update_result.new_components_detected:
+                self.console.print(
+                    "⚠️  New components detected. Consider running full scan.",
+                    style="yellow",
+                )
 
         issues = []
         for vuln in pr_vulns if isinstance(pr_vulns, list) else []:
@@ -1375,6 +1393,20 @@ Only report findings at or above: {severity_threshold}
         # Regenerate artifacts with merged validation data
         if scan_result.dast_enabled:
             self._regenerate_artifacts(scan_result, securevibes_dir)
+
+        # Update scan state only for full scans (not subagent/resume)
+        if single_subagent is None and resume_from is None:
+            commit = get_repo_head_commit(repo)
+            branch = get_repo_branch(repo)
+            if commit and branch:
+                update_scan_state(
+                    securevibes_dir / SCAN_STATE_FILE,
+                    full_scan=build_full_scan_entry(
+                        commit=commit,
+                        branch=branch,
+                        timestamp=utc_timestamp(),
+                    ),
+                )
 
         return scan_result
 

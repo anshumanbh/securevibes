@@ -7,7 +7,9 @@
 
 ## Overview
 
-Three enhancements to improve the pr-review feature based on testing with OpenClaw security advisories.
+Three enhancements to improve the pr-review feature based on testing with OpenClaw
+security advisories. This plan is implementation-ready and includes edge cases,
+CLI behavior, and test expectations.
 
 ---
 
@@ -34,11 +36,13 @@ def normalize_pr_vulnerability(vuln: dict) -> dict:
     normalized = {}
 
     # threat_id: accept 'id', 'threat_id', 'finding_id'
-    normalized['threat_id'] = vuln.get('threat_id') or vuln.get('id') or 'UNKNOWN'
+    normalized['threat_id'] = vuln.get('threat_id') or vuln.get('id') or vuln.get('finding_id')
+    if not normalized['threat_id']:
+        normalized['threat_id'] = derive_pr_finding_id(vuln)  # stable hash of file+title+line
 
     # finding_type: infer from category if missing
     if 'finding_type' not in vuln:
-        normalized['finding_type'] = 'new_threat'  # default
+        normalized['finding_type'] = infer_finding_type(vuln) or 'unknown'
 
     # line_number: flatten array to first element
     if 'line_numbers' in vuln and isinstance(vuln['line_numbers'], list):
@@ -47,13 +51,7 @@ def normalize_pr_vulnerability(vuln: dict) -> dict:
         normalized['line_number'] = vuln.get('line_number', 0)
 
     # cwe_id: extract from vulnerability_types array
-    if 'vulnerability_types' in vuln:
-        for vtype in vuln['vulnerability_types']:
-            if 'CWE-' in vtype:
-                normalized['cwe_id'] = vtype.split(':')[0].strip()
-                break
-    else:
-        normalized['cwe_id'] = vuln.get('cwe_id', '')
+    normalized['cwe_id'] = extract_cwe_id(vuln) or vuln.get('cwe_id', '')
 
     # Copy other required fields
     for field in ['title', 'description', 'severity', 'file_path',
@@ -67,6 +65,19 @@ def normalize_pr_vulnerability(vuln: dict) -> dict:
 ```
 
 Update `fix_pr_vulnerabilities_json()` to call normalization after unwrapping.
+
+Implementation details:
+
+- Add helper functions in `schemas.py`:
+  - `derive_pr_finding_id(vuln: Mapping[str, object]) -> str`:
+    Stable hash of `file_path`, `title`, and `line_number` (or first `line_numbers` entry).
+  - `infer_finding_type(vuln: Mapping[str, object]) -> str | None`:
+    Map known agent fields (e.g., `category`) to expected enums; return `None` if unsure.
+  - `extract_cwe_id(vuln: Mapping[str, object]) -> str | None`:
+    Accept `vulnerability_types` entries as strings or dicts, use regex `CWE-\d+`.
+- Preserve `line_numbers` by adding it to `evidence` (if present) to avoid losing context.
+- Log a warning when normalization fills missing fields or alters types.
+- Do not default to `new_threat`; unknowns must not be treated as new threats.
 
 ### Files to Modify
 
@@ -85,7 +96,8 @@ securevibes pr-review . --range abc..def --update-artifacts
 
 ### Implementation
 
-After PR review completes, optionally update base artifacts:
+After PR review completes, optionally update base artifacts. The command should
+auto-detect what to update (no separate flags for threats vs vulnerabilities):
 
 1. **Append new threats to THREAT_MODEL.json**:
    ```python
@@ -98,7 +110,7 @@ After PR review completes, optionally update base artifacts:
 2. **Append new vulns to VULNERABILITIES.json**:
    ```python
    for vuln in pr_vulns:
-       if vuln not in existing_vulns:  # dedupe by file+title
+       if vuln_key(vuln) not in existing_keys:  # dedupe by stable key
            vulnerabilities.append(vuln)
    ```
 
@@ -107,6 +119,17 @@ After PR review completes, optionally update base artifacts:
    if any_new_components_detected(pr_vulns):
        console.print("⚠️  New components detected. Consider running full scan.")
    ```
+
+Implementation details:
+
+- `vuln_key(vuln)` uses normalized fields: `file_path`, `title`, `line_number`, `severity`.
+- `new_threat` findings only update THREAT_MODEL; `known_vuln` or `regression`
+  update VULNERABILITIES. `unknown` findings are ignored for artifact updates
+  (but still reported).
+- `any_new_components_detected` heuristic:
+  - Use top-level directory + file extension as a component proxy.
+  - Compare against existing THREAT_MODEL components list when available.
+  - If no component list exists, print the warning but do not auto-update SECURITY.md.
 
 ### Files to Modify
 
@@ -155,6 +178,21 @@ securevibes pr-review . --last 10
 securevibes catchup . --branch main
 ```
 
+### CLI Behavior
+
+- `--range`, `--since-last-scan`, `--since`, and `--last` are mutually exclusive.
+- `--since` is **inclusive** and interpreted in Pacific time
+  (`America/Los_Angeles`) at midnight of the provided date.
+- If `scan_state.json` is missing **or** the last scan is on a different branch:
+  - Print a clear message.
+  - Prompt the user: “No baseline scan found for this branch. Run a baseline
+    full scan now? [y/N]”.
+  - If the user declines, exit with a non-zero status and instructions.
+  - If non-interactive (no TTY), exit with a message instructing the user to run
+    a baseline scan first.
+- Baseline scan = `securevibes scan .` to generate SECURITY.md, THREAT_MODEL.json,
+  VULNERABILITIES.json, and initialize `.securevibes/scan_state.json`.
+
 ### Workflow
 
 ```
@@ -189,6 +227,8 @@ securevibes catchup . --branch main
 
 ### Cron Setup (macOS/Linux)
 
+Note: requires a baseline scan to create `.securevibes/scan_state.json`.
+
 ```bash
 # Daily at 6 AM
 0 6 * * * cd /path/to/openclaw && git pull origin main && securevibes pr-review . --since-last-scan --output daily-review-$(date +%Y%m%d).md
@@ -203,6 +243,7 @@ securevibes catchup . --branch main
 - `packages/core/securevibes/cli/main.py` - Add new CLI options
 - `packages/core/securevibes/diff/extractor.py` - Add commit range helpers
 - `packages/core/securevibes/scanner/scanner.py` - Integrate state tracking
+- `.gitignore` - Add `.securevibes/` if scan state should remain local
 
 ---
 
@@ -236,3 +277,18 @@ securevibes pr-review /Users/anshumanbhartiya/repos/openclaw/ --range eaace3423~
 1. **Schema fix** - Quick win, improves reliability
 2. **Cron + commit tracking** - Enables automated daily scanning
 3. **Update artifacts** - Keeps context fresh over time
+
+## Additional Tests to Add
+
+- `normalize_pr_vulnerability`:
+  - `finding_id`/`id`/`threat_id` mapping + derived ID.
+  - `line_numbers` list normalization + preservation in `evidence`.
+  - `vulnerability_types` parsing for string/dict entries with regex.
+  - `finding_type` inference fallback to `unknown`.
+- CLI parsing:
+  - Mutual exclusion between range/last/since/since-last-scan.
+  - `--since` timezone parsing in `America/Los_Angeles`.
+- State tracking:
+  - Missing `scan_state.json` prompt flow.
+  - Branch mismatch prompt flow.
+  - Non-interactive mode exits with instructions.

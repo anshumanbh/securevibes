@@ -84,3 +84,86 @@ def test_pr_review_empty_diff_exits_cleanly(tmp_path: Path):
 
     assert result.exit_code == 0
     assert "No changes found" in result.output
+
+
+def test_pr_review_rejects_multiple_diff_sources(tmp_path: Path):
+    """Multiple diff sources should be rejected."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+
+    (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+
+    diff_file = tmp_path / "changes.patch"
+    diff_file.write_text("diff --git a/a b/a\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "pr-review",
+            str(repo),
+            "--diff",
+            str(diff_file),
+            "--range",
+            "abc123..def456",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Choose exactly one" in result.output
+
+
+def test_pr_review_since_last_scan_requires_baseline(tmp_path: Path):
+    """Missing scan_state.json should require a baseline scan."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+
+    (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["pr-review", str(repo), "--since-last-scan"])
+
+    assert result.exit_code == 1
+    assert "baseline scan" in result.output.lower()
+
+
+def test_pr_review_since_invalid_date(tmp_path: Path):
+    """Invalid --since date should be rejected."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+
+    (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["pr-review", str(repo), "--since", "2026-02-99"])
+
+    assert result.exit_code == 1
+    assert "YYYY-MM-DD" in result.output
+
+
+def test_pr_review_since_no_commits(tmp_path: Path, monkeypatch):
+    """No commits since date should exit cleanly."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+
+    (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+
+    monkeypatch.setattr("securevibes.cli.main.get_commits_since", lambda *_args, **_kwargs: [])
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["pr-review", str(repo), "--since", "2026-02-01"])
+
+    assert result.exit_code == 0
+    assert "No commits since 2026-02-01" in result.output
