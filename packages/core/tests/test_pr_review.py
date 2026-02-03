@@ -167,3 +167,25 @@ def test_pr_review_since_no_commits(tmp_path: Path, monkeypatch):
 
     assert result.exit_code == 0
     assert "No commits since 2026-02-01" in result.output
+
+
+def test_pr_review_last_no_commits(tmp_path: Path, monkeypatch):
+    """--last with no commits should exit cleanly."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+
+    (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "securevibes.cli.main.get_last_n_commits",
+        lambda *_args, **_kwargs: [],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["pr-review", str(repo), "--last", "5"])
+
+    assert result.exit_code == 0
+    assert "No commits found" in result.output
