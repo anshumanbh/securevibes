@@ -53,7 +53,18 @@ def update_pr_review_artifacts(
                 threats_added += 1
             continue
 
-        if finding_type in {"known_vuln", "regression"}:
+        # These finding types indicate vulnerabilities to track
+        if finding_type in {"known_vuln", "regression", "threat_enabler", "mitigation_removal"}:
+            key = _vuln_key(vuln)
+            if key not in existing_vuln_keys:
+                vulnerabilities.append(dict(vuln))
+                existing_vuln_keys.add(key)
+                vulnerabilities_added += 1
+            continue
+
+        # Fallback: treat missing/unknown finding_type as new vulnerability
+        # This handles cases where the model doesn't output finding_type
+        if not finding_type or finding_type in {"unknown", ""}:
             key = _vuln_key(vuln)
             if key not in existing_vuln_keys:
                 vulnerabilities.append(dict(vuln))

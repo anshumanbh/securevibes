@@ -271,17 +271,62 @@ def create_json_validation_hook(console: Console, debug: bool):
         if not file_path or "VULNERABILITIES.json" not in file_path:
             return {}
 
+        if debug:
+            console.print(
+                f"  🔍 [Hook] Intercepted Write to: {file_path}",
+                style="dim",
+            )
+
         content = tool_input.get("content", "")
         if not content:
+            if debug:
+                console.print("  🔍 [Hook] Empty content, skipping", style="dim")
             return {}
 
         is_pr_review = "PR_VULNERABILITIES.json" in file_path
+
+        # Log original content analysis
+        if debug:
+            try:
+                import json as _json
+                original_data = _json.loads(content)
+                if isinstance(original_data, list) and original_data:
+                    first_item = original_data[0] if isinstance(original_data[0], dict) else {}
+                    has_finding_type = "finding_type" in first_item
+                    has_extra_fields = any(
+                        k in first_item
+                        for k in ["impact_analysis", "exploitability", "cvss_v3_score"]
+                    )
+                    console.print(
+                        f"  🔍 [Hook] Original: finding_type={has_finding_type}, "
+                        f"extra_fields={has_extra_fields}, items={len(original_data)}",
+                        style="dim",
+                    )
+            except Exception:
+                pass
 
         # Attempt to fix common format issues
         if is_pr_review:
             fixed_content, was_modified = fix_pr_vulnerabilities_json(content)
         else:
             fixed_content, was_modified = fix_vulnerabilities_json(content)
+
+        # Log normalization result
+        if debug:
+            try:
+                import json as _json
+                fixed_data = _json.loads(fixed_content)
+                if isinstance(fixed_data, list) and fixed_data:
+                    first_item = fixed_data[0] if isinstance(fixed_data[0], dict) else {}
+                    has_finding_type = "finding_type" in first_item
+                    finding_type_value = first_item.get("finding_type", "N/A")
+                    console.print(
+                        f"  🔍 [Hook] After fix: was_modified={was_modified}, "
+                        f"finding_type={has_finding_type} (value={finding_type_value})",
+                        style="dim",
+                    )
+            except Exception:
+                pass
 
         if was_modified:
             if debug:
@@ -334,8 +379,20 @@ def create_json_validation_hook(console: Console, debug: bool):
 
         # If content was modified, return updated input
         if was_modified:
-            return {"updatedInput": {**tool_input, "content": fixed_content}}
+            if debug:
+                console.print(
+                    f"  🔍 [Hook] Returning updatedInput (content_len={len(fixed_content)})",
+                    style="dim",
+                )
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "updatedInput": {**tool_input, "content": fixed_content},
+                }
+            }
 
+        if debug:
+            console.print("  🔍 [Hook] No modifications, returning empty dict", style="dim")
         return {}
 
     return json_validation_hook
@@ -429,9 +486,12 @@ def create_threat_model_validation_hook(
                     style="yellow",
                 )
             return {
-                "updatedInput": {
-                    **tool_input,
-                    "content": fixed_content,
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "updatedInput": {
+                        **tool_input,
+                        "content": fixed_content,
+                    },
                 }
             }
 
