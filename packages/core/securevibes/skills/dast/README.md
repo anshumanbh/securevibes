@@ -40,12 +40,19 @@ Each skill directory contains:
 
 **Output**: Validation status (VALIDATED/FALSE_POSITIVE/UNVALIDATED) with evidence
 
-### sql-injection-testing
-**Purpose**: Validate SQL injection vulnerabilities through error-based, union-based, boolean-based, and time-based detection techniques.
+### command-injection-testing
+**Purpose**: Validate OS command injection vulnerabilities through various shell metacharacter and argument injection techniques.
 
-**Trigger**: CWE-89 (SQL Injection), CWE-564 (SQL Injection: Hibernate)
+**Trigger**: CWE-78 (OS Command Injection), CWE-77 (Command Injection), CWE-88 (Argument Injection)
 
-**Output**: Validation status with evidence including database type detection and exploitation proof
+**Output**: Validation status with evidence of command execution
+
+### injection-testing
+**Purpose**: Validate miscellaneous injection vulnerabilities not covered by dedicated skills (SSTI, LDAP, XPath, XQuery, CRLF/HTTP headers, Expression Language, GraphQL, ORM/HQL, CSV/Formula injection, ReDoS, YAML config, and Shellshock).
+
+**Trigger**: CWE-1336 (SSTI), CWE-90 (LDAP), CWE-643 (XPath), CWE-652 (XQuery), CWE-93/CWE-113 (CRLF/Header Injection), CWE-917 (Expression Language), CWE-94/CWE-95 (Code/Eval Injection), CWE-1333 (ReDoS), CWE-1236 (CSV/Formula)
+
+**Output**: Validation status (VALIDATED/FALSE_POSITIVE/PARTIAL/UNVALIDATED) with evidence
 
 ### nosql-injection-testing
 **Purpose**: Validate NoSQL injection vulnerabilities in MongoDB, CouchDB, and other NoSQL databases.
@@ -53,6 +60,13 @@ Each skill directory contains:
 **Trigger**: CWE-943 (NoSQL Injection)
 
 **Output**: Validation status with evidence of query manipulation or data exfiltration
+
+### sql-injection-testing
+**Purpose**: Validate SQL injection vulnerabilities through error-based, union-based, boolean-based, and time-based detection techniques.
+
+**Trigger**: CWE-89 (SQL Injection), CWE-564 (SQL Injection: Hibernate)
+
+**Output**: Validation status with evidence including database type detection and exploitation proof
 
 ### ssrf-testing
 **Purpose**: Validate Server-Side Request Forgery (SSRF) vulnerabilities through dynamic testing. Tests by attempting to access internal resources, cloud metadata endpoints, and triggering out-of-band callbacks.
@@ -79,20 +93,6 @@ Each skill directory contains:
 **Trigger**: CWE-611 (XXE), CWE-776 (Entity Expansion DoS), CWE-827 (Improper Control of Document Type Definition)
 
 **Output**: Validation status with evidence of entity expansion or external resource access
-
-### command-injection-testing
-**Purpose**: Validate OS command injection vulnerabilities through various shell metacharacter and argument injection techniques.
-
-**Trigger**: CWE-78 (OS Command Injection), CWE-77 (Command Injection), CWE-88 (Argument Injection)
-
-**Output**: Validation status with evidence of command execution
-
-### injection-testing
-**Purpose**: Validate miscellaneous injection vulnerabilities not covered by dedicated skills (SSTI, LDAP, XPath, XQuery, CRLF/HTTP headers, Expression Language, GraphQL, ORM/HQL, CSV/Formula injection, ReDoS, YAML config, and Shellshock).
-
-**Trigger**: CWE-1336 (SSTI), CWE-90 (LDAP), CWE-643 (XPath), CWE-652 (XQuery), CWE-93/CWE-113 (CRLF/Header Injection), CWE-917 (Expression Language), CWE-94/CWE-95 (Code/Eval Injection), CWE-1333 (ReDoS), CWE-1236 (CSV/Formula)
-
-**Output**: Validation status (VALIDATED/FALSE_POSITIVE/PARTIAL/UNVALIDATED) with evidence
 
 ## Adding New Skills
 
