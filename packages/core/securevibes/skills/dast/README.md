@@ -16,8 +16,8 @@ Skills provide specialized testing methodologies that the DAST agent uses to val
 ├── injection-testing/           # Miscellaneous injection validation
 ├── nosql-injection-testing/     # NoSQL injection validation
 ├── sql-injection-testing/       # SQL injection validation
-├── xss-testing/                 # Cross-site scripting validation
 ├── ssrf-testing/                # Server-Side Request Forgery validation
+├── xss-testing/                 # Cross-site scripting validation
 └── xxe-testing/                 # XML external entity validation
 ```
 
@@ -54,6 +54,18 @@ Each skill directory contains:
 
 **Output**: Validation status with evidence of query manipulation or data exfiltration
 
+### ssrf-testing
+**Purpose**: Validate Server-Side Request Forgery (SSRF) vulnerabilities through dynamic testing. Tests by attempting to access internal resources, cloud metadata endpoints, and triggering out-of-band callbacks.
+
+**Trigger**: CWE-918 (Server-Side Request Forgery)
+
+**Requirements**:
+- Target application running and reachable
+- Optional: Callback server for blind SSRF detection (e.g., Burp Collaborator, interact.sh)
+- VULNERABILITIES.json with SSRF findings
+
+**Output**: Validation status (VALIDATED/FALSE_POSITIVE/PARTIAL/UNVALIDATED) with evidence of internal resource access or out-of-band interaction
+
 ### xss-testing
 **Purpose**: Validate Cross-Site Scripting vulnerabilities including reflected, stored, and DOM-based XSS.
 
@@ -81,18 +93,6 @@ Each skill directory contains:
 **Trigger**: CWE-1336 (SSTI), CWE-90 (LDAP), CWE-643 (XPath), CWE-652 (XQuery), CWE-93/CWE-113 (CRLF/Header Injection), CWE-917 (Expression Language), CWE-94/CWE-95 (Code/Eval Injection), CWE-1333 (ReDoS), CWE-1236 (CSV/Formula)
 
 **Output**: Validation status (VALIDATED/FALSE_POSITIVE/PARTIAL/UNVALIDATED) with evidence
-
-### ssrf-testing
-**Purpose**: Validate Server-Side Request Forgery (SSRF) vulnerabilities through dynamic testing. Tests by attempting to access internal resources, cloud metadata endpoints, and triggering out-of-band callbacks.
-
-**Trigger**: CWE-918 (Server-Side Request Forgery)
-
-**Requirements**:
-- Target application running and reachable
-- Optional: Callback server for blind SSRF detection (e.g., Burp Collaborator, interact.sh)
-- VULNERABILITIES.json with SSRF findings
-
-**Output**: Validation status (VALIDATED/FALSE_POSITIVE/PARTIAL/UNVALIDATED) with evidence of internal resource access or out-of-band interaction
 
 ## Adding New Skills
 

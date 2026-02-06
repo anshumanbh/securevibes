@@ -75,7 +75,7 @@ See [examples.md](examples.md#xxe-based-ssrf) for payloads.
 HTML-to-PDF converters (wkhtmltopdf, Puppeteer, Chrome headless) fetch embedded resources.
 
 **Test Pattern:** Inject HTML with internal resource references (iframe, img, link, script tags)  
-See [examples.md](examples.md#pdfhtml-renderer-ssrf) and [ssrf_payloads.py](references/ssrf_payloads.py) for payloads.
+See [examples.md](examples.md#pdfhtml-renderer-ssrf) and [ssrf_payloads.py](reference/ssrf_payloads.py) for payloads.
 
 ### 8. SSRF via SVG/Image Processing (CWE-918)
 Image processors that handle SVG or fetch external images.
@@ -111,67 +111,67 @@ Before testing, analyze vulnerability report and source code for:
 
 ### Phase 2: Establish Baseline
 
-Send a request to an external domain you control or an OOB service to confirm URL fetching is enabled. See [validate_ssrf.py](references/validate_ssrf.py) for implementation.
+Send a request to an external domain you control or an OOB service to confirm URL fetching is enabled. See [validate_ssrf.py](reference/validate_ssrf.py) for implementation.
 
 ### Phase 3: Test Internal Access
 
 #### Localhost Access
 
-Test standard localhost references and bypass variants. See [ssrf_payloads.py](references/ssrf_payloads.py) `get_localhost_payloads()` for complete list including decimal/hex/octal encodings and [examples.md](examples.md#basic-ssrf---localhost-access) for testing patterns.
+Test standard localhost references and bypass variants. See [ssrf_payloads.py](reference/ssrf_payloads.py) `get_localhost_payloads()` for complete list including decimal/hex/octal encodings and [examples.md](examples.md#basic-ssrf---localhost-access) for testing patterns.
 
 #### Cloud Metadata Access
 
-Test cloud provider metadata endpoints. See [ssrf_payloads.py](references/ssrf_payloads.py) `get_cloud_metadata_payloads()` for complete provider-specific URLs and required headers. See [examples.md](examples.md#cloud-metadata-ssrf) for testing patterns.
+Test cloud provider metadata endpoints. See [ssrf_payloads.py](reference/ssrf_payloads.py) `get_cloud_metadata_payloads()` for complete provider-specific URLs and required headers. See [examples.md](examples.md#cloud-metadata-ssrf) for testing patterns.
 
 ### Phase 4: Test Filter Bypasses
 
 #### IP Encoding Bypasses
 
-Test decimal, hex, octal, IPv6-mapped encodings. See [ssrf_payloads.py](references/ssrf_payloads.py) `get_ip_encoding_payloads()` for encoding functions.
+Test decimal, hex, octal, IPv6-mapped encodings. See [ssrf_payloads.py](reference/ssrf_payloads.py) `get_ip_encoding_payloads()` for encoding functions.
 
 #### URL Parser Confusion
 
-Exploit parser differences using @, #, \ characters. See [ssrf_payloads.py](references/ssrf_payloads.py) `get_url_parser_confusion_payloads()`.
+Exploit parser differences using @, #, \ characters. See [ssrf_payloads.py](reference/ssrf_payloads.py) `get_url_parser_confusion_payloads()`.
 
 #### DNS Rebinding
 
-Use DNS services that alternate responses (1u.ms, rebind.network). See [ssrf_payloads.py](references/ssrf_payloads.py) `get_dns_rebinding_payloads()`.
+Use DNS services that alternate responses (1u.ms, rebind.network). See [ssrf_payloads.py](reference/ssrf_payloads.py) `get_dns_rebinding_payloads()`.
 
 #### Redirect-Based Bypass
 
-Use 307/308 redirect services. See [ssrf_payloads.py](references/ssrf_payloads.py) `get_redirect_payloads()`.
+Use 307/308 redirect services. See [ssrf_payloads.py](reference/ssrf_payloads.py) `get_redirect_payloads()`.
 
 #### Unicode/Punycode Bypass
 
-Test unicode normalization and punycode. See [ssrf_payloads.py](references/ssrf_payloads.py) for patterns.
+Test unicode normalization and punycode. See [ssrf_payloads.py](reference/ssrf_payloads.py) for patterns.
 
 #### CRLF Injection in URL
 
-Inject headers via CRLF sequences. See [ssrf_payloads.py](references/ssrf_payloads.py) for patterns.
+Inject headers via CRLF sequences. See [ssrf_payloads.py](reference/ssrf_payloads.py) for patterns.
 
 #### JAR Scheme Bypass (Java)
 
-Test JAR scheme for Java apps. See [ssrf_payloads.py](references/ssrf_payloads.py) `get_protocol_payloads()`.
+Test JAR scheme for Java apps. See [ssrf_payloads.py](reference/ssrf_payloads.py) `get_protocol_payloads()`.
 
 ### Phase 5: Test Protocol Handlers
 
-Test alternative URL schemes (file://, gopher://, dict://, php://, ldap://, etc.). See [ssrf_payloads.py](references/ssrf_payloads.py) `get_protocol_payloads()` and [examples.md](examples.md#protocol-smuggling) for complete list and patterns.
+Test alternative URL schemes (file://, gopher://, dict://, php://, ldap://, etc.). See [ssrf_payloads.py](reference/ssrf_payloads.py) `get_protocol_payloads()` and [examples.md](examples.md#protocol-smuggling) for complete list and patterns.
 
 ### Phase 5b: Test XXE-based SSRF
 
-If application processes XML, test XXE leading to SSRF. See [ssrf_payloads.py](references/ssrf_payloads.py) `get_xxe_payloads()` for examples.
+If application processes XML, test XXE leading to SSRF. See [ssrf_payloads.py](reference/ssrf_payloads.py) `get_xxe_payloads()` for examples.
 
 ### Phase 5c: Test HTML/PDF Injection SSRF
 
-If application generates PDFs from HTML, inject tags that fetch resources. See [ssrf_payloads.py](references/ssrf_payloads.py) `get_html_injection_payloads()`.
+If application generates PDFs from HTML, inject tags that fetch resources. See [ssrf_payloads.py](reference/ssrf_payloads.py) `get_html_injection_payloads()`.
 
 ### Phase 6: Blind SSRF Detection
 
-Use OOB callback service (Burp Collaborator, interact.sh) to detect blind SSRF. See [examples.md](examples.md#blind-ssrf) and [validate_ssrf.py](references/validate_ssrf.py) for implementation.
+Use OOB callback service (Burp Collaborator, interact.sh) to detect blind SSRF. See [examples.md](examples.md#blind-ssrf) and [validate_ssrf.py](reference/validate_ssrf.py) for implementation.
 
 ### Phase 7: Classification Logic
 
-Classify responses based on internal content indicators, timing differences, and OOB callbacks. See [validate_ssrf.py](references/validate_ssrf.py) for complete classification function with indicators for:
+Classify responses based on internal content indicators, timing differences, and OOB callbacks. See [validate_ssrf.py](reference/validate_ssrf.py) for complete classification function with indicators for:
 - Linux/Windows system files
 - AWS/GCP/Azure metadata
 - Internal services (Redis, Memcached, etc.)
@@ -288,7 +288,7 @@ For comprehensive examples with payloads and evidence, see `examples.md`:
 
 ## Reference Implementations
 
-See `references/` directory for implementation examples:
+See `reference/` directory for implementation examples:
 - **`ssrf_payloads.py`**: Payload generator functions for all bypass techniques
 - **`validate_ssrf.py`**: Complete SSRF testing script with classification
 - **`README.md`**: Usage guidance and adaptation notes
