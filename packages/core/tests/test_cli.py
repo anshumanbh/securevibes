@@ -49,6 +49,46 @@ class TestCLIBasics:
         assert result.exit_code == 0
         assert "scan" in result.output.lower()
 
+    def test_catchup_help(self, runner):
+        """Test catchup command help"""
+        result = runner.invoke(cli, ["catchup", "--help"])
+        assert result.exit_code == 0
+        assert "catchup" in result.output.lower()
+
+
+class TestCatchupCommand:
+    """Tests for catchup command."""
+
+    def test_catchup_branch_mismatch(self, runner, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        monkeypatch.setattr("securevibes.cli.main.get_repo_branch", lambda *_args, **_kwargs: "dev")
+
+        result = runner.invoke(cli, ["catchup", str(repo), "--branch", "main"])
+
+        assert result.exit_code == 1
+        assert "checkout" in result.output.lower()
+
+    def test_catchup_invokes_pr_review(self, runner, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        called = {}
+
+        def fake_pr_review(**kwargs):
+            called["since_last_scan"] = kwargs.get("since_last_scan")
+
+        monkeypatch.setattr("securevibes.cli.main.pr_review", fake_pr_review)
+        monkeypatch.setattr("securevibes.cli.main._git_pull", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            "securevibes.cli.main.get_repo_branch", lambda *_args, **_kwargs: "main"
+        )
+
+        result = runner.invoke(cli, ["catchup", str(repo), "--branch", "main"])
+
+        assert result.exit_code == 0
+        assert called["since_last_scan"] is True
+
 
 class TestScanCommand:
     """Test scan command"""

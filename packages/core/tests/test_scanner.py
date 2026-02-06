@@ -401,6 +401,106 @@ class TestScannerResultLoading:
                 securevibes_dir, test_repo, files_scanned=10, scan_start_time=0
             )
 
+    @pytest.mark.asyncio
+    @patch("securevibes.scanner.scanner.update_scan_state")
+    @patch("securevibes.scanner.scanner.get_repo_branch")
+    @patch("securevibes.scanner.scanner.get_repo_head_commit")
+    async def test_load_updates_scan_state_for_full_scan(
+        self, mock_commit, mock_branch, mock_update_state, scanner, test_repo
+    ):
+        """Test scan state is updated when single_subagent and resume_from are both None"""
+        securevibes_dir = test_repo / ".securevibes"
+        securevibes_dir.mkdir()
+
+        mock_commit.return_value = "abc123"
+        mock_branch.return_value = "main"
+
+        scan_results = {
+            "issues": [
+                {
+                    "threat_id": "TEST-1",
+                    "title": "Test Issue",
+                    "description": "Test",
+                    "severity": "low",
+                    "file_path": "test.py",
+                    "line_number": 1,
+                    "code_snippet": "test",
+                    "cwe_id": "CWE-000",
+                    "recommendation": "Fix it",
+                }
+            ]
+        }
+
+        import json
+
+        (securevibes_dir / "scan_results.json").write_text(json.dumps(scan_results))
+
+        # Call without single_subagent or resume_from (full scan)
+        result = scanner._load_scan_results(
+            securevibes_dir, test_repo, files_scanned=10, scan_start_time=0
+        )
+
+        assert isinstance(result, ScanResult)
+        mock_update_state.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("securevibes.scanner.scanner.update_scan_state")
+    @patch("securevibes.scanner.scanner.get_repo_branch")
+    @patch("securevibes.scanner.scanner.get_repo_head_commit")
+    async def test_load_skips_scan_state_for_subagent(
+        self, mock_commit, mock_branch, mock_update_state, scanner, test_repo
+    ):
+        """Test scan state is NOT updated when single_subagent is set"""
+        securevibes_dir = test_repo / ".securevibes"
+        securevibes_dir.mkdir()
+
+        mock_commit.return_value = "abc123"
+        mock_branch.return_value = "main"
+
+        scan_results = {"issues": []}
+
+        import json
+
+        (securevibes_dir / "scan_results.json").write_text(json.dumps(scan_results))
+
+        # Call with single_subagent set
+        result = scanner._load_scan_results(
+            securevibes_dir, test_repo, files_scanned=10, scan_start_time=0,
+            single_subagent="assessment"
+        )
+
+        assert isinstance(result, ScanResult)
+        mock_update_state.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("securevibes.scanner.scanner.update_scan_state")
+    @patch("securevibes.scanner.scanner.get_repo_branch")
+    @patch("securevibes.scanner.scanner.get_repo_head_commit")
+    async def test_load_skips_scan_state_for_resume(
+        self, mock_commit, mock_branch, mock_update_state, scanner, test_repo
+    ):
+        """Test scan state is NOT updated when resume_from is set"""
+        securevibes_dir = test_repo / ".securevibes"
+        securevibes_dir.mkdir()
+
+        mock_commit.return_value = "abc123"
+        mock_branch.return_value = "main"
+
+        scan_results = {"issues": []}
+
+        import json
+
+        (securevibes_dir / "scan_results.json").write_text(json.dumps(scan_results))
+
+        # Call with resume_from set
+        result = scanner._load_scan_results(
+            securevibes_dir, test_repo, files_scanned=10, scan_start_time=0,
+            resume_from="code-review"
+        )
+
+        assert isinstance(result, ScanResult)
+        mock_update_state.assert_not_called()
+
 
 class TestProgressTrackerEdgeCases:
     """Test edge cases in progress tracking"""

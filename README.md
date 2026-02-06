@@ -156,6 +156,14 @@ securevibes pr-review . --range abc123~1..abc123
 # Patch file
 securevibes pr-review . --diff changes.patch
 
+# Commit tracking (requires baseline scan and scan_state.json)
+securevibes pr-review . --since-last-scan
+securevibes pr-review . --since 2026-02-01
+securevibes pr-review . --last 10
+
+# Update base artifacts from PR findings
+securevibes pr-review . --range abc123~1..abc123 --update-artifacts
+
 # Output formats (default: markdown)
 securevibes pr-review . --base main --head feature-branch --format markdown
 securevibes pr-review . --base main --head feature-branch --format json --output pr_review.json
@@ -166,12 +174,16 @@ securevibes pr-review . --base main --head feature-branch --severity high
 
 # Model + debug
 securevibes pr-review . --base main --head feature-branch --model haiku --debug
+
+# Catchup: pull latest + review since last full scan
+securevibes catchup . --branch main
 ```
 
 PR review artifacts (written to `.securevibes/`):
 - `DIFF_CONTEXT.json` (parsed diff summary)
 - `PR_VULNERABILITIES.json` (raw findings)
 - `pr_review_report.md` (default markdown report)
+- `scan_state.json` (commit tracking for pr-review/catchup)
 
 ### Agentic Detection Override
 

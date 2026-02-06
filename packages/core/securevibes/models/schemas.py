@@ -8,9 +8,13 @@ These schemas are used to:
 The schemas are derived from the Pydantic models in scan_output.py.
 """
 
+import hashlib
 import json
+import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 # JSON Schema for a single vulnerability
 VULNERABILITY_SCHEMA: Dict[str, Any] = {
@@ -92,7 +96,14 @@ PR_VULNERABILITY_SCHEMA: Dict[str, Any] = {
         "threat_id": {"type": "string"},
         "finding_type": {
             "type": "string",
-            "enum": ["new_threat", "threat_enabler", "mitigation_removal"],
+            "enum": [
+                "new_threat",
+                "threat_enabler",
+                "mitigation_removal",
+                "known_vuln",
+                "regression",
+                "unknown",
+            ],
         },
         "title": {"type": "string"},
         "description": {"type": "string"},
@@ -371,30 +382,245 @@ def fix_pr_vulnerabilities_json(content: str) -> Tuple[str, bool]:
 
     content = content.strip()
 
-    if content.startswith("["):
-        return content, False
-
     try:
         data = json.loads(content)
     except json.JSONDecodeError:
         return content, False
 
+    was_modified = False
+
     if isinstance(data, list):
-        return json.dumps(data, indent=2), False
+        normalized, normalized_modified = _normalize_pr_vulnerability_list(data)
+        if normalized_modified:
+            return json.dumps(normalized, indent=2), True
+        return content, False
 
     if isinstance(data, dict):
+        unwrapped = None
         for key in WRAPPER_KEYS:
             if key in data and isinstance(data[key], list):
-                return json.dumps(data[key], indent=2), True
+                unwrapped = data[key]
+                break
 
-        for value in data.values():
-            if isinstance(value, list):
-                return json.dumps(value, indent=2), True
+        if unwrapped is None:
+            for value in data.values():
+                if isinstance(value, list):
+                    unwrapped = value
+                    break
+
+        if unwrapped is not None:
+            was_modified = True
+            normalized, normalized_modified = _normalize_pr_vulnerability_list(unwrapped)
+            return json.dumps(normalized, indent=2), was_modified or normalized_modified
 
         if "threat_id" in data or "title" in data:
-            return json.dumps([data], indent=2), True
+            was_modified = True
+            normalized, normalized_modified = _normalize_pr_vulnerability_list([data])
+            return json.dumps(normalized, indent=2), was_modified or normalized_modified
 
     return content, False
+
+
+def _normalize_pr_vulnerability_list(
+    vulnerabilities: list[object],
+) -> tuple[list[object], bool]:
+    """Normalize PR vulnerability list items and report if any changes occurred."""
+    normalized: list[object] = []
+    modified = False
+    for item in vulnerabilities:
+        if isinstance(item, dict):
+            normalized_item = normalize_pr_vulnerability(item)
+            if normalized_item != item:
+                modified = True
+            normalized.append(normalized_item)
+        else:
+            normalized.append(item)
+    return normalized, modified
+
+
+def derive_pr_finding_id(vuln: Mapping[str, object]) -> str:
+    """Derive a stable ID for a PR finding when threat_id is missing.
+
+    Args:
+        vuln: Raw vulnerability mapping.
+
+    Returns:
+        Stable PR finding identifier.
+    """
+    file_path = str(vuln.get("file_path", ""))
+    title = str(vuln.get("title", ""))
+    line_number = _extract_primary_line_number(vuln)
+    raw_key = f"{file_path}|{title}|{line_number}"
+    digest = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+    return f"PR-{digest[:12]}"
+
+
+def infer_finding_type(vuln: Mapping[str, object]) -> Optional[str]:
+    """Infer finding_type from common alternative fields.
+
+    Args:
+        vuln: Raw vulnerability mapping.
+
+    Returns:
+        Inferred finding type or None.
+    """
+    candidate = vuln.get("category") or vuln.get("type") or vuln.get("finding_type")
+    if not candidate:
+        return None
+
+    normalized = str(candidate).strip().lower().replace("-", "_").replace(" ", "_")
+    mapping = {
+        "new": "new_threat",
+        "new_threat": "new_threat",
+        "threat_enabler": "threat_enabler",
+        "enabler": "threat_enabler",
+        "mitigation_removal": "mitigation_removal",
+        "mitigation": "mitigation_removal",
+        "removal": "mitigation_removal",
+        "known_vuln": "known_vuln",
+        "known": "known_vuln",
+        "regression": "regression",
+        "unknown": "unknown",
+    }
+
+    return mapping.get(normalized)
+
+
+def extract_cwe_id(vuln: Mapping[str, object]) -> Optional[str]:
+    """Extract CWE ID from vulnerability_types if present.
+
+    Args:
+        vuln: Raw vulnerability mapping.
+
+    Returns:
+        CWE identifier (e.g., CWE-79) or None.
+    """
+    types_value = vuln.get("vulnerability_types")
+    if not isinstance(types_value, list):
+        return None
+
+    for entry in types_value:
+        if isinstance(entry, str):
+            match = re.search(r"CWE-\d+", entry)
+            if match:
+                return match.group(0)
+        elif isinstance(entry, dict):
+            for key in ("id", "cwe_id", "cwe", "name", "title"):
+                value = entry.get(key)
+                if isinstance(value, str):
+                    match = re.search(r"CWE-\d+", value)
+                    if match:
+                        return match.group(0)
+    return None
+
+
+def normalize_pr_vulnerability(vuln: Mapping[str, object]) -> Dict[str, object]:
+    """Transform common PR schema variations into the expected format.
+
+    Args:
+        vuln: Raw vulnerability mapping from the agent.
+
+    Returns:
+        Normalized vulnerability dict.
+    """
+    normalized: Dict[str, object] = {}
+    warnings: list[str] = []
+
+    threat_id = vuln.get("threat_id") or vuln.get("id") or vuln.get("finding_id")
+    if not threat_id:
+        threat_id = derive_pr_finding_id(vuln)
+        warnings.append("threat_id")
+    normalized["threat_id"] = threat_id
+
+    finding_type = vuln.get("finding_type")
+    if not finding_type:
+        finding_type = infer_finding_type(vuln) or "unknown"
+        warnings.append("finding_type")
+    normalized["finding_type"] = finding_type
+
+    line_number = _extract_primary_line_number(vuln)
+    if "line_number" not in vuln and "line_numbers" in vuln:
+        warnings.append("line_number")
+    normalized["line_number"] = line_number
+
+    cwe_id = extract_cwe_id(vuln) or vuln.get("cwe_id", "")
+    if "cwe_id" not in vuln and "vulnerability_types" in vuln:
+        warnings.append("cwe_id")
+    normalized["cwe_id"] = cwe_id
+
+    for field in [
+        "title",
+        "description",
+        "severity",
+        "file_path",
+        "code_snippet",
+        "attack_scenario",
+        "evidence",
+    ]:
+        normalized[field] = vuln.get(field, "")
+
+    normalized["recommendation"] = vuln.get("recommendation") or vuln.get("mitigation", "")
+
+    evidence_text = _coerce_evidence_to_string(normalized.get("evidence"))
+    line_numbers = _extract_line_numbers(vuln)
+    if line_numbers:
+        evidence_text = _append_line_numbers_to_evidence(evidence_text, line_numbers)
+        warnings.append("evidence")
+    normalized["evidence"] = evidence_text
+
+    if warnings:
+        logger.warning("Normalized PR vulnerability fields: %s", ", ".join(sorted(set(warnings))))
+
+    return normalized
+
+
+def _extract_primary_line_number(vuln: Mapping[str, object]) -> int:
+    line_value = vuln.get("line_number")
+    if line_value is not None:
+        try:
+            return int(line_value)
+        except (TypeError, ValueError):
+            return 0
+
+    line_numbers = _extract_line_numbers(vuln)
+    if line_numbers:
+        return line_numbers[0]
+    return 0
+
+
+def _extract_line_numbers(vuln: Mapping[str, object]) -> list[int]:
+    value = vuln.get("line_numbers")
+    if not isinstance(value, list):
+        return []
+    line_numbers: list[int] = []
+    for entry in value:
+        try:
+            line_numbers.append(int(entry))
+        except (TypeError, ValueError):
+            continue
+    return line_numbers
+
+
+def _coerce_evidence_to_string(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=True)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _append_line_numbers_to_evidence(evidence: str, line_numbers: list[int]) -> str:
+    if not line_numbers:
+        return evidence
+    suffix = f"line_numbers: {line_numbers}"
+    if evidence:
+        if suffix in evidence:
+            return evidence
+        return f"{evidence}\n{suffix}"
+    return suffix
 
 
 def validate_vulnerabilities_json(content: str) -> Tuple[bool, Optional[str]]:
@@ -473,7 +699,14 @@ def validate_pr_vulnerabilities_json(content: str) -> Tuple[bool, Optional[str]]
 
     required_fields = set(PR_VULNERABILITY_SCHEMA["required"])
     valid_severities = {"critical", "high", "medium", "low"}
-    valid_finding_types = {"new_threat", "threat_enabler", "mitigation_removal"}
+    valid_finding_types = {
+        "new_threat",
+        "threat_enabler",
+        "mitigation_removal",
+        "known_vuln",
+        "regression",
+        "unknown",
+    }
 
     for i, vuln in enumerate(data):
         if not isinstance(vuln, dict):

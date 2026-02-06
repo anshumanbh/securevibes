@@ -1,9 +1,12 @@
 """Main CLI entry point for SecureVibes"""
 
 import asyncio
+import subprocess
 import sys
+from datetime import datetime, time
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import click
 from rich.console import Console
@@ -14,11 +17,27 @@ from securevibes import __version__
 from securevibes.models.issue import Severity
 from securevibes.scanner.scanner import Scanner
 from securevibes.diff.extractor import (
+    get_commits_after,
+    get_commits_between,
+    get_commits_for_range,
+    get_commits_since,
+    get_diff_from_commit_list,
     get_diff_from_commits,
     get_diff_from_file,
     get_diff_from_git_range,
+    get_last_n_commits,
 )
 from securevibes.diff.parser import DiffContext, parse_unified_diff
+from securevibes.scanner.state import (
+    build_pr_review_entry,
+    get_last_full_scan_commit,
+    get_repo_branch,
+    get_repo_head_commit,
+    load_scan_state,
+    scan_state_branch_matches,
+    update_scan_state,
+    utc_timestamp,
+)
 
 console = Console()
 
@@ -342,6 +361,14 @@ def scan(
 @click.option("--head", help="Head branch/commit (e.g., feature-branch)")
 @click.option("--range", "commit_range", help="Commit range (e.g., abc123~1..abc123)")
 @click.option("--diff", "diff_file", type=click.Path(exists=True), help="Path to diff/patch file")
+@click.option("--since-last-scan", is_flag=True, help="Review commits since last full scan")
+@click.option("--since", "since_date", help="Review commits since date (YYYY-MM-DD, Pacific)")
+@click.option("--last", "last_commits", type=int, help="Review last N commits")
+@click.option(
+    "--update-artifacts",
+    is_flag=True,
+    help="Update THREAT_MODEL.json and VULNERABILITIES.json from PR findings",
+)
 @click.option("--model", "-m", default="sonnet", help="Claude model to use (e.g., sonnet, haiku)")
 @click.option(
     "--format",
@@ -365,6 +392,10 @@ def pr_review(
     head: Optional[str],
     commit_range: Optional[str],
     diff_file: Optional[str],
+    since_last_scan: bool,
+    since_date: Optional[str],
+    last_commits: Optional[int],
+    update_artifacts: bool,
     model: str,
     format: str,
     output: Optional[str],
@@ -385,6 +416,31 @@ def pr_review(
     try:
         repo = Path(path).resolve()
         securevibes_dir = repo / ".securevibes"
+
+        if (base or head) and not (base and head):
+            console.print("[bold red]❌ Must specify both --base and --head[/bold red]")
+            sys.exit(1)
+
+        selection_count = sum(
+            [
+                bool(diff_file),
+                bool(commit_range),
+                bool(base and head),
+                bool(since_last_scan),
+                bool(since_date),
+                bool(last_commits is not None),
+            ]
+        )
+        if selection_count != 1:
+            console.print(
+                "[bold red]❌ Choose exactly one of --base/--head, --range, --diff, "
+                "--since-last-scan, --since, or --last[/bold red]"
+            )
+            sys.exit(1)
+
+        if since_last_scan:
+            _ensure_baseline_scan(repo, model, debug)
+
         required_artifacts = ["SECURITY.md", "THREAT_MODEL.json"]
         missing = [a for a in required_artifacts if not (securevibes_dir / a).exists()]
         if missing:
@@ -392,14 +448,44 @@ def pr_review(
             console.print("Run 'securevibes scan' first to generate base artifacts.")
             sys.exit(1)
 
+        commits_reviewed: list[str] = []
         if diff_file:
             diff_content = get_diff_from_file(Path(diff_file))
         elif commit_range:
             diff_content = get_diff_from_commits(repo, commit_range)
+            commits_reviewed = get_commits_for_range(repo, commit_range)
         elif base and head:
             diff_content = get_diff_from_git_range(repo, base, head)
+            commits_reviewed = get_commits_between(repo, base, head)
+        elif since_last_scan:
+            state = load_scan_state(securevibes_dir / "scan_state.json") or {}
+            base_commit = get_last_full_scan_commit(state)
+            if not base_commit:
+                console.print("[bold red]❌ Missing last_full_scan commit in scan_state.json[/bold red]")
+                sys.exit(1)
+            commits_reviewed = get_commits_after(repo, base_commit)
+            if not commits_reviewed:
+                console.print("[yellow]No commits since last scan.[/yellow]")
+                sys.exit(0)
+            diff_content = get_diff_from_commit_list(repo, commits_reviewed)
+        elif since_date:
+            since_str = _parse_since_date_pacific(since_date)
+            commits_reviewed = get_commits_since(repo, since_str)
+            if not commits_reviewed:
+                console.print(f"[yellow]No commits since {since_date}.[/yellow]")
+                sys.exit(0)
+            diff_content = get_diff_from_commit_list(repo, commits_reviewed)
+        elif last_commits is not None:
+            commits_reviewed = get_last_n_commits(repo, last_commits)
+            if not commits_reviewed:
+                console.print("[yellow]No commits found for the requested range.[/yellow]")
+                sys.exit(0)
+            diff_content = get_diff_from_commit_list(repo, commits_reviewed)
         else:
-            console.print("[bold red]❌ Must specify --base/--head, --range, or --diff[/bold red]")
+            console.print(
+                "[bold red]❌ Must specify --base/--head, --range, --diff, "
+                "--since-last-scan, --since, or --last[/bold red]"
+            )
             sys.exit(1)
 
         if not diff_content.strip():
@@ -422,6 +508,7 @@ def pr_review(
                 diff_context,
                 known_vulns,
                 severity,
+                update_artifacts,
             )
         )
 
@@ -478,12 +565,103 @@ def pr_review(
         else:
             _display_table_results(result, quiet=False)
 
+        head_commit = get_repo_head_commit(repo)
+        if head_commit:
+            update_scan_state(
+                securevibes_dir / "scan_state.json",
+                pr_review=build_pr_review_entry(
+                    commit=head_commit,
+                    commits_reviewed=commits_reviewed,
+                    timestamp=utc_timestamp(),
+                ),
+            )
+
         if result.critical_count > 0:
             sys.exit(2)
         if result.high_count > 0:
             sys.exit(1)
         sys.exit(0)
 
+    except Exception as e:
+        console.print(f"\n[bold red]❌ Error:[/bold red] {e}", style="red")
+        console.print("\n[dim]Run with --help for usage information[/dim]")
+        sys.exit(1)
+
+
+@cli.command("catchup")
+@click.argument("path", type=click.Path(exists=True), default=".")
+@click.option("--branch", default="main", help="Branch to pull before reviewing")
+@click.option("--model", "-m", default="sonnet", help="Claude model to use (e.g., sonnet, haiku)")
+@click.option(
+    "--format",
+    "-f",
+    type=click.Choice(["markdown", "json", "table"]),
+    default="markdown",
+    help="Output format (default: markdown)",
+)
+@click.option("--output", "-o", type=click.Path(), help="Output file path")
+@click.option("--debug", is_flag=True, help="Show verbose diagnostic output")
+@click.option(
+    "--severity",
+    "-s",
+    type=click.Choice(["critical", "high", "medium", "low"]),
+    default="medium",
+    help="Minimum severity to report",
+)
+@click.option(
+    "--update-artifacts",
+    is_flag=True,
+    help="Update THREAT_MODEL.json and VULNERABILITIES.json from PR findings",
+)
+def catchup(
+    path: str,
+    branch: str,
+    model: str,
+    format: str,
+    output: Optional[str],
+    debug: bool,
+    severity: str,
+    update_artifacts: bool,
+):
+    """
+    Pull latest changes and review commits since the last full scan.
+
+    Example:
+
+        securevibes catchup . --branch main
+    """
+    try:
+        repo = Path(path).resolve()
+        current_branch = get_repo_branch(repo)
+        if current_branch and current_branch != branch:
+            console.print(
+                f"[bold red]❌ Current branch is {current_branch}. "
+                f"Please checkout {branch} before running catchup.[/bold red]"
+            )
+            sys.exit(1)
+
+        try:
+            _git_pull(repo, branch)
+        except RuntimeError as e:
+            console.print(f"[bold red]❌ git pull failed:[/bold red] {e}")
+            sys.exit(1)
+
+        pr_review(
+            path=path,
+            base=None,
+            head=None,
+            commit_range=None,
+            diff_file=None,
+            since_last_scan=True,
+            since_date=None,
+            last_commits=None,
+            update_artifacts=update_artifacts,
+            model=model,
+            format=format,
+            output=output,
+            debug=debug,
+            severity=severity,
+        )
     except Exception as e:
         console.print(f"\n[bold red]❌ Error:[/bold red] {e}", style="red")
         console.print("\n[dim]Run with --help for usage information[/dim]")
@@ -527,6 +705,74 @@ def _is_production_url(url: str) -> bool:
     ]
 
     return any(pattern in url_lower for pattern in production_patterns)
+
+
+def _parse_since_date_pacific(date_str: str) -> str:
+    """Parse a YYYY-MM-DD date as Pacific midnight and return an ISO string."""
+    try:
+        parsed_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise click.BadParameter("Date must be in YYYY-MM-DD format") from exc
+
+    pacific = ZoneInfo("America/Los_Angeles")
+    since_dt = datetime.combine(parsed_date, time.min, tzinfo=pacific)
+    return since_dt.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
+def _ensure_baseline_scan(repo: Path, model: str, debug: bool) -> None:
+    state_path = repo / ".securevibes" / "scan_state.json"
+    state = load_scan_state(state_path)
+    branch = get_repo_branch(repo)
+
+    if state and branch and scan_state_branch_matches(state, branch):
+        return
+
+    console.print(
+        "[yellow]⚠️  No baseline scan found for this branch.[/yellow]",
+    )
+
+    if not sys.stdin.isatty():
+        console.print("Run 'securevibes scan .' to generate base artifacts.")
+        sys.exit(1)
+
+    if not click.confirm(
+        "No baseline scan found for this branch. Run a baseline full scan now?",
+        default=False,
+    ):
+        console.print("Run 'securevibes scan .' to generate base artifacts.")
+        sys.exit(1)
+
+    console.print("Running baseline scan...")
+    asyncio.run(
+        _run_scan(
+            str(repo),
+            model=model,
+            save_results=True,
+            quiet=False,
+            debug=debug,
+        )
+    )
+
+    state = load_scan_state(state_path)
+    branch = get_repo_branch(repo)
+    if not state or not branch or not scan_state_branch_matches(state, branch):
+        console.print(
+            "[bold red]❌ Baseline scan did not initialize scan_state.json[/bold red]"
+        )
+        sys.exit(1)
+
+
+def _git_pull(repo: Path, branch: str) -> None:
+    result = subprocess.run(
+        ["git", "pull", "origin", branch],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.strip() or "Unknown git pull error"
+        raise RuntimeError(stderr)
 
 
 def _check_target_reachability(target_url: str, timeout: int = 5) -> bool:
@@ -608,6 +854,7 @@ async def _run_pr_review(
     diff_context: DiffContext,
     known_vulns_path: Optional[Path],
     severity_threshold: str,
+    update_artifacts: bool,
 ):
     """Run the PR review with the configured scanner."""
     scanner = Scanner(model=model, debug=debug)
@@ -616,6 +863,7 @@ async def _run_pr_review(
         diff_context,
         known_vulns_path,
         severity_threshold,
+        update_artifacts=update_artifacts,
     )
 
 

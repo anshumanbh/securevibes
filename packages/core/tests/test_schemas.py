@@ -5,8 +5,11 @@ import json
 import pytest
 
 from securevibes.models.schemas import (
+    derive_pr_finding_id,
+    extract_cwe_id,
     fix_pr_vulnerabilities_json,
     fix_vulnerabilities_json,
+    normalize_pr_vulnerability,
     validate_vulnerabilities_json,
     validate_pr_vulnerabilities_json,
     get_output_format_config,
@@ -469,6 +472,16 @@ class TestValidatePrVulnerabilitiesJson:
         assert is_valid is True
         assert error is None
 
+    def test_unknown_finding_type_allowed(self, valid_pr_vuln):
+        """Unknown finding_type should be allowed for normalized output."""
+        valid_pr_vuln["finding_type"] = "unknown"
+        content = json.dumps([valid_pr_vuln])
+
+        is_valid, error = validate_pr_vulnerabilities_json(content)
+
+        assert is_valid is True
+        assert error is None
+
     def test_missing_required_field(self, valid_pr_vuln):
         del valid_pr_vuln["attack_scenario"]
         content = json.dumps([valid_pr_vuln])
@@ -477,3 +490,55 @@ class TestValidatePrVulnerabilitiesJson:
 
         assert is_valid is False
         assert "attack_scenario" in error
+
+
+class TestNormalizePrVulnerability:
+    """Tests for normalize_pr_vulnerability() helper."""
+
+    def test_normalizes_common_field_variations(self):
+        vuln = {
+            "id": "NEW-001",
+            "title": "Gateway URL injection",
+            "description": "Test description",
+            "severity": "high",
+            "file_path": "ui/app.ts",
+            "line_numbers": [10, 11],
+            "code_snippet": "const gatewayUrl = params.get('gatewayUrl')",
+            "attack_scenario": "Attacker controls gatewayUrl",
+            "evidence": "Token sent to attacker",
+            "vulnerability_types": ["CWE-918: SSRF"],
+            "recommendation": "Validate URL input",
+        }
+
+        normalized = normalize_pr_vulnerability(vuln)
+
+        assert normalized["threat_id"] == "NEW-001"
+        assert normalized["finding_type"] == "unknown"
+        assert normalized["line_number"] == 10
+        assert normalized["cwe_id"] == "CWE-918"
+        assert isinstance(normalized["evidence"], str)
+        assert "line_numbers" in normalized["evidence"]
+
+    def test_derive_pr_finding_id_is_stable(self):
+        vuln = {
+            "title": "Issue",
+            "file_path": "src/app.py",
+            "line_number": 42,
+        }
+
+        first = derive_pr_finding_id(vuln)
+        second = derive_pr_finding_id(vuln)
+
+        assert first == second
+        assert first.startswith("PR-")
+
+    def test_extract_cwe_id_supports_string_and_dict_entries(self):
+        vuln = {
+            "vulnerability_types": [
+                {"id": "CWE-79"},
+                {"name": "CWE-89: SQL Injection"},
+                "CWE-20: Improper Input Validation",
+            ]
+        }
+
+        assert extract_cwe_id(vuln) == "CWE-79"
