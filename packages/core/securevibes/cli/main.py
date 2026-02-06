@@ -1,6 +1,7 @@
 """Main CLI entry point for SecureVibes"""
 
 import asyncio
+import io
 import sys
 from pathlib import Path
 from typing import Optional
@@ -20,7 +21,12 @@ from securevibes.diff.extractor import (
 )
 from securevibes.diff.parser import DiffContext, parse_unified_diff
 
-console = Console()
+# Ensure UTF-8 output on Windows to handle emojis and special characters
+if sys.platform == "win32" and not isinstance(sys.stdout, io.TextIOWrapper):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
+console = Console(force_terminal=True)
 
 
 @click.group()
