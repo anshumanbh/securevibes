@@ -209,6 +209,22 @@ class TestVulnerability:
         assert isinstance(vuln.evidence, dict)
         assert vuln.evidence["request"] == "GET /admin"
 
+    def test_evidence_list(self):
+        """Test evidence can be a list of dicts (multi-file evidence)"""
+        vuln = Vulnerability(
+            threat_id="T-001",
+            title="Test",
+            description="Test desc",
+            severity="high",
+            evidence=[
+                {"file": "src/db.py", "finding": "unencrypted database"},
+                {"file": "src/config.py", "finding": "hardcoded credentials"}
+            ]
+        )
+        assert isinstance(vuln.evidence, list)
+        assert len(vuln.evidence) == 2
+        assert vuln.evidence[0]["file"] == "src/db.py"
+
 
 class TestScanOutput:
     """Test ScanOutput model and validate_input"""

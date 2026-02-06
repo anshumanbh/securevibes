@@ -1,6 +1,8 @@
 """Sub-agent execution manager with artifact detection and dependency resolution"""
 
+import io
 import json
+import sys
 from pathlib import Path
 from typing import Dict, Optional, List, Tuple
 from dataclasses import dataclass
@@ -11,7 +13,12 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-console = Console()
+# Ensure UTF-8 output on Windows to handle emojis and special characters
+if sys.platform == "win32" and not isinstance(sys.stdout, io.TextIOWrapper):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
+console = Console(force_terminal=True)
 
 
 class ScanMode(Enum):

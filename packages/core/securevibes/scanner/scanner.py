@@ -1,12 +1,19 @@
 """Security scanner with real-time progress tracking using ClaudeSDKClient"""
 
+import io
 import os
 import json
+import sys
 import time
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any
 from rich.console import Console
+
+# Ensure UTF-8 output on Windows to handle emojis and special characters
+if sys.platform == "win32" and not isinstance(sys.stdout, io.TextIOWrapper):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
 from claude_agent_sdk.types import (
@@ -263,7 +270,7 @@ class Scanner:
         self.model = model
         self.debug = debug
         self.total_cost = 0.0
-        self.console = Console()
+        self.console = Console(force_terminal=True)
 
         # DAST configuration
         self.dast_enabled = False
@@ -1049,9 +1056,8 @@ Only report findings at or above: {severity_threshold}
                 f.write(md_output)
 
             if self.debug:
-                self.console.print(
-                    "✅ Regenerated reports with DAST validation data", style="green"
-                )
+                msg = "✅ Regenerated reports with DAST validation data" if scan_result.dast_enabled else "✅ Saved normalized scan reports"
+                self.console.print(msg, style="green")
 
         except Exception as e:
             if self.debug:
@@ -1372,9 +1378,8 @@ Only report findings at or above: {severity_threshold}
         # Merge DAST validation results if available
         scan_result = self._merge_dast_results(scan_result, securevibes_dir)
 
-        # Regenerate artifacts with merged validation data
-        if scan_result.dast_enabled:
-            self._regenerate_artifacts(scan_result, securevibes_dir)
+        # Always regenerate artifacts with normalized format (required for 'securevibes report')
+        self._regenerate_artifacts(scan_result, securevibes_dir)
 
         return scan_result
 
