@@ -277,11 +277,11 @@ If `--dast` enabled, DAST agent:
    - Merges into `scan_results.json`
    - Marks issues as: VALIDATED, FALSE_POSITIVE, or UNVALIDATED
 
-## Skill‑Gated Validation
+## Skills as Reference Methodologies
 
-- DAST validates a vulnerability only when a matching skill is available and loaded from `.claude/skills/dast/`.
-- Without a relevant skill, the item is marked `UNVALIDATED` with a clear reason (e.g., "No applicable validation skill").
-- This methodology‑first approach focuses on the what (testing logic) rather than prescribing how (hardcoded scripts).
+- DAST skills in `.claude/skills/dast/` provide structured testing methodologies the agent can consult as reference material.
+- Skills are additive — the agent uses its security testing expertise for all vulnerabilities and may reference skills for additional techniques or structured approaches.
+- If a vulnerability cannot be tested (e.g., endpoint unreachable, credentials required), it is marked `UNVALIDATED` with a clear reason.
 
 ### Validation Status
 
