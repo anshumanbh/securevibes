@@ -107,7 +107,7 @@ def create_agent_definitions(
             model=config.get_agent_model("report_generator", cli_override=cli_model),
         ),
         "dast": AgentDefinition(
-            description="Validates vulnerabilities via HTTP testing ONLY when a matching Agent Skill is available; otherwise reports UNVALIDATED",
+            description="Validates vulnerabilities via HTTP-based dynamic testing against the live application, using security expertise and available skills as reference",
             prompt=dast_prompt,
             tools=["Read", "Write", "Skill", "Bash"],
             model=config.get_agent_model("dast", cli_override=cli_model),

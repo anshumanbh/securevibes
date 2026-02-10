@@ -819,7 +819,7 @@ def test_merge_dast_results_basic(tmp_path):
                 "vulnerability_id": "THREAT-002",
                 "validation_status": "UNVALIDATED",
                 "tested_at": "2025-10-25T00:00:00Z",
-                "reason": "No applicable validation skill",
+                "reason": "Endpoint requires authentication but no credentials provided",
             },
         ],
     }
