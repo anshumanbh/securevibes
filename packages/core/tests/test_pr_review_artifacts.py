@@ -51,6 +51,7 @@ def test_update_pr_review_artifacts_appends_entries(tmp_path: Path):
 
     assert result.threats_added == 1
     assert result.vulnerabilities_added == 1
+    assert result.new_components_detected is True
 
     threats = json.loads(threat_model_path.read_text(encoding="utf-8"))
     vulns = json.loads(vulnerabilities_path.read_text(encoding="utf-8"))

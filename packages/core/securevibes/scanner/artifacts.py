@@ -39,6 +39,9 @@ def update_pr_review_artifacts(
     threats_added = 0
     vulnerabilities_added = 0
 
+    # Snapshot before mutation so _detect_new_components sees pre-existing threats only
+    existing_threats_snapshot = list(threats)
+
     for vuln in pr_vulns:
         if not isinstance(vuln, dict):
             continue
@@ -80,7 +83,7 @@ def update_pr_review_artifacts(
     if vulnerabilities_added:
         _write_json_list(vulnerabilities_path, vulnerabilities)
 
-    new_components_detected = _detect_new_components(pr_vulns, threats)
+    new_components_detected = _detect_new_components(pr_vulns, existing_threats_snapshot)
 
     return ArtifactUpdateResult(
         threats_added=threats_added,

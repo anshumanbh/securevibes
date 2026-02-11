@@ -186,6 +186,67 @@ def test_get_diff_from_commit_list_empty_returns_empty():
     assert get_diff_from_commit_list(Path("."), []) == ""
 
 
+def test_get_diff_from_commit_list_with_commits(monkeypatch):
+    """Non-empty commit list should diff from parent of oldest to HEAD."""
+    calls = []
+
+    class ParentResult:
+        returncode = 0
+        stdout = "parent_sha\n"
+        stderr = ""
+
+    class DiffResult:
+        returncode = 0
+        stdout = "diff --git a/f b/f\n+added\n"
+        stderr = ""
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        if "rev-parse" in cmd:
+            return ParentResult()
+        return DiffResult()
+
+    monkeypatch.setattr("securevibes.diff.extractor.subprocess.run", fake_run)
+
+    result = get_diff_from_commit_list(Path("/repo"), ["oldest_sha", "mid_sha", "newest_sha"])
+
+    assert "diff --git" in result
+    # Should have called rev-parse for parent of oldest commit
+    assert any("oldest_sha^" in str(c) for c in calls)
+    # Should have called diff with parent..HEAD
+    assert any("parent_sha..HEAD" in str(c) for c in calls)
+
+
+def test_get_diff_from_commit_list_root_commit(monkeypatch):
+    """Root commit (no parent) should use --root HEAD."""
+    calls = []
+
+    class NoParentResult:
+        returncode = 1
+        stdout = ""
+        stderr = "unknown revision"
+
+    class DiffResult:
+        returncode = 0
+        stdout = "diff --git a/f b/f\n+init\n"
+        stderr = ""
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        if "rev-parse" in cmd:
+            return NoParentResult()
+        return DiffResult()
+
+    monkeypatch.setattr("securevibes.diff.extractor.subprocess.run", fake_run)
+
+    result = get_diff_from_commit_list(Path("/repo"), ["root_sha"])
+
+    assert "diff --git" in result
+    # Should have called diff with --root HEAD
+    diff_calls = [c for c in calls if "diff" in c and "rev-parse" not in str(c)]
+    assert any("--root" in c for c in diff_calls)
+
+
 class TestGitRefValidation:
     """Tests for git ref validation to prevent command injection."""
 

@@ -42,7 +42,7 @@ Required fields per item:
 - recommendation
 
 Allowed values:
-- finding_type: new_threat | threat_enabler | mitigation_removal | known_vuln | regression
+- finding_type: new_threat | threat_enabler | mitigation_removal | known_vuln | regression | unknown
 - severity: critical | high | medium | low
 
 Example item:

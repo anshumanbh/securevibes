@@ -363,7 +363,7 @@ def scan(
 @click.option("--diff", "diff_file", type=click.Path(exists=True), help="Path to diff/patch file")
 @click.option("--since-last-scan", is_flag=True, help="Review commits since last full scan")
 @click.option("--since", "since_date", help="Review commits since date (YYYY-MM-DD, Pacific)")
-@click.option("--last", "last_commits", type=int, help="Review last N commits")
+@click.option("--last", "last_commits", type=click.IntRange(min=1), help="Review last N commits")
 @click.option(
     "--update-artifacts",
     is_flag=True,
