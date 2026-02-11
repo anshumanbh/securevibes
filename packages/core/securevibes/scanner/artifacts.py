@@ -57,7 +57,9 @@ def update_pr_review_artifacts(
         if finding_type in {"known_vuln", "regression", "threat_enabler", "mitigation_removal"}:
             key = _vuln_key(vuln)
             if key not in existing_vuln_keys:
-                vulnerabilities.append(dict(vuln))
+                entry = dict(vuln)
+                entry["source"] = "pr_review"
+                vulnerabilities.append(entry)
                 existing_vuln_keys.add(key)
                 vulnerabilities_added += 1
             continue
@@ -67,7 +69,9 @@ def update_pr_review_artifacts(
         if not finding_type or finding_type in {"unknown", ""}:
             key = _vuln_key(vuln)
             if key not in existing_vuln_keys:
-                vulnerabilities.append(dict(vuln))
+                entry = dict(vuln)
+                entry["source"] = "pr_review"
+                vulnerabilities.append(entry)
                 existing_vuln_keys.add(key)
                 vulnerabilities_added += 1
 

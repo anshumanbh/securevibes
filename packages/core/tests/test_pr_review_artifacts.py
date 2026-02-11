@@ -59,6 +59,7 @@ def test_update_pr_review_artifacts_appends_entries(tmp_path: Path):
     assert threats[0]["id"] == "NEW-001"
     assert len(vulns) == 1
     assert vulns[0]["threat_id"] == "THREAT-001"
+    assert vulns[0]["source"] == "pr_review"
 
 
 def test_update_pr_review_artifacts_dedupes_vulnerabilities(tmp_path: Path):
@@ -144,6 +145,11 @@ def test_update_pr_review_artifacts_adds_unknown_as_vulnerability(tmp_path: Path
     assert result.threats_added == 0
     assert result.vulnerabilities_added == 1  # unknown is now added as vulnerability
 
+    vulns = json.loads(
+        (securevibes_dir / "VULNERABILITIES.json").read_text(encoding="utf-8")
+    )
+    assert vulns[0]["source"] == "pr_review"
+
 
 def test_update_pr_review_artifacts_adds_missing_finding_type(tmp_path: Path):
     """Vulnerabilities with no finding_type should be added to VULNERABILITIES.json."""
@@ -173,6 +179,11 @@ def test_update_pr_review_artifacts_adds_missing_finding_type(tmp_path: Path):
 
     assert result.threats_added == 0
     assert result.vulnerabilities_added == 1
+
+    vulns = json.loads(
+        (securevibes_dir / "VULNERABILITIES.json").read_text(encoding="utf-8")
+    )
+    assert vulns[0]["source"] == "pr_review"
 
 
 def test_update_pr_review_artifacts_handles_threat_enabler(tmp_path: Path):
@@ -209,6 +220,7 @@ def test_update_pr_review_artifacts_handles_threat_enabler(tmp_path: Path):
     )
     assert len(vulns) == 1
     assert vulns[0]["finding_type"] == "threat_enabler"
+    assert vulns[0]["source"] == "pr_review"
 
 
 def test_update_pr_review_artifacts_handles_mitigation_removal(tmp_path: Path):
@@ -245,6 +257,7 @@ def test_update_pr_review_artifacts_handles_mitigation_removal(tmp_path: Path):
     )
     assert len(vulns) == 1
     assert vulns[0]["finding_type"] == "mitigation_removal"
+    assert vulns[0]["source"] == "pr_review"
 
 
 def test_update_pr_review_artifacts_handles_regression(tmp_path: Path):
@@ -281,3 +294,4 @@ def test_update_pr_review_artifacts_handles_regression(tmp_path: Path):
     )
     assert len(vulns) == 1
     assert vulns[0]["finding_type"] == "regression"
+    assert vulns[0]["source"] == "pr_review"

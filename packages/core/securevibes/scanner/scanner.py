@@ -650,6 +650,8 @@ class Scanner:
             except (OSError, json.JSONDecodeError):
                 known_vulns = []
 
+        baseline_vulns = filter_baseline_vulns(known_vulns)
+
         agents = create_agent_definitions(cli_model=self.model)
         pr_agent = agents["pr-code-review"]
 
@@ -662,7 +664,7 @@ class Scanner:
 {json.dumps(relevant_threats, indent=2)}
 
 ## KNOWN VULNERABILITIES (optional, from VULNERABILITIES.json)
-{json.dumps(known_vulns, indent=2)}
+{json.dumps(baseline_vulns, indent=2)}
 
 ## DIFF TO ANALYZE
 The diff has been written to DIFF_CONTEXT.json. Read it to see the changes.
@@ -735,8 +737,8 @@ Only report findings at or above: {severity_threshold}
         except (OSError, json.JSONDecodeError) as e:
             raise RuntimeError(f"Failed to parse {PR_VULNERABILITIES_FILE}: {e}")
 
-        if known_vulns:
-            pr_vulns = dedupe_pr_vulns(pr_vulns, known_vulns)
+        if baseline_vulns:
+            pr_vulns = dedupe_pr_vulns(pr_vulns, baseline_vulns)
 
         if update_artifacts and isinstance(pr_vulns, list):
             update_result = update_pr_review_artifacts(securevibes_dir, pr_vulns)
@@ -1411,6 +1413,37 @@ Only report findings at or above: {severity_threshold}
                 )
 
         return scan_result
+
+
+_PR_FINDING_TYPES = frozenset({
+    "new_threat", "threat_enabler", "mitigation_removal",
+    "known_vuln", "regression", "unknown",
+})
+
+
+def filter_baseline_vulns(known_vulns: list[dict]) -> list[dict]:
+    """Return only baseline vulnerability entries, excluding PR-derived ones.
+
+    PR-derived entries are identified by:
+    - source == "pr_review" (explicit tag added by update_pr_review_artifacts)
+    - finding_type in _PR_FINDING_TYPES (normalized; matches PR_VULNERABILITY_SCHEMA enum)
+    - threat_id starting with PR- or NEW- (auto-generated or LLM-assigned PR IDs)
+    """
+    _PR_PREFIXES = ("PR-", "NEW-")
+    baseline: list[dict] = []
+    for vuln in known_vulns:
+        if not isinstance(vuln, dict):
+            continue
+        if vuln.get("source") == "pr_review":
+            continue
+        raw_ft = vuln.get("finding_type")
+        if raw_ft is not None and str(raw_ft).strip().lower() in _PR_FINDING_TYPES:
+            continue
+        threat_id = vuln.get("threat_id", "")
+        if isinstance(threat_id, str) and threat_id.startswith(_PR_PREFIXES):
+            continue
+        baseline.append(vuln)
+    return baseline
 
 
 def dedupe_pr_vulns(pr_vulns: list[dict], known_vulns: list[dict]) -> list[dict]:

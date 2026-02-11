@@ -66,6 +66,10 @@ VULNERABILITY_SCHEMA: Dict[str, Any] = {
             "oneOf": [{"type": "string"}, {"type": "object"}, {"type": "null"}],
             "description": "Proof this is exploitable",
         },
+        "source": {
+            "type": ["string", "null"],
+            "description": "Origin of the entry (e.g. 'pr_review'). Internal metadata.",
+        },
     },
     "required": [
         "threat_id",
@@ -118,6 +122,10 @@ PR_VULNERABILITY_SCHEMA: Dict[str, Any] = {
         "evidence": {"type": "string"},
         "cwe_id": {"type": "string"},
         "recommendation": {"type": "string"},
+        "source": {
+            "type": ["string", "null"],
+            "description": "Origin of the entry (e.g. 'pr_review'). Internal metadata.",
+        },
     },
     "required": [
         "threat_id",

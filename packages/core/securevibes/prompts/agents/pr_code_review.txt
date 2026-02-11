@@ -63,6 +63,36 @@ Example item:
 }
 ```
 
+## CRITICAL ATTACK PATTERNS TO DETECT
+
+### Credential Exposure via Configuration Injection
+Look for changes that could leak tokens, secrets, or credentials to user-controlled destinations:
+- API keys, tokens, or secrets sent to URLs derived from user input or configuration
+- Handshake or authentication credential leaks through logging, error messages, or redirects
+- Secrets written to world-readable files or exposed via environment variable dumps
+- CWE-522 (Insufficiently Protected Credentials), CWE-200 (Exposure of Sensitive Information), CWE-312 (Cleartext Storage of Sensitive Information)
+
+### Sandbox / Safety Bypass Chains
+Look for changes that disable or weaken safety controls:
+- Disabling input validation, authentication checks, or authorization guards
+- Permission escalation through configuration changes (e.g., granting admin roles, disabling RBAC)
+- Removing or weakening Content Security Policy, CORS restrictions, or rate limiting
+- CWE-693 (Protection Mechanism Failure), CWE-284 (Improper Access Control), CWE-269 (Improper Privilege Management)
+
+### Localhost Bypass / SSRF-to-RCE Chains
+Look for changes that allow user input to control connection targets:
+- User-controlled URLs, hostnames, or IP addresses in HTTP clients, database connections, or socket calls
+- Proxy or redirect configurations that could route to internal services (127.0.0.1, metadata endpoints)
+- DNS rebinding or TOCTOU vulnerabilities in URL validation
+- CWE-918 (Server-Side Request Forgery), CWE-94 (Improper Control of Generation of Code), CWE-78 (OS Command Injection)
+
+### Multi-Stage RCE / Exploit Chains
+Look for combined diffs that together create an exploit path even if each change seems benign alone:
+- Data flow from user input to dangerous sinks (eval, exec, spawn, deserialization, template rendering)
+- Chained vulnerabilities: e.g., an SSRF enabling access to an internal admin endpoint that allows code execution
+- Unsafe deserialization of user-controlled data (JSON.parse with reviver, pickle, YAML.load)
+- CWE-77 (Command Injection), CWE-502 (Deserialization of Untrusted Data), CWE-94 (Code Injection)
+
 ## RULES
 
 1. Only report vulnerabilities in CHANGED code.

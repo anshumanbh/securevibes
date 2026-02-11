@@ -7,7 +7,7 @@ from click.testing import CliRunner
 
 from securevibes.cli.main import cli
 from securevibes.diff.context import extract_relevant_architecture, filter_relevant_threats
-from securevibes.scanner.scanner import dedupe_pr_vulns
+from securevibes.scanner.scanner import dedupe_pr_vulns, filter_baseline_vulns
 
 
 def test_extract_relevant_architecture_matches_sections(tmp_path: Path):
@@ -64,6 +64,75 @@ def test_dedupe_pr_vulns_filters_known():
 
     assert len(filtered) == 1
     assert filtered[0]["threat_id"] == "THREAT-002"
+
+
+def test_filter_baseline_vulns_excludes_pr_derived_with_threat_prefix():
+    """A THREAT-001 entry with finding_type='known_vuln' is PR-derived, not baseline."""
+    known_vulns = [
+        {"file_path": "app.ts", "threat_id": "THREAT-001", "title": "SQLi"},  # baseline
+        {"file_path": "app.ts", "threat_id": "THREAT-001", "title": "SQLi",
+         "finding_type": "known_vuln"},  # PR-derived
+    ]
+    baseline = filter_baseline_vulns(known_vulns)
+    assert len(baseline) == 1
+    assert "finding_type" not in baseline[0]
+
+
+def test_filter_baseline_vulns_excludes_pr_and_new_prefixes():
+    """PR-/NEW- prefix entries filtered regardless of finding_type."""
+    known_vulns = [
+        {"file_path": "a.ts", "threat_id": "PR-abc123", "title": "A"},
+        {"file_path": "b.ts", "threat_id": "NEW-001", "title": "B"},
+        {"file_path": "c.ts", "threat_id": "THREAT-002", "title": "C"},
+    ]
+    baseline = filter_baseline_vulns(known_vulns)
+    assert len(baseline) == 1
+    assert baseline[0]["threat_id"] == "THREAT-002"
+
+
+def test_filter_baseline_vulns_excludes_source_pr_review():
+    """source='pr_review' entries should be filtered."""
+    known_vulns = [
+        {"file_path": "x.ts", "threat_id": "THREAT-005", "title": "X",
+         "source": "pr_review"},
+    ]
+    baseline = filter_baseline_vulns(known_vulns)
+    assert len(baseline) == 0
+
+
+def test_dedupe_with_baseline_filter_preserves_pr_findings():
+    """The real regression: THREAT-001 + finding_type in known should NOT suppress."""
+    pr_vulns = [{"file_path": "app.ts", "threat_id": "THREAT-001", "title": "SQLi"}]
+    known_vulns = [
+        {"file_path": "app.ts", "threat_id": "THREAT-001", "title": "SQLi",
+         "finding_type": "known_vuln"},
+    ]
+    baseline = filter_baseline_vulns(known_vulns)
+    result = dedupe_pr_vulns(pr_vulns, baseline)
+    assert len(result) == 1  # NOT deduped
+
+
+def test_filter_baseline_vulns_normalizes_finding_type():
+    """finding_type with mixed case or whitespace should still be recognized."""
+    known_vulns = [
+        {"file_path": "a.ts", "threat_id": "THREAT-010", "title": "A",
+         "finding_type": " Known_Vuln "},
+        {"file_path": "b.ts", "threat_id": "THREAT-011", "title": "B",
+         "finding_type": "REGRESSION"},
+    ]
+    baseline = filter_baseline_vulns(known_vulns)
+    assert len(baseline) == 0
+
+
+def test_dedupe_with_baseline_filter_still_dedupes_real_baseline():
+    """Baseline THREAT entries without finding_type should still dedupe correctly."""
+    pr_vulns = [{"file_path": "app.ts", "threat_id": "THREAT-001", "title": "SQLi"}]
+    known_vulns = [
+        {"file_path": "app.ts", "threat_id": "THREAT-001", "title": "SQLi"},  # no finding_type
+    ]
+    baseline = filter_baseline_vulns(known_vulns)
+    result = dedupe_pr_vulns(pr_vulns, baseline)
+    assert len(result) == 0  # IS deduped — genuine baseline match
 
 
 def test_pr_review_empty_diff_exits_cleanly(tmp_path: Path):
