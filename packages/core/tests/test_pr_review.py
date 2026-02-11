@@ -258,3 +258,37 @@ def test_pr_review_last_no_commits(tmp_path: Path, monkeypatch):
 
     assert result.exit_code == 0
     assert "No commits found" in result.output
+
+
+def test_pr_review_last_zero_rejected(tmp_path: Path):
+    """--last 0 should be rejected by CLI validation."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+
+    (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["pr-review", str(repo), "--last", "0"])
+
+    assert result.exit_code != 0
+    assert "0" in result.output or "invalid" in result.output.lower() or "range" in result.output.lower()
+
+
+def test_pr_review_last_negative_rejected(tmp_path: Path):
+    """--last -1 should be rejected by CLI validation."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+
+    (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["pr-review", str(repo), "--last", "-1"])
+
+    assert result.exit_code != 0
+    assert "-1" in result.output or "invalid" in result.output.lower() or "range" in result.output.lower()
