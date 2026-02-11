@@ -227,6 +227,8 @@ The threat modeling agent can load technology-specific skills to identify specia
 - Invoked by `securevibes pr-review`
 - Focuses on changed code only
 - Respects the configured severity threshold
+- Baseline filtering: `VULNERABILITIES.json` is pre-filtered via `filter_baseline_vulns()` before being injected into the prompt and used for post-processing dedupe. PR-derived entries (identified by `source: "pr_review"`, `finding_type` membership, or `PR-`/`NEW-` threat_id prefix) are excluded so they don't suppress valid findings.
+- Includes critical attack pattern detection for credential exposure, sandbox bypass, SSRF-to-RCE chains, and multi-stage exploit chains (with CWE references)
 
 ### 5. Report Generator Agent
 
@@ -497,7 +499,7 @@ PR-specific findings tied to changed lines:
 [
   {
     "threat_id": "THREAT-XXX",
-    "finding_type": "new_threat|threat_enabler|mitigation_removal",
+    "finding_type": "new_threat|threat_enabler|mitigation_removal|known_vuln|regression|unknown",
     "title": "Vulnerability title",
     "description": "...",
     "severity": "critical|high|medium|low",
@@ -507,10 +509,13 @@ PR-specific findings tied to changed lines:
     "attack_scenario": "...",
     "evidence": "...",
     "cwe_id": "CWE-XXX",
-    "recommendation": "How to fix"
+    "recommendation": "How to fix",
+    "source": "pr_review"
   }
 ]
 ```
+
+When PR findings are merged into `VULNERABILITIES.json` via `--update-artifacts`, each entry is tagged with `"source": "pr_review"`. This allows `filter_baseline_vulns()` to distinguish PR-derived entries from baseline scan findings during subsequent reviews, preventing false suppression.
 
 ### scan_results.json
 Final compiled report:

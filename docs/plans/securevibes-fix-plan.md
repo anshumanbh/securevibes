@@ -1,5 +1,13 @@
 # Plan: Fix PR Review Report Generation & Improve RCE Detection
 
+> **Status: IMPLEMENTED** (commit 8924fc1 on `enhance-pr-reviews`)
+>
+> The actual implementation went beyond this initial plan:
+> - Instead of modifying `dedupe_pr_vulns` directly, a new `filter_baseline_vulns()` function strips PR-derived entries **upstream** of both suppression points (prompt context injection and post-processing dedupe).
+> - PR-derived entries are identified by three signals: `source == "pr_review"` tag, `finding_type` membership in PR finding types, and `PR-`/`NEW-` threat_id prefix.
+> - A `source` field was added to both `VULNERABILITY_SCHEMA` and `PR_VULNERABILITY_SCHEMA` in `schemas.py`, and `artifacts.py` now tags stored entries with `source: "pr_review"`.
+> - The attack patterns section was expanded with CWE references across four subsections.
+
 ## Problem Summary
 
 Two issues identified:
