@@ -360,3 +360,85 @@ async def test_pr_review_missing_artifact_returns_warning(tmp_path: Path):
     assert len(result.issues) == 0
     assert len(result.warnings) == 1
     assert "did not produce PR_VULNERABILITIES.json" in result.warnings[0]
+
+
+@pytest.mark.asyncio
+async def test_pr_review_allows_task_tool(tmp_path: Path):
+    """PR review must include Task in allowed_tools for subagent dispatch."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+
+    (securevibes_dir / "SECURITY.md").write_text("# Security\n", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+
+    diff_context = DiffContext(files=[], added_lines=1, removed_lines=0, changed_files=["app.py"])
+
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+
+    with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+        mock_instance = MagicMock()
+        mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.query = AsyncMock()
+
+        async def async_gen():
+            return
+            yield  # pragma: no cover
+
+        mock_instance.receive_messages = async_gen
+
+        await scanner.pr_review(
+            str(repo),
+            diff_context,
+            known_vulns_path=None,
+            severity_threshold="low",
+        )
+
+    # Verify Task is in the allowed_tools passed to ClaudeAgentOptions
+    options = mock_client.call_args[1]["options"]
+    assert "Task" in options.allowed_tools, (
+        f"Task tool missing from allowed_tools: {options.allowed_tools}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_pr_review_has_subagent_hook(tmp_path: Path):
+    """PR review must wire up SubagentStop hook for subagent lifecycle tracking."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+
+    (securevibes_dir / "SECURITY.md").write_text("# Security\n", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+
+    diff_context = DiffContext(files=[], added_lines=1, removed_lines=0, changed_files=["app.py"])
+
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+
+    with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+        mock_instance = MagicMock()
+        mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.query = AsyncMock()
+
+        async def async_gen():
+            return
+            yield  # pragma: no cover
+
+        mock_instance.receive_messages = async_gen
+
+        await scanner.pr_review(
+            str(repo),
+            diff_context,
+            known_vulns_path=None,
+            severity_threshold="low",
+        )
+
+    options = mock_client.call_args[1]["options"]
+    assert "SubagentStop" in options.hooks, "SubagentStop hook must be configured"
+    assert len(options.hooks["SubagentStop"]) > 0, "SubagentStop must have at least one hook"

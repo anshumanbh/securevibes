@@ -587,3 +587,62 @@ class TestProgressTrackerEdgeCases:
 
         assert long_path in progress_tracker.files_read
         assert progress_tracker.tool_count == 1
+
+
+class TestFullScanAllowedTools:
+    """Test that full scan includes Task in allowed_tools for subagent dispatch."""
+
+    @pytest.mark.asyncio
+    async def test_full_scan_allows_task_tool(self, test_repo):
+        """Full scan must include Task in allowed_tools for subagent dispatch."""
+        scanner = Scanner(model="sonnet", debug=False)
+        scanner.console = Console(file=StringIO())
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+            mock_instance = MagicMock()
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_instance.query = AsyncMock()
+
+            async def async_gen():
+                return
+                yield  # pragma: no cover
+
+            mock_instance.receive_messages = async_gen
+
+            try:
+                await scanner.scan(str(test_repo))
+            except RuntimeError:
+                pass  # Expected — no results file
+
+        options = mock_client.call_args[1]["options"]
+        assert "Task" in options.allowed_tools, (
+            f"Task tool missing from allowed_tools: {options.allowed_tools}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_full_scan_has_subagent_hook(self, test_repo):
+        """Full scan must wire up SubagentStop hook for subagent lifecycle tracking."""
+        scanner = Scanner(model="sonnet", debug=False)
+        scanner.console = Console(file=StringIO())
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+            mock_instance = MagicMock()
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_instance.query = AsyncMock()
+
+            async def async_gen():
+                return
+                yield  # pragma: no cover
+
+            mock_instance.receive_messages = async_gen
+
+            try:
+                await scanner.scan(str(test_repo))
+            except RuntimeError:
+                pass  # Expected — no results file
+
+        options = mock_client.call_args[1]["options"]
+        assert "SubagentStop" in options.hooks, "SubagentStop hook must be configured"
+        assert len(options.hooks["SubagentStop"]) > 0

@@ -690,7 +690,8 @@ Only report findings at or above: {severity_threshold}
             agents=agents,
             cwd=str(repo),
             setting_sources=["project"],
-            allowed_tools=["Read", "Write", "Grep", "Glob", "LS"],
+            # Task is required for the orchestrator to dispatch to subagents defined via --agents
+            allowed_tools=["Task", "Read", "Write", "Grep", "Glob", "LS"],
             max_turns=config.get_max_turns(),
             permission_mode="bypassPermissions",
             model=self.model,
@@ -979,7 +980,8 @@ Only report findings at or above: {severity_threshold}
             setting_sources=["project"],
             # Explicit global tools (recommended for clarity)
             # Individual agents may have more restrictive tool lists
-            allowed_tools=["Skill", "Read", "Write", "Edit", "Bash", "Grep", "Glob", "LS"],
+            # Task is required for the orchestrator to dispatch to subagents defined via --agents
+            allowed_tools=["Task", "Skill", "Read", "Write", "Edit", "Bash", "Grep", "Glob", "LS"],
             max_turns=config.get_max_turns(),
             permission_mode="bypassPermissions",
             model=self.model,
