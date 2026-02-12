@@ -567,6 +567,22 @@ def normalize_pr_vulnerability(vuln: Mapping[str, object]) -> Dict[str, object]:
     ]:
         normalized[field] = vuln.get(field, "")
 
+    evidence_fields = ("file_path", "code_snippet", "evidence", "cwe_id")
+    empty_evidence_fields = [
+        field for field in evidence_fields if not str(normalized.get(field, "")).strip()
+    ]
+    if empty_evidence_fields:
+        logger.warning(
+            "Normalized PR vulnerability has empty evidence fields: %s",
+            ", ".join(sorted(empty_evidence_fields)),
+        )
+
+    if not isinstance(line_number, int) or line_number < 1:
+        logger.warning(
+            "Normalized PR vulnerability has invalid line_number: %s",
+            line_number,
+        )
+
     normalized["recommendation"] = vuln.get("recommendation") or vuln.get("mitigation", "")
 
     evidence_text = _coerce_evidence_to_string(normalized.get("evidence"))
@@ -731,6 +747,18 @@ def validate_pr_vulnerabilities_json(content: str) -> Tuple[bool, Optional[str]]
         finding_type = str(vuln.get("finding_type", "")).lower()
         if finding_type not in valid_finding_types:
             return False, f"Item {i} has invalid finding_type: {vuln.get('finding_type')}"
+
+        evidence_fields = {"file_path", "code_snippet", "evidence", "cwe_id"}
+        empty_fields = [field for field in evidence_fields if not str(vuln.get(field, "")).strip()]
+        if empty_fields:
+            return (
+                False,
+                f"Item {i} has empty required evidence fields: {', '.join(sorted(empty_fields))}",
+            )
+
+        line_number = vuln.get("line_number", 0)
+        if not isinstance(line_number, int) or line_number < 1:
+            return False, f"Item {i} has invalid line_number: {line_number} (must be >= 1)"
 
     return True, None
 

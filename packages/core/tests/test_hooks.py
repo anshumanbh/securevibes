@@ -1026,3 +1026,54 @@ class TestPRJsonValidationHook:
         fixed_data = json.loads(fixed_content)
         # Should extract first line number
         assert fixed_data[0]["line_number"] == 10
+
+    @pytest.mark.asyncio
+    async def test_pr_invalid_empty_evidence_rejected_once(self, console):
+        """Invalid PR payload should be rejected on first attempt."""
+        import json
+
+        hook = create_json_validation_hook(console, debug=False)
+
+        vuln = self._make_valid_pr_vuln()
+        vuln["file_path"] = ""
+        content = json.dumps([vuln])
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/PR_VULNERABILITIES.json",
+                "content": content,
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "override_result" in result
+        assert result["override_result"]["is_error"] is True
+        assert "Write rejected by SecureVibes PR validation" in result["override_result"]["content"]
+        assert "file_path" in result["override_result"]["content"]
+
+    @pytest.mark.asyncio
+    async def test_pr_invalid_empty_evidence_allows_after_retry_budget(self, console):
+        """After retry budget is exhausted, invalid PR payload should pass through."""
+        import json
+
+        hook = create_json_validation_hook(console, debug=False)
+
+        vuln = self._make_valid_pr_vuln()
+        vuln["evidence"] = "   "
+        content = json.dumps([vuln])
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/PR_VULNERABILITIES.json",
+                "content": content,
+            },
+        }
+
+        first = await hook(input_data, "tool-123", {})
+        second = await hook(input_data, "tool-124", {})
+
+        assert "override_result" in first
+        assert "override_result" not in second

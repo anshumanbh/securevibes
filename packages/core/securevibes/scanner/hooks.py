@@ -281,7 +281,12 @@ def create_json_validation_hook(console: Console, debug: bool):
         Async hook function compatible with ClaudeSDKClient PreToolUse hook
     """
 
+    pr_invalid_attempts = 0
+    max_pr_retries = 1
+
     async def json_validation_hook(input_data: dict, tool_use_id: str, ctx: dict) -> dict:
+        nonlocal pr_invalid_attempts
+
         tool_name = input_data.get("tool_name")
 
         # Only intercept Write operations
@@ -383,16 +388,42 @@ def create_json_validation_hook(console: Console, debug: bool):
             is_valid, error_msg = validate_vulnerabilities_json(fixed_content)
 
         if not is_valid:
-            console.print(
-                (
-                    f"  ❌ PR_VULNERABILITIES.json validation failed: {error_msg}"
-                    if is_pr_review
-                    else f"  ❌ VULNERABILITIES.json validation failed: {error_msg}"
-                ),
-                style="bold red",
-            )
-            # Don't block - let it write but warn
-            # The Pydantic validation in scanner.py will catch it later
+            if is_pr_review:
+                pr_invalid_attempts += 1
+                remaining = max(0, max_pr_retries - pr_invalid_attempts + 1)
+                reason = error_msg or "Unknown validation error"
+
+                if pr_invalid_attempts <= max_pr_retries:
+                    console.print(
+                        f"  ❌ PR_VULNERABILITIES.json validation failed "
+                        f"(retry {pr_invalid_attempts}/{max_pr_retries}): {reason}",
+                        style="bold red",
+                    )
+                    return {
+                        "override_result": {
+                            "content": (
+                                "Write rejected by SecureVibes PR validation.\n"
+                                f"Reason: {reason}\n"
+                                f"Retries remaining: {remaining}\n\n"
+                                "PR_VULNERABILITIES.json rejected: empty evidence fields. "
+                                "Read the actual source files and populate file_path, "
+                                "line_number, code_snippet, evidence, and cwe_id for every finding."
+                            ),
+                            "is_error": True,
+                        }
+                    }
+
+                console.print(
+                    "  ⚠️  PR_VULNERABILITIES.json still failed validation after retry budget; "
+                    "allowing write with warnings.",
+                    style="yellow",
+                )
+            else:
+                console.print(
+                    f"  ❌ VULNERABILITIES.json validation failed: {error_msg}",
+                    style="bold red",
+                )
+                # Non-PR code review remains warn-only for compatibility.
         elif debug:
             console.print(
                 (

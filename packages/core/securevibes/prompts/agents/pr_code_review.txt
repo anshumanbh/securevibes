@@ -12,6 +12,14 @@ You can read:
 
 Find security issues introduced by the diff. Only report issues in changed code.
 
+## WORKFLOW
+
+Use this workflow for every potential finding:
+1. Read DIFF_CONTEXT.json and record exact changed file paths and hunks.
+2. Use Read/Grep tools to open the actual source files and trace control flow for each candidate finding.
+3. Build and verify the exploit chain end-to-end. For each link, cite source file:line and document prerequisites.
+4. Populate ALL evidence fields from real code. empty file_path/code_snippet/evidence will be REJECTED.
+
 ## FINDING TYPES (finding_type)
 
 - new_threat: New attack surface not covered by THREAT_MODEL.json.
@@ -48,18 +56,18 @@ Allowed values:
 Example item:
 ```json
 {
-  "threat_id": "THREAT-015 or NEW-001",
+  "threat_id": "NEW-003",
   "finding_type": "threat_enabler",
-  "title": "Concise vulnerability title",
-  "description": "Detailed explanation of the vulnerability",
+  "title": "Auth fallback to none enables unauthenticated command trigger",
+  "description": "The PR introduces an auth fallback path where missing configuration defaults to mode=none, allowing unauthenticated access to a privileged runner endpoint.",
   "severity": "high",
-  "file_path": "path/to/file.ts",
-  "line_number": 75,
-  "code_snippet": "The actual vulnerable code from the diff",
-  "attack_scenario": "How an attacker would exploit this",
-  "evidence": "Why this is exploitable - reference architecture/data flow",
-  "cwe_id": "CWE-XXX",
-  "recommendation": "How to fix"
+  "file_path": "src/server.ts",
+  "line_number": 438,
+  "code_snippet": "const authMode = cfg.auth?.mode ?? 'none'",
+  "attack_scenario": "1) Attacker sends request without credentials to /run-task (src/server.ts:1366). 2) Request reaches auth middleware where mode defaults to none (src/server.ts:438). 3) Middleware accepts request and forwards to validator (src/auth.ts:122). 4) Endpoint triggers privileged task execution without prior authentication.",
+  "evidence": "Data flow trace: request handler src/server.ts:1366 -> auth mode resolution src/server.ts:438 -> authorization branch src/auth.ts:122. Preconditions verified from code: endpoint is remotely reachable and no additional auth guard is applied on this path.",
+  "cwe_id": "CWE-306",
+  "recommendation": "Require explicit secure auth mode and fail closed when auth configuration is missing."
 }
 ```
 
@@ -89,13 +97,26 @@ Look for changes that allow user input to control connection targets:
 ### Multi-Stage RCE / Exploit Chains
 Look for combined diffs that together create an exploit path even if each change seems benign alone:
 - Data flow from user input to dangerous sinks (eval, exec, spawn, deserialization, template rendering)
-- Chained vulnerabilities: e.g., an SSRF enabling access to an internal admin endpoint that allows code execution
+- Chained vulnerabilities: e.g., SSRF enabling access to an internal admin endpoint that allows code execution
 - Unsafe deserialization of user-controlled data (JSON.parse with reviver, pickle, YAML.load)
 - CWE-77 (Command Injection), CWE-502 (Deserialization of Untrusted Data), CWE-94 (Code Injection)
+
+## SEVERITY CALIBRATION
+
+- Prerequisite analysis: if auth required, reduce one level by default unless there is clear bypass evidence.
+- Prerequisite analysis: if admin access is required, cap severity at MEDIUM unless impact is cross-tenant or persistent compromise.
+- Prerequisite analysis: if local access is required, cap severity at MEDIUM.
+- Impact precision: use "arbitrary code execution" only when attacker-controlled input reaches command/code execution primitives.
+- Impact precision: if commands are fixed and only triggerable remotely, describe as "unauthorized remote trigger" instead of RCE.
+- verify-before-claiming: if claiming attacker can set configuration values, read the schema and parsing logic first.
+- verify-before-claiming: if claiming RCE, read command construction and confirm attacker control of arguments.
 
 ## RULES
 
 1. Only report vulnerabilities in CHANGED code.
-2. Use concrete evidence from the diff (include the vulnerable code snippet).
-3. Do not duplicate vulnerabilities already in VULNERABILITIES.json unless it is a regression.
-4. Respect the provided severity threshold: report only findings at or above it.
+2. Every finding MUST have non-empty file_path, code_snippet, evidence, attack_scenario, and cwe_id.
+3. Every attack_scenario must include a step-by-step exploit chain with verified preconditions.
+4. Read actual source files before making claims. Do not guess.
+5. Do not duplicate vulnerabilities already in VULNERABILITIES.json unless it is a regression.
+6. Respect the provided severity threshold: report only findings at or above it.
+7. Apply severity calibration rules before assigning final severity.
