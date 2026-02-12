@@ -177,6 +177,30 @@ def create_pre_tool_hook(tracker, console: Console, debug: bool, detected_langua
                         }
                     }
 
+        # Enforce PR review write restrictions:
+        # only allow writing .securevibes/PR_VULNERABILITIES.json
+        if tool_name == "Write" and tracker.current_phase == "pr-code-review":
+            file_path = tool_input.get("file_path", "")
+            if file_path:
+                try:
+                    p = Path(file_path)
+                    allowed = (
+                        p.name == "PR_VULNERABILITIES.json" and p.parent.name == ".securevibes"
+                    )
+                except Exception:
+                    allowed = False
+                if not allowed:
+                    return {
+                        "override_result": {
+                            "content": (
+                                "PR code review phase may only write "
+                                ".securevibes/PR_VULNERABILITIES.json. "
+                                f"Blocked write to: {file_path}"
+                            ),
+                            "is_error": False,
+                        }
+                    }
+
         # Track tool start
         tracker.on_tool_start(tool_name, tool_input)
         return {}
@@ -289,6 +313,7 @@ def create_json_validation_hook(console: Console, debug: bool):
         if debug:
             try:
                 import json as _json
+
                 original_data = _json.loads(content)
                 if isinstance(original_data, list) and original_data:
                     first_item = original_data[0] if isinstance(original_data[0], dict) else {}
@@ -315,6 +340,7 @@ def create_json_validation_hook(console: Console, debug: bool):
         if debug:
             try:
                 import json as _json
+
                 fixed_data = _json.loads(fixed_content)
                 if isinstance(fixed_data, list) and fixed_data:
                     first_item = fixed_data[0] if isinstance(fixed_data[0], dict) else {}

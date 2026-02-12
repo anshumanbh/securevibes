@@ -15,6 +15,7 @@ class ScanResult:
     files_scanned: int = 0
     scan_time_seconds: float = 0.0
     total_cost_usd: float = 0.0
+    warnings: List[str] = field(default_factory=list)
 
     # DAST metrics
     dast_enabled: bool = False
@@ -71,6 +72,9 @@ class ScanResult:
                 "low": self.low_count,
             },
         }
+
+        if self.warnings:
+            result["warnings"] = self.warnings
 
         # Add DAST metrics if enabled
         if self.dast_enabled:

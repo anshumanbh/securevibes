@@ -724,12 +724,19 @@ Only report findings at or above: {severity_threshold}
 
         pr_vulns_path = securevibes_dir / PR_VULNERABILITIES_FILE
         if not pr_vulns_path.exists():
+            warning_msg = (
+                "PR code review agent did not produce PR_VULNERABILITIES.json. "
+                "The analysis may not have completed successfully. "
+                "Results below may be incomplete."
+            )
+            self.console.print(f"\n[bold yellow]WARNING:[/bold yellow] {warning_msg}\n")
             return ScanResult(
                 repository_path=str(repo),
                 issues=[],
                 files_scanned=len(diff_context.changed_files),
                 scan_time_seconds=round(time.time() - scan_start_time, 2),
                 total_cost_usd=round(self.total_cost, 4),
+                warnings=[warning_msg],
             )
 
         try:
@@ -1039,8 +1046,12 @@ Only report findings at or above: {severity_threshold}
                 )
             else:
                 return self._load_scan_results(
-                    securevibes_dir, repo, files_scanned, scan_start_time,
-                    single_subagent, resume_from
+                    securevibes_dir,
+                    repo,
+                    files_scanned,
+                    scan_start_time,
+                    single_subagent,
+                    resume_from,
                 )
         except RuntimeError as e:
             self.console.print(f"❌ Error loading scan results: {e}", style="bold red")
@@ -1293,8 +1304,13 @@ Only report findings at or above: {severity_threshold}
         )
 
     def _load_scan_results(
-        self, securevibes_dir: Path, repo: Path, files_scanned: int, scan_start_time: float,
-        single_subagent: Optional[str] = None, resume_from: Optional[str] = None
+        self,
+        securevibes_dir: Path,
+        repo: Path,
+        files_scanned: int,
+        scan_start_time: float,
+        single_subagent: Optional[str] = None,
+        resume_from: Optional[str] = None,
     ) -> ScanResult:
         """
         Load and parse scan results from agent-generated files.
@@ -1415,10 +1431,16 @@ Only report findings at or above: {severity_threshold}
         return scan_result
 
 
-_PR_FINDING_TYPES = frozenset({
-    "new_threat", "threat_enabler", "mitigation_removal",
-    "known_vuln", "regression", "unknown",
-})
+_PR_FINDING_TYPES = frozenset(
+    {
+        "new_threat",
+        "threat_enabler",
+        "mitigation_removal",
+        "known_vuln",
+        "regression",
+        "unknown",
+    }
+)
 
 
 def filter_baseline_vulns(known_vulns: list[dict]) -> list[dict]:

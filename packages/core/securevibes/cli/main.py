@@ -461,7 +461,9 @@ def pr_review(
             state = load_scan_state(securevibes_dir / "scan_state.json") or {}
             base_commit = get_last_full_scan_commit(state)
             if not base_commit:
-                console.print("[bold red]❌ Missing last_full_scan commit in scan_state.json[/bold red]")
+                console.print(
+                    "[bold red]❌ Missing last_full_scan commit in scan_state.json[/bold red]"
+                )
                 sys.exit(1)
             commits_reviewed = get_commits_after(repo, base_commit)
             if not commits_reviewed:
@@ -756,9 +758,7 @@ def _ensure_baseline_scan(repo: Path, model: str, debug: bool) -> None:
     state = load_scan_state(state_path)
     branch = get_repo_branch(repo)
     if not state or not branch or not scan_state_branch_matches(state, branch):
-        console.print(
-            "[bold red]❌ Baseline scan did not initialize scan_state.json[/bold red]"
-        )
+        console.print("[bold red]❌ Baseline scan did not initialize scan_state.json[/bold red]")
         sys.exit(1)
 
 
@@ -890,6 +890,12 @@ def _display_table_results(result, quiet: bool):
         stats_table.add_row("   🟢 Low:", f"[dim]{result.low_count}[/dim]")
 
     console.print(stats_table)
+
+    warnings = getattr(result, "warnings", None)
+    if isinstance(warnings, list) and warnings:
+        for warning in warnings:
+            console.print(f"[bold yellow]WARNING:[/bold yellow] {warning}")
+
     console.print()
 
     if result.issues:
@@ -934,6 +940,11 @@ def _display_text_results(result):
     console.print(f"\nFiles scanned: {result.files_scanned}")
     console.print(f"Scan time: {result.scan_time_seconds}s")
     console.print(f"Issues found: {len(result.issues)}")
+
+    warnings = getattr(result, "warnings", None)
+    if isinstance(warnings, list) and warnings:
+        for warning in warnings:
+            console.print(f"WARNING: {warning}")
 
     if result.issues:
         console.print(f"  Critical: {result.critical_count}")

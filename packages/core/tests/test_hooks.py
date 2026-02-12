@@ -261,6 +261,105 @@ class TestPreToolHook:
         # Should not block
         assert "override_result" not in result
 
+    @pytest.mark.asyncio
+    async def test_blocks_arbitrary_writes_in_pr_code_review(self, tracker, console):
+        """PR code review should block arbitrary file writes."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        hook = create_pre_tool_hook(
+            tracker, console, debug=False, detected_languages=detected_languages
+        )
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/project/src/agents/pr-code-review.ts", "content": "x"},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "override_result" in result
+        assert "PR code review phase may only write" in result["override_result"]["content"]
+
+    @pytest.mark.asyncio
+    async def test_allows_pr_vulnerabilities_write_in_pr_code_review(self, tracker, console):
+        """PR code review should allow PR_VULNERABILITIES.json artifact write."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        hook = create_pre_tool_hook(
+            tracker, console, debug=False, detected_languages=detected_languages
+        )
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/PR_VULNERABILITIES.json",
+                "content": "[]",
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "override_result" not in result
+
+    @pytest.mark.asyncio
+    async def test_blocks_tmp_writes_in_pr_code_review(self, tracker, console):
+        """PR code review should not allow /tmp writes."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        hook = create_pre_tool_hook(
+            tracker, console, debug=False, detected_languages=detected_languages
+        )
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/pr-review-helper.py", "content": "print('x')"},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "override_result" in result
+        assert "/tmp/pr-review-helper.py" in result["override_result"]["content"]
+
+    @pytest.mark.asyncio
+    async def test_blocks_other_securevibes_writes_in_pr_code_review(self, tracker, console):
+        """PR code review should block non-PR_VULNERABILITIES artifacts."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        hook = create_pre_tool_hook(
+            tracker, console, debug=False, detected_languages=detected_languages
+        )
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/VULNERABILITIES.json",
+                "content": "[]",
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "override_result" in result
+        assert "PR code review phase may only write" in result["override_result"]["content"]
+
+    @pytest.mark.asyncio
+    async def test_read_operations_unaffected_in_pr_code_review(self, tracker, console):
+        """PR code review restrictions should not affect reads."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        hook = create_pre_tool_hook(
+            tracker, console, debug=False, detected_languages=detected_languages
+        )
+
+        input_data = {
+            "tool_name": "Read",
+            "tool_input": {"file_path": "/project/src/app.py"},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert result == {}
+
     # Note: test_logs_skill_invocations_in_debug removed - SDK auto-loads skills
     # from .claude/skills/ without explicit Skill tool calls, so the logging
     # code was dead code and has been removed.

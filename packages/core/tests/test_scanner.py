@@ -52,6 +52,40 @@ def api():
     return tmp_path
 
 
+class TestScanResultWarnings:
+    """Test ScanResult warning behavior."""
+
+    def test_scan_result_warnings_default_empty(self):
+        """Warnings should default to an empty list."""
+        result = ScanResult(repository_path="/tmp/repo")
+
+        assert result.warnings == []
+
+    def test_scan_result_warnings_stores_values(self):
+        """Warnings passed to constructor should be stored."""
+        warnings = ["Analysis may be incomplete."]
+        result = ScanResult(repository_path="/tmp/repo", warnings=warnings)
+
+        assert result.warnings == warnings
+
+    def test_scan_result_to_dict_includes_warnings_when_non_empty(self):
+        """to_dict should include warnings only when present."""
+        warnings = ["Missing PR_VULNERABILITIES.json"]
+        result = ScanResult(repository_path="/tmp/repo", warnings=warnings)
+
+        data = result.to_dict()
+
+        assert data["warnings"] == warnings
+
+    def test_scan_result_to_dict_omits_warnings_when_empty(self):
+        """to_dict should not include warnings when list is empty."""
+        result = ScanResult(repository_path="/tmp/repo")
+
+        data = result.to_dict()
+
+        assert "warnings" not in data
+
+
 class TestProgressTracker:
     """Test ProgressTracker functionality"""
 
@@ -465,8 +499,11 @@ class TestScannerResultLoading:
 
         # Call with single_subagent set
         result = scanner._load_scan_results(
-            securevibes_dir, test_repo, files_scanned=10, scan_start_time=0,
-            single_subagent="assessment"
+            securevibes_dir,
+            test_repo,
+            files_scanned=10,
+            scan_start_time=0,
+            single_subagent="assessment",
         )
 
         assert isinstance(result, ScanResult)
@@ -494,8 +531,11 @@ class TestScannerResultLoading:
 
         # Call with resume_from set
         result = scanner._load_scan_results(
-            securevibes_dir, test_repo, files_scanned=10, scan_start_time=0,
-            resume_from="code-review"
+            securevibes_dir,
+            test_repo,
+            files_scanned=10,
+            scan_start_time=0,
+            resume_from="code-review",
         )
 
         assert isinstance(result, ScanResult)

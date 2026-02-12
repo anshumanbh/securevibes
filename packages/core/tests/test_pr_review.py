@@ -1,13 +1,18 @@
 """Tests for PR review helpers."""
 
 import json
+from io import StringIO
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from click.testing import CliRunner
+from rich.console import Console
 
 from securevibes.cli.main import cli
 from securevibes.diff.context import extract_relevant_architecture, filter_relevant_threats
-from securevibes.scanner.scanner import dedupe_pr_vulns, filter_baseline_vulns
+from securevibes.diff.parser import DiffContext
+from securevibes.scanner.scanner import Scanner, dedupe_pr_vulns, filter_baseline_vulns
 
 
 def test_extract_relevant_architecture_matches_sections(tmp_path: Path):
@@ -70,8 +75,12 @@ def test_filter_baseline_vulns_excludes_pr_derived_with_threat_prefix():
     """A THREAT-001 entry with finding_type='known_vuln' is PR-derived, not baseline."""
     known_vulns = [
         {"file_path": "app.ts", "threat_id": "THREAT-001", "title": "SQLi"},  # baseline
-        {"file_path": "app.ts", "threat_id": "THREAT-001", "title": "SQLi",
-         "finding_type": "known_vuln"},  # PR-derived
+        {
+            "file_path": "app.ts",
+            "threat_id": "THREAT-001",
+            "title": "SQLi",
+            "finding_type": "known_vuln",
+        },  # PR-derived
     ]
     baseline = filter_baseline_vulns(known_vulns)
     assert len(baseline) == 1
@@ -93,8 +102,7 @@ def test_filter_baseline_vulns_excludes_pr_and_new_prefixes():
 def test_filter_baseline_vulns_excludes_source_pr_review():
     """source='pr_review' entries should be filtered."""
     known_vulns = [
-        {"file_path": "x.ts", "threat_id": "THREAT-005", "title": "X",
-         "source": "pr_review"},
+        {"file_path": "x.ts", "threat_id": "THREAT-005", "title": "X", "source": "pr_review"},
     ]
     baseline = filter_baseline_vulns(known_vulns)
     assert len(baseline) == 0
@@ -104,8 +112,12 @@ def test_dedupe_with_baseline_filter_preserves_pr_findings():
     """The real regression: THREAT-001 + finding_type in known should NOT suppress."""
     pr_vulns = [{"file_path": "app.ts", "threat_id": "THREAT-001", "title": "SQLi"}]
     known_vulns = [
-        {"file_path": "app.ts", "threat_id": "THREAT-001", "title": "SQLi",
-         "finding_type": "known_vuln"},
+        {
+            "file_path": "app.ts",
+            "threat_id": "THREAT-001",
+            "title": "SQLi",
+            "finding_type": "known_vuln",
+        },
     ]
     baseline = filter_baseline_vulns(known_vulns)
     result = dedupe_pr_vulns(pr_vulns, baseline)
@@ -115,10 +127,18 @@ def test_dedupe_with_baseline_filter_preserves_pr_findings():
 def test_filter_baseline_vulns_normalizes_finding_type():
     """finding_type with mixed case or whitespace should still be recognized."""
     known_vulns = [
-        {"file_path": "a.ts", "threat_id": "THREAT-010", "title": "A",
-         "finding_type": " Known_Vuln "},
-        {"file_path": "b.ts", "threat_id": "THREAT-011", "title": "B",
-         "finding_type": "REGRESSION"},
+        {
+            "file_path": "a.ts",
+            "threat_id": "THREAT-010",
+            "title": "A",
+            "finding_type": " Known_Vuln ",
+        },
+        {
+            "file_path": "b.ts",
+            "threat_id": "THREAT-011",
+            "title": "B",
+            "finding_type": "REGRESSION",
+        },
     ]
     baseline = filter_baseline_vulns(known_vulns)
     assert len(baseline) == 0
@@ -274,7 +294,11 @@ def test_pr_review_last_zero_rejected(tmp_path: Path):
     result = runner.invoke(cli, ["pr-review", str(repo), "--last", "0"])
 
     assert result.exit_code != 0
-    assert "0" in result.output or "invalid" in result.output.lower() or "range" in result.output.lower()
+    assert (
+        "0" in result.output
+        or "invalid" in result.output.lower()
+        or "range" in result.output.lower()
+    )
 
 
 def test_pr_review_last_negative_rejected(tmp_path: Path):
@@ -291,4 +315,48 @@ def test_pr_review_last_negative_rejected(tmp_path: Path):
     result = runner.invoke(cli, ["pr-review", str(repo), "--last", "-1"])
 
     assert result.exit_code != 0
-    assert "-1" in result.output or "invalid" in result.output.lower() or "range" in result.output.lower()
+    assert (
+        "-1" in result.output
+        or "invalid" in result.output.lower()
+        or "range" in result.output.lower()
+    )
+
+
+@pytest.mark.asyncio
+async def test_pr_review_missing_artifact_returns_warning(tmp_path: Path):
+    """Missing PR_VULNERABILITIES.json should return a warning instead of silent success."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+
+    (securevibes_dir / "SECURITY.md").write_text("# Security\n", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+
+    diff_context = DiffContext(files=[], added_lines=1, removed_lines=0, changed_files=["app.py"])
+
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+
+    with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+        mock_instance = MagicMock()
+        mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.query = AsyncMock()
+
+        async def async_gen():
+            return
+            yield  # pragma: no cover
+
+        mock_instance.receive_messages = async_gen
+
+        result = await scanner.pr_review(
+            str(repo),
+            diff_context,
+            known_vulns_path=None,
+            severity_threshold="low",
+        )
+
+    assert len(result.issues) == 0
+    assert len(result.warnings) == 1
+    assert "did not produce PR_VULNERABILITIES.json" in result.warnings[0]
