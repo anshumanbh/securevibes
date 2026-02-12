@@ -1077,3 +1077,36 @@ class TestPRJsonValidationHook:
 
         assert "override_result" in first
         assert "override_result" not in second
+
+    @pytest.mark.asyncio
+    async def test_pr_retry_exhaustion_preserves_updated_input(self, console):
+        """After max retries with wrapper input, updatedInput with format fixes still returned."""
+        import json
+
+        hook = create_json_validation_hook(console, debug=False)
+
+        vuln = self._make_valid_pr_vuln()
+        vuln["evidence"] = ""  # empty evidence → invalid
+        # Wrap in a dict — the fixer should unwrap AND the wrapper fix should be in updatedInput
+        content = json.dumps({"vulnerabilities": [vuln]})
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/PR_VULNERABILITIES.json",
+                "content": content,
+            },
+        }
+
+        # First attempt: rejected (retry budget not exhausted)
+        first = await hook(input_data, "tool-123", {})
+        assert "override_result" in first
+
+        # Second attempt: retry budget exhausted — should pass through
+        # but because the wrapper was fixed, updatedInput should be returned
+        second = await hook(input_data, "tool-124", {})
+        assert "override_result" not in second
+        assert "hookSpecificOutput" in second
+        updated = second["hookSpecificOutput"]["updatedInput"]
+        fixed_data = json.loads(updated["content"])
+        assert isinstance(fixed_data, list), "Wrapper should have been unwrapped"

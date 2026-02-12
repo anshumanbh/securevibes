@@ -567,6 +567,47 @@ def normalize_pr_vulnerability(vuln: Mapping[str, object]) -> Dict[str, object]:
     ]:
         normalized[field] = vuln.get(field, "")
 
+    # Map location.file → file_path, location.line → line_number (if not already set)
+    location = vuln.get("location")
+    if isinstance(location, dict):
+        if not str(normalized.get("file_path", "")).strip() and location.get("file"):
+            normalized["file_path"] = str(location["file"])
+            warnings.append("file_path")
+        loc_line = location.get("line")
+        if loc_line is not None and (
+            not isinstance(normalized.get("line_number"), int) or normalized["line_number"] < 1
+        ):
+            try:
+                parsed_line = int(loc_line)
+                normalized["line_number"] = parsed_line
+                warnings.append("line_number")
+            except (TypeError, ValueError):
+                pass  # leave line_number from _extract_primary_line_number
+
+    # Map location string forms like:
+    # - src/app.ts:42
+    # - src/app.ts:111-208
+    # - src/a.ts:16-119, src/b.ts
+    if isinstance(location, str):
+        parsed_path, parsed_line = _parse_location_string(location)
+        if parsed_path and not str(normalized.get("file_path", "")).strip():
+            normalized["file_path"] = parsed_path
+            warnings.append("file_path")
+        if parsed_line is not None and (
+            not isinstance(normalized.get("line_number"), int) or normalized["line_number"] < 1
+        ):
+            normalized["line_number"] = parsed_line
+            warnings.append("line_number")
+
+    # Map bare cwe → cwe_id (if extract_cwe_id and field copy didn't produce one)
+    if not str(normalized.get("cwe_id", "")).strip() and vuln.get("cwe"):
+        raw_cwe = str(vuln["cwe"]).strip()
+        # Normalize bare numbers: "862" → "CWE-862"
+        if re.fullmatch(r"\d+", raw_cwe):
+            raw_cwe = f"CWE-{raw_cwe}"
+        normalized["cwe_id"] = raw_cwe
+        warnings.append("cwe_id")
+
     evidence_fields = ("file_path", "code_snippet", "evidence", "cwe_id")
     empty_evidence_fields = [
         field for field in evidence_fields if not str(normalized.get(field, "")).strip()
@@ -577,10 +618,11 @@ def normalize_pr_vulnerability(vuln: Mapping[str, object]) -> Dict[str, object]:
             ", ".join(sorted(empty_evidence_fields)),
         )
 
-    if not isinstance(line_number, int) or line_number < 1:
+    normalized_line_number = normalized.get("line_number")
+    if not isinstance(normalized_line_number, int) or normalized_line_number < 1:
         logger.warning(
             "Normalized PR vulnerability has invalid line_number: %s",
-            line_number,
+            normalized_line_number,
         )
 
     normalized["recommendation"] = vuln.get("recommendation") or vuln.get("mitigation", "")
@@ -623,6 +665,27 @@ def _extract_line_numbers(vuln: Mapping[str, object]) -> list[int]:
         except (TypeError, ValueError):
             continue
     return line_numbers
+
+
+def _parse_location_string(location: str) -> tuple[Optional[str], Optional[int]]:
+    """Parse common location string variants into (file_path, line_number)."""
+    raw = (location or "").strip()
+    if not raw:
+        return None, None
+
+    first_segment = raw.split(",", 1)[0].strip()
+    if not first_segment:
+        return None, None
+
+    # path:42 or path:111-208
+    match = re.match(r"^(?P<path>.+?):(?P<line>\d+)(?:-\d+)?$", first_segment)
+    if match:
+        path = match.group("path").strip()
+        line = int(match.group("line"))
+        return (path or None), (line if line >= 1 else None)
+
+    # path without line
+    return first_segment, None
 
 
 def _coerce_evidence_to_string(value: object) -> str:

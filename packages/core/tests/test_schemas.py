@@ -617,3 +617,176 @@ class TestNormalizePrVulnerability:
         }
 
         assert extract_cwe_id(vuln) == "CWE-79"
+
+    def test_maps_location_file_to_file_path(self):
+        """location.file → file_path, location.line → line_number."""
+        vuln = {
+            "title": "Broken access control",
+            "description": "Missing auth check",
+            "severity": "high",
+            "location": {"file": "src/app.ts", "line": 42},
+            "code_snippet": "if (user) {",
+            "attack_scenario": "Bypass auth",
+            "evidence": "No middleware",
+            "cwe_id": "CWE-862",
+            "recommendation": "Add auth middleware",
+        }
+
+        normalized = normalize_pr_vulnerability(vuln)
+
+        assert normalized["file_path"] == "src/app.ts"
+        assert normalized["line_number"] == 42
+
+    def test_maps_cwe_to_cwe_id(self):
+        """cwe field → cwe_id when cwe_id is absent."""
+        vuln = {
+            "title": "SSRF",
+            "description": "Server-side request forgery",
+            "severity": "high",
+            "file_path": "api/fetch.ts",
+            "line_number": 10,
+            "code_snippet": "fetch(url)",
+            "attack_scenario": "Attacker controls URL",
+            "evidence": "Unvalidated URL",
+            "cwe": "CWE-862",
+            "recommendation": "Validate URLs",
+        }
+
+        normalized = normalize_pr_vulnerability(vuln)
+
+        assert normalized["cwe_id"] == "CWE-862"
+
+    def test_maps_bare_cwe_number_to_cwe_id(self):
+        """Bare numeric cwe '862' → 'CWE-862'."""
+        vuln = {
+            "title": "Missing auth",
+            "description": "No authorization check",
+            "severity": "high",
+            "file_path": "api/route.ts",
+            "line_number": 5,
+            "code_snippet": "app.get('/admin')",
+            "attack_scenario": "Direct access",
+            "evidence": "No auth middleware",
+            "cwe": "862",
+            "recommendation": "Add auth",
+        }
+
+        normalized = normalize_pr_vulnerability(vuln)
+
+        assert normalized["cwe_id"] == "CWE-862"
+
+    def test_location_does_not_override_explicit_file_path(self):
+        """Explicit file_path should not be overwritten by location.file."""
+        vuln = {
+            "title": "XSS",
+            "description": "Cross-site scripting",
+            "severity": "medium",
+            "file_path": "explicit/path.ts",
+            "line_number": 7,
+            "location": {"file": "other/path.ts", "line": 99},
+            "code_snippet": "innerHTML = data",
+            "attack_scenario": "Script injection",
+            "evidence": "Unescaped output",
+            "cwe_id": "CWE-79",
+            "recommendation": "Escape output",
+        }
+
+        normalized = normalize_pr_vulnerability(vuln)
+
+        assert normalized["file_path"] == "explicit/path.ts"
+        assert normalized["line_number"] == 7
+
+    def test_location_line_non_numeric_is_ignored(self):
+        """Non-numeric location.line should be silently ignored."""
+        vuln = {
+            "title": "Issue",
+            "description": "Test",
+            "severity": "low",
+            "location": {"file": "x.ts", "line": "abc"},
+            "code_snippet": "code",
+            "attack_scenario": "scenario",
+            "evidence": "evidence",
+            "cwe_id": "CWE-1",
+            "recommendation": "fix",
+        }
+
+        normalized = normalize_pr_vulnerability(vuln)
+
+        assert normalized["file_path"] == "x.ts"
+        assert normalized["line_number"] == 0
+
+    def test_maps_location_string_path_and_range_to_file_path_and_line_number(self):
+        """location='path:start-end' should map file_path and first line."""
+        vuln = {
+            "title": "Issue",
+            "description": "Test",
+            "severity": "high",
+            "location": "src/gateway/server-methods/config.ts:111-208",
+            "code_snippet": "code",
+            "attack_scenario": "scenario",
+            "evidence": "evidence",
+            "cwe_id": "CWE-269",
+            "recommendation": "fix",
+        }
+
+        normalized = normalize_pr_vulnerability(vuln)
+
+        assert normalized["file_path"] == "src/gateway/server-methods/config.ts"
+        assert normalized["line_number"] == 111
+
+    def test_maps_location_string_path_and_single_line(self):
+        """location='path:line' should map file_path and line."""
+        vuln = {
+            "title": "Issue",
+            "description": "Test",
+            "severity": "high",
+            "location": "src/infra/update-runner.ts:145",
+            "code_snippet": "code",
+            "attack_scenario": "scenario",
+            "evidence": "evidence",
+            "cwe_id": "CWE-78",
+            "recommendation": "fix",
+        }
+
+        normalized = normalize_pr_vulnerability(vuln)
+
+        assert normalized["file_path"] == "src/infra/update-runner.ts"
+        assert normalized["line_number"] == 145
+
+    def test_maps_location_string_with_multiple_segments_uses_first(self):
+        """location with commas should use first segment for path/line extraction."""
+        vuln = {
+            "title": "Issue",
+            "description": "Test",
+            "severity": "medium",
+            "location": "src/a.ts:16-119, src/b.ts",
+            "code_snippet": "code",
+            "attack_scenario": "scenario",
+            "evidence": "evidence",
+            "cwe_id": "CWE-200",
+            "recommendation": "fix",
+        }
+
+        normalized = normalize_pr_vulnerability(vuln)
+
+        assert normalized["file_path"] == "src/a.ts"
+        assert normalized["line_number"] == 16
+
+    def test_maps_location_string_path_only_to_file_path(self):
+        """location='path' should set file_path but keep unresolved line_number."""
+        vuln = {
+            "title": "Issue",
+            "description": "Test",
+            "severity": "low",
+            "location": "src/only-path.ts",
+            "code_snippet": "code",
+            "attack_scenario": "scenario",
+            "evidence": "evidence",
+            "cwe_id": "CWE-770",
+            "recommendation": "fix",
+        }
+
+        normalized = normalize_pr_vulnerability(vuln)
+
+        assert normalized["file_path"] == "src/only-path.ts"
+        assert normalized["line_number"] == 0

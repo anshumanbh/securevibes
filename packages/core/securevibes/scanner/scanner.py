@@ -741,9 +741,30 @@ Only report findings at or above: {severity_threshold}
             )
 
         try:
-            pr_vulns = json.loads(pr_vulns_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as e:
-            raise RuntimeError(f"Failed to parse {PR_VULNERABILITIES_FILE}: {e}")
+            raw_content = pr_vulns_path.read_text(encoding="utf-8")
+        except OSError as e:
+            raise RuntimeError(f"Failed to read {PR_VULNERABILITIES_FILE}: {e}")
+
+        # Defense-in-depth: unwrap wrappers + normalize even if hook didn't run
+        from securevibes.models.schemas import fix_pr_vulnerabilities_json
+        fixed_content, was_fixed = fix_pr_vulnerabilities_json(raw_content)
+        if was_fixed:
+            self.console.print("  Applied PR vulnerability format normalization", style="dim")
+
+        try:
+            pr_vulns = json.loads(fixed_content)
+        except json.JSONDecodeError:
+            try:
+                pr_vulns = json.loads(raw_content)
+            except json.JSONDecodeError as e:
+                raise RuntimeError(f"Failed to parse {PR_VULNERABILITIES_FILE}: {e}")
+
+        if not isinstance(pr_vulns, list):
+            self.console.print(
+                f"  ⚠️  {PR_VULNERABILITIES_FILE} is not a list after fixing; treating as empty",
+                style="yellow",
+            )
+            pr_vulns = []
 
         if baseline_vulns:
             pr_vulns = dedupe_pr_vulns(pr_vulns, baseline_vulns)

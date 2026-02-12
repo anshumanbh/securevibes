@@ -323,6 +323,63 @@ def test_pr_review_last_negative_rejected(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_pr_review_handles_wrapper_format(tmp_path: Path):
+    """Wrapper + schema variant should be normalized into proper issue locations/CWE."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+
+    (securevibes_dir / "SECURITY.md").write_text("# Security\n", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+
+    variant_vuln = {
+        "id": "PR-VULN-001",
+        "title": "SQL Injection",
+        "description": "User input in query",
+        "severity": "high",
+        "location": "src/app.py:42-45",
+        "cwe": "89",
+        "recommendation": "Use parameterized queries",
+    }
+    # Write as wrapper dict with variant fields — scanner must unwrap + normalize it
+    (securevibes_dir / "PR_VULNERABILITIES.json").write_text(
+        json.dumps({"vulnerabilities": [variant_vuln]}),
+        encoding="utf-8",
+    )
+
+    diff_context = DiffContext(files=[], added_lines=1, removed_lines=0, changed_files=["app.py"])
+
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+
+    with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+        mock_instance = MagicMock()
+        mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.query = AsyncMock()
+
+        async def async_gen():
+            return
+            yield  # pragma: no cover
+
+        mock_instance.receive_messages = async_gen
+
+        result = await scanner.pr_review(
+            str(repo),
+            diff_context,
+            known_vulns_path=None,
+            severity_threshold="low",
+        )
+
+    assert len(result.issues) > 0, "Wrapper format should produce non-empty issues after unwrap"
+    assert result.issues[0].title == "SQL Injection"
+    assert result.issues[0].file_path == "src/app.py"
+    assert result.issues[0].line_number == 42
+    assert result.issues[0].cwe_id == "CWE-89"
+
+
+@pytest.mark.asyncio
 async def test_pr_review_missing_artifact_returns_warning(tmp_path: Path):
     """Missing PR_VULNERABILITIES.json should return a warning instead of silent success."""
     repo = tmp_path / "repo"
@@ -399,9 +456,9 @@ async def test_pr_review_allows_task_tool(tmp_path: Path):
 
     # Verify Task is in the allowed_tools passed to ClaudeAgentOptions
     options = mock_client.call_args[1]["options"]
-    assert "Task" in options.allowed_tools, (
-        f"Task tool missing from allowed_tools: {options.allowed_tools}"
-    )
+    assert (
+        "Task" in options.allowed_tools
+    ), f"Task tool missing from allowed_tools: {options.allowed_tools}"
 
 
 @pytest.mark.asyncio
