@@ -599,6 +599,21 @@ def normalize_pr_vulnerability(vuln: Mapping[str, object]) -> Dict[str, object]:
             normalized["line_number"] = parsed_line
             warnings.append("line_number")
 
+    # Map top-level aliases file → file_path, line → line_number.
+    file_alias = vuln.get("file")
+    if file_alias and not str(normalized.get("file_path", "")).strip():
+        normalized["file_path"] = str(file_alias).strip()
+        warnings.append("file_path")
+
+    line_alias = vuln.get("line")
+    if line_alias is not None and (
+        not isinstance(normalized.get("line_number"), int) or normalized["line_number"] < 1
+    ):
+        parsed_line_alias = _parse_line_value(line_alias)
+        if parsed_line_alias is not None:
+            normalized["line_number"] = parsed_line_alias
+            warnings.append("line_number")
+
     # Map bare cwe → cwe_id (if extract_cwe_id and field copy didn't produce one)
     if not str(normalized.get("cwe_id", "")).strip() and vuln.get("cwe"):
         raw_cwe = str(vuln["cwe"]).strip()
@@ -686,6 +701,28 @@ def _parse_location_string(location: str) -> tuple[Optional[str], Optional[int]]
 
     # path without line
     return first_segment, None
+
+
+def _parse_line_value(value: object) -> Optional[int]:
+    """Parse line value variants into a positive line number."""
+    if isinstance(value, int):
+        return value if value >= 1 else None
+
+    raw = str(value).strip()
+    if not raw:
+        return None
+
+    if raw.isdigit():
+        parsed = int(raw)
+        return parsed if parsed >= 1 else None
+
+    # Range or mixed form like "42-80" or "42-80,90-100" -> first start line.
+    match = re.search(r"\b(\d+)(?:-\d+)?\b", raw)
+    if not match:
+        return None
+
+    parsed = int(match.group(1))
+    return parsed if parsed >= 1 else None
 
 
 def _coerce_evidence_to_string(value: object) -> str:

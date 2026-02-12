@@ -790,3 +790,116 @@ class TestNormalizePrVulnerability:
 
         assert normalized["file_path"] == "src/only-path.ts"
         assert normalized["line_number"] == 0
+
+    def test_maps_file_alias_to_file_path(self):
+        """Top-level file alias should map to file_path when absent."""
+        vuln = {
+            "title": "Issue",
+            "description": "Test",
+            "severity": "high",
+            "file": "src/alias.ts",
+            "code_snippet": "code",
+            "attack_scenario": "scenario",
+            "evidence": "evidence",
+            "cwe_id": "CWE-79",
+            "recommendation": "fix",
+        }
+
+        normalized = normalize_pr_vulnerability(vuln)
+
+        assert normalized["file_path"] == "src/alias.ts"
+
+    def test_maps_line_alias_numeric_string_to_line_number(self):
+        """Top-level line alias as numeric string should map to line_number."""
+        vuln = {
+            "title": "Issue",
+            "description": "Test",
+            "severity": "high",
+            "line": "42",
+            "code_snippet": "code",
+            "attack_scenario": "scenario",
+            "evidence": "evidence",
+            "cwe_id": "CWE-79",
+            "recommendation": "fix",
+        }
+
+        normalized = normalize_pr_vulnerability(vuln)
+
+        assert normalized["line_number"] == 42
+
+    def test_maps_line_alias_range_to_start_line(self):
+        """Top-level line alias as range should map to first line."""
+        vuln = {
+            "title": "Issue",
+            "description": "Test",
+            "severity": "high",
+            "line": "42-80",
+            "code_snippet": "code",
+            "attack_scenario": "scenario",
+            "evidence": "evidence",
+            "cwe_id": "CWE-79",
+            "recommendation": "fix",
+        }
+
+        normalized = normalize_pr_vulnerability(vuln)
+
+        assert normalized["line_number"] == 42
+
+    def test_file_alias_does_not_override_explicit_file_path(self):
+        """file alias should not override explicit file_path."""
+        vuln = {
+            "title": "Issue",
+            "description": "Test",
+            "severity": "high",
+            "file_path": "src/explicit.ts",
+            "file": "src/alias.ts",
+            "line_number": 7,
+            "code_snippet": "code",
+            "attack_scenario": "scenario",
+            "evidence": "evidence",
+            "cwe_id": "CWE-79",
+            "recommendation": "fix",
+        }
+
+        normalized = normalize_pr_vulnerability(vuln)
+
+        assert normalized["file_path"] == "src/explicit.ts"
+        assert normalized["line_number"] == 7
+
+    def test_line_alias_non_numeric_ignored_when_no_other_line(self):
+        """Non-numeric top-level line alias should be ignored."""
+        vuln = {
+            "title": "Issue",
+            "description": "Test",
+            "severity": "high",
+            "line": "abc",
+            "code_snippet": "code",
+            "attack_scenario": "scenario",
+            "evidence": "evidence",
+            "cwe_id": "CWE-79",
+            "recommendation": "fix",
+        }
+
+        normalized = normalize_pr_vulnerability(vuln)
+
+        assert normalized["line_number"] == 0
+
+    def test_line_alias_used_when_location_missing(self):
+        """line alias should populate line_number when location is missing."""
+        vuln = {
+            "title": "Issue",
+            "description": "Test",
+            "severity": "high",
+            "file": "src/alias.ts",
+            "line": "145-217",
+            "code_snippet": "code",
+            "attack_scenario": "scenario",
+            "evidence": "evidence",
+            "cwe_id": "CWE-78",
+            "recommendation": "fix",
+        }
+
+        normalized = normalize_pr_vulnerability(vuln)
+
+        assert normalized["file_path"] == "src/alias.ts"
+        assert normalized["line_number"] == 145
