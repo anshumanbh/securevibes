@@ -212,6 +212,8 @@ class AgentConfig:
 
     # Default max turns for agent queries
     DEFAULT_MAX_TURNS = 50
+    DEFAULT_PR_REVIEW_TIMEOUT_SECONDS = 180
+    DEFAULT_PR_REVIEW_ATTEMPTS = 2
 
     @classmethod
     def get_agent_model(cls, agent_name: str, cli_override: Optional[str] = None) -> str:
@@ -286,6 +288,45 @@ class AgentConfig:
         except ValueError:
             # If invalid value provided, return default
             return cls.DEFAULT_MAX_TURNS
+
+    @classmethod
+    def get_pr_review_timeout_seconds(cls) -> int:
+        """
+        Get timeout for PR review agent execution.
+
+        Can be overridden via SECUREVIBES_PR_REVIEW_TIMEOUT_SECONDS.
+        """
+        try:
+            timeout = int(
+                os.getenv(
+                    "SECUREVIBES_PR_REVIEW_TIMEOUT_SECONDS",
+                    cls.DEFAULT_PR_REVIEW_TIMEOUT_SECONDS,
+                )
+            )
+        except ValueError:
+            return cls.DEFAULT_PR_REVIEW_TIMEOUT_SECONDS
+
+        if timeout < 1:
+            return cls.DEFAULT_PR_REVIEW_TIMEOUT_SECONDS
+        return timeout
+
+    @classmethod
+    def get_pr_review_attempts(cls) -> int:
+        """
+        Get number of PR review agent attempts before giving up.
+
+        Can be overridden via SECUREVIBES_PR_REVIEW_ATTEMPTS.
+        """
+        try:
+            attempts = int(
+                os.getenv("SECUREVIBES_PR_REVIEW_ATTEMPTS", cls.DEFAULT_PR_REVIEW_ATTEMPTS)
+            )
+        except ValueError:
+            return cls.DEFAULT_PR_REVIEW_ATTEMPTS
+
+        if attempts < 1:
+            return cls.DEFAULT_PR_REVIEW_ATTEMPTS
+        return attempts
 
 
 # Global configuration instance

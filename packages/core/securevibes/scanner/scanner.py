@@ -1,5 +1,6 @@
 """Security scanner with real-time progress tracking using ClaudeSDKClient"""
 
+import asyncio
 import os
 import json
 import time
@@ -23,8 +24,16 @@ from securevibes.prompts.loader import load_prompt
 from securevibes.config import config, LanguageConfig, ScanConfig
 from securevibes.scanner.subagent_manager import SubAgentManager, ScanMode
 from securevibes.scanner.detection import collect_agentic_detection_files, detect_agentic_patterns
-from securevibes.diff.context import extract_relevant_architecture, filter_relevant_threats
-from securevibes.diff.parser import DiffContext
+from securevibes.diff.context import (
+    extract_relevant_architecture,
+    filter_relevant_threats,
+    filter_relevant_vulnerabilities,
+    normalize_repo_path,
+    summarize_threats_for_prompt,
+    summarize_vulnerabilities_for_prompt,
+    suggest_security_adjacent_files,
+)
+from securevibes.diff.parser import DiffContext, DiffFile, DiffHunk
 from securevibes.scanner.hooks import (
     create_dast_security_hook,
     create_pre_tool_hook,
@@ -51,6 +60,178 @@ PR_VULNERABILITIES_FILE = "PR_VULNERABILITIES.json"
 DIFF_CONTEXT_FILE = "DIFF_CONTEXT.json"
 SCAN_RESULTS_FILE = "scan_results.json"
 SCAN_STATE_FILE = "scan_state.json"
+
+_FOCUSED_DIFF_MAX_FILES = 16
+_FOCUSED_DIFF_MAX_HUNK_LINES = 200
+_SECURITY_PATH_HINTS = (
+    "auth",
+    "permission",
+    "policy",
+    "guard",
+    "gateway",
+    "config",
+    "update",
+    "session",
+    "token",
+    "websocket",
+    "rpc",
+)
+_NON_CODE_SUFFIXES = {
+    ".md",
+    ".txt",
+    ".rst",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".svg",
+    ".gif",
+    ".pdf",
+    ".jsonl",
+    ".lock",
+}
+
+
+def _summarize_diff_line_anchors(
+    diff_context: DiffContext,
+    max_files: int = 16,
+    max_lines_per_file: int = 24,
+    max_chars: int = 12000,
+) -> str:
+    """Build concise changed-line anchors for prompt context."""
+    if not diff_context.files:
+        return "- No changed files."
+
+    lines: list[str] = []
+    for diff_file in diff_context.files[:max_files]:
+        path = _diff_file_path(diff_file)
+        if not path:
+            continue
+        added = [
+            (int(line.new_line_num or 0), line.content.strip())
+            for hunk in diff_file.hunks
+            for line in hunk.lines
+            if line.type == "add" and isinstance(line.content, str) and line.content.strip()
+        ]
+        removed_count = sum(
+            1 for hunk in diff_file.hunks for line in hunk.lines if line.type == "remove"
+        )
+        lines.append(f"- {path}")
+        for line_no, content in added[:max_lines_per_file]:
+            snippet = content.replace("\t", " ").strip()
+            if len(snippet) > 180:
+                snippet = f"{snippet[:177]}..."
+            lines.append(f"  + L{line_no}: {snippet}")
+        if len(added) > max_lines_per_file:
+            lines.append(f"  + ... {len(added) - max_lines_per_file} more added lines")
+        if removed_count:
+            lines.append(f"  - removed lines: {removed_count}")
+
+    summary = "\n".join(lines).strip() or "- No changed lines."
+    if len(summary) <= max_chars:
+        return summary
+    return f"{summary[: max_chars - 15].rstrip()}...[truncated]"
+
+
+def _diff_file_path(diff_file: DiffFile) -> str:
+    return str(diff_file.new_path or diff_file.old_path or "")
+
+
+def _score_diff_file_for_security_review(diff_file: DiffFile) -> int:
+    path = _diff_file_path(diff_file).lower()
+    if not path:
+        return 0
+
+    score = 0
+    suffix = Path(path).suffix.lower()
+
+    if suffix not in _NON_CODE_SUFFIXES:
+        score += 60
+    if "/docs/" in path or path.startswith("docs/"):
+        score -= 35
+    if "/test/" in path or "/tests/" in path or ".test." in path or ".spec." in path:
+        score -= 20
+
+    score += sum(12 for hint in _SECURITY_PATH_HINTS if hint in path)
+    if path.startswith("src/"):
+        score += 20
+    if diff_file.is_new:
+        score += 8
+    if diff_file.is_renamed:
+        score += 4
+
+    return score
+
+
+def _build_focused_diff_context(diff_context: DiffContext) -> DiffContext:
+    """Prioritize security-relevant code changes and trim oversized hunk context."""
+    if not diff_context.files:
+        return diff_context
+
+    scored_files = sorted(
+        diff_context.files,
+        key=lambda f: (_score_diff_file_for_security_review(f), _diff_file_path(f)),
+        reverse=True,
+    )
+
+    top_files = [
+        f
+        for f in scored_files[:_FOCUSED_DIFF_MAX_FILES]
+        if _score_diff_file_for_security_review(f) > 0
+    ]
+    if not top_files:
+        top_files = scored_files[: min(len(scored_files), _FOCUSED_DIFF_MAX_FILES)]
+
+    focused_files: list[DiffFile] = []
+    for diff_file in top_files:
+        focused_hunks: list[DiffHunk] = []
+        for hunk in diff_file.hunks:
+            if len(hunk.lines) <= _FOCUSED_DIFF_MAX_HUNK_LINES:
+                focused_hunks.append(hunk)
+                continue
+
+            focused_hunks.append(
+                DiffHunk(
+                    old_start=hunk.old_start,
+                    old_count=hunk.old_count,
+                    new_start=hunk.new_start,
+                    new_count=hunk.new_count,
+                    lines=hunk.lines[:_FOCUSED_DIFF_MAX_HUNK_LINES],
+                )
+            )
+
+        focused_files.append(
+            DiffFile(
+                old_path=diff_file.old_path,
+                new_path=diff_file.new_path,
+                hunks=focused_hunks,
+                is_new=diff_file.is_new,
+                is_deleted=diff_file.is_deleted,
+                is_renamed=diff_file.is_renamed,
+            )
+        )
+
+    changed_files = [path for path in (_diff_file_path(file) for file in focused_files) if path]
+    added_lines = sum(
+        1
+        for file in focused_files
+        for hunk in file.hunks
+        for line in hunk.lines
+        if line.type == "add"
+    )
+    removed_lines = sum(
+        1
+        for file in focused_files
+        for hunk in file.hunks
+        for line in hunk.lines
+        if line.type == "remove"
+    )
+
+    return DiffContext(
+        files=focused_files,
+        added_lines=added_lines,
+        removed_lines=removed_lines,
+        changed_files=changed_files,
+    )
 
 
 class ProgressTracker:
@@ -121,7 +302,7 @@ class ProgressTracker:
 
         # Show meaningful progress based on tool type
         if tool_name == "Read":
-            file_path = tool_input.get("file_path", "")
+            file_path = tool_input.get("file_path") or tool_input.get("path") or ""
             if file_path:
                 self.files_read.add(file_path)
 
@@ -627,17 +808,18 @@ class Scanner:
 
         scan_start_time = time.time()
 
+        focused_diff_context = _build_focused_diff_context(diff_context)
         diff_context_path = securevibes_dir / DIFF_CONTEXT_FILE
-        diff_context_path.write_text(json.dumps(diff_context.to_json(), indent=2))
+        diff_context_path.write_text(json.dumps(focused_diff_context.to_json(), indent=2))
 
         architecture_context = extract_relevant_architecture(
             securevibes_dir / SECURITY_FILE,
-            diff_context.changed_files,
+            focused_diff_context.changed_files,
         )
 
         relevant_threats = filter_relevant_threats(
             securevibes_dir / THREAT_MODEL_FILE,
-            diff_context.changed_files,
+            focused_diff_context.changed_files,
         )
 
         known_vulns = []
@@ -651,85 +833,186 @@ class Scanner:
                 known_vulns = []
 
         baseline_vulns = filter_baseline_vulns(known_vulns)
+        relevant_baseline_vulns = filter_relevant_vulnerabilities(
+            baseline_vulns,
+            focused_diff_context.changed_files,
+        )
+        threat_context_summary = summarize_threats_for_prompt(relevant_threats)
+        vuln_context_summary = summarize_vulnerabilities_for_prompt(relevant_baseline_vulns)
+        security_adjacent_files = suggest_security_adjacent_files(
+            repo,
+            focused_diff_context.changed_files,
+            max_items=20,
+        )
+        adjacent_file_hints = (
+            "\n".join(f"- {file_path}" for file_path in security_adjacent_files)
+            if security_adjacent_files
+            else "- None identified from changed-file neighborhoods"
+        )
+        diff_line_anchors = _summarize_diff_line_anchors(focused_diff_context)
 
-        agents = create_agent_definitions(cli_model=self.model)
-        pr_agent = agents["pr-code-review"]
+        base_agents = create_agent_definitions(cli_model=self.model)
+        base_pr_prompt = base_agents["pr-code-review"].prompt
 
-        contextualized_prompt = f"""{pr_agent.prompt}
+        contextualized_prompt = f"""{base_pr_prompt}
 
 ## ARCHITECTURE CONTEXT (from SECURITY.md)
 {architecture_context}
 
 ## RELEVANT EXISTING THREATS (from THREAT_MODEL.json)
-{json.dumps(relevant_threats, indent=2)}
+{threat_context_summary}
 
-## KNOWN VULNERABILITIES (optional, from VULNERABILITIES.json)
-{json.dumps(baseline_vulns, indent=2)}
+## RELEVANT BASELINE VULNERABILITIES (from VULNERABILITIES.json)
+{vuln_context_summary}
+
+## SECURITY-ADJACENT FILES TO CHECK FOR REACHABILITY
+{adjacent_file_hints}
 
 ## DIFF TO ANALYZE
-The diff has been written to DIFF_CONTEXT.json. Read it to see the changes.
+Use the prompt-provided changed files and line anchors below as authoritative diff context.
 Changed files: {diff_context.changed_files}
+Prioritized changed files: {focused_diff_context.changed_files}
+
+## CHANGED LINE ANCHORS (authoritative)
+{diff_line_anchors}
 
 ## SEVERITY THRESHOLD
 Only report findings at or above: {severity_threshold}
 """
 
-        pr_agent.prompt = contextualized_prompt
-
-        tracker = ProgressTracker(self.console, debug=self.debug, single_subagent="pr-code-review")
-        tracker.current_phase = "pr-code-review"
-        detected_languages = LanguageConfig.detect_languages(repo) if repo else set()
-        pre_tool_hook = create_pre_tool_hook(tracker, self.console, self.debug, detected_languages)
-        post_tool_hook = create_post_tool_hook(tracker, self.console, self.debug)
-        subagent_hook = create_subagent_hook(tracker)
-        json_validation_hook = create_json_validation_hook(self.console, self.debug)
-
         from claude_agent_sdk.types import HookMatcher
 
-        options = ClaudeAgentOptions(
-            agents=agents,
-            cwd=str(repo),
-            setting_sources=["project"],
-            # Task is required for the orchestrator to dispatch to subagents defined via --agents
-            allowed_tools=["Task", "Read", "Write", "Grep", "Glob", "LS"],
-            max_turns=config.get_max_turns(),
-            permission_mode="bypassPermissions",
-            model=self.model,
-            hooks={
-                "PreToolUse": [
-                    HookMatcher(hooks=[json_validation_hook]),
-                    HookMatcher(hooks=[pre_tool_hook]),
-                ],
-                "PostToolUse": [HookMatcher(hooks=[post_tool_hook])],
-                "SubagentStop": [HookMatcher(hooks=[subagent_hook])],
-            },
-        )
-
-        orchestration_prompt = load_prompt("pr_review", category="orchestration")
-
-        try:
-            async with ClaudeSDKClient(options=options) as client:
-                await client.query(orchestration_prompt)
-                async for message in client.receive_messages():
-                    if isinstance(message, AssistantMessage):
-                        for block in message.content:
-                            if isinstance(block, TextBlock):
-                                tracker.on_assistant_text(block.text)
-                    elif isinstance(message, ResultMessage):
-                        if message.total_cost_usd:
-                            self.total_cost = message.total_cost_usd
-                        break
-        except Exception as e:
-            self.console.print(f"\n❌ PR review failed: {e}", style="bold red")
-            raise
-
+        warnings: list[str] = []
+        pr_timeout_seconds = config.get_pr_review_timeout_seconds()
+        pr_review_attempts = config.get_pr_review_attempts()
         pr_vulns_path = securevibes_dir / PR_VULNERABILITIES_FILE
-        if not pr_vulns_path.exists():
-            warning_msg = (
-                "PR code review agent did not produce PR_VULNERABILITIES.json. "
-                "The analysis may not have completed successfully. "
-                "Results below may be incomplete."
+        detected_languages = LanguageConfig.detect_languages(repo) if repo else set()
+
+        pr_vulns: list[dict] = []
+        artifact_loaded = False
+
+        for attempt_idx in range(pr_review_attempts):
+            attempt_num = attempt_idx + 1
+            retry_suffix = ""
+            if attempt_num > 1:
+                retry_suffix = _build_pr_review_retry_suffix(attempt_num)
+
+            agents = create_agent_definitions(cli_model=self.model)
+            attempt_prompt = f"{contextualized_prompt}{retry_suffix}"
+            agents["pr-code-review"].prompt = attempt_prompt
+
+            tracker = ProgressTracker(
+                self.console, debug=self.debug, single_subagent="pr-code-review"
             )
+            tracker.current_phase = "pr-code-review"
+            pre_tool_hook = create_pre_tool_hook(
+                tracker, self.console, self.debug, detected_languages
+            )
+            post_tool_hook = create_post_tool_hook(tracker, self.console, self.debug)
+            subagent_hook = create_subagent_hook(tracker)
+            json_validation_hook = create_json_validation_hook(self.console, self.debug)
+
+            options = ClaudeAgentOptions(
+                agents=agents,
+                cwd=str(repo),
+                setting_sources=["project"],
+                allowed_tools=["Read", "Write", "Grep", "Glob", "LS"],
+                max_turns=config.get_max_turns(),
+                permission_mode="bypassPermissions",
+                model=self.model,
+                hooks={
+                    "PreToolUse": [
+                        HookMatcher(hooks=[json_validation_hook]),
+                        HookMatcher(hooks=[pre_tool_hook]),
+                    ],
+                    "PostToolUse": [HookMatcher(hooks=[post_tool_hook])],
+                    "SubagentStop": [HookMatcher(hooks=[subagent_hook])],
+                },
+            )
+
+            try:
+                async with ClaudeSDKClient(options=options) as client:
+                    await asyncio.wait_for(client.query(attempt_prompt), timeout=30)
+
+                    async def consume_messages() -> None:
+                        async for message in client.receive_messages():
+                            if isinstance(message, AssistantMessage):
+                                for block in message.content:
+                                    if isinstance(block, TextBlock):
+                                        tracker.on_assistant_text(block.text)
+                            elif isinstance(message, ResultMessage):
+                                if message.total_cost_usd:
+                                    self.total_cost = message.total_cost_usd
+                                break
+
+                    await asyncio.wait_for(consume_messages(), timeout=pr_timeout_seconds)
+            except asyncio.TimeoutError:
+                timeout_warning = (
+                    f"PR code review attempt {attempt_num}/{pr_review_attempts} timed out after "
+                    f"{pr_timeout_seconds}s."
+                )
+                warnings.append(timeout_warning)
+                self.console.print(f"\n[bold yellow]WARNING:[/bold yellow] {timeout_warning}\n")
+                loaded_vulns, load_warning = _load_pr_vulnerabilities_artifact(
+                    pr_vulns_path=pr_vulns_path,
+                    console=self.console,
+                )
+                if not load_warning:
+                    artifact_loaded = True
+                    pr_vulns = loaded_vulns
+                    if pr_vulns:
+                        break
+                continue
+            except Exception as e:
+                attempt_warning = (
+                    f"PR code review attempt {attempt_num}/{pr_review_attempts} failed: {e}"
+                )
+                warnings.append(attempt_warning)
+                self.console.print(f"\n[bold yellow]WARNING:[/bold yellow] {attempt_warning}\n")
+                loaded_vulns, load_warning = _load_pr_vulnerabilities_artifact(
+                    pr_vulns_path=pr_vulns_path,
+                    console=self.console,
+                )
+                if not load_warning:
+                    artifact_loaded = True
+                    pr_vulns = loaded_vulns
+                    if pr_vulns:
+                        break
+                continue
+
+            loaded_vulns, load_warning = _load_pr_vulnerabilities_artifact(
+                pr_vulns_path=pr_vulns_path,
+                console=self.console,
+            )
+            if load_warning:
+                warnings.append(
+                    f"PR code review attempt {attempt_num}/{pr_review_attempts}: {load_warning}"
+                )
+                continue
+
+            artifact_loaded = True
+            pr_vulns = loaded_vulns
+            if pr_vulns:
+                break
+
+            if attempt_num < pr_review_attempts:
+                retry_warning = (
+                    f"PR code review attempt {attempt_num}/{pr_review_attempts} returned no findings; "
+                    "retrying with chain-focused prompt."
+                )
+                warnings.append(retry_warning)
+                self.console.print(f"\n[bold yellow]WARNING:[/bold yellow] {retry_warning}\n")
+                try:
+                    pr_vulns_path.unlink()
+                except OSError:
+                    pass
+
+        if not artifact_loaded:
+            warning_msg = (
+                "PR code review agent did not produce a readable PR_VULNERABILITIES.json after "
+                f"{pr_review_attempts} attempt(s). Results may be incomplete."
+            )
+            warnings.append(warning_msg)
             self.console.print(f"\n[bold yellow]WARNING:[/bold yellow] {warning_msg}\n")
             return ScanResult(
                 repository_path=str(repo),
@@ -737,37 +1020,15 @@ Only report findings at or above: {severity_threshold}
                 files_scanned=len(diff_context.changed_files),
                 scan_time_seconds=round(time.time() - scan_start_time, 2),
                 total_cost_usd=round(self.total_cost, 4),
-                warnings=[warning_msg],
+                warnings=warnings,
             )
 
-        try:
-            raw_content = pr_vulns_path.read_text(encoding="utf-8")
-        except OSError as e:
-            raise RuntimeError(f"Failed to read {PR_VULNERABILITIES_FILE}: {e}")
-
-        # Defense-in-depth: unwrap wrappers + normalize even if hook didn't run
-        from securevibes.models.schemas import fix_pr_vulnerabilities_json
-        fixed_content, was_fixed = fix_pr_vulnerabilities_json(raw_content)
-        if was_fixed:
-            self.console.print("  Applied PR vulnerability format normalization", style="dim")
-
-        try:
-            pr_vulns = json.loads(fixed_content)
-        except json.JSONDecodeError:
-            try:
-                pr_vulns = json.loads(raw_content)
-            except json.JSONDecodeError as e:
-                raise RuntimeError(f"Failed to parse {PR_VULNERABILITIES_FILE}: {e}")
-
-        if not isinstance(pr_vulns, list):
-            self.console.print(
-                f"  ⚠️  {PR_VULNERABILITIES_FILE} is not a list after fixing; treating as empty",
-                style="yellow",
-            )
-            pr_vulns = []
-
-        if baseline_vulns:
+        if baseline_vulns and pr_vulns:
             pr_vulns = dedupe_pr_vulns(pr_vulns, baseline_vulns)
+            try:
+                pr_vulns_path.write_text(json.dumps(pr_vulns, indent=2), encoding="utf-8")
+            except OSError as e:
+                warnings.append(f"Unable to persist deduped PR findings to {pr_vulns_path}: {e}")
 
         if update_artifacts and isinstance(pr_vulns, list):
             update_result = update_pr_review_artifacts(securevibes_dir, pr_vulns)
@@ -777,43 +1038,13 @@ Only report findings at or above: {severity_threshold}
                     style="yellow",
                 )
 
-        issues = []
-        for vuln in pr_vulns if isinstance(pr_vulns, list) else []:
-            if not isinstance(vuln, dict):
-                continue
-            line_value = vuln.get("line_number")
-            try:
-                line_number = int(line_value) if line_value is not None else 0
-            except (TypeError, ValueError):
-                line_number = 0
-            try:
-                severity = Severity(vuln.get("severity", "medium"))
-            except ValueError:
-                severity = Severity.MEDIUM
-
-            issues.append(
-                SecurityIssue(
-                    id=str(vuln.get("threat_id", "UNKNOWN")),
-                    title=str(vuln.get("title", "")),
-                    description=str(vuln.get("description", "")),
-                    severity=severity,
-                    file_path=str(vuln.get("file_path", "")),
-                    line_number=line_number,
-                    code_snippet=str(vuln.get("code_snippet", "")),
-                    cwe_id=vuln.get("cwe_id"),
-                    recommendation=vuln.get("recommendation"),
-                    finding_type=vuln.get("finding_type"),
-                    attack_scenario=vuln.get("attack_scenario"),
-                    evidence=vuln.get("evidence"),
-                )
-            )
-
         return ScanResult(
             repository_path=str(repo),
-            issues=issues,
+            issues=_issues_from_pr_vulns(pr_vulns if isinstance(pr_vulns, list) else []),
             files_scanned=len(diff_context.changed_files),
             scan_time_seconds=round(time.time() - scan_start_time, 2),
             total_cost_usd=round(self.total_cost, 4),
+            warnings=warnings,
         )
 
     async def _execute_scan(
@@ -1491,20 +1722,141 @@ def filter_baseline_vulns(known_vulns: list[dict]) -> list[dict]:
     return baseline
 
 
-def dedupe_pr_vulns(pr_vulns: list[dict], known_vulns: list[dict]) -> list[dict]:
-    """Drop PR findings that match known issues by file + threat_id/title."""
-    known_keys = set()
-    for vuln in known_vulns:
-        if not isinstance(vuln, dict):
-            continue
-        key = (vuln.get("file_path"), vuln.get("threat_id") or vuln.get("title"))
-        known_keys.add(key)
+def _normalize_finding_identity(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip().lower()
 
-    filtered: list[dict] = []
+
+def _build_vuln_match_keys(vuln: dict) -> set[tuple[str, str]]:
+    identities = {
+        identity
+        for identity in (
+            _normalize_finding_identity(vuln.get("threat_id")),
+            _normalize_finding_identity(vuln.get("title")),
+        )
+        if identity
+    }
+    if not identities:
+        return set()
+
+    raw_path = normalize_repo_path(vuln.get("file_path")).lower()
+    path_keys = {raw_path} if raw_path else {""}
+    if raw_path:
+        basename = raw_path.rsplit("/", 1)[-1]
+        path_keys.add(basename)
+
+    return {(path_key, identity) for path_key in path_keys for identity in identities}
+
+
+def _issues_from_pr_vulns(pr_vulns: list[dict]) -> list[SecurityIssue]:
+    """Convert PR vulnerability dict entries to SecurityIssue models."""
+    issues: list[SecurityIssue] = []
     for vuln in pr_vulns:
         if not isinstance(vuln, dict):
             continue
-        key = (vuln.get("file_path"), vuln.get("threat_id") or vuln.get("title"))
-        if key not in known_keys:
-            filtered.append(vuln)
-    return filtered
+        line_value = vuln.get("line_number")
+        try:
+            line_number = int(line_value) if line_value is not None else 0
+        except (TypeError, ValueError):
+            line_number = 0
+        try:
+            severity = Severity(vuln.get("severity", "medium"))
+        except ValueError:
+            severity = Severity.MEDIUM
+
+        issues.append(
+            SecurityIssue(
+                id=str(vuln.get("threat_id", "UNKNOWN")),
+                title=str(vuln.get("title", "")),
+                description=str(vuln.get("description", "")),
+                severity=severity,
+                file_path=str(vuln.get("file_path", "")),
+                line_number=line_number,
+                code_snippet=str(vuln.get("code_snippet", "")),
+                cwe_id=vuln.get("cwe_id"),
+                recommendation=vuln.get("recommendation"),
+                finding_type=vuln.get("finding_type"),
+                attack_scenario=vuln.get("attack_scenario"),
+                evidence=vuln.get("evidence"),
+            )
+        )
+    return issues
+
+
+def _build_pr_review_retry_suffix(attempt_num: int) -> str:
+    """Return extra guidance used when retrying PR review with LLM."""
+    return f"""
+
+## FOLLOW-UP ANALYSIS PASS {attempt_num}
+Previous attempt was incomplete or inconclusive. Re-run the review with this strict process:
+
+1. Build a threat-delta list from the diff:
+   - New/changed capabilities
+   - New/changed trust boundaries
+   - New/changed privileged sinks
+2. Compare that delta against baseline threat/vulnerability summaries as hypotheses.
+3. Validate each high-impact hypothesis by reading concrete code paths in changed and adjacent files.
+4. Prioritize exploit chains that combine:
+   - reachability
+   - auth/authorization weaknesses
+   - privileged operations (config, updates, execution, policy changes)
+5. Avoid repetitive broad Grep. Use targeted reads/greps scoped to specific files or src/ paths.
+6. If and only if no issue is provable, output [] after explicitly checking all prioritized changed files.
+"""
+
+
+def _load_pr_vulnerabilities_artifact(
+    pr_vulns_path: Path,
+    console: Console,
+) -> tuple[list[dict], Optional[str]]:
+    """Read and normalize PR_VULNERABILITIES.json."""
+    if not pr_vulns_path.exists():
+        return [], "PR_VULNERABILITIES.json was not produced"
+
+    try:
+        raw_content = pr_vulns_path.read_text(encoding="utf-8")
+    except OSError as e:
+        return [], f"Failed to read PR_VULNERABILITIES.json: {e}"
+
+    from securevibes.models.schemas import fix_pr_vulnerabilities_json
+
+    fixed_content, was_fixed = fix_pr_vulnerabilities_json(raw_content)
+    if was_fixed:
+        console.print("  Applied PR vulnerability format normalization", style="dim")
+
+    try:
+        pr_vulns = json.loads(fixed_content)
+    except json.JSONDecodeError:
+        try:
+            pr_vulns = json.loads(raw_content)
+        except json.JSONDecodeError as e:
+            return [], f"Failed to parse PR_VULNERABILITIES.json: {e}"
+
+    if not isinstance(pr_vulns, list):
+        return [], "PR_VULNERABILITIES.json is not a JSON array"
+
+    normalized = [item for item in pr_vulns if isinstance(item, dict)]
+    return normalized, None
+
+
+def dedupe_pr_vulns(pr_vulns: list[dict], known_vulns: list[dict]) -> list[dict]:
+    """Tag PR findings as known_vuln when they overlap baseline issues."""
+    known_keys: set[tuple[str, str]] = set()
+    for vuln in known_vulns:
+        if not isinstance(vuln, dict):
+            continue
+        known_keys.update(_build_vuln_match_keys(vuln))
+
+    normalized: list[dict] = []
+    for vuln in pr_vulns:
+        if not isinstance(vuln, dict):
+            continue
+        entry = dict(vuln)
+        candidate_keys = _build_vuln_match_keys(entry)
+        if candidate_keys and known_keys.intersection(candidate_keys):
+            finding_type = str(entry.get("finding_type", "")).strip().lower()
+            if not finding_type or finding_type == "unknown":
+                entry["finding_type"] = "known_vuln"
+        normalized.append(entry)
+    return normalized

@@ -369,6 +369,11 @@ def scan(
     is_flag=True,
     help="Update THREAT_MODEL.json and VULNERABILITIES.json from PR findings",
 )
+@click.option(
+    "--clean-pr-artifacts",
+    is_flag=True,
+    help="Delete transient PR review artifacts before running",
+)
 @click.option("--model", "-m", default="sonnet", help="Claude model to use (e.g., sonnet, haiku)")
 @click.option(
     "--format",
@@ -396,6 +401,7 @@ def pr_review(
     since_date: Optional[str],
     last_commits: Optional[int],
     update_artifacts: bool,
+    clean_pr_artifacts: bool,
     model: str,
     format: str,
     output: Optional[str],
@@ -447,6 +453,12 @@ def pr_review(
             console.print(f"[bold red]❌ Missing required artifacts:[/bold red] {missing}")
             console.print("Run 'securevibes scan' first to generate base artifacts.")
             sys.exit(1)
+
+        if clean_pr_artifacts:
+            removed_artifacts = _clean_pr_artifacts(securevibes_dir)
+            if removed_artifacts:
+                removed_list = ", ".join(path.name for path in removed_artifacts)
+                console.print(f"[dim]Removed transient PR artifacts: {removed_list}[/dim]")
 
         commits_reviewed: list[str] = []
         if diff_file:
@@ -658,6 +670,7 @@ def catchup(
             since_date=None,
             last_commits=None,
             update_artifacts=update_artifacts,
+            clean_pr_artifacts=False,
             model=model,
             format=format,
             output=output,
@@ -707,6 +720,26 @@ def _is_production_url(url: str) -> bool:
     ]
 
     return any(pattern in url_lower for pattern in production_patterns)
+
+
+def _clean_pr_artifacts(securevibes_dir: Path) -> list[Path]:
+    """Delete transient PR review artifacts that can taint reruns."""
+    transient_files = (
+        "PR_VULNERABILITIES.json",
+        "DIFF_CONTEXT.json",
+        "pr_review_report.md",
+    )
+    removed: list[Path] = []
+    for file_name in transient_files:
+        candidate = securevibes_dir / file_name
+        if not candidate.exists() or not candidate.is_file():
+            continue
+        try:
+            candidate.unlink()
+        except OSError as exc:
+            raise RuntimeError(f"Failed to remove transient artifact {candidate}: {exc}") from exc
+        removed.append(candidate)
+    return removed
 
 
 def _parse_since_date_pacific(date_str: str) -> str:

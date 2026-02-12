@@ -3,8 +3,12 @@ Perform a context-aware PR security review.
 PHASE: PR CODE REVIEW
 - Announce: "Starting PR Code Review"
 - Use the Task tool to invoke the 'pr-code-review' agent to analyze the diff
-- The agent reads .securevibes/DIFF_CONTEXT.json, SECURITY.md, THREAT_MODEL.json
-- The agent reads .securevibes/VULNERABILITIES.json if present (for deduplication)
+- The agent reads context in this order:
+  1) Prompt-provided changed files and changed-line anchors (authoritative diff context)
+  2) Prompt-provided threat + vulnerability summaries
+  3) Prompt-provided security-adjacent file hints
+  4) Actual changed and adjacent source files via Read/Grep
+  5) .securevibes/DIFF_CONTEXT.json only as optional backup context
 - The agent writes .securevibes/PR_VULNERABILITIES.json with its findings
 - Report: "PR code review complete" when done
 

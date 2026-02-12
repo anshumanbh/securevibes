@@ -616,9 +616,9 @@ class TestFullScanAllowedTools:
                 pass  # Expected — no results file
 
         options = mock_client.call_args[1]["options"]
-        assert "Task" in options.allowed_tools, (
-            f"Task tool missing from allowed_tools: {options.allowed_tools}"
-        )
+        assert (
+            "Task" in options.allowed_tools
+        ), f"Task tool missing from allowed_tools: {options.allowed_tools}"
 
     @pytest.mark.asyncio
     async def test_full_scan_has_subagent_hook(self, test_repo):

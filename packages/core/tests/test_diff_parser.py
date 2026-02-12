@@ -300,6 +300,7 @@ class TestGitRefValidation:
 
     def test_get_diff_from_git_range_validates_refs(self, monkeypatch):
         """get_diff_from_git_range should validate refs before execution."""
+
         # Ensure subprocess.run is never called for invalid refs
         def fail_if_called(*_args, **_kwargs):
             pytest.fail("subprocess.run should not be called for invalid refs")

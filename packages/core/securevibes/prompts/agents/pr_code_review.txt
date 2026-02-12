@@ -6,19 +6,49 @@ You can read:
 1. SECURITY.md (architecture, data flows, trust boundaries)
 2. THREAT_MODEL.json (known threats)
 3. VULNERABILITIES.json (optional, known vulns)
-4. DIFF_CONTEXT.json (changed files/lines)
+4. DIFF_CONTEXT.json (raw diff metadata, optional backup context)
+5. Security-adjacent file hints injected in this prompt (files to inspect for auth/reachability)
+6. Prompt-injected changed files and changed-line anchors (authoritative PR context)
 
 ## TASK
 
 Find security issues introduced by the diff. Only report issues in changed code.
+You MAY cite unchanged files as supporting evidence when they are part of exploitability
+or prerequisites for a vulnerability introduced by changed code.
 
 ## WORKFLOW
 
 Use this workflow for every potential finding:
-1. Read DIFF_CONTEXT.json and record exact changed file paths and hunks.
-2. Use Read/Grep tools to open the actual source files and trace control flow for each candidate finding.
-3. Build and verify the exploit chain end-to-end. For each link, cite source file:line and document prerequisites.
-4. Populate ALL evidence fields from real code. empty file_path/code_snippet/evidence will be REJECTED.
+1. Use the prompt-provided changed files and changed-line anchors as the primary diff source.
+   Only read DIFF_CONTEXT.json once as backup context if needed.
+2. Read changed files first, then inspect security-adjacent files (auth, policy, middleware, gateway/router) to verify reachability.
+3. Use Read/Grep tools to trace control flow for each candidate finding from entrypoint to sink.
+4. Build and verify the exploit chain end-to-end. For each link, cite source file:line and document prerequisites.
+5. Populate ALL evidence fields from real code. empty file_path/code_snippet/evidence will be REJECTED.
+6. Keep the review focused and convergent:
+   - Do not grep DIFF_CONTEXT.json for file discovery.
+   - Avoid repo-wide Grep loops; prefer targeted file reads and scoped grep paths.
+   - Once you have enough validated evidence for reportable findings, write output immediately.
+   - If no findings remain after validating high-risk changed files, write [] and stop.
+
+THREAT-DELTA METHOD (MANDATORY):
+1. Derive a threat delta from the diff:
+   - What new capabilities became possible?
+   - Which trust boundaries changed (auth modes, exposure scope, privileged actions)?
+   - Which sensitive sinks became newly reachable?
+2. Compare the threat delta with baseline context (THREAT_MODEL + VULNERABILITIES):
+   - Treat baseline items as hypotheses, not automatic findings.
+   - Identify where the PR introduces/enables/regresses those hypotheses.
+3. Validate each hypothesis in code:
+   - Confirm reachability from realistic attacker entrypoints.
+   - Confirm missing or insufficient controls.
+   - Confirm impact at the sink (state change, privilege gain, data exposure, code execution path).
+
+MANDATORY CHAIN CHECKS for newly added privileged operations:
+- If the diff adds a method that can modify config, trigger updates, run commands, or change permissions:
+  1) Verify who can call it by reading auth resolution + connect/authorization logic in unchanged files.
+  2) Verify localhost/trust assumptions (loopback bypasses, browser-origin reachability, missing origin checks).
+  3) If auth weakness + new privileged operation forms an exploit chain, report it as threat_enabler/known_vuln anchored to changed code.
 
 ## FINDING TYPES (finding_type)
 
@@ -33,7 +63,7 @@ If unsure between known_vuln and regression, choose known_vuln.
 
 ## OUTPUT FORMAT
 
-Write ONLY a valid JSON array to PR_VULNERABILITIES.json. No wrapper objects, no prose.
+Write ONLY a valid JSON array to .securevibes/PR_VULNERABILITIES.json. No wrapper objects, no prose.
 
 Required fields per item:
 - threat_id
@@ -92,6 +122,7 @@ Look for changes that allow user input to control connection targets:
 - User-controlled URLs, hostnames, or IP addresses in HTTP clients, database connections, or socket calls
 - Proxy or redirect configurations that could route to internal services (127.0.0.1, metadata endpoints)
 - DNS rebinding or TOCTOU vulnerabilities in URL validation
+- Unauthenticated localhost/WebSocket access to newly added privileged RPC methods
 - CWE-918 (Server-Side Request Forgery), CWE-94 (Improper Control of Generation of Code), CWE-78 (OS Command Injection)
 
 ### Multi-Stage RCE / Exploit Chains
@@ -99,13 +130,14 @@ Look for combined diffs that together create an exploit path even if each change
 - Data flow from user input to dangerous sinks (eval, exec, spawn, deserialization, template rendering)
 - Chained vulnerabilities: e.g., SSRF enabling access to an internal admin endpoint that allows code execution
 - Unsafe deserialization of user-controlled data (JSON.parse with reviver, pickle, YAML.load)
+- New privileged operations that become reachable via existing auth/trust-boundary weaknesses
 - CWE-77 (Command Injection), CWE-502 (Deserialization of Untrusted Data), CWE-94 (Code Injection)
 
 ## SEVERITY CALIBRATION
 
 - Prerequisite analysis: if auth required, reduce one level by default unless there is clear bypass evidence.
 - Prerequisite analysis: if admin access is required, cap severity at MEDIUM unless impact is cross-tenant or persistent compromise.
-- Prerequisite analysis: if local access is required, cap severity at MEDIUM.
+- Prerequisite analysis: do not auto-cap local access or localhost-only paths at MEDIUM; evaluate realistic browser/local-network abuse and auth bypass reachability.
 - Impact precision: use "arbitrary code execution" only when attacker-controlled input reaches command/code execution primitives.
 - Impact precision: if commands are fixed and only triggerable remotely, describe as "unauthorized remote trigger" instead of RCE.
 - verify-before-claiming: if claiming attacker can set configuration values, read the schema and parsing logic first.
@@ -117,6 +149,6 @@ Look for combined diffs that together create an exploit path even if each change
 2. Every finding MUST have non-empty file_path, code_snippet, evidence, attack_scenario, and cwe_id.
 3. Every attack_scenario must include a step-by-step exploit chain with verified preconditions.
 4. Read actual source files before making claims. Do not guess.
-5. Do not duplicate vulnerabilities already in VULNERABILITIES.json unless it is a regression.
+5. If a vulnerability already exists in VULNERABILITIES.json and this diff introduces or enables it, report it as finding_type=known_vuln (or regression if reintroduced).
 6. Respect the provided severity threshold: report only findings at or above it.
 7. Apply severity calibration rules before assigning final severity.

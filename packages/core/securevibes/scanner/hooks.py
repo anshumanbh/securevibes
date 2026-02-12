@@ -129,6 +129,51 @@ def create_pre_tool_hook(tracker, console: Console, debug: bool, detected_langua
                         }
                     }
 
+            if tool_name == "Read" and tracker.current_phase == "pr-code-review":
+                normalized_path = str(path or "").replace("\\", "/")
+                is_diff_context_read = normalized_path.endswith(
+                    "/.securevibes/DIFF_CONTEXT.json"
+                ) or (normalized_path == ".securevibes/DIFF_CONTEXT.json")
+                if is_diff_context_read:
+                    return {
+                        "override_result": {
+                            "content": (
+                                "PR review guard: DIFF_CONTEXT.json reads are disabled. "
+                                "Use prompt-provided changed files and changed-line anchors."
+                            ),
+                            "is_error": False,
+                        }
+                    }
+
+            if tool_name == "Grep" and tracker.current_phase == "pr-code-review":
+                normalized_path = str(path or "").replace("\\", "/")
+                if normalized_path.endswith("/.securevibes/DIFF_CONTEXT.json") or (
+                    normalized_path == ".securevibes/DIFF_CONTEXT.json"
+                ):
+                    return {
+                        "override_result": {
+                            "content": (
+                                "PR review guard: do not grep DIFF_CONTEXT.json. "
+                                "Use the prompt-provided changed file lists and inspect source files directly."
+                            ),
+                            "is_error": False,
+                        }
+                    }
+                if not normalized_path:
+                    # Prevent expensive repo-wide Grep loops in PR review; scope to src by default.
+                    updated_input = {**tool_input, "path": "src"}
+                    if debug:
+                        console.print(
+                            "  🔧 Scoped PR Grep without path to src/",
+                            style="dim yellow",
+                        )
+                    return {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "updatedInput": updated_input,
+                        }
+                    }
+
             # For Grep, inject excludePatterns to filter out infrastructure directories
             if tool_name == "Grep":
                 # Add exclude patterns for infrastructure directories
@@ -184,20 +229,38 @@ def create_pre_tool_hook(tracker, console: Console, debug: bool, detected_langua
             if file_path:
                 try:
                     p = Path(file_path)
-                    allowed = (
-                        p.name == "PR_VULNERABILITIES.json" and p.parent.name == ".securevibes"
-                    )
+                    wants_pr_artifact = p.name == "PR_VULNERABILITIES.json"
+                    allowed = wants_pr_artifact and p.parent.name == ".securevibes"
                 except Exception:
+                    wants_pr_artifact = False
                     allowed = False
+
+                # Normalize legacy/bare artifact path writes (e.g., PR_VULNERABILITIES.json)
+                # to the required .securevibes location so orchestration can find the file.
+                if wants_pr_artifact and not allowed:
+                    normalized_path = ".securevibes/PR_VULNERABILITIES.json"
+                    if debug:
+                        console.print(
+                            f"  🔧 Normalized PR artifact path: {file_path} -> {normalized_path}",
+                            style="dim yellow",
+                        )
+                    return {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "updatedInput": {**tool_input, "file_path": normalized_path},
+                        }
+                    }
+
                 if not allowed:
                     return {
                         "override_result": {
                             "content": (
+                                "Write rejected by SecureVibes PR review guard. "
                                 "PR code review phase may only write "
                                 ".securevibes/PR_VULNERABILITIES.json. "
                                 f"Blocked write to: {file_path}"
                             ),
-                            "is_error": False,
+                            "is_error": True,
                         }
                     }
 

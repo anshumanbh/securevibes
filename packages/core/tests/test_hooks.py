@@ -343,6 +343,29 @@ class TestPreToolHook:
         assert "PR code review phase may only write" in result["override_result"]["content"]
 
     @pytest.mark.asyncio
+    async def test_normalizes_bare_pr_vulnerabilities_write_path(self, tracker, console):
+        """PR code review should normalize bare artifact path to .securevibes location."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        hook = create_pre_tool_hook(
+            tracker, console, debug=False, detected_languages=detected_languages
+        )
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "PR_VULNERABILITIES.json",
+                "content": "[]",
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        updated = result["hookSpecificOutput"]["updatedInput"]
+        assert updated["file_path"] == ".securevibes/PR_VULNERABILITIES.json"
+
+    @pytest.mark.asyncio
     async def test_read_operations_unaffected_in_pr_code_review(self, tracker, console):
         """PR code review restrictions should not affect reads."""
         tracker.current_phase = "pr-code-review"
@@ -359,6 +382,69 @@ class TestPreToolHook:
         result = await hook(input_data, "tool-123", {})
 
         assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_blocks_grep_over_diff_context_in_pr_code_review(self, tracker, console):
+        """PR code review should block Grep against DIFF_CONTEXT.json."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        hook = create_pre_tool_hook(
+            tracker, console, debug=False, detected_languages=detected_languages
+        )
+
+        input_data = {
+            "tool_name": "Grep",
+            "tool_input": {
+                "pattern": "new_path",
+                "path": "/project/.securevibes/DIFF_CONTEXT.json",
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "override_result" in result
+        assert "do not grep DIFF_CONTEXT.json" in result["override_result"]["content"]
+
+    @pytest.mark.asyncio
+    async def test_scopes_pathless_grep_to_src_in_pr_code_review(self, tracker, console):
+        """PR code review should scope pathless Grep requests to src/."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        hook = create_pre_tool_hook(
+            tracker, console, debug=False, detected_languages=detected_languages
+        )
+
+        input_data = {
+            "tool_name": "Grep",
+            "tool_input": {
+                "pattern": "authorizeGatewayConnect",
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        updated = result["hookSpecificOutput"]["updatedInput"]
+        assert updated["path"] == "src"
+
+    @pytest.mark.asyncio
+    async def test_blocks_diff_context_reads_in_pr_code_review(self, tracker, console):
+        """PR code review should block DIFF_CONTEXT.json reads in favor of prompt anchors."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        hook = create_pre_tool_hook(
+            tracker, console, debug=False, detected_languages=detected_languages
+        )
+
+        input_data = {
+            "tool_name": "Read",
+            "tool_input": {"file_path": "/project/.securevibes/DIFF_CONTEXT.json"},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "override_result" in result
+        assert "reads are disabled" in result["override_result"]["content"]
 
     # Note: test_logs_skill_invocations_in_debug removed - SDK auto-loads skills
     # from .claude/skills/ without explicit Skill tool calls, so the logging

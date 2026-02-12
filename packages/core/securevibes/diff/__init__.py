@@ -22,6 +22,11 @@ from securevibes.diff.extractor import (
 from securevibes.diff.context import (
     extract_relevant_architecture,
     filter_relevant_threats,
+    filter_relevant_vulnerabilities,
+    normalize_repo_path,
+    summarize_threats_for_prompt,
+    summarize_vulnerabilities_for_prompt,
+    suggest_security_adjacent_files,
     check_vuln_overlap,
 )
 
@@ -43,5 +48,10 @@ __all__ = [
     "get_last_n_commits",
     "extract_relevant_architecture",
     "filter_relevant_threats",
+    "filter_relevant_vulnerabilities",
+    "normalize_repo_path",
+    "summarize_threats_for_prompt",
+    "summarize_vulnerabilities_for_prompt",
+    "suggest_security_adjacent_files",
     "check_vuln_overlap",
 ]

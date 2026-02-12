@@ -1,5 +1,6 @@
 """Tests for PR review helpers."""
 
+import asyncio
 import json
 from io import StringIO
 from pathlib import Path
@@ -10,9 +11,21 @@ from click.testing import CliRunner
 from rich.console import Console
 
 from securevibes.cli.main import cli
-from securevibes.diff.context import extract_relevant_architecture, filter_relevant_threats
-from securevibes.diff.parser import DiffContext
-from securevibes.scanner.scanner import Scanner, dedupe_pr_vulns, filter_baseline_vulns
+from securevibes.diff.context import (
+    extract_relevant_architecture,
+    filter_relevant_threats,
+    filter_relevant_vulnerabilities,
+    suggest_security_adjacent_files,
+    summarize_threats_for_prompt,
+    summarize_vulnerabilities_for_prompt,
+)
+from securevibes.diff.parser import DiffContext, DiffFile, DiffHunk, DiffLine
+from securevibes.scanner.scanner import (
+    Scanner,
+    _build_focused_diff_context,
+    dedupe_pr_vulns,
+    filter_baseline_vulns,
+)
 
 
 def test_extract_relevant_architecture_matches_sections(tmp_path: Path):
@@ -55,8 +68,200 @@ def test_filter_relevant_threats_matches_tokens(tmp_path: Path):
     assert relevant[0]["id"] == "THREAT-001"
 
 
-def test_dedupe_pr_vulns_filters_known():
-    """Known issues should be filtered from PR findings."""
+def test_filter_relevant_threats_prioritizes_exact_file_overlap(tmp_path: Path):
+    """Exact changed-file threat matches should outrank loose token matches."""
+    threat_model = tmp_path / "THREAT_MODEL.json"
+    threats = [
+        {
+            "id": "THREAT-LOOSE",
+            "title": "Gateway auth issue",
+            "description": "General auth weakness in gateway",
+            "affected_components": ["gateway"],
+        },
+        {
+            "id": "THREAT-EXACT",
+            "title": "Config apply privilege issue",
+            "description": "Direct overlap with changed file",
+            "affected_files": [{"file_path": "src/gateway/server-methods/config.ts"}],
+        },
+    ]
+    threat_model.write_text(json.dumps(threats), encoding="utf-8")
+
+    relevant = filter_relevant_threats(
+        threat_model,
+        ["src/gateway/server-methods/config.ts"],
+        max_items=2,
+    )
+
+    assert len(relevant) == 2
+    assert relevant[0]["id"] == "THREAT-EXACT"
+
+
+def test_filter_relevant_vulnerabilities_prefers_file_overlap():
+    """Vulnerability relevance should prefer exact file overlap over loose text matches."""
+    vulnerabilities = [
+        {
+            "threat_id": "THREAT-1",
+            "title": "Gateway issue",
+            "description": "General gateway auth concern",
+            "file_path": "src/gateway/auth.ts",
+        },
+        {
+            "threat_id": "THREAT-2",
+            "title": "Config apply exploit chain",
+            "description": "Direct overlap with changed method",
+            "file_path": "src/gateway/server-methods/config.ts",
+        },
+    ]
+
+    relevant = filter_relevant_vulnerabilities(
+        vulnerabilities,
+        ["src/gateway/server-methods/config.ts"],
+        max_items=2,
+    )
+
+    assert len(relevant) == 2
+    assert relevant[0]["threat_id"] == "THREAT-2"
+
+
+def test_context_summaries_are_bounded():
+    """Prompt summaries should include findings but respect char limits."""
+    threats = [
+        {
+            "id": "THREAT-001",
+            "title": "Very long threat title " * 20,
+            "description": "Very long threat description " * 40,
+            "severity": "high",
+            "file_path": "src/gateway/auth.ts",
+        }
+    ]
+    vulns = [
+        {
+            "threat_id": "THREAT-002",
+            "title": "Very long vulnerability title " * 20,
+            "description": "Very long vulnerability description " * 40,
+            "severity": "critical",
+            "file_path": "src/gateway/server.ts",
+            "cwe_id": "CWE-306",
+        }
+    ]
+
+    threat_summary = summarize_threats_for_prompt(threats, max_chars=180)
+    vuln_summary = summarize_vulnerabilities_for_prompt(vulns, max_chars=180)
+
+    assert len(threat_summary) <= 180
+    assert len(vuln_summary) <= 180
+    assert "THREAT-001" in threat_summary
+    assert "THREAT-002" in vuln_summary
+
+
+def test_suggest_security_adjacent_files_returns_ranked_neighbors(tmp_path: Path):
+    """Security-adjacent hints should include nearby auth/policy files."""
+    repo = tmp_path / "repo"
+    (repo / "src/gateway/server-methods").mkdir(parents=True)
+    (repo / "src/gateway/server-methods/config.ts").write_text("export const x = 1;\n", "utf-8")
+    (repo / "src/gateway/auth.ts").write_text("export const y = 1;\n", "utf-8")
+    (repo / "src/gateway/router.ts").write_text("export const z = 1;\n", "utf-8")
+    (repo / "src/gateway/notes.txt").write_text("not code\n", "utf-8")
+
+    hints = suggest_security_adjacent_files(
+        repo, ["src/gateway/server-methods/config.ts"], max_items=5
+    )
+
+    assert "src/gateway/auth.ts" in hints
+    assert "src/gateway/router.ts" in hints
+    assert "src/gateway/server-methods/config.ts" not in hints
+
+
+def test_build_focused_diff_context_prioritizes_source_over_docs():
+    """Focused diff should prioritize code paths over docs noise."""
+    docs_file = DiffFile(
+        old_path="docs/readme.md",
+        new_path="docs/readme.md",
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+        hunks=[
+            DiffHunk(
+                old_start=1,
+                old_count=1,
+                new_start=1,
+                new_count=1,
+                lines=[
+                    DiffLine(type="add", content="doc update", old_line_num=None, new_line_num=1)
+                ],
+            )
+        ],
+    )
+    code_file = DiffFile(
+        old_path="src/gateway/server-methods/config.ts",
+        new_path="src/gateway/server-methods/config.ts",
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+        hunks=[
+            DiffHunk(
+                old_start=10,
+                old_count=1,
+                new_start=10,
+                new_count=1,
+                lines=[
+                    DiffLine(type="add", content="config.apply", old_line_num=None, new_line_num=10)
+                ],
+            )
+        ],
+    )
+    context = DiffContext(
+        files=[docs_file, code_file],
+        added_lines=2,
+        removed_lines=0,
+        changed_files=["docs/readme.md", "src/gateway/server-methods/config.ts"],
+    )
+
+    focused = _build_focused_diff_context(context)
+
+    assert focused.changed_files
+    assert focused.changed_files[0] == "src/gateway/server-methods/config.ts"
+
+
+def test_build_focused_diff_context_trims_oversized_hunks():
+    """Focused diff should cap hunk size to keep prompts tractable."""
+    many_lines = [
+        DiffLine(type="add", content=f"line {idx}", old_line_num=None, new_line_num=idx)
+        for idx in range(1, 280)
+    ]
+    noisy_file = DiffFile(
+        old_path="src/gateway/server.ts",
+        new_path="src/gateway/server.ts",
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+        hunks=[
+            DiffHunk(
+                old_start=1,
+                old_count=200,
+                new_start=1,
+                new_count=200,
+                lines=many_lines,
+            )
+        ],
+    )
+    context = DiffContext(
+        files=[noisy_file],
+        added_lines=len(many_lines),
+        removed_lines=0,
+        changed_files=["src/gateway/server.ts"],
+    )
+
+    focused = _build_focused_diff_context(context)
+
+    assert len(focused.files) == 1
+    assert len(focused.files[0].hunks) == 1
+    assert len(focused.files[0].hunks[0].lines) == 200
+
+
+def test_dedupe_pr_vulns_tags_known_matches():
+    """Baseline overlaps should be retained and tagged as known_vuln."""
     pr_vulns = [
         {"file_path": "ui/app.ts", "threat_id": "THREAT-001", "title": "A"},
         {"file_path": "api/app.ts", "threat_id": "THREAT-002", "title": "B"},
@@ -67,8 +272,10 @@ def test_dedupe_pr_vulns_filters_known():
 
     filtered = dedupe_pr_vulns(pr_vulns, known_vulns)
 
-    assert len(filtered) == 1
-    assert filtered[0]["threat_id"] == "THREAT-002"
+    assert len(filtered) == 2
+    assert filtered[0]["threat_id"] == "THREAT-001"
+    assert filtered[0]["finding_type"] == "known_vuln"
+    assert filtered[1]["threat_id"] == "THREAT-002"
 
 
 def test_filter_baseline_vulns_excludes_pr_derived_with_threat_prefix():
@@ -144,15 +351,16 @@ def test_filter_baseline_vulns_normalizes_finding_type():
     assert len(baseline) == 0
 
 
-def test_dedupe_with_baseline_filter_still_dedupes_real_baseline():
-    """Baseline THREAT entries without finding_type should still dedupe correctly."""
+def test_dedupe_with_baseline_filter_marks_real_baseline_as_known():
+    """Baseline THREAT entries without finding_type should be tagged known_vuln."""
     pr_vulns = [{"file_path": "app.ts", "threat_id": "THREAT-001", "title": "SQLi"}]
     known_vulns = [
         {"file_path": "app.ts", "threat_id": "THREAT-001", "title": "SQLi"},  # no finding_type
     ]
     baseline = filter_baseline_vulns(known_vulns)
     result = dedupe_pr_vulns(pr_vulns, baseline)
-    assert len(result) == 0  # IS deduped — genuine baseline match
+    assert len(result) == 1
+    assert result[0]["finding_type"] == "known_vuln"
 
 
 def test_pr_review_empty_diff_exits_cleanly(tmp_path: Path):
@@ -173,6 +381,45 @@ def test_pr_review_empty_diff_exits_cleanly(tmp_path: Path):
 
     assert result.exit_code == 0
     assert "No changes found" in result.output
+
+
+def test_pr_review_clean_pr_artifacts_removes_transient_files(tmp_path: Path):
+    """--clean-pr-artifacts should remove only transient PR outputs."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+
+    (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+    (securevibes_dir / "VULNERABILITIES.json").write_text("[]", encoding="utf-8")
+
+    (securevibes_dir / "PR_VULNERABILITIES.json").write_text("[]", encoding="utf-8")
+    (securevibes_dir / "DIFF_CONTEXT.json").write_text("{}", encoding="utf-8")
+    (securevibes_dir / "pr_review_report.md").write_text("old report", encoding="utf-8")
+
+    diff_file = tmp_path / "empty.patch"
+    diff_file.write_text("", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "pr-review",
+            str(repo),
+            "--diff",
+            str(diff_file),
+            "--clean-pr-artifacts",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert not (securevibes_dir / "PR_VULNERABILITIES.json").exists()
+    assert not (securevibes_dir / "DIFF_CONTEXT.json").exists()
+    assert not (securevibes_dir / "pr_review_report.md").exists()
+    assert (securevibes_dir / "SECURITY.md").exists()
+    assert (securevibes_dir / "THREAT_MODEL.json").exists()
+    assert (securevibes_dir / "VULNERABILITIES.json").exists()
 
 
 def test_pr_review_rejects_multiple_diff_sources(tmp_path: Path):
@@ -415,13 +662,161 @@ async def test_pr_review_missing_artifact_returns_warning(tmp_path: Path):
         )
 
     assert len(result.issues) == 0
-    assert len(result.warnings) == 1
-    assert "did not produce PR_VULNERABILITIES.json" in result.warnings[0]
+    assert result.warnings
+    assert any("did not produce a readable PR_VULNERABILITIES.json" in w for w in result.warnings)
 
 
 @pytest.mark.asyncio
-async def test_pr_review_allows_task_tool(tmp_path: Path):
-    """PR review must include Task in allowed_tools for subagent dispatch."""
+async def test_pr_review_retries_when_first_attempt_returns_empty(tmp_path: Path):
+    """If first attempt returns empty findings, scanner should retry with follow-up pass."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+
+    (securevibes_dir / "SECURITY.md").write_text("# Security\n", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+    diff_context = DiffContext(files=[], added_lines=1, removed_lines=0, changed_files=["app.py"])
+
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+
+    attempt_counter = {"count": 0}
+
+    with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+        mock_instance = MagicMock()
+        mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.query = AsyncMock()
+
+        async def query_side_effect(_prompt: str):
+            attempt_counter["count"] += 1
+            if attempt_counter["count"] == 1:
+                (securevibes_dir / "PR_VULNERABILITIES.json").write_text("[]", encoding="utf-8")
+            else:
+                (securevibes_dir / "PR_VULNERABILITIES.json").write_text(
+                    json.dumps(
+                        [
+                            {
+                                "threat_id": "PR-001",
+                                "finding_type": "new_threat",
+                                "title": "Follow-up finding",
+                                "description": "Second pass produced a finding.",
+                                "severity": "high",
+                                "file_path": "src/app.py",
+                                "line_number": 1,
+                                "code_snippet": "danger()",
+                                "attack_scenario": "1) Input reaches sink.",
+                                "evidence": "src/app.py:1",
+                                "cwe_id": "CWE-94",
+                                "recommendation": "Add validation.",
+                            }
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+
+        mock_instance.query.side_effect = query_side_effect
+
+        async def async_gen():
+            return
+            yield  # pragma: no cover
+
+        mock_instance.receive_messages = async_gen
+
+        result = await scanner.pr_review(
+            str(repo),
+            diff_context,
+            known_vulns_path=None,
+            severity_threshold="low",
+        )
+
+    assert result.issues
+    assert attempt_counter["count"] == 2
+    assert any("retrying with chain-focused prompt" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_pr_review_timeout_retries_and_succeeds(tmp_path: Path, monkeypatch):
+    """A timeout on first pass should retry and accept a later successful pass."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+
+    (securevibes_dir / "SECURITY.md").write_text("# Security\n", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+    diff_context = DiffContext(files=[], added_lines=1, removed_lines=0, changed_files=["app.py"])
+
+    monkeypatch.setenv("SECUREVIBES_PR_REVIEW_TIMEOUT_SECONDS", "1")
+    monkeypatch.setenv("SECUREVIBES_PR_REVIEW_ATTEMPTS", "2")
+
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+
+    stream_counter = {"count": 0}
+
+    with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+        mock_instance = MagicMock()
+        mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.query = AsyncMock()
+
+        async def query_side_effect(_prompt: str):
+            if stream_counter["count"] >= 1:
+                (securevibes_dir / "PR_VULNERABILITIES.json").write_text(
+                    json.dumps(
+                        [
+                            {
+                                "threat_id": "PR-002",
+                                "finding_type": "new_threat",
+                                "title": "Recovered finding",
+                                "description": "Retry pass produced a finding.",
+                                "severity": "high",
+                                "file_path": "src/app.py",
+                                "line_number": 2,
+                                "code_snippet": "eval(x)",
+                                "attack_scenario": "1) User input controls eval.",
+                                "evidence": "src/app.py:2",
+                                "cwe_id": "CWE-94",
+                                "recommendation": "Avoid eval.",
+                            }
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+
+        mock_instance.query.side_effect = query_side_effect
+
+        def receive_messages_side_effect():
+            async def _stream():
+                if stream_counter["count"] == 0:
+                    stream_counter["count"] += 1
+                    await asyncio.sleep(2)
+                    return
+                    yield  # pragma: no cover
+                stream_counter["count"] += 1
+                return
+                yield  # pragma: no cover
+
+            return _stream()
+
+        mock_instance.receive_messages = receive_messages_side_effect
+
+        result = await scanner.pr_review(
+            str(repo),
+            diff_context,
+            known_vulns_path=None,
+            severity_threshold="low",
+        )
+
+    assert result.issues
+    assert any("timed out" in warning.lower() for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_pr_review_uses_direct_tools_without_task(tmp_path: Path):
+    """PR review should run with direct Read/Write/Grep tools and not require Task."""
     repo = tmp_path / "repo"
     repo.mkdir()
     securevibes_dir = repo / ".securevibes"
@@ -454,11 +849,12 @@ async def test_pr_review_allows_task_tool(tmp_path: Path):
             severity_threshold="low",
         )
 
-    # Verify Task is in the allowed_tools passed to ClaudeAgentOptions
+    # Verify direct tool execution surface for PR review
     options = mock_client.call_args[1]["options"]
-    assert (
-        "Task" in options.allowed_tools
-    ), f"Task tool missing from allowed_tools: {options.allowed_tools}"
+    assert "Read" in options.allowed_tools
+    assert "Write" in options.allowed_tools
+    assert "Grep" in options.allowed_tools
+    assert "Task" not in options.allowed_tools
 
 
 @pytest.mark.asyncio
@@ -499,3 +895,33 @@ async def test_pr_review_has_subagent_hook(tmp_path: Path):
     options = mock_client.call_args[1]["options"]
     assert "SubagentStop" in options.hooks, "SubagentStop hook must be configured"
     assert len(options.hooks["SubagentStop"]) > 0, "SubagentStop must have at least one hook"
+
+
+def test_pr_code_review_prompt_requires_chain_analysis_text():
+    """Prompt must explicitly require trust-boundary exploit chain reasoning."""
+    prompt_path = (
+        Path(__file__).resolve().parents[1]
+        / "securevibes"
+        / "prompts"
+        / "agents"
+        / "pr_code_review.txt"
+    )
+    prompt = prompt_path.read_text(encoding="utf-8")
+
+    assert "existing auth/trust-boundary weaknesses" in prompt
+    assert "do not auto-cap local access or localhost-only paths at MEDIUM" in prompt
+
+
+def test_pr_orchestration_prompt_includes_context_read_order():
+    """Orchestration prompt should enforce deterministic context read order."""
+    prompt_path = (
+        Path(__file__).resolve().parents[1]
+        / "securevibes"
+        / "prompts"
+        / "orchestration"
+        / "pr_review.txt"
+    )
+    prompt = prompt_path.read_text(encoding="utf-8")
+
+    assert "The agent reads context in this order" in prompt
+    assert ".securevibes/DIFF_CONTEXT.json" in prompt

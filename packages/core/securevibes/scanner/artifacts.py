@@ -28,13 +28,9 @@ def update_pr_review_artifacts(
     vulnerabilities = _load_json_list(vulnerabilities_path)
 
     existing_threat_ids = {
-        str(threat.get("id"))
-        for threat in threats
-        if isinstance(threat, dict) and threat.get("id")
+        str(threat.get("id")) for threat in threats if isinstance(threat, dict) and threat.get("id")
     }
-    existing_vuln_keys = {
-        _vuln_key(vuln) for vuln in vulnerabilities if isinstance(vuln, dict)
-    }
+    existing_vuln_keys = {_vuln_key(vuln) for vuln in vulnerabilities if isinstance(vuln, dict)}
 
     threats_added = 0
     vulnerabilities_added = 0
@@ -114,9 +110,7 @@ def _convert_vuln_to_threat(vuln: Mapping[str, object]) -> dict[str, object]:
         "title": str(vuln.get("title", "")),
         "description": str(vuln.get("description", "")),
         "severity": str(vuln.get("severity", "")),
-        "affected_components": _derive_components_from_file_path(
-            str(vuln.get("file_path", ""))
-        ),
+        "affected_components": _derive_components_from_file_path(str(vuln.get("file_path", ""))),
     }
 
 
@@ -150,9 +144,7 @@ def _coerce_int(value: object) -> int:
         return 0
 
 
-def _detect_new_components(
-    pr_vulns: list[Mapping[str, object]], threats: list[object]
-) -> bool:
+def _detect_new_components(pr_vulns: list[Mapping[str, object]], threats: list[object]) -> bool:
     existing_components: set[str] = set()
     for threat in threats:
         if not isinstance(threat, dict):
