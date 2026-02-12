@@ -24,6 +24,7 @@ from securevibes.scanner.scanner import (
     Scanner,
     _derive_pr_default_grep_scope,
     _build_focused_diff_context,
+    _merge_pr_attempt_findings,
     _summarize_diff_hunk_snippets,
     dedupe_pr_vulns,
     filter_baseline_vulns,
@@ -344,6 +345,72 @@ def test_dedupe_pr_vulns_tags_known_matches():
     assert filtered[0]["threat_id"] == "THREAT-001"
     assert filtered[0]["finding_type"] == "known_vuln"
     assert filtered[1]["threat_id"] == "THREAT-002"
+
+
+def test_merge_pr_attempt_findings_collapses_duplicate_chain_variants():
+    """Near-duplicate chain variants from multiple attempts should collapse to one finding."""
+    merged = _merge_pr_attempt_findings(
+        [
+            {
+                "title": "Unvalidated gatewayUrl parameter enables credential theft",
+                "description": "gatewayUrl from query string is trusted and used for websocket connect.",
+                "attack_scenario": "1) Victim opens link 2) token sent to attacker websocket.",
+                "evidence": "ui/src/ui/app-settings.ts:98",
+                "severity": "critical",
+                "finding_type": "threat_enabler",
+                "file_path": "ui/src/ui/app-settings.ts",
+                "line_number": 98,
+                "cwe_id": "CWE-601",
+            },
+            {
+                "title": "Unvalidated gatewayUrl query parameter enables WebSocket hijacking",
+                "description": "URL parameter controls websocket endpoint and leaks stored token.",
+                "attack_scenario": "1) attacker link 2) browser auto-connects 3) token exfiltration.",
+                "evidence": "ui/src/ui/app-settings.ts:99",
+                "severity": "high",
+                "finding_type": "new_threat",
+                "file_path": "ui/src/ui/app-settings.ts",
+                "line_number": 99,
+                "cwe_id": "CWE-200",
+            },
+        ]
+    )
+
+    assert len(merged) == 1
+    assert merged[0]["severity"] == "critical"
+    assert "gatewayUrl" in merged[0]["title"]
+
+
+def test_merge_pr_attempt_findings_preserves_distinct_chains():
+    """Different chains in the same file should remain as separate findings."""
+    merged = _merge_pr_attempt_findings(
+        [
+            {
+                "title": "Docker bind mount allows host filesystem escape",
+                "description": "Unvalidated binds permit mounting host paths into container.",
+                "attack_scenario": "1) set binds 2) mount /var/run/docker.sock 3) escape.",
+                "evidence": "src/config/zod-schema.agent-runtime.ts:80",
+                "severity": "critical",
+                "finding_type": "new_threat",
+                "file_path": "src/config/zod-schema.agent-runtime.ts",
+                "line_number": 80,
+                "cwe_id": "CWE-610",
+            },
+            {
+                "title": "Shell command injection via unsanitized PATH export",
+                "description": "PATH value is interpolated into shell script without sanitization.",
+                "attack_scenario": "1) attacker controls env.PATH 2) command substitution executes.",
+                "evidence": "src/agents/bash-tools.shared.ts:67",
+                "severity": "high",
+                "finding_type": "new_threat",
+                "file_path": "src/agents/bash-tools.shared.ts",
+                "line_number": 67,
+                "cwe_id": "CWE-78",
+            },
+        ]
+    )
+
+    assert len(merged) == 2
 
 
 def test_filter_baseline_vulns_excludes_pr_derived_with_threat_prefix():

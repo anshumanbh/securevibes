@@ -4,6 +4,8 @@ import asyncio
 import os
 import json
 import time
+import re
+from difflib import SequenceMatcher
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any
@@ -2100,38 +2102,172 @@ def _load_pr_vulnerabilities_artifact(
 
 
 def _merge_pr_attempt_findings(vulns: list[dict]) -> list[dict]:
-    """Merge findings across attempts while preserving first-seen ordering."""
+    """Merge findings across attempts and keep one canonical finding per chain."""
+    if not vulns:
+        return []
+
     severity_rank = {
         "low": 1,
         "medium": 2,
         "high": 3,
         "critical": 4,
     }
-    merged: list[dict] = []
-    index_by_key: dict[tuple[str, str, str, str], int] = {}
+    finding_type_rank = {
+        "known_vuln": 6,
+        "regression": 5,
+        "threat_enabler": 5,
+        "mitigation_removal": 4,
+        "new_threat": 3,
+        "unknown": 1,
+    }
+    chain_stopwords = {
+        "the",
+        "and",
+        "with",
+        "from",
+        "into",
+        "via",
+        "that",
+        "this",
+        "allows",
+        "allow",
+        "enable",
+        "enables",
+        "enabled",
+        "through",
+        "using",
+        "when",
+        "where",
+        "code",
+        "change",
+        "changes",
+        "input",
+        "output",
+        "command",
+        "commands",
+        "config",
+        "configuration",
+        "security",
+        "vulnerability",
+        "attack",
+        "path",
+        "line",
+        "file",
+    }
 
-    for vuln in vulns:
-        if not isinstance(vuln, dict):
-            continue
+    def _coerce_line_number(value: object) -> int:
+        try:
+            return int(value) if value is not None else 0
+        except (TypeError, ValueError):
+            return 0
 
-        entry = dict(vuln)
-        normalized_path = normalize_repo_path(entry.get("file_path"))
-        line_number = str(entry.get("line_number", "")).strip()
-        cwe_id = str(entry.get("cwe_id", "")).strip().lower()
-        finding_type = str(entry.get("finding_type", "")).strip().lower()
-        coarse_key = (normalized_path, line_number, cwe_id, finding_type)
+    def _coarse_cwe_family(value: object) -> str:
+        text = str(value or "").strip().upper()
+        match = re.search(r"CWE-(\d+)", text)
+        if not match:
+            return ""
+        return match.group(1)[:2]
 
-        existing_idx = index_by_key.get(coarse_key)
-        if existing_idx is None:
-            index_by_key[coarse_key] = len(merged)
-            merged.append(entry)
-        else:
-            existing = merged[existing_idx]
-            existing_rank = severity_rank.get(str(existing.get("severity", "")).lower(), 0)
-            candidate_rank = severity_rank.get(str(entry.get("severity", "")).lower(), 0)
-            if candidate_rank > existing_rank:
-                merged[existing_idx] = entry
-    return merged
+    def _finding_tokens(entry: dict) -> set[str]:
+        text = " ".join(
+            str(entry.get(field, ""))
+            for field in ("title", "description", "attack_scenario", "evidence")
+        ).lower()
+        tokens = re.findall(r"[a-z0-9_]+", text)
+        return {
+            token
+            for token in tokens
+            if len(token) >= 4 and token not in chain_stopwords and not token.isdigit()
+        }
+
+    def _token_similarity(a: set[str], b: set[str]) -> float:
+        if not a or not b:
+            return 0.0
+        overlap = len(a & b)
+        union = len(a | b)
+        return overlap / union if union else 0.0
+
+    def _entry_quality(entry: dict) -> tuple[int, int, int, int]:
+        severity = severity_rank.get(str(entry.get("severity", "")).strip().lower(), 0)
+        finding_type = finding_type_rank.get(str(entry.get("finding_type", "")).strip().lower(), 0)
+        evidence_chars = len(str(entry.get("evidence", ""))) + len(
+            str(entry.get("attack_scenario", ""))
+        )
+        description_chars = len(str(entry.get("description", "")))
+        return (
+            severity,
+            finding_type,
+            min(evidence_chars, 4000),
+            min(description_chars, 2000),
+        )
+
+    def _same_chain(candidate: dict, canonical: dict) -> bool:
+        candidate_path = normalize_repo_path(candidate.get("file_path"))
+        canonical_path = normalize_repo_path(canonical.get("file_path"))
+        if not candidate_path or not canonical_path:
+            return False
+
+        candidate_line = _coerce_line_number(candidate.get("line_number"))
+        canonical_line = _coerce_line_number(canonical.get("line_number"))
+        line_gap = (
+            abs(candidate_line - canonical_line)
+            if candidate_line > 0 and canonical_line > 0
+            else 999
+        )
+
+        candidate_tokens = _finding_tokens(candidate)
+        canonical_tokens = _finding_tokens(canonical)
+        token_similarity = _token_similarity(candidate_tokens, canonical_tokens)
+
+        candidate_title = str(candidate.get("title", "")).strip().lower()
+        canonical_title = str(canonical.get("title", "")).strip().lower()
+        title_similarity = (
+            SequenceMatcher(None, candidate_title, canonical_title).ratio()
+            if candidate_title and canonical_title
+            else 0.0
+        )
+
+        same_cwe_family = _coarse_cwe_family(candidate.get("cwe_id")) == _coarse_cwe_family(
+            canonical.get("cwe_id")
+        )
+
+        if candidate_path == canonical_path:
+            if line_gap <= 4 and token_similarity >= 0.24:
+                return True
+            if token_similarity >= 0.52:
+                return True
+            if title_similarity >= 0.82:
+                return True
+
+        candidate_dir = candidate_path.rsplit("/", 1)[0] if "/" in candidate_path else ""
+        canonical_dir = canonical_path.rsplit("/", 1)[0] if "/" in canonical_path else ""
+        if (
+            candidate_dir
+            and candidate_dir == canonical_dir
+            and same_cwe_family
+            and token_similarity >= 0.68
+        ):
+            return True
+
+        return False
+
+    normalized_vulns = [dict(v) for v in vulns if isinstance(v, dict)]
+    normalized_vulns.sort(key=_entry_quality, reverse=True)
+
+    canonical_findings: list[dict] = []
+    for candidate in normalized_vulns:
+        merged = False
+        for idx, existing in enumerate(canonical_findings):
+            if not _same_chain(candidate, existing):
+                continue
+            if _entry_quality(candidate) > _entry_quality(existing):
+                canonical_findings[idx] = candidate
+            merged = True
+            break
+        if not merged:
+            canonical_findings.append(candidate)
+
+    return canonical_findings
 
 
 def dedupe_pr_vulns(pr_vulns: list[dict], known_vulns: list[dict]) -> list[dict]:
