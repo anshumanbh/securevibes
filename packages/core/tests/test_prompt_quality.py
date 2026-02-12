@@ -358,6 +358,9 @@ class TestPrCodeReviewEvidenceRequirements:
         assert "Read/Grep" in prompt_content or "Read tool" in prompt_content
         assert "actual source files" in prompt_content
 
+    def test_disallows_diff_context_file_reads(self, prompt_content):
+        assert "Do not read or grep DIFF_CONTEXT.json" in prompt_content
+
     def test_requires_nonempty_evidence(self, prompt_content):
         assert "empty file_path/code_snippet/evidence" in prompt_content
         assert "REJECTED" in prompt_content

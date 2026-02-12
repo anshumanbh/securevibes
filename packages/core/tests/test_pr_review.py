@@ -912,16 +912,15 @@ def test_pr_code_review_prompt_requires_chain_analysis_text():
     assert "do not auto-cap local access or localhost-only paths at MEDIUM" in prompt
 
 
-def test_pr_orchestration_prompt_includes_context_read_order():
-    """Orchestration prompt should enforce deterministic context read order."""
+def test_pr_code_review_prompt_disables_diff_context_file_reads():
+    """PR review prompt must align with hooks and disallow DIFF_CONTEXT reads/greps."""
     prompt_path = (
         Path(__file__).resolve().parents[1]
         / "securevibes"
         / "prompts"
-        / "orchestration"
-        / "pr_review.txt"
+        / "agents"
+        / "pr_code_review.txt"
     )
     prompt = prompt_path.read_text(encoding="utf-8")
 
-    assert "The agent reads context in this order" in prompt
-    assert ".securevibes/DIFF_CONTEXT.json" in prompt
+    assert "Do not read or grep DIFF_CONTEXT.json" in prompt

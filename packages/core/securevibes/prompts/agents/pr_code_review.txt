@@ -6,9 +6,8 @@ You can read:
 1. SECURITY.md (architecture, data flows, trust boundaries)
 2. THREAT_MODEL.json (known threats)
 3. VULNERABILITIES.json (optional, known vulns)
-4. DIFF_CONTEXT.json (raw diff metadata, optional backup context)
-5. Security-adjacent file hints injected in this prompt (files to inspect for auth/reachability)
-6. Prompt-injected changed files and changed-line anchors (authoritative PR context)
+4. Security-adjacent file hints injected in this prompt (files to inspect for auth/reachability)
+5. Prompt-injected changed files and changed-line anchors (authoritative PR context)
 
 ## TASK
 
@@ -20,13 +19,13 @@ or prerequisites for a vulnerability introduced by changed code.
 
 Use this workflow for every potential finding:
 1. Use the prompt-provided changed files and changed-line anchors as the primary diff source.
-   Only read DIFF_CONTEXT.json once as backup context if needed.
+   Do not read or grep DIFF_CONTEXT.json; use prompt anchors plus source files.
 2. Read changed files first, then inspect security-adjacent files (auth, policy, middleware, gateway/router) to verify reachability.
 3. Use Read/Grep tools to trace control flow for each candidate finding from entrypoint to sink.
 4. Build and verify the exploit chain end-to-end. For each link, cite source file:line and document prerequisites.
 5. Populate ALL evidence fields from real code. empty file_path/code_snippet/evidence will be REJECTED.
 6. Keep the review focused and convergent:
-   - Do not grep DIFF_CONTEXT.json for file discovery.
+   - Do not read or grep DIFF_CONTEXT.json for file discovery.
    - Avoid repo-wide Grep loops; prefer targeted file reads and scoped grep paths.
    - Once you have enough validated evidence for reportable findings, write output immediately.
    - If no findings remain after validating high-risk changed files, write [] and stop.
@@ -104,34 +103,29 @@ Example item:
 ## CRITICAL ATTACK PATTERNS TO DETECT
 
 ### Credential Exposure via Configuration Injection
-Look for changes that could leak tokens, secrets, or credentials to user-controlled destinations:
-- API keys, tokens, or secrets sent to URLs derived from user input or configuration
-- Handshake or authentication credential leaks through logging, error messages, or redirects
-- Secrets written to world-readable files or exposed via environment variable dumps
-- CWE-522 (Insufficiently Protected Credentials), CWE-200 (Exposure of Sensitive Information), CWE-312 (Cleartext Storage of Sensitive Information)
+Prioritize data flows where credentials can leave trusted boundaries:
+- Tokens/secrets sent to URLs, hosts, or handshake targets derived from user input/config
+- Credentials exposed in redirects, logs, or untrusted telemetry paths
+- CWE-522, CWE-200, CWE-312
 
 ### Sandbox / Safety Bypass Chains
-Look for changes that disable or weaken safety controls:
-- Disabling input validation, authentication checks, or authorization guards
-- Permission escalation through configuration changes (e.g., granting admin roles, disabling RBAC)
-- Removing or weakening Content Security Policy, CORS restrictions, or rate limiting
-- CWE-693 (Protection Mechanism Failure), CWE-284 (Improper Access Control), CWE-269 (Improper Privilege Management)
+Look for diffs that weaken enforcement gates around privileged actions:
+- AuthN/AuthZ bypasses, downgraded policy checks, or runtime safety toggles
+- Capability expansion that grants elevated execution/config mutation
+- CWE-693, CWE-284, CWE-269
 
 ### Localhost Bypass / SSRF-to-RCE Chains
-Look for changes that allow user input to control connection targets:
-- User-controlled URLs, hostnames, or IP addresses in HTTP clients, database connections, or socket calls
-- Proxy or redirect configurations that could route to internal services (127.0.0.1, metadata endpoints)
-- DNS rebinding or TOCTOU vulnerabilities in URL validation
-- Unauthenticated localhost/WebSocket access to newly added privileged RPC methods
-- CWE-918 (Server-Side Request Forgery), CWE-94 (Improper Control of Generation of Code), CWE-78 (OS Command Injection)
+Analyze whether untrusted input can steer connections to internal/trusted services:
+- User-controlled URLs/hosts/IPs used in client sockets, fetchers, or proxy hops
+- Localhost/internal endpoint access combined with weak origin/auth assumptions
+- CWE-918, CWE-94, CWE-78
 
 ### Multi-Stage RCE / Exploit Chains
-Look for combined diffs that together create an exploit path even if each change seems benign alone:
-- Data flow from user input to dangerous sinks (eval, exec, spawn, deserialization, template rendering)
-- Chained vulnerabilities: e.g., SSRF enabling access to an internal admin endpoint that allows code execution
-- Unsafe deserialization of user-controlled data (JSON.parse with reviver, pickle, YAML.load)
-- New privileged operations that become reachable via existing auth/trust-boundary weaknesses
-- CWE-77 (Command Injection), CWE-502 (Deserialization of Untrusted Data), CWE-94 (Code Injection)
+Treat the PR as a graph and report chainable paths, not isolated smells:
+- Input/control flow from entrypoint to privileged sink (exec/spawn/eval/deserialization/policy apply)
+- Multiple weak links that combine into one high-impact exploit path
+- New privileged operations reachable via existing auth/trust-boundary weaknesses
+- CWE-77, CWE-502, CWE-94
 
 ## SEVERITY CALIBRATION
 
