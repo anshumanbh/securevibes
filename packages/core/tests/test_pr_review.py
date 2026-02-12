@@ -22,10 +22,13 @@ from securevibes.diff.context import (
 from securevibes.diff.parser import DiffContext, DiffFile, DiffHunk, DiffLine
 from securevibes.scanner.scanner import (
     Scanner,
+    _derive_pr_default_grep_scope,
     _build_focused_diff_context,
+    _summarize_diff_hunk_snippets,
     dedupe_pr_vulns,
     filter_baseline_vulns,
 )
+from securevibes.config import config
 
 
 def test_extract_relevant_architecture_matches_sections(tmp_path: Path):
@@ -258,6 +261,71 @@ def test_build_focused_diff_context_trims_oversized_hunks():
     assert len(focused.files) == 1
     assert len(focused.files[0].hunks) == 1
     assert len(focused.files[0].hunks[0].lines) == 200
+
+
+def test_summarize_diff_hunk_snippets_includes_diff_lines():
+    """Prompt hunk snippets should preserve +/- diff lines for missing-file analysis."""
+    diff_file = DiffFile(
+        old_path="src/media/parse.ts",
+        new_path="src/media/parse.ts",
+        is_new=True,
+        is_deleted=False,
+        is_renamed=False,
+        hunks=[
+            DiffHunk(
+                old_start=0,
+                old_count=0,
+                new_start=1,
+                new_count=4,
+                lines=[
+                    DiffLine(
+                        type="add",
+                        content="export const MEDIA_LINE_RE = /\\\\bMEDIA:/i;",
+                        old_line_num=None,
+                        new_line_num=1,
+                    ),
+                    DiffLine(
+                        type="add",
+                        content='if (candidate.startsWith("/")) return true;',
+                        old_line_num=None,
+                        new_line_num=2,
+                    ),
+                    DiffLine(
+                        type="remove",
+                        content='if (candidate.startsWith("./")) return false;',
+                        old_line_num=9,
+                        new_line_num=None,
+                    ),
+                ],
+            )
+        ],
+    )
+    context = DiffContext(
+        files=[diff_file],
+        added_lines=2,
+        removed_lines=1,
+        changed_files=["src/media/parse.ts"],
+    )
+
+    summary = _summarize_diff_hunk_snippets(context, max_chars=4000)
+
+    assert "--- src/media/parse.ts (new)" in summary
+    assert '+if (candidate.startsWith("/")) return true;' in summary
+    assert '-if (candidate.startsWith("./")) return false;' in summary
+
+
+def test_derive_pr_default_grep_scope_prefers_non_src_changed_top_level():
+    """Pathless PR Grep should scope to changed top-level directory when src is absent."""
+    context = DiffContext(
+        files=[],
+        added_lines=1,
+        removed_lines=0,
+        changed_files=["apps/macos/Sources/Clawdis/Utilities.swift"],
+    )
+
+    scope = _derive_pr_default_grep_scope(context)
+
+    assert scope == "apps"
 
 
 def test_dedupe_pr_vulns_tags_known_matches():
@@ -732,7 +800,7 @@ async def test_pr_review_retries_when_first_attempt_returns_empty(tmp_path: Path
         )
 
     assert result.issues
-    assert attempt_counter["count"] == 2
+    assert attempt_counter["count"] == config.get_pr_review_attempts()
     assert any("retrying with chain-focused prompt" in warning for warning in result.warnings)
 
 

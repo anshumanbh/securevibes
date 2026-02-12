@@ -212,8 +212,8 @@ class AgentConfig:
 
     # Default max turns for agent queries
     DEFAULT_MAX_TURNS = 50
-    DEFAULT_PR_REVIEW_TIMEOUT_SECONDS = 180
-    DEFAULT_PR_REVIEW_ATTEMPTS = 2
+    DEFAULT_PR_REVIEW_TIMEOUT_SECONDS = 240
+    DEFAULT_PR_REVIEW_ATTEMPTS = 4
 
     @classmethod
     def get_agent_model(cls, agent_name: str, cli_override: Optional[str] = None) -> str:

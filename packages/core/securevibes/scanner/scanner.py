@@ -63,6 +63,9 @@ SCAN_STATE_FILE = "scan_state.json"
 
 _FOCUSED_DIFF_MAX_FILES = 16
 _FOCUSED_DIFF_MAX_HUNK_LINES = 200
+_PROMPT_HUNK_MAX_FILES = 12
+_PROMPT_HUNK_MAX_HUNKS_PER_FILE = 4
+_PROMPT_HUNK_MAX_LINES_PER_HUNK = 80
 _SECURITY_PATH_HINTS = (
     "auth",
     "permission",
@@ -94,7 +97,7 @@ _NON_CODE_SUFFIXES = {
 def _summarize_diff_line_anchors(
     diff_context: DiffContext,
     max_files: int = 16,
-    max_lines_per_file: int = 24,
+    max_lines_per_file: int = 48,
     max_chars: int = 12000,
 ) -> str:
     """Build concise changed-line anchors for prompt context."""
@@ -134,6 +137,194 @@ def _summarize_diff_line_anchors(
 
 def _diff_file_path(diff_file: DiffFile) -> str:
     return str(diff_file.new_path or diff_file.old_path or "")
+
+
+def _summarize_diff_hunk_snippets(
+    diff_context: DiffContext,
+    max_files: int = _PROMPT_HUNK_MAX_FILES,
+    max_hunks_per_file: int = _PROMPT_HUNK_MAX_HUNKS_PER_FILE,
+    max_lines_per_hunk: int = _PROMPT_HUNK_MAX_LINES_PER_HUNK,
+    max_chars: int = 22000,
+) -> str:
+    """Build diff-style snippets for changed hunks to ground PR analysis."""
+    if not diff_context.files:
+        return "- No changed hunks."
+
+    output: list[str] = []
+    for diff_file in diff_context.files[:max_files]:
+        path = _diff_file_path(diff_file)
+        if not path:
+            continue
+
+        file_meta: list[str] = []
+        if diff_file.is_new:
+            file_meta.append("new")
+        if diff_file.is_deleted:
+            file_meta.append("deleted")
+        if diff_file.is_renamed:
+            file_meta.append("renamed")
+        meta_suffix = f" ({', '.join(file_meta)})" if file_meta else ""
+        output.append(f"--- {path}{meta_suffix}")
+
+        for hunk in diff_file.hunks[:max_hunks_per_file]:
+            output.append(
+                f"@@ -{hunk.old_start},{hunk.old_count} +{hunk.new_start},{hunk.new_count} @@"
+            )
+            for line in hunk.lines[:max_lines_per_hunk]:
+                prefix = "+"
+                if line.type == "remove":
+                    prefix = "-"
+                elif line.type == "context":
+                    prefix = " "
+
+                content = line.content.rstrip("\n")
+                if len(content) > 220:
+                    content = f"{content[:217]}..."
+                output.append(f"{prefix}{content}")
+
+            if len(hunk.lines) > max_lines_per_hunk:
+                output.append(f"... [truncated {len(hunk.lines) - max_lines_per_hunk} hunk lines]")
+
+        if len(diff_file.hunks) > max_hunks_per_file:
+            output.append(
+                f"... [truncated {len(diff_file.hunks) - max_hunks_per_file} hunks for {path}]"
+            )
+
+    summary = "\n".join(output).strip() or "- No changed hunks."
+    if len(summary) <= max_chars:
+        return summary
+    return f"{summary[: max_chars - 15].rstrip()}...[truncated]"
+
+
+def _derive_pr_default_grep_scope(diff_context: DiffContext) -> str:
+    """Choose a safe default grep scope from changed file directories."""
+    dir_counts: dict[str, int] = {}
+    for raw_path in diff_context.changed_files:
+        normalized = normalize_repo_path(raw_path)
+        if not normalized:
+            continue
+        parts = [part for part in normalized.split("/") if part]
+        if len(parts) < 2:
+            continue
+        top_level = parts[0]
+        dir_counts[top_level] = dir_counts.get(top_level, 0) + 1
+
+    if not dir_counts:
+        return "src"
+    if "src" in dir_counts:
+        return "src"
+    return sorted(dir_counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+
+
+def _normalize_hypothesis_output(
+    raw_text: str,
+    max_items: int = 8,
+    max_chars: int = 5000,
+) -> str:
+    """Normalize free-form LLM output into concise bullet hypotheses."""
+    stripped = raw_text.strip()
+    if not stripped:
+        return "- None generated."
+
+    bullets: list[str] = []
+    for line in stripped.splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        if text.startswith("- "):
+            bullets.append(text)
+            continue
+        if text.startswith("* "):
+            bullets.append(f"- {text[2:].strip()}")
+            continue
+        if len(text) > 2 and text[0].isdigit() and text[1] in {".", ")"}:
+            bullets.append(f"- {text[2:].strip()}")
+            continue
+
+    if not bullets:
+        first_line = stripped.splitlines()[0].strip()
+        if len(first_line) > 280:
+            first_line = f"{first_line[:277]}..."
+        bullets = [f"- {first_line}"]
+
+    normalized = "\n".join(bullets[:max_items]).strip() or "- None generated."
+    if len(normalized) <= max_chars:
+        return normalized
+    return f"{normalized[: max_chars - 15].rstrip()}...[truncated]"
+
+
+async def _generate_pr_hypotheses(
+    *,
+    repo: Path,
+    model: str,
+    changed_files: list[str],
+    diff_line_anchors: str,
+    diff_hunk_snippets: str,
+    threat_context_summary: str,
+    vuln_context_summary: str,
+    architecture_context: str,
+) -> str:
+    """Generate exploit hypotheses from diff+baseline context using the LLM."""
+    hypothesis_prompt = f"""You are a security exploit hypothesis generator for code review.
+
+Generate 3-8 high-impact exploit hypotheses grounded in the changed diff.
+These are hypotheses to validate, NOT confirmed vulnerabilities.
+
+Return ONLY bullet lines. Each bullet should include:
+- potential exploit chain
+- changed file/line anchor reference
+- why impact could be high
+- which files/functions should be validated
+
+Focus on chains such as:
+- auth/trust-boundary bypass + privileged action
+- command/shell/option injection
+- file path traversal/exfiltration
+- token/credential exfiltration leading to privileged access
+
+CHANGED FILES:
+{changed_files}
+
+CHANGED LINE ANCHORS:
+{diff_line_anchors}
+
+CHANGED HUNK SNIPPETS:
+{diff_hunk_snippets}
+
+RELEVANT THREATS:
+{threat_context_summary}
+
+RELEVANT BASELINE VULNERABILITIES:
+{vuln_context_summary}
+
+ARCHITECTURE CONTEXT:
+{architecture_context}
+"""
+
+    options = ClaudeAgentOptions(
+        cwd=str(repo),
+        setting_sources=["project"],
+        allowed_tools=[],
+        max_turns=8,
+        permission_mode="bypassPermissions",
+        model=model,
+    )
+
+    collected_text: list[str] = []
+    try:
+        async with ClaudeSDKClient(options=options) as client:
+            await asyncio.wait_for(client.query(hypothesis_prompt), timeout=30)
+            async for message in client.receive_messages():
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            collected_text.append(block.text)
+                elif isinstance(message, ResultMessage):
+                    break
+    except Exception:
+        return "- Unable to generate hypotheses."
+
+    return _normalize_hypothesis_output("\n".join(collected_text))
 
 
 def _score_diff_file_for_security_review(diff_file: DiffFile) -> int:
@@ -850,6 +1041,22 @@ class Scanner:
             else "- None identified from changed-file neighborhoods"
         )
         diff_line_anchors = _summarize_diff_line_anchors(focused_diff_context)
+        diff_hunk_snippets = _summarize_diff_hunk_snippets(focused_diff_context)
+        pr_grep_default_scope = _derive_pr_default_grep_scope(focused_diff_context)
+        pr_hypotheses = "- None generated."
+        if focused_diff_context.files:
+            pr_hypotheses = await _generate_pr_hypotheses(
+                repo=repo,
+                model=self.model,
+                changed_files=focused_diff_context.changed_files,
+                diff_line_anchors=diff_line_anchors,
+                diff_hunk_snippets=diff_hunk_snippets,
+                threat_context_summary=threat_context_summary,
+                vuln_context_summary=vuln_context_summary,
+                architecture_context=architecture_context,
+            )
+        if self.debug:
+            self.console.print("  🧠 PR exploit hypotheses prepared", style="dim")
 
         base_agents = create_agent_definitions(cli_model=self.model)
         base_pr_prompt = base_agents["pr-code-review"].prompt
@@ -870,11 +1077,20 @@ class Scanner:
 
 ## DIFF TO ANALYZE
 Use the prompt-provided changed files and line anchors below as authoritative diff context.
+This scan may run against a pre-change snapshot where new/modified PR code is not present on disk.
 Changed files: {diff_context.changed_files}
 Prioritized changed files: {focused_diff_context.changed_files}
 
 ## CHANGED LINE ANCHORS (authoritative)
 {diff_line_anchors}
+
+## CHANGED HUNK SNIPPETS (authoritative diff code)
+{diff_hunk_snippets}
+
+## HYPOTHESES TO VALIDATE (LLM-generated)
+Validate or falsify each hypothesis before final output:
+You may output [] only if every hypothesis is disproved with concrete code evidence.
+{pr_hypotheses}
 
 ## SEVERITY THRESHOLD
 Only report findings at or above: {severity_threshold}
@@ -889,6 +1105,7 @@ Only report findings at or above: {severity_threshold}
         detected_languages = LanguageConfig.detect_languages(repo) if repo else set()
 
         pr_vulns: list[dict] = []
+        collected_pr_vulns: list[dict] = []
         artifact_loaded = False
 
         for attempt_idx in range(pr_review_attempts):
@@ -896,6 +1113,10 @@ Only report findings at or above: {severity_threshold}
             retry_suffix = ""
             if attempt_num > 1:
                 retry_suffix = _build_pr_review_retry_suffix(attempt_num)
+                try:
+                    pr_vulns_path.unlink()
+                except OSError:
+                    pass
 
             agents = create_agent_definitions(cli_model=self.model)
             attempt_prompt = f"{contextualized_prompt}{retry_suffix}"
@@ -906,7 +1127,11 @@ Only report findings at or above: {severity_threshold}
             )
             tracker.current_phase = "pr-code-review"
             pre_tool_hook = create_pre_tool_hook(
-                tracker, self.console, self.debug, detected_languages
+                tracker,
+                self.console,
+                self.debug,
+                detected_languages,
+                pr_grep_default_path=pr_grep_default_scope,
             )
             post_tool_hook = create_post_tool_hook(tracker, self.console, self.debug)
             subagent_hook = create_subagent_hook(tracker)
@@ -959,9 +1184,8 @@ Only report findings at or above: {severity_threshold}
                 )
                 if not load_warning:
                     artifact_loaded = True
-                    pr_vulns = loaded_vulns
-                    if pr_vulns:
-                        break
+                    if loaded_vulns:
+                        collected_pr_vulns.extend(loaded_vulns)
                 continue
             except Exception as e:
                 attempt_warning = (
@@ -975,9 +1199,8 @@ Only report findings at or above: {severity_threshold}
                 )
                 if not load_warning:
                     artifact_loaded = True
-                    pr_vulns = loaded_vulns
-                    if pr_vulns:
-                        break
+                    if loaded_vulns:
+                        collected_pr_vulns.extend(loaded_vulns)
                 continue
 
             loaded_vulns, load_warning = _load_pr_vulnerabilities_artifact(
@@ -991,9 +1214,14 @@ Only report findings at or above: {severity_threshold}
                 continue
 
             artifact_loaded = True
-            pr_vulns = loaded_vulns
-            if pr_vulns:
-                break
+            if loaded_vulns:
+                collected_pr_vulns.extend(loaded_vulns)
+                if attempt_num < pr_review_attempts and self.debug:
+                    self.console.print(
+                        "  🔁 Running additional focused PR pass for broader chain coverage",
+                        style="dim",
+                    )
+                continue
 
             if attempt_num < pr_review_attempts:
                 retry_warning = (
@@ -1002,12 +1230,8 @@ Only report findings at or above: {severity_threshold}
                 )
                 warnings.append(retry_warning)
                 self.console.print(f"\n[bold yellow]WARNING:[/bold yellow] {retry_warning}\n")
-                try:
-                    pr_vulns_path.unlink()
-                except OSError:
-                    pass
 
-        if not artifact_loaded:
+        if not artifact_loaded and not collected_pr_vulns:
             warning_msg = (
                 "PR code review agent did not produce a readable PR_VULNERABILITIES.json after "
                 f"{pr_review_attempts} attempt(s). Results may be incomplete."
@@ -1022,6 +1246,8 @@ Only report findings at or above: {severity_threshold}
                 total_cost_usd=round(self.total_cost, 4),
                 warnings=warnings,
             )
+
+        pr_vulns = _merge_pr_attempt_findings(collected_pr_vulns)
 
         if baseline_vulns and pr_vulns:
             pr_vulns = dedupe_pr_vulns(pr_vulns, baseline_vulns)
@@ -1786,6 +2012,35 @@ def _issues_from_pr_vulns(pr_vulns: list[dict]) -> list[SecurityIssue]:
 
 def _build_pr_review_retry_suffix(attempt_num: int) -> str:
     """Return extra guidance used when retrying PR review with LLM."""
+    focus_block = ""
+    if attempt_num == 2:
+        focus_block = """
+
+## FOCUS AREA: PATH + FILE EXFILTRATION CHAINS
+Prioritize changed parser/validator logic for URLs/paths/media tokens.
+Look for acceptance of absolute/relative/home/traversal paths that can reach file read/host/upload/render sinks.
+Do not dismiss as "refactor-only" if changed code still enables exfiltration.
+"""
+    elif attempt_num == 3:
+        focus_block = """
+
+## FOCUS AREA: COMMAND/OPTION INJECTION CHAINS
+Prioritize command builder and shell composition changes:
+- untrusted env/config/input interpolated into shell fragments (`sh -c`, `bash -lc`)
+- CLI option injection via untrusted args that can start with '-' (host/target/remote values)
+- parser functions feeding command builders must reject dash-prefixed target/host inputs
+- double-quoted interpolation still allows `$()` and backtick command substitution
+Validate both local and remote execution surfaces.
+"""
+    elif attempt_num >= 4:
+        focus_block = """
+
+## FOCUS AREA: AUTH + PRIVILEGED OPERATION CHAINING
+Prioritize trust-boundary changes that expose privileged operations (config/apply/update/exec/policy changes).
+Prove end-to-end chain from attacker-controlled entrypoint to privileged sink, including missing controls.
+Do not reject a chain only because direct callers are absent in this snapshot when the diff adds exported/shared command helpers.
+"""
+
     return f"""
 
 ## FOLLOW-UP ANALYSIS PASS {attempt_num}
@@ -1795,14 +2050,18 @@ Previous attempt was incomplete or inconclusive. Re-run the review with this str
    - New/changed capabilities
    - New/changed trust boundaries
    - New/changed privileged sinks
-2. Compare that delta against baseline threat/vulnerability summaries as hypotheses.
-3. Validate each high-impact hypothesis by reading concrete code paths in changed and adjacent files.
-4. Prioritize exploit chains that combine:
+2. Treat prompt-injected changed hunk snippets as authoritative changed code.
+   If changed code is missing from the current checkout, analyze from diff snippets directly.
+3. Compare that delta against baseline threat/vulnerability summaries as hypotheses.
+4. Validate each high-impact hypothesis by reading concrete code paths in changed and adjacent files.
+5. Prioritize exploit chains that combine:
    - reachability
    - auth/authorization weaknesses
    - privileged operations (config, updates, execution, policy changes)
-5. Avoid repetitive broad Grep. Use targeted reads/greps scoped to specific files or src/ paths.
-6. If and only if no issue is provable, output [] after explicitly checking all prioritized changed files.
+6. Do not dismiss findings as "refactor-only" until you verify security semantics of changed helpers.
+7. Avoid repetitive broad Grep. Use targeted reads/greps scoped to specific files or changed top-level paths.
+8. If and only if no issue is provable, output [] after explicitly checking all prioritized changed files.
+{focus_block}
 """
 
 
@@ -1838,6 +2097,41 @@ def _load_pr_vulnerabilities_artifact(
 
     normalized = [item for item in pr_vulns if isinstance(item, dict)]
     return normalized, None
+
+
+def _merge_pr_attempt_findings(vulns: list[dict]) -> list[dict]:
+    """Merge findings across attempts while preserving first-seen ordering."""
+    severity_rank = {
+        "low": 1,
+        "medium": 2,
+        "high": 3,
+        "critical": 4,
+    }
+    merged: list[dict] = []
+    index_by_key: dict[tuple[str, str, str, str], int] = {}
+
+    for vuln in vulns:
+        if not isinstance(vuln, dict):
+            continue
+
+        entry = dict(vuln)
+        normalized_path = normalize_repo_path(entry.get("file_path"))
+        line_number = str(entry.get("line_number", "")).strip()
+        cwe_id = str(entry.get("cwe_id", "")).strip().lower()
+        finding_type = str(entry.get("finding_type", "")).strip().lower()
+        coarse_key = (normalized_path, line_number, cwe_id, finding_type)
+
+        existing_idx = index_by_key.get(coarse_key)
+        if existing_idx is None:
+            index_by_key[coarse_key] = len(merged)
+            merged.append(entry)
+        else:
+            existing = merged[existing_idx]
+            existing_rank = severity_rank.get(str(existing.get("severity", "")).lower(), 0)
+            candidate_rank = severity_rank.get(str(entry.get("severity", "")).lower(), 0)
+            if candidate_rank > existing_rank:
+                merged[existing_idx] = entry
+    return merged
 
 
 def dedupe_pr_vulns(pr_vulns: list[dict], known_vulns: list[dict]) -> list[dict]:

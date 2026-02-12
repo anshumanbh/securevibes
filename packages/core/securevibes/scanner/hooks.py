@@ -72,7 +72,13 @@ def create_dast_security_hook(tracker, console: Console, debug: bool):
     return dast_security_hook
 
 
-def create_pre_tool_hook(tracker, console: Console, debug: bool, detected_languages: Set[str]):
+def create_pre_tool_hook(
+    tracker,
+    console: Console,
+    debug: bool,
+    detected_languages: Set[str],
+    pr_grep_default_path: str = "src",
+):
     """
     Create pre-tool hook for infrastructure exclusions and DAST restrictions.
 
@@ -87,6 +93,7 @@ def create_pre_tool_hook(tracker, console: Console, debug: bool, detected_langua
         console: Rich console for debug output
         debug: Whether to show debug messages
         detected_languages: Set of detected languages for exclusion rules
+        pr_grep_default_path: Default path used for pathless Grep calls in PR review
 
     Returns:
         Async hook function compatible with ClaudeSDKClient PreToolUse hook
@@ -160,11 +167,13 @@ def create_pre_tool_hook(tracker, console: Console, debug: bool, detected_langua
                         }
                     }
                 if not normalized_path:
-                    # Prevent expensive repo-wide Grep loops in PR review; scope to src by default.
-                    updated_input = {**tool_input, "path": "src"}
+                    # Prevent expensive repo-wide Grep loops in PR review.
+                    # Scope to an injected top-level directory derived from changed files.
+                    scope_path = (pr_grep_default_path or "src").strip() or "src"
+                    updated_input = {**tool_input, "path": scope_path}
                     if debug:
                         console.print(
-                            "  🔧 Scoped PR Grep without path to src/",
+                            f"  🔧 Scoped PR Grep without path to {scope_path}/",
                             style="dim yellow",
                         )
                     return {

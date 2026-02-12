@@ -428,6 +428,34 @@ class TestPreToolHook:
         assert updated["path"] == "src"
 
     @pytest.mark.asyncio
+    async def test_scopes_pathless_grep_to_configured_path_in_pr_code_review(
+        self, tracker, console
+    ):
+        """PR code review should honor configured default path for pathless Grep."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"swift"}
+        hook = create_pre_tool_hook(
+            tracker,
+            console,
+            debug=False,
+            detected_languages=detected_languages,
+            pr_grep_default_path="apps",
+        )
+
+        input_data = {
+            "tool_name": "Grep",
+            "tool_input": {
+                "pattern": "sshNodeCommand",
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        updated = result["hookSpecificOutput"]["updatedInput"]
+        assert updated["path"] == "apps"
+
+    @pytest.mark.asyncio
     async def test_blocks_diff_context_reads_in_pr_code_review(self, tracker, console):
         """PR code review should block DIFF_CONTEXT.json reads in favor of prompt anchors."""
         tracker.current_phase = "pr-code-review"

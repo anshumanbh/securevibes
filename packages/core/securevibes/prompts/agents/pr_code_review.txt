@@ -7,7 +7,7 @@ You can read:
 2. THREAT_MODEL.json (known threats)
 3. VULNERABILITIES.json (optional, known vulns)
 4. Security-adjacent file hints injected in this prompt (files to inspect for auth/reachability)
-5. Prompt-injected changed files and changed-line anchors (authoritative PR context)
+5. Prompt-injected changed files, changed-line anchors, and changed-hunk snippets (authoritative PR context)
 
 ## TASK
 
@@ -18,15 +18,19 @@ or prerequisites for a vulnerability introduced by changed code.
 ## WORKFLOW
 
 Use this workflow for every potential finding:
-1. Use the prompt-provided changed files and changed-line anchors as the primary diff source.
-   Do not read or grep DIFF_CONTEXT.json; use prompt anchors plus source files.
+1. Use the prompt-provided changed files, changed-line anchors, and changed-hunk snippets as the primary diff source.
+   Do not read or grep DIFF_CONTEXT.json; use prompt diff context plus source files.
 2. Read changed files first, then inspect security-adjacent files (auth, policy, middleware, gateway/router) to verify reachability.
-3. Use Read/Grep tools to trace control flow for each candidate finding from entrypoint to sink.
-4. Build and verify the exploit chain end-to-end. For each link, cite source file:line and document prerequisites.
-5. Populate ALL evidence fields from real code. empty file_path/code_snippet/evidence will be REJECTED.
-6. Keep the review focused and convergent:
+3. If changed code is missing from the current checkout (pre-change snapshot), treat prompt-injected diff hunks as source-of-truth code and continue analysis.
+4. Use Read/Grep tools to trace control flow for each candidate finding from entrypoint to sink.
+5. Build and verify the exploit chain end-to-end. For each link, cite source file:line and document prerequisites.
+6. Populate ALL evidence fields from real code. empty file_path/code_snippet/evidence will be REJECTED.
+7. Keep the review focused and convergent:
    - Do not read or grep DIFF_CONTEXT.json for file discovery.
    - Avoid repo-wide Grep loops; prefer targeted file reads and scoped grep paths.
+   - Do not assume a helper extraction/refactor is safe without validating changed security semantics.
+   - Do not suppress findings solely because old code may have had similar behavior; if changed lines are still exploitable, report as known_vuln/threat_enabler.
+   - Treat newly added exported/shared helper methods as reachable attack surface when they are part of command-routing APIs, even if direct callers are not yet visible in this checkout snapshot.
    - Once you have enough validated evidence for reportable findings, write output immediately.
    - If no findings remain after validating high-risk changed files, write [] and stop.
 
@@ -41,13 +45,23 @@ THREAT-DELTA METHOD (MANDATORY):
 3. Validate each hypothesis in code:
    - Confirm reachability from realistic attacker entrypoints.
    - Confirm missing or insufficient controls.
-   - Confirm impact at the sink (state change, privilege gain, data exposure, code execution path).
+   - Confirm impact at the sink (state change, privilege gain, data exposure, code execution path), even when sink code is shown via diff hunk snippets.
 
 MANDATORY CHAIN CHECKS for newly added privileged operations:
 - If the diff adds a method that can modify config, trigger updates, run commands, or change permissions:
   1) Verify who can call it by reading auth resolution + connect/authorization logic in unchanged files.
   2) Verify localhost/trust assumptions (loopback bypasses, browser-origin reachability, missing origin checks).
   3) If auth weakness + new privileged operation forms an exploit chain, report it as threat_enabler/known_vuln anchored to changed code.
+
+MANDATORY CHECKS for command builders and parser-coupled execution:
+- If the diff adds/changes command helper functions that invoke CLI tools (ssh/git/curl/docker/etc):
+  1) Read parser/normalizer functions that produce host/target/arg values.
+  2) Verify parsed target/host values cannot begin with '-' or include argument separators that become flags/options.
+  3) If target/host validation is missing and values are passed into CLI argv, treat as option injection chain (CWE-88/CWE-78).
+- If the diff adds shell script string composition (`sh -c`, `bash -lc`) with env/config/input interpolation:
+  1) Verify interpolation is robust against shell expansion and command substitution.
+  2) Remember that double-quoted interpolation still allows `$()`/`` `...` `` expansion.
+  3) If untrusted values flow into script body without strict sanitization, report command injection chain (CWE-78).
 
 ## FINDING TYPES (finding_type)
 
@@ -120,12 +134,21 @@ Analyze whether untrusted input can steer connections to internal/trusted servic
 - Localhost/internal endpoint access combined with weak origin/auth assumptions
 - CWE-918, CWE-94, CWE-78
 
+### File Path Parsing / Local File Exfiltration
+Look for parser/validator changes that accept attacker-influenced filesystem paths:
+- Absolute, relative, home-directory, or traversal-style paths accepted from untrusted input/output
+- Missing canonicalization/safe-root enforcement before file read/host/upload/render steps
+- "Refactor-only" helpers that still weaken path validation semantics
+- CWE-22, CWE-73, CWE-200
+
 ### Multi-Stage RCE / Exploit Chains
 Treat the PR as a graph and report chainable paths, not isolated smells:
 - Input/control flow from entrypoint to privileged sink (exec/spawn/eval/deserialization/policy apply)
+- Shell/CLI argument construction where untrusted values can become options (e.g., dash-prefixed targets) or shell fragments
+- `sh -c`/`bash -lc` script composition that interpolates untrusted env/config values into command prefixes
 - Multiple weak links that combine into one high-impact exploit path
 - New privileged operations reachable via existing auth/trust-boundary weaknesses
-- CWE-77, CWE-502, CWE-94
+- CWE-77, CWE-502, CWE-94, CWE-88
 
 ## SEVERITY CALIBRATION
 
@@ -146,3 +169,4 @@ Treat the PR as a graph and report chainable paths, not isolated smells:
 5. If a vulnerability already exists in VULNERABILITIES.json and this diff introduces or enables it, report it as finding_type=known_vuln (or regression if reintroduced).
 6. Respect the provided severity threshold: report only findings at or above it.
 7. Apply severity calibration rules before assigning final severity.
+8. Never return [] only because change is "refactor-like"; return [] only after disproving exploitability of all high-risk changed hunks.
