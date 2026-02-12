@@ -22,6 +22,7 @@ from securevibes.diff.context import (
 from securevibes.diff.parser import DiffContext, DiffFile, DiffHunk, DiffLine
 from securevibes.scanner.scanner import (
     Scanner,
+    _build_pr_review_retry_suffix,
     _derive_pr_default_grep_scope,
     _build_focused_diff_context,
     _merge_pr_attempt_findings,
@@ -413,6 +414,56 @@ def test_merge_pr_attempt_findings_preserves_distinct_chains():
     assert len(merged) == 2
 
 
+def test_merge_pr_attempt_findings_prefers_concrete_exploit_primitive():
+    """Concrete exploit-primitive findings should win over speculative hardening variants."""
+    merged = _merge_pr_attempt_findings(
+        [
+            {
+                "title": "Potential shell interpolation hardening gap in SSH helper",
+                "description": (
+                    "The SSH flow could potentially allow bypass in edge cases if bypass exists; "
+                    "testing needed for hypothetical quoting issues."
+                ),
+                "attack_scenario": (
+                    "1) Attacker might influence target. 2) If bypass exists, command execution could be "
+                    "possible. 3) Consider hardening."
+                ),
+                "evidence": "apps/macos/Sources/Clawdis/Utilities.swift:373",
+                "severity": "medium",
+                "finding_type": "new_threat",
+                "file_path": "apps/macos/Sources/Clawdis/Utilities.swift",
+                "line_number": 373,
+                "cwe_id": "CWE-78",
+            },
+            {
+                "title": "SSH option injection via dash-prefixed host positional argument",
+                "description": (
+                    "Untrusted target host reaches ssh argv positional host argument without `--`, "
+                    "allowing option injection (CWE-88)."
+                ),
+                "attack_scenario": (
+                    "1) Attacker sets target host to `-oProxyCommand=touch /tmp/pwned`. "
+                    "2) Parser keeps non-empty host value. "
+                    "3) Command builder appends userHost as positional arg and ssh treats it as option."
+                ),
+                "evidence": (
+                    "source target -> parse host -> userHost positional argv sink; "
+                    "apps/macos/Sources/Clawdis/Utilities.swift:373->374"
+                ),
+                "severity": "medium",
+                "finding_type": "known_vuln",
+                "file_path": "apps/macos/Sources/Clawdis/Utilities.swift",
+                "line_number": 374,
+                "cwe_id": "CWE-88",
+            },
+        ]
+    )
+
+    assert len(merged) == 1
+    assert "option injection" in merged[0]["title"].lower()
+    assert merged[0]["cwe_id"] == "CWE-88"
+
+
 def test_filter_baseline_vulns_excludes_pr_derived_with_threat_prefix():
     """A THREAT-001 entry with finding_type='known_vuln' is PR-derived, not baseline."""
     known_vulns = [
@@ -464,6 +515,25 @@ def test_dedupe_with_baseline_filter_preserves_pr_findings():
     baseline = filter_baseline_vulns(known_vulns)
     result = dedupe_pr_vulns(pr_vulns, baseline)
     assert len(result) == 1  # NOT deduped
+
+
+def test_pr_review_retry_suffix_attempt_two_focuses_command_injection():
+    """Second pass should prioritize command/option injection chains."""
+    suffix = _build_pr_review_retry_suffix(2)
+    assert "FOCUS AREA: COMMAND/OPTION INJECTION CHAINS" in suffix
+
+
+def test_pr_review_retry_suffix_attempt_three_focuses_path_chains():
+    """Third pass should prioritize path/file exfiltration chains."""
+    suffix = _build_pr_review_retry_suffix(3)
+    assert "FOCUS AREA: PATH + FILE EXFILTRATION CHAINS" in suffix
+
+
+def test_pr_review_retry_suffix_adds_command_builder_hint():
+    """When command-builder deltas are detected, retry guidance should call that out."""
+    suffix = _build_pr_review_retry_suffix(2, command_builder_signals=True)
+    assert "COMMAND-BUILDER DELTA DETECTED" in suffix
+    assert "missing `--` separators" in suffix
 
 
 def test_filter_baseline_vulns_normalizes_finding_type():
@@ -868,7 +938,85 @@ async def test_pr_review_retries_when_first_attempt_returns_empty(tmp_path: Path
 
     assert result.issues
     assert attempt_counter["count"] == config.get_pr_review_attempts()
-    assert any("retrying with chain-focused prompt" in warning for warning in result.warnings)
+    assert any("returned no findings yet" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_pr_review_empty_follow_up_attempt_is_logged_without_warning(
+    tmp_path: Path, monkeypatch
+):
+    """No-new-findings follow-up attempts should not emit warning-level retry noise."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+
+    (securevibes_dir / "SECURITY.md").write_text("# Security\n", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+    diff_context = DiffContext(files=[], added_lines=1, removed_lines=0, changed_files=["app.py"])
+
+    monkeypatch.setenv("SECUREVIBES_PR_REVIEW_ATTEMPTS", "3")
+
+    console_output = StringIO()
+    scanner = Scanner(model="sonnet", debug=True)
+    scanner.console = Console(file=console_output)
+
+    attempt_counter = {"count": 0}
+
+    with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+        mock_instance = MagicMock()
+        mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.query = AsyncMock()
+
+        async def query_side_effect(_prompt: str):
+            attempt_counter["count"] += 1
+            if attempt_counter["count"] == 1:
+                (securevibes_dir / "PR_VULNERABILITIES.json").write_text(
+                    json.dumps(
+                        [
+                            {
+                                "threat_id": "PR-OBS-001",
+                                "finding_type": "new_threat",
+                                "title": "Initial finding",
+                                "description": "First pass produced a finding.",
+                                "severity": "high",
+                                "file_path": "src/app.py",
+                                "line_number": 1,
+                                "code_snippet": "danger()",
+                                "attack_scenario": "1) Input reaches sink.",
+                                "evidence": "src/app.py:1",
+                                "cwe_id": "CWE-94",
+                                "recommendation": "Add validation.",
+                            }
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+            else:
+                (securevibes_dir / "PR_VULNERABILITIES.json").write_text("[]", encoding="utf-8")
+
+        mock_instance.query.side_effect = query_side_effect
+
+        async def async_gen():
+            return
+            yield  # pragma: no cover
+
+        mock_instance.receive_messages = async_gen
+
+        result = await scanner.pr_review(
+            str(repo),
+            diff_context,
+            known_vulns_path=None,
+            severity_threshold="low",
+        )
+
+    console_text = console_output.getvalue()
+    assert result.issues
+    assert attempt_counter["count"] == config.get_pr_review_attempts()
+    assert not any("returned no findings yet" in warning for warning in result.warnings)
+    assert "no new findings; cumulative remains 1" in console_text
+    assert "PR review attempt summary:" in console_text
 
 
 @pytest.mark.asyncio
@@ -1045,6 +1193,24 @@ def test_pr_code_review_prompt_requires_chain_analysis_text():
 
     assert "existing auth/trust-boundary weaknesses" in prompt
     assert "do not auto-cap local access or localhost-only paths at MEDIUM" in prompt
+
+
+def test_pr_code_review_prompt_requires_concrete_injection_proof():
+    """Prompt should enforce concrete proof for command/option injection claims."""
+    prompt_path = (
+        Path(__file__).resolve().parents[1]
+        / "securevibes"
+        / "prompts"
+        / "agents"
+        / "pr_code_review.txt"
+    )
+    prompt = prompt_path.read_text(encoding="utf-8")
+
+    assert "MANDATORY PROOF CHECKLIST for CWE-88/CWE-78 findings" in prompt
+    assert "Do not report hypothetical bypasses" in prompt
+    assert "keep the most concrete exploit-primitive framing" in prompt
+    assert "appended as positional argv without `--`" in prompt
+    assert "explicit option arguments" in prompt
 
 
 def test_pr_code_review_prompt_disables_diff_context_file_reads():

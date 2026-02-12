@@ -58,10 +58,21 @@ MANDATORY CHECKS for command builders and parser-coupled execution:
   1) Read parser/normalizer functions that produce host/target/arg values.
   2) Verify parsed target/host values cannot begin with '-' or include argument separators that become flags/options.
   3) If target/host validation is missing and values are passed into CLI argv, treat as option injection chain (CWE-88/CWE-78).
+  4) If SSH host/target is only validated as non-empty and then appended as positional argv without `--`, treat as high-impact option injection and prioritize that primitive over generic "arbitrary host" framing.
+  5) Do not treat values passed as explicit option arguments (e.g., `-i <value>`) as option injection unless you can prove the value is reinterpreted as a flag; prioritize positional host/target argv sinks.
 - If the diff adds shell script string composition (`sh -c`, `bash -lc`) with env/config/input interpolation:
   1) Verify interpolation is robust against shell expansion and command substitution.
   2) Remember that double-quoted interpolation still allows `$()`/`` `...` `` expansion.
   3) If untrusted values flow into script body without strict sanitization, report command injection chain (CWE-78).
+
+MANDATORY PROOF CHECKLIST for CWE-88/CWE-78 findings:
+- Your evidence must include all of the following:
+  1) attacker-controlled value source (or user-modifiable runtime config source)
+  2) exact changed code line where value is inserted into argv or shell
+  3) concrete payload example that demonstrates exploit primitive
+  4) why parser/normalizer/quoting does not block the payload
+- If any item is missing, do not report the finding.
+- Do not report hypothetical bypasses ("might", "if bypass exists", "edge case maybe") without concrete proof path.
 
 ## FINDING TYPES (finding_type)
 
@@ -155,6 +166,7 @@ Treat the PR as a graph and report chainable paths, not isolated smells:
 - Prerequisite analysis: if auth required, reduce one level by default unless there is clear bypass evidence.
 - Prerequisite analysis: if admin access is required, cap severity at MEDIUM unless impact is cross-tenant or persistent compromise.
 - Prerequisite analysis: do not auto-cap local access or localhost-only paths at MEDIUM; evaluate realistic browser/local-network abuse and auth bypass reachability.
+- For argv option injection chains (e.g., untrusted host/target as positional CLI arg without `--`), do not down-rank by default when impact is credential exfiltration, command execution pivot, or privilege abuse.
 - Impact precision: use "arbitrary code execution" only when attacker-controlled input reaches command/code execution primitives.
 - Impact precision: if commands are fixed and only triggerable remotely, describe as "unauthorized remote trigger" instead of RCE.
 - verify-before-claiming: if claiming attacker can set configuration values, read the schema and parsing logic first.
@@ -170,3 +182,5 @@ Treat the PR as a graph and report chainable paths, not isolated smells:
 6. Respect the provided severity threshold: report only findings at or above it.
 7. Apply severity calibration rules before assigning final severity.
 8. Never return [] only because change is "refactor-like"; return [] only after disproving exploitability of all high-risk changed hunks.
+9. Reject speculative findings that lack concrete exploit proof and sink reachability.
+10. When multiple findings describe the same chain, keep the most concrete exploit-primitive framing and drop hardening-only duplicates.

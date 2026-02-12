@@ -118,6 +118,14 @@ class TestMarkdownStructure:
         assert "## Executive Summary" in markdown
         assert "3 security vulnerabilities found" in markdown
 
+    def test_markdown_has_primary_exploit_chain(self, sample_result):
+        """Test markdown includes primary exploit chain callout when issues exist."""
+        markdown = MarkdownReporter.generate(sample_result)
+
+        assert "## Primary Exploit Chain" in markdown
+        assert "**Finding:**" in markdown
+        assert "**Location:**" in markdown
+
     def test_markdown_has_severity_table(self, sample_result):
         """Test markdown includes severity distribution table"""
         markdown = MarkdownReporter.generate(sample_result)
@@ -204,6 +212,7 @@ class TestMarkdownEmptyResult:
         markdown = MarkdownReporter.generate(empty_result)
 
         # These sections should not appear
+        assert "## Primary Exploit Chain" not in markdown
         assert "## Severity Distribution" not in markdown
         assert "## Vulnerability Overview" not in markdown
         assert "## Detailed Findings" not in markdown

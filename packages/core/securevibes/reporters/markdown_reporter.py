@@ -112,6 +112,40 @@ class MarkdownReporter:
                 lines.append(f"- ✅ {len(result.validated_issues)} Validated")
                 lines.append(f"- ❌ {len(result.false_positives)} False Positives")
                 lines.append(f"- ❓ {len(result.unvalidated_issues)} Unvalidated")
+
+            severity_order = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+            primary_issue = max(
+                result.issues,
+                key=lambda issue: (
+                    severity_order.get(issue.severity.value, 0),
+                    len(issue.attack_scenario or ""),
+                    len(issue.evidence or ""),
+                ),
+            )
+            primary_location = (
+                f"`{primary_issue.file_path}:{primary_issue.line_number}`"
+                if primary_issue.line_number
+                else f"`{primary_issue.file_path}`"
+            )
+            chain_text = (
+                primary_issue.attack_scenario
+                or primary_issue.evidence
+                or primary_issue.description
+                or primary_issue.title
+            )
+            chain_text = " ".join(chain_text.split())
+            if len(chain_text) > 420:
+                chain_text = f"{chain_text[:417]}..."
+
+            lines.append("")
+            lines.append("## Primary Exploit Chain")
+            lines.append("")
+            lines.append(f"**Finding:** {primary_issue.title}")
+            lines.append(f"**Location:** {primary_location}")
+            if primary_issue.cwe_id:
+                lines.append(f"**CWE:** {primary_issue.cwe_id}")
+            lines.append("")
+            lines.append(chain_text)
         else:
             lines.append("## Executive Summary")
             lines.append("")

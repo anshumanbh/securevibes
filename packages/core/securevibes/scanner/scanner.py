@@ -329,6 +329,87 @@ ARCHITECTURE CONTEXT:
     return _normalize_hypothesis_output("\n".join(collected_text))
 
 
+async def _refine_pr_findings_with_llm(
+    *,
+    repo: Path,
+    model: str,
+    diff_line_anchors: str,
+    diff_hunk_snippets: str,
+    findings: list[dict],
+    severity_threshold: str,
+) -> Optional[list[dict]]:
+    """Use an LLM-only quality pass to keep concrete exploit-primitive findings."""
+    if not findings:
+        return None
+
+    finding_json = json.dumps(findings, indent=2, ensure_ascii=False)
+    refinement_prompt = f"""You are an exploit-chain quality auditor for PR security findings.
+
+Rewrite the candidate findings into a final canonical set using these rules:
+- Keep one canonical finding per exploit chain.
+- Prefer concrete exploit primitives over generic hardening framing.
+- Drop speculative findings ("might", "if bypass exists", "testing needed") unless concrete code proof exists.
+- Preserve only findings at or above severity threshold: {severity_threshold}.
+- Never invent vulnerabilities not supported by diff context.
+
+Special command-builder review requirements:
+- For command/CLI helper diffs, verify whether attacker-controlled host/target values can become CLI options.
+- If positional host/target arguments are appended without robust dash-prefixed rejection or `--` separation, treat as option injection chain (CWE-88) when supported by the diff.
+- Do not classify explicit option-value pairs (such as `-i <value>`) as option injection unless the value is proven to be reinterpreted as a flag.
+- If command injection is claimed, ensure scenario includes concrete payload and sink reachability.
+
+Return ONLY a JSON array of findings using the existing schema fields.
+
+CHANGED LINE ANCHORS:
+{diff_line_anchors}
+
+CHANGED HUNK SNIPPETS:
+{diff_hunk_snippets}
+
+CANDIDATE FINDINGS JSON:
+{finding_json}
+"""
+
+    options = ClaudeAgentOptions(
+        cwd=str(repo),
+        setting_sources=["project"],
+        allowed_tools=[],
+        max_turns=10,
+        permission_mode="bypassPermissions",
+        model=model,
+    )
+
+    collected_text: list[str] = []
+    try:
+        async with ClaudeSDKClient(options=options) as client:
+            await asyncio.wait_for(client.query(refinement_prompt), timeout=30)
+            async for message in client.receive_messages():
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            collected_text.append(block.text)
+                elif isinstance(message, ResultMessage):
+                    break
+    except Exception:
+        return None
+
+    raw_output = "\n".join(collected_text).strip()
+    if not raw_output:
+        return None
+
+    from securevibes.models.schemas import fix_pr_vulnerabilities_json
+
+    fixed_content, _ = fix_pr_vulnerabilities_json(raw_output)
+    try:
+        parsed = json.loads(fixed_content)
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(parsed, list):
+        return None
+    return [entry for entry in parsed if isinstance(entry, dict)]
+
+
 def _score_diff_file_for_security_review(diff_file: DiffFile) -> int:
     path = _diff_file_path(diff_file).lower()
     if not path:
@@ -1044,6 +1125,7 @@ class Scanner:
         )
         diff_line_anchors = _summarize_diff_line_anchors(focused_diff_context)
         diff_hunk_snippets = _summarize_diff_hunk_snippets(focused_diff_context)
+        command_builder_signals = _diff_has_command_builder_signals(focused_diff_context)
         pr_grep_default_scope = _derive_pr_default_grep_scope(focused_diff_context)
         pr_hypotheses = "- None generated."
         if focused_diff_context.files:
@@ -1109,12 +1191,17 @@ Only report findings at or above: {severity_threshold}
         pr_vulns: list[dict] = []
         collected_pr_vulns: list[dict] = []
         artifact_loaded = False
+        attempts_run = 0
 
         for attempt_idx in range(pr_review_attempts):
             attempt_num = attempt_idx + 1
+            attempts_run = attempt_num
             retry_suffix = ""
             if attempt_num > 1:
-                retry_suffix = _build_pr_review_retry_suffix(attempt_num)
+                retry_suffix = _build_pr_review_retry_suffix(
+                    attempt_num,
+                    command_builder_signals=command_builder_signals,
+                )
                 try:
                     pr_vulns_path.unlink()
                 except OSError:
@@ -1216,8 +1303,16 @@ Only report findings at or above: {severity_threshold}
                 continue
 
             artifact_loaded = True
-            if loaded_vulns:
+            attempt_finding_count = len(loaded_vulns)
+            if attempt_finding_count:
                 collected_pr_vulns.extend(loaded_vulns)
+                if self.debug:
+                    self.console.print(
+                        f"  PR pass {attempt_num}/{pr_review_attempts}: "
+                        f"{attempt_finding_count} finding(s), "
+                        f"cumulative {len(collected_pr_vulns)}",
+                        style="dim",
+                    )
                 if attempt_num < pr_review_attempts and self.debug:
                     self.console.print(
                         "  🔁 Running additional focused PR pass for broader chain coverage",
@@ -1226,12 +1321,22 @@ Only report findings at or above: {severity_threshold}
                 continue
 
             if attempt_num < pr_review_attempts:
-                retry_warning = (
-                    f"PR code review attempt {attempt_num}/{pr_review_attempts} returned no findings; "
-                    "retrying with chain-focused prompt."
-                )
-                warnings.append(retry_warning)
-                self.console.print(f"\n[bold yellow]WARNING:[/bold yellow] {retry_warning}\n")
+                cumulative_findings = len(collected_pr_vulns)
+                if cumulative_findings > 0:
+                    if self.debug:
+                        self.console.print(
+                            f"  PR pass {attempt_num}/{pr_review_attempts}: no new findings; "
+                            f"cumulative remains {cumulative_findings}. "
+                            "Continuing with chain-focused prompt.",
+                            style="dim",
+                        )
+                else:
+                    retry_warning = (
+                        f"PR code review attempt {attempt_num}/{pr_review_attempts} returned no findings "
+                        "yet; retrying with chain-focused prompt."
+                    )
+                    warnings.append(retry_warning)
+                    self.console.print(f"\n[bold yellow]WARNING:[/bold yellow] {retry_warning}\n")
 
         if not artifact_loaded and not collected_pr_vulns:
             warning_msg = (
@@ -1249,7 +1354,28 @@ Only report findings at or above: {severity_threshold}
                 warnings=warnings,
             )
 
+        raw_pr_finding_count = len(collected_pr_vulns)
         pr_vulns = _merge_pr_attempt_findings(collected_pr_vulns)
+        if command_builder_signals and pr_vulns:
+            refined_pr_vulns = await _refine_pr_findings_with_llm(
+                repo=repo,
+                model=self.model,
+                diff_line_anchors=diff_line_anchors,
+                diff_hunk_snippets=diff_hunk_snippets,
+                findings=pr_vulns,
+                severity_threshold=severity_threshold,
+            )
+            if refined_pr_vulns:
+                refined_canonical = _merge_pr_attempt_findings(refined_pr_vulns)
+                if refined_canonical:
+                    if self.debug:
+                        self.console.print(
+                            "  PR exploit-quality refinement pass updated canonical findings: "
+                            f"{len(pr_vulns)} -> {len(refined_canonical)}",
+                            style="dim",
+                        )
+                    pr_vulns = refined_canonical
+        merged_pr_finding_count = len(pr_vulns)
 
         if baseline_vulns and pr_vulns:
             pr_vulns = dedupe_pr_vulns(pr_vulns, baseline_vulns)
@@ -1257,6 +1383,17 @@ Only report findings at or above: {severity_threshold}
                 pr_vulns_path.write_text(json.dumps(pr_vulns, indent=2), encoding="utf-8")
             except OSError as e:
                 warnings.append(f"Unable to persist deduped PR findings to {pr_vulns_path}: {e}")
+
+        final_pr_finding_count = len(pr_vulns)
+        if self.debug:
+            self.console.print(
+                "  PR review attempt summary: "
+                f"{attempts_run}/{pr_review_attempts} attempts, "
+                f"{raw_pr_finding_count} raw finding(s), "
+                f"{merged_pr_finding_count} canonical chain(s), "
+                f"{final_pr_finding_count} final finding(s) after baseline dedupe",
+                style="dim",
+            )
 
         if update_artifacts and isinstance(pr_vulns, list):
             update_result = update_pr_review_artifacts(securevibes_dir, pr_vulns)
@@ -2012,18 +2149,50 @@ def _issues_from_pr_vulns(pr_vulns: list[dict]) -> list[SecurityIssue]:
     return issues
 
 
-def _build_pr_review_retry_suffix(attempt_num: int) -> str:
+def _diff_has_command_builder_signals(diff_context: DiffContext) -> bool:
+    """Return True when changed diff hunks look like command/argv construction code."""
+    signal_snippets = (
+        "ssh",
+        "args.append",
+        "/bin/sh",
+        "sh -c",
+        "bash -lc",
+        "spawn(",
+        "exec(",
+        "subprocess",
+        "command -v",
+    )
+    signal_paths = ("command", "shell", "process", "exec", "ssh", "cli", "util")
+
+    for diff_file in diff_context.files:
+        path = _diff_file_path(diff_file).lower()
+        if path and any(token in path for token in signal_paths):
+            return True
+
+        for hunk in diff_file.hunks:
+            for line in hunk.lines:
+                content = str(line.content or "").lower()
+                if any(token in content for token in signal_snippets):
+                    return True
+
+    return False
+
+
+def _build_pr_review_retry_suffix(attempt_num: int, command_builder_signals: bool = False) -> str:
     """Return extra guidance used when retrying PR review with LLM."""
     focus_block = ""
-    if attempt_num == 2:
-        focus_block = """
+    command_builder_hint = ""
+    if command_builder_signals:
+        command_builder_hint = """
 
-## FOCUS AREA: PATH + FILE EXFILTRATION CHAINS
-Prioritize changed parser/validator logic for URLs/paths/media tokens.
-Look for acceptance of absolute/relative/home/traversal paths that can reach file read/host/upload/render sinks.
-Do not dismiss as "refactor-only" if changed code still enables exfiltration.
+## COMMAND-BUILDER DELTA DETECTED
+Changed hunks appear to build argv/shell commands.
+Before other hypotheses, explicitly verify:
+- untrusted values cannot become dash-prefixed options
+- host/target positional arguments cannot be interpreted as flags
+- missing `--` separators do not permit option injection pivots
 """
-    elif attempt_num == 3:
+    if attempt_num == 2:
         focus_block = """
 
 ## FOCUS AREA: COMMAND/OPTION INJECTION CHAINS
@@ -2033,6 +2202,14 @@ Prioritize command builder and shell composition changes:
 - parser functions feeding command builders must reject dash-prefixed target/host inputs
 - double-quoted interpolation still allows `$()` and backtick command substitution
 Validate both local and remote execution surfaces.
+"""
+    elif attempt_num == 3:
+        focus_block = """
+
+## FOCUS AREA: PATH + FILE EXFILTRATION CHAINS
+Prioritize changed parser/validator logic for URLs/paths/media tokens.
+Look for acceptance of absolute/relative/home/traversal paths that can reach file read/host/upload/render sinks.
+Do not dismiss as "refactor-only" if changed code still enables exfiltration.
 """
     elif attempt_num >= 4:
         focus_block = """
@@ -2063,6 +2240,7 @@ Previous attempt was incomplete or inconclusive. Re-run the review with this str
 6. Do not dismiss findings as "refactor-only" until you verify security semantics of changed helpers.
 7. Avoid repetitive broad Grep. Use targeted reads/greps scoped to specific files or changed top-level paths.
 8. If and only if no issue is provable, output [] after explicitly checking all prioritized changed files.
+{command_builder_hint}
 {focus_block}
 """
 
@@ -2154,6 +2332,93 @@ def _merge_pr_attempt_findings(vulns: list[dict]) -> list[dict]:
         "line",
         "file",
     }
+    exploit_primitive_terms = (
+        "option injection",
+        "argument injection",
+        "argv",
+        "positional arg",
+        "positional argument",
+        "dash-prefixed",
+        "dash prefixed",
+        "missing --",
+        "without --",
+        "proxycommand",
+        "cwe-88",
+    )
+    concrete_payload_terms = (
+        "-o",
+        "--",
+        "payload",
+        "proxycommand=",
+        "attacker@",
+        "example payload",
+        "value starts with -",
+    )
+    speculative_terms = (
+        "if bypass exists",
+        "testing needed",
+        "edge case",
+        "could",
+        "might",
+        "may",
+        "potential",
+        "possible",
+        "hypothetical",
+        "warrant defense-in-depth",
+    )
+    hardening_terms = (
+        "defense-in-depth",
+        "hardening",
+        "could be improved",
+        "security consideration",
+    )
+
+    def _entry_text(entry: dict, *, fields: tuple[str, ...]) -> str:
+        return " ".join(str(entry.get(field, "")) for field in fields).strip().lower()
+
+    def _proof_score(entry: dict) -> int:
+        score = 0
+        evidence_text = _entry_text(entry, fields=("evidence",))
+        scenario_text = _entry_text(entry, fields=("attack_scenario",))
+        core_text = _entry_text(
+            entry, fields=("title", "description", "evidence", "attack_scenario")
+        )
+        cwe_text = str(entry.get("cwe_id", "")).strip().upper()
+
+        if any(term in core_text for term in exploit_primitive_terms):
+            score += 4
+        if "CWE-88" in cwe_text:
+            score += 4
+        if "cwe-78" in cwe_text and any(term in core_text for term in ("argv", "option injection")):
+            score += 2
+        if any(term in scenario_text for term in concrete_payload_terms):
+            score += 3
+        if "1)" in scenario_text and "2)" in scenario_text:
+            score += 1
+        if normalize_repo_path(entry.get("file_path")):
+            score += 1
+        if _coerce_line_number(entry.get("line_number")) > 0:
+            score += 1
+        if ":" in evidence_text and ("->" in evidence_text or "flow" in evidence_text):
+            score += 1
+        if "missing `--`" in core_text or "missing --" in core_text:
+            score += 2
+
+        return score
+
+    def _speculation_penalty(entry: dict) -> int:
+        text = _entry_text(entry, fields=("title", "description", "attack_scenario", "evidence"))
+        penalty = 0
+        for term in speculative_terms:
+            if " " in term:
+                if term in text:
+                    penalty += 1
+                continue
+            if re.search(rf"\b{re.escape(term)}\b", text):
+                penalty += 1
+        if any(term in text for term in hardening_terms):
+            penalty += 1
+        return min(penalty, 6)
 
     def _coerce_line_number(value: object) -> int:
         try:
@@ -2187,9 +2452,11 @@ def _merge_pr_attempt_findings(vulns: list[dict]) -> list[dict]:
         union = len(a | b)
         return overlap / union if union else 0.0
 
-    def _entry_quality(entry: dict) -> tuple[int, int, int, int]:
+    def _entry_quality(entry: dict) -> tuple[int, int, int, int, int, int]:
         severity = severity_rank.get(str(entry.get("severity", "")).strip().lower(), 0)
         finding_type = finding_type_rank.get(str(entry.get("finding_type", "")).strip().lower(), 0)
+        proof_score = _proof_score(entry)
+        speculation_penalty = _speculation_penalty(entry)
         evidence_chars = len(str(entry.get("evidence", ""))) + len(
             str(entry.get("attack_scenario", ""))
         )
@@ -2197,6 +2464,8 @@ def _merge_pr_attempt_findings(vulns: list[dict]) -> list[dict]:
         return (
             severity,
             finding_type,
+            proof_score,
+            -speculation_penalty,
             min(evidence_chars, 4000),
             min(description_chars, 2000),
         )
@@ -2227,12 +2496,19 @@ def _merge_pr_attempt_findings(vulns: list[dict]) -> list[dict]:
             else 0.0
         )
 
-        same_cwe_family = _coarse_cwe_family(candidate.get("cwe_id")) == _coarse_cwe_family(
-            canonical.get("cwe_id")
-        )
+        candidate_cwe_family = _coarse_cwe_family(candidate.get("cwe_id"))
+        canonical_cwe_family = _coarse_cwe_family(canonical.get("cwe_id"))
+        same_cwe_family = candidate_cwe_family == canonical_cwe_family
 
         if candidate_path == canonical_path:
             if line_gap <= 4 and token_similarity >= 0.24:
+                return True
+            if (
+                line_gap <= 4
+                and candidate_cwe_family in {"78", "88"}
+                and canonical_cwe_family in {"78", "88"}
+                and token_similarity >= 0.16
+            ):
                 return True
             if token_similarity >= 0.52:
                 return True
@@ -2267,7 +2543,57 @@ def _merge_pr_attempt_findings(vulns: list[dict]) -> list[dict]:
         if not merged:
             canonical_findings.append(candidate)
 
-    return canonical_findings
+    # Secondary guard: collapse residual near-duplicates and keep the strongest proof-based variant.
+    canonical_findings.sort(key=_entry_quality, reverse=True)
+    final_findings: list[dict] = []
+    for candidate in canonical_findings:
+        candidate_path = normalize_repo_path(candidate.get("file_path"))
+        candidate_line = _coerce_line_number(candidate.get("line_number"))
+        candidate_cwe_family = _coarse_cwe_family(candidate.get("cwe_id"))
+        candidate_tokens = _finding_tokens(candidate)
+        candidate_title = str(candidate.get("title", "")).strip().lower()
+
+        is_duplicate = False
+        for existing in final_findings:
+            existing_path = normalize_repo_path(existing.get("file_path"))
+            if not candidate_path or candidate_path != existing_path:
+                continue
+            existing_line = _coerce_line_number(existing.get("line_number"))
+            line_gap = (
+                abs(candidate_line - existing_line)
+                if candidate_line > 0 and existing_line > 0
+                else 999
+            )
+            if line_gap > 8:
+                continue
+
+            existing_tokens = _finding_tokens(existing)
+            token_similarity = _token_similarity(candidate_tokens, existing_tokens)
+            existing_cwe_family = _coarse_cwe_family(existing.get("cwe_id"))
+            candidate_proof = _proof_score(candidate)
+            existing_proof = _proof_score(existing)
+            if (
+                line_gap <= 4
+                and candidate_cwe_family in {"78", "88"}
+                and existing_cwe_family in {"78", "88"}
+                and abs(candidate_proof - existing_proof) >= 2
+            ):
+                is_duplicate = True
+                break
+            title_similarity = SequenceMatcher(
+                None,
+                candidate_title,
+                str(existing.get("title", "")).strip().lower(),
+            ).ratio()
+            same_cwe_family = candidate_cwe_family and candidate_cwe_family == existing_cwe_family
+            if token_similarity >= 0.34 or title_similarity >= 0.58 or same_cwe_family:
+                is_duplicate = True
+                break
+
+        if not is_duplicate:
+            final_findings.append(candidate)
+
+    return final_findings
 
 
 def dedupe_pr_vulns(pr_vulns: list[dict], known_vulns: list[dict]) -> list[dict]:
