@@ -23,8 +23,13 @@ from securevibes.diff.parser import DiffContext, DiffFile, DiffHunk, DiffLine
 from securevibes.scanner.scanner import (
     Scanner,
     _build_pr_review_retry_suffix,
+    _build_pr_retry_focus_plan,
+    _diff_has_auth_privilege_signals,
+    _diff_has_path_parser_signals,
     _derive_pr_default_grep_scope,
     _build_focused_diff_context,
+    _attempts_show_pr_disagreement,
+    _extract_observed_pr_findings,
     _merge_pr_attempt_findings,
     _summarize_diff_hunk_snippets,
     dedupe_pr_vulns,
@@ -464,6 +469,55 @@ def test_merge_pr_attempt_findings_prefers_concrete_exploit_primitive():
     assert merged[0]["cwe_id"] == "CWE-88"
 
 
+def test_merge_pr_attempt_findings_drops_speculative_noise_when_concrete_exists():
+    """Strongly-proven chain should suppress separate speculative hardening noise entries."""
+    merged = _merge_pr_attempt_findings(
+        [
+            {
+                "title": "Local file exfiltration via media parser path acceptance",
+                "description": (
+                    "Changed parser accepts attacker-controlled local paths that are copied and served "
+                    "without auth checks."
+                ),
+                "attack_scenario": (
+                    "1) Attacker sends media token with /etc/passwd path. "
+                    "2) Parser accepts local path and flow reaches save/host route. "
+                    "3) Unauthenticated media endpoint serves copied file."
+                ),
+                "evidence": (
+                    "flow: src/media/parse.ts:29 -> src/media/store.ts:91 -> "
+                    "src/media/server.ts:28"
+                ),
+                "severity": "high",
+                "finding_type": "known_vuln",
+                "file_path": "src/media/parse.ts",
+                "line_number": 29,
+                "cwe_id": "CWE-22",
+            },
+            {
+                "title": "Exported parser could increase future attack surface",
+                "description": (
+                    "Potential hardening note: parser export might be misused in the future and could "
+                    "benefit from defense-in-depth checks."
+                ),
+                "attack_scenario": (
+                    "1) Future code might call parser differently. "
+                    "2) Possible edge case could appear."
+                ),
+                "evidence": "src/media/parse.ts:1",
+                "severity": "medium",
+                "finding_type": "threat_enabler",
+                "file_path": "src/media/parse.ts",
+                "line_number": 1,
+                "cwe_id": "CWE-693",
+            },
+        ]
+    )
+
+    assert len(merged) == 1
+    assert "exfiltration" in merged[0]["title"].lower()
+
+
 def test_filter_baseline_vulns_excludes_pr_derived_with_threat_prefix():
     """A THREAT-001 entry with finding_type='known_vuln' is PR-derived, not baseline."""
     known_vulns = [
@@ -534,6 +588,108 @@ def test_pr_review_retry_suffix_adds_command_builder_hint():
     suffix = _build_pr_review_retry_suffix(2, command_builder_signals=True)
     assert "COMMAND-BUILDER DELTA DETECTED" in suffix
     assert "missing `--` separators" in suffix
+
+
+def test_pr_review_retry_focus_plan_prioritizes_detected_signals():
+    """Retry focus should prioritize active diff signals before default ordering."""
+    retry_plan = _build_pr_retry_focus_plan(
+        4,
+        command_builder_signals=False,
+        path_parser_signals=True,
+        auth_privilege_signals=True,
+    )
+
+    assert retry_plan == ["path_exfiltration", "auth_privileged", "command_option"]
+
+
+def test_pr_review_retry_suffix_respects_explicit_focus_area():
+    """Adaptive retry scheduling should be able to set explicit focus area text."""
+    suffix = _build_pr_review_retry_suffix(2, focus_area="auth_privileged")
+    assert "FOCUS AREA: AUTH + PRIVILEGED OPERATION CHAINING" in suffix
+
+
+def test_diff_signal_detectors_identify_path_and_auth_deltas():
+    """Path and auth/privilege signal helpers should detect high-risk changed hunks."""
+    context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/media/parse.ts",
+                new_path="src/media/parse.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=20,
+                        old_count=1,
+                        new_start=20,
+                        new_count=1,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="const normalized = path.resolve(inputPath)",
+                                old_line_num=None,
+                                new_line_num=20,
+                            )
+                        ],
+                    )
+                ],
+            ),
+            DiffFile(
+                old_path="src/gateway/server-methods/config.ts",
+                new_path="src/gateway/server-methods/config.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=75,
+                        old_count=1,
+                        new_start=75,
+                        new_count=1,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="socket.methods['config.apply'] = applyConfig",
+                                old_line_num=None,
+                                new_line_num=75,
+                            )
+                        ],
+                    )
+                ],
+            ),
+        ],
+        added_lines=2,
+        removed_lines=0,
+        changed_files=["src/media/parse.ts", "src/gateway/server-methods/config.ts"],
+    )
+
+    assert _diff_has_path_parser_signals(context)
+    assert _diff_has_auth_privilege_signals(context)
+
+
+def test_attempt_disagreement_detector_flags_sparse_attempt_success():
+    """Mixed zero/non-zero attempt outputs should trigger verifier-mode disagreement."""
+    assert _attempts_show_pr_disagreement([0, 2, 0, 1])
+    assert not _attempts_show_pr_disagreement([2, 2, 2])
+
+
+def test_extract_observed_pr_findings_reads_hook_observer_payload():
+    """Hook observer payload should be converted into list[dict] findings."""
+    observed = _extract_observed_pr_findings(
+        {
+            "max_items": 2,
+            "max_content": json.dumps(
+                [
+                    {"title": "A", "file_path": "a.ts", "line_number": 1},
+                    {"title": "B", "file_path": "b.ts", "line_number": 2},
+                ]
+            ),
+        }
+    )
+
+    assert len(observed) == 2
+    assert observed[0]["title"] == "A"
 
 
 def test_filter_baseline_vulns_normalizes_finding_type():
@@ -895,6 +1051,8 @@ async def test_pr_review_retries_when_first_attempt_returns_empty(tmp_path: Path
         mock_instance.query = AsyncMock()
 
         async def query_side_effect(_prompt: str):
+            if "## HYPOTHESES TO VALIDATE" not in _prompt:
+                return
             attempt_counter["count"] += 1
             if attempt_counter["count"] == 1:
                 (securevibes_dir / "PR_VULNERABILITIES.json").write_text("[]", encoding="utf-8")
@@ -970,6 +1128,8 @@ async def test_pr_review_empty_follow_up_attempt_is_logged_without_warning(
         mock_instance.query = AsyncMock()
 
         async def query_side_effect(_prompt: str):
+            if "## HYPOTHESES TO VALIDATE" not in _prompt:
+                return
             attempt_counter["count"] += 1
             if attempt_counter["count"] == 1:
                 (securevibes_dir / "PR_VULNERABILITIES.json").write_text(
@@ -1015,7 +1175,8 @@ async def test_pr_review_empty_follow_up_attempt_is_logged_without_warning(
     assert result.issues
     assert attempt_counter["count"] == config.get_pr_review_attempts()
     assert not any("returned no findings yet" in warning for warning in result.warnings)
-    assert "no new findings; cumulative remains 1" in console_text
+    assert "no new findings" in console_text
+    assert "cumulative remains 1" in console_text
     assert "PR review attempt summary:" in console_text
 
 

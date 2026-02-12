@@ -952,6 +952,40 @@ class TestPRJsonValidationHook:
         assert "updatedInput" not in result
 
     @pytest.mark.asyncio
+    async def test_pr_write_observer_tracks_largest_nonempty_payload(self, console):
+        """Observer should record max payload even if a later write overwrites with empty array."""
+        import json
+
+        observer: dict[str, object] = {}
+        hook = create_json_validation_hook(console, debug=False, write_observer=observer)
+
+        vuln = self._make_valid_pr_vuln()
+        first_input = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/PR_VULNERABILITIES.json",
+                "content": json.dumps([vuln]),
+            },
+        }
+        second_input = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/PR_VULNERABILITIES.json",
+                "content": "[]",
+            },
+        }
+
+        await hook(first_input, "tool-123", {})
+        await hook(second_input, "tool-124", {})
+
+        assert observer["total_writes"] == 2
+        assert observer["item_counts"] == [1, 0]
+        assert observer["max_items"] == 1
+        max_payload = json.loads(str(observer["max_content"]))
+        assert isinstance(max_payload, list)
+        assert len(max_payload) == 1
+
+    @pytest.mark.asyncio
     async def test_pr_wrapped_findings_gets_fixed(self, console):
         """{'findings': [...]} wrapper gets unwrapped."""
         import json

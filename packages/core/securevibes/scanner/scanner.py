@@ -337,13 +337,32 @@ async def _refine_pr_findings_with_llm(
     diff_hunk_snippets: str,
     findings: list[dict],
     severity_threshold: str,
+    focus_areas: Optional[list[str]] = None,
+    mode: str = "quality",
+    attempt_observability: str = "",
 ) -> Optional[list[dict]]:
     """Use an LLM-only quality pass to keep concrete exploit-primitive findings."""
     if not findings:
         return None
 
+    focus_area_lines = (
+        "\n".join(
+            f"- {_focus_area_label(focus_area)}" for focus_area in (focus_areas or [])
+        ).strip()
+        or "- General exploit-chain verification"
+    )
+    verification_mode = "verifier" if mode == "verifier" else "quality"
+    mode_goal = (
+        "Attempt outputs disagreed; adjudicate contradictions and keep only findings proven by concrete source->sink evidence."
+        if verification_mode == "verifier"
+        else "Consolidate candidates into concrete canonical exploit chains and remove speculative/hardening-only noise."
+    )
+
     finding_json = json.dumps(findings, indent=2, ensure_ascii=False)
-    refinement_prompt = f"""You are an exploit-chain quality auditor for PR security findings.
+    refinement_prompt = f"""You are an exploit-chain {verification_mode} auditor for PR security findings.
+
+Primary goal:
+{mode_goal}
 
 Rewrite the candidate findings into a final canonical set using these rules:
 - Keep one canonical finding per exploit chain.
@@ -351,14 +370,23 @@ Rewrite the candidate findings into a final canonical set using these rules:
 - Drop speculative findings ("might", "if bypass exists", "testing needed") unless concrete code proof exists.
 - Preserve only findings at or above severity threshold: {severity_threshold}.
 - Never invent vulnerabilities not supported by diff context.
+- Use threat-delta reasoning: validate attacker entrypoint -> trust boundary -> privileged sink impact.
+- Treat baseline overlap/hardening observations as secondary unless they form a concrete exploit chain.
 
-Special command-builder review requirements:
+Cross-domain exploit checks:
 - For command/CLI helper diffs, verify whether attacker-controlled host/target values can become CLI options.
 - If positional host/target arguments are appended without robust dash-prefixed rejection or `--` separation, treat as option injection chain (CWE-88) when supported by the diff.
 - Do not classify explicit option-value pairs (such as `-i <value>`) as option injection unless the value is proven to be reinterpreted as a flag.
-- If command injection is claimed, ensure scenario includes concrete payload and sink reachability.
+- For path/parser diffs, verify concrete path/source -> file read/host/send/upload sink reachability before reporting.
+- For auth/privilege diffs, verify concrete caller reachability and missing enforcement before reporting.
 
 Return ONLY a JSON array of findings using the existing schema fields.
+
+Prioritized focus areas:
+{focus_area_lines}
+
+Attempt observability notes:
+{attempt_observability or "- None"}
 
 CHANGED LINE ANCHORS:
 {diff_line_anchors}
@@ -1126,7 +1154,16 @@ class Scanner:
         diff_line_anchors = _summarize_diff_line_anchors(focused_diff_context)
         diff_hunk_snippets = _summarize_diff_hunk_snippets(focused_diff_context)
         command_builder_signals = _diff_has_command_builder_signals(focused_diff_context)
+        path_parser_signals = _diff_has_path_parser_signals(focused_diff_context)
+        auth_privilege_signals = _diff_has_auth_privilege_signals(focused_diff_context)
         pr_grep_default_scope = _derive_pr_default_grep_scope(focused_diff_context)
+        pr_review_attempts = config.get_pr_review_attempts()
+        retry_focus_plan = _build_pr_retry_focus_plan(
+            pr_review_attempts,
+            command_builder_signals=command_builder_signals,
+            path_parser_signals=path_parser_signals,
+            auth_privilege_signals=auth_privilege_signals,
+        )
         pr_hypotheses = "- None generated."
         if focused_diff_context.files:
             pr_hypotheses = await _generate_pr_hypotheses(
@@ -1141,6 +1178,18 @@ class Scanner:
             )
         if self.debug:
             self.console.print("  🧠 PR exploit hypotheses prepared", style="dim")
+            self.console.print(
+                "  🔎 PR diff risk signals: "
+                f"command_builder={command_builder_signals}, "
+                f"path_parser={path_parser_signals}, "
+                f"auth_privilege={auth_privilege_signals}",
+                style="dim",
+            )
+            if retry_focus_plan:
+                focus_preview = " -> ".join(
+                    _focus_area_label(focus_area) for focus_area in retry_focus_plan
+                )
+                self.console.print(f"  🎯 PR retry focus plan: {focus_preview}", style="dim")
 
         base_agents = create_agent_definitions(cli_model=self.model)
         base_pr_prompt = base_agents["pr-code-review"].prompt
@@ -1184,24 +1233,43 @@ Only report findings at or above: {severity_threshold}
 
         warnings: list[str] = []
         pr_timeout_seconds = config.get_pr_review_timeout_seconds()
-        pr_review_attempts = config.get_pr_review_attempts()
         pr_vulns_path = securevibes_dir / PR_VULNERABILITIES_FILE
         detected_languages = LanguageConfig.detect_languages(repo) if repo else set()
 
         pr_vulns: list[dict] = []
         collected_pr_vulns: list[dict] = []
+        ephemeral_pr_vulns: list[dict] = []
         artifact_loaded = False
         attempts_run = 0
+        attempts_with_overwritten_artifact = 0
+        attempt_finding_counts: list[int] = []
+        attempt_observed_counts: list[int] = []
+        attempt_focus_areas: list[str] = []
 
         for attempt_idx in range(pr_review_attempts):
             attempt_num = attempt_idx + 1
             attempts_run = attempt_num
             retry_suffix = ""
+            retry_focus_area = ""
+            attempt_write_observer: Dict[str, Any] = {}
             if attempt_num > 1:
+                plan_index = attempt_num - 2
+                if plan_index < len(retry_focus_plan):
+                    retry_focus_area = retry_focus_plan[plan_index]
+                    attempt_focus_areas.append(retry_focus_area)
                 retry_suffix = _build_pr_review_retry_suffix(
                     attempt_num,
                     command_builder_signals=command_builder_signals,
+                    focus_area=retry_focus_area,
+                    path_parser_signals=path_parser_signals,
+                    auth_privilege_signals=auth_privilege_signals,
                 )
+                if self.debug and retry_focus_area:
+                    self.console.print(
+                        f"  🎯 PR pass {attempt_num}/{pr_review_attempts} focus: "
+                        f"{_focus_area_label(retry_focus_area)}",
+                        style="dim",
+                    )
                 try:
                     pr_vulns_path.unlink()
                 except OSError:
@@ -1224,7 +1292,9 @@ Only report findings at or above: {severity_threshold}
             )
             post_tool_hook = create_post_tool_hook(tracker, self.console, self.debug)
             subagent_hook = create_subagent_hook(tracker)
-            json_validation_hook = create_json_validation_hook(self.console, self.debug)
+            json_validation_hook = create_json_validation_hook(
+                self.console, self.debug, write_observer=attempt_write_observer
+            )
 
             options = ClaudeAgentOptions(
                 agents=agents,
@@ -1271,10 +1341,25 @@ Only report findings at or above: {severity_threshold}
                     pr_vulns_path=pr_vulns_path,
                     console=self.console,
                 )
+                observed_vulns = _extract_observed_pr_findings(attempt_write_observer)
+                attempt_finding_count = len(loaded_vulns) if not load_warning else 0
+                observed_count = max(attempt_finding_count, len(observed_vulns))
+                attempt_finding_counts.append(attempt_finding_count)
+                attempt_observed_counts.append(observed_count)
                 if not load_warning:
                     artifact_loaded = True
                     if loaded_vulns:
                         collected_pr_vulns.extend(loaded_vulns)
+                if observed_vulns and len(observed_vulns) > attempt_finding_count:
+                    attempts_with_overwritten_artifact += 1
+                    ephemeral_pr_vulns.extend(observed_vulns)
+                    if self.debug:
+                        self.console.print(
+                            f"  🔎 PR pass {attempt_num}/{pr_review_attempts}: "
+                            f"captured {len(observed_vulns)} intermediate finding(s) from write logs "
+                            f"while final artifact had {attempt_finding_count}.",
+                            style="dim",
+                        )
                 continue
             except Exception as e:
                 attempt_warning = (
@@ -1286,24 +1371,65 @@ Only report findings at or above: {severity_threshold}
                     pr_vulns_path=pr_vulns_path,
                     console=self.console,
                 )
+                observed_vulns = _extract_observed_pr_findings(attempt_write_observer)
+                attempt_finding_count = len(loaded_vulns) if not load_warning else 0
+                observed_count = max(attempt_finding_count, len(observed_vulns))
+                attempt_finding_counts.append(attempt_finding_count)
+                attempt_observed_counts.append(observed_count)
                 if not load_warning:
                     artifact_loaded = True
                     if loaded_vulns:
                         collected_pr_vulns.extend(loaded_vulns)
+                if observed_vulns and len(observed_vulns) > attempt_finding_count:
+                    attempts_with_overwritten_artifact += 1
+                    ephemeral_pr_vulns.extend(observed_vulns)
+                    if self.debug:
+                        self.console.print(
+                            f"  🔎 PR pass {attempt_num}/{pr_review_attempts}: "
+                            f"captured {len(observed_vulns)} intermediate finding(s) from write logs "
+                            f"while final artifact had {attempt_finding_count}.",
+                            style="dim",
+                        )
                 continue
 
             loaded_vulns, load_warning = _load_pr_vulnerabilities_artifact(
                 pr_vulns_path=pr_vulns_path,
                 console=self.console,
             )
+            observed_vulns = _extract_observed_pr_findings(attempt_write_observer)
             if load_warning:
                 warnings.append(
                     f"PR code review attempt {attempt_num}/{pr_review_attempts}: {load_warning}"
                 )
+                attempt_finding_counts.append(0)
+                attempt_observed_counts.append(len(observed_vulns))
+                if observed_vulns:
+                    attempts_with_overwritten_artifact += 1
+                    ephemeral_pr_vulns.extend(observed_vulns)
+                    if self.debug:
+                        self.console.print(
+                            f"  🔎 PR pass {attempt_num}/{pr_review_attempts}: "
+                            f"artifact read failed, but write logs captured "
+                            f"{len(observed_vulns)} finding(s).",
+                            style="dim",
+                        )
                 continue
 
             artifact_loaded = True
             attempt_finding_count = len(loaded_vulns)
+            observed_count = max(attempt_finding_count, len(observed_vulns))
+            attempt_finding_counts.append(attempt_finding_count)
+            attempt_observed_counts.append(observed_count)
+            if observed_vulns and len(observed_vulns) > attempt_finding_count:
+                attempts_with_overwritten_artifact += 1
+                ephemeral_pr_vulns.extend(observed_vulns)
+                if self.debug:
+                    self.console.print(
+                        f"  🔎 PR pass {attempt_num}/{pr_review_attempts}: "
+                        f"captured {len(observed_vulns)} intermediate finding(s) from write logs "
+                        f"while final artifact had {attempt_finding_count}.",
+                        style="dim",
+                    )
             if attempt_finding_count:
                 collected_pr_vulns.extend(loaded_vulns)
                 if self.debug:
@@ -1321,11 +1447,17 @@ Only report findings at or above: {severity_threshold}
                 continue
 
             if attempt_num < pr_review_attempts:
-                cumulative_findings = len(collected_pr_vulns)
+                cumulative_findings = len(collected_pr_vulns) + len(ephemeral_pr_vulns)
                 if cumulative_findings > 0:
                     if self.debug:
+                        no_new_note = (
+                            "no new findings in final artifact; "
+                            "intermediate write findings are being preserved for verification."
+                            if observed_count > attempt_finding_count
+                            else "no new findings."
+                        )
                         self.console.print(
-                            f"  PR pass {attempt_num}/{pr_review_attempts}: no new findings; "
+                            f"  PR pass {attempt_num}/{pr_review_attempts}: {no_new_note} "
                             f"cumulative remains {cumulative_findings}. "
                             "Continuing with chain-focused prompt.",
                             style="dim",
@@ -1338,7 +1470,7 @@ Only report findings at or above: {severity_threshold}
                     warnings.append(retry_warning)
                     self.console.print(f"\n[bold yellow]WARNING:[/bold yellow] {retry_warning}\n")
 
-        if not artifact_loaded and not collected_pr_vulns:
+        if not artifact_loaded and not collected_pr_vulns and not ephemeral_pr_vulns:
             warning_msg = (
                 "PR code review agent did not produce a readable PR_VULNERABILITIES.json after "
                 f"{pr_review_attempts} attempt(s). Results may be incomplete."
@@ -1354,9 +1486,33 @@ Only report findings at or above: {severity_threshold}
                 warnings=warnings,
             )
 
-        raw_pr_finding_count = len(collected_pr_vulns)
-        pr_vulns = _merge_pr_attempt_findings(collected_pr_vulns)
-        if command_builder_signals and pr_vulns:
+        raw_candidates = [*collected_pr_vulns, *ephemeral_pr_vulns]
+        raw_pr_finding_count = len(raw_candidates)
+        merge_stats: Dict[str, int] = {}
+        pr_vulns = _merge_pr_attempt_findings(raw_candidates, merge_stats=merge_stats)
+
+        attempt_outcome_counts = attempt_observed_counts or attempt_finding_counts
+        attempt_disagreement = _attempts_show_pr_disagreement(attempt_outcome_counts)
+        high_risk_signal_count = sum(
+            [command_builder_signals, path_parser_signals, auth_privilege_signals]
+        )
+        attempt_observability_notes = (
+            f"- Attempt final artifact finding counts: {attempt_finding_counts}\n"
+            f"- Attempt observed finding counts (including overwritten writes): {attempt_outcome_counts}\n"
+            f"- Attempts with overwritten/non-final findings: {attempts_with_overwritten_artifact}\n"
+            f"- Ephemeral candidate findings captured from write logs: {len(ephemeral_pr_vulns)}"
+        )
+        refinement_focus_areas = attempt_focus_areas or retry_focus_plan
+
+        should_refine = bool(pr_vulns) and (
+            high_risk_signal_count > 0 or attempt_disagreement or len(pr_vulns) > 1
+        )
+        if should_refine:
+            if self.debug:
+                self.console.print(
+                    "  🔬 Running PR quality refinement pass for concrete chain verification",
+                    style="dim",
+                )
             refined_pr_vulns = await _refine_pr_findings_with_llm(
                 repo=repo,
                 model=self.model,
@@ -1364,9 +1520,15 @@ Only report findings at or above: {severity_threshold}
                 diff_hunk_snippets=diff_hunk_snippets,
                 findings=pr_vulns,
                 severity_threshold=severity_threshold,
+                focus_areas=refinement_focus_areas,
+                mode="quality",
+                attempt_observability=attempt_observability_notes,
             )
-            if refined_pr_vulns:
-                refined_canonical = _merge_pr_attempt_findings(refined_pr_vulns)
+            if refined_pr_vulns is not None:
+                refined_merge_stats: Dict[str, int] = {}
+                refined_canonical = _merge_pr_attempt_findings(
+                    refined_pr_vulns, merge_stats=refined_merge_stats
+                )
                 if refined_canonical:
                     if self.debug:
                         self.console.print(
@@ -1375,6 +1537,51 @@ Only report findings at or above: {severity_threshold}
                             style="dim",
                         )
                     pr_vulns = refined_canonical
+                    merge_stats = refined_merge_stats
+                elif self.debug:
+                    self.console.print(
+                        "  PR exploit-quality refinement returned no canonical findings; "
+                        "retaining pre-refinement canonical set.",
+                        style="dim",
+                    )
+
+        if attempt_disagreement and pr_vulns:
+            if self.debug:
+                self.console.print(
+                    "  🧪 Attempt disagreement detected; running verifier pass to adjudicate chain evidence",
+                    style="dim",
+                )
+            verified_pr_vulns = await _refine_pr_findings_with_llm(
+                repo=repo,
+                model=self.model,
+                diff_line_anchors=diff_line_anchors,
+                diff_hunk_snippets=diff_hunk_snippets,
+                findings=pr_vulns,
+                severity_threshold=severity_threshold,
+                focus_areas=refinement_focus_areas,
+                mode="verifier",
+                attempt_observability=attempt_observability_notes,
+            )
+            if verified_pr_vulns is not None:
+                verified_merge_stats: Dict[str, int] = {}
+                verified_canonical = _merge_pr_attempt_findings(
+                    verified_pr_vulns, merge_stats=verified_merge_stats
+                )
+                if verified_canonical:
+                    if self.debug:
+                        self.console.print(
+                            "  PR verifier pass updated canonical findings: "
+                            f"{len(pr_vulns)} -> {len(verified_canonical)}",
+                            style="dim",
+                        )
+                    pr_vulns = verified_canonical
+                    merge_stats = verified_merge_stats
+                elif self.debug:
+                    self.console.print(
+                        "  PR verifier pass returned no canonical findings; "
+                        "retaining previous canonical set.",
+                        style="dim",
+                    )
         merged_pr_finding_count = len(pr_vulns)
 
         if baseline_vulns and pr_vulns:
@@ -1386,12 +1593,16 @@ Only report findings at or above: {severity_threshold}
 
         final_pr_finding_count = len(pr_vulns)
         if self.debug:
+            speculative_dropped = merge_stats.get("speculative_dropped", 0)
             self.console.print(
                 "  PR review attempt summary: "
                 f"{attempts_run}/{pr_review_attempts} attempts, "
                 f"{raw_pr_finding_count} raw finding(s), "
                 f"{merged_pr_finding_count} canonical chain(s), "
-                f"{final_pr_finding_count} final finding(s) after baseline dedupe",
+                f"{final_pr_finding_count} final finding(s) after baseline dedupe, "
+                f"attempt_counts={attempt_outcome_counts}, "
+                f"overwritten_attempts={attempts_with_overwritten_artifact}, "
+                f"speculative_dropped={speculative_dropped}",
                 style="dim",
             )
 
@@ -2178,10 +2389,201 @@ def _diff_has_command_builder_signals(diff_context: DiffContext) -> bool:
     return False
 
 
-def _build_pr_review_retry_suffix(attempt_num: int, command_builder_signals: bool = False) -> str:
+def _diff_has_path_parser_signals(diff_context: DiffContext) -> bool:
+    """Return True when changed hunks look like parser/path/file handling logic."""
+    signal_snippets = (
+        "normalize",
+        "resolve(",
+        "realpath",
+        "sendfile",
+        "readfile",
+        "copyfile",
+        "filepath",
+        "path.",
+        "file://",
+        "../",
+        "~/",
+        "media",
+        "upload",
+        "download",
+    )
+    signal_paths = ("path", "file", "media", "upload", "download", "parse", "store", "server")
+
+    for diff_file in diff_context.files:
+        path = _diff_file_path(diff_file).lower()
+        if path and any(token in path for token in signal_paths):
+            return True
+
+        for hunk in diff_file.hunks:
+            for line in hunk.lines:
+                content = str(line.content or "").lower()
+                if any(token in content for token in signal_snippets):
+                    return True
+
+    return False
+
+
+def _diff_has_auth_privilege_signals(diff_context: DiffContext) -> bool:
+    """Return True when diff hints at trust-boundary or privileged operation changes."""
+    signal_snippets = (
+        "auth",
+        "authorize",
+        "permission",
+        "session",
+        "token",
+        "localhost",
+        "origin",
+        "config.apply",
+        "apply(",
+        "privilege",
+        "admin",
+        "role",
+        "policy",
+        "websocket",
+    )
+    signal_paths = ("auth", "gateway", "server", "config", "policy", "permission", "session")
+
+    for diff_file in diff_context.files:
+        path = _diff_file_path(diff_file).lower()
+        if path and any(token in path for token in signal_paths):
+            return True
+
+        for hunk in diff_file.hunks:
+            for line in hunk.lines:
+                content = str(line.content or "").lower()
+                if any(token in content for token in signal_snippets):
+                    return True
+
+    return False
+
+
+_PR_RETRY_FOCUS_LABELS = {
+    "command_option": "COMMAND/OPTION INJECTION CHAINS",
+    "path_exfiltration": "PATH + FILE EXFILTRATION CHAINS",
+    "auth_privileged": "AUTH + PRIVILEGED OPERATION CHAINING",
+}
+
+_PR_RETRY_FOCUS_BLOCKS = {
+    "command_option": """
+
+## FOCUS AREA: COMMAND/OPTION INJECTION CHAINS
+Prioritize command builder and shell composition changes:
+- untrusted env/config/input interpolated into shell fragments (`sh -c`, `bash -lc`)
+- CLI option injection via untrusted args that can start with '-' (host/target/remote values)
+- parser functions feeding command builders must reject dash-prefixed target/host inputs
+- double-quoted interpolation still allows `$()` and backtick command substitution
+Validate both local and remote execution surfaces.
+""",
+    "path_exfiltration": """
+
+## FOCUS AREA: PATH + FILE EXFILTRATION CHAINS
+Prioritize changed parser/validator logic for URLs/paths/media tokens.
+Look for acceptance of absolute/relative/home/traversal paths that can reach file read/host/upload/render sinks.
+Do not dismiss as "refactor-only" if changed code still enables exfiltration.
+""",
+    "auth_privileged": """
+
+## FOCUS AREA: AUTH + PRIVILEGED OPERATION CHAINING
+Prioritize trust-boundary changes that expose privileged operations (config/apply/update/exec/policy changes).
+Prove end-to-end chain from attacker-controlled entrypoint to privileged sink, including missing controls.
+Do not reject a chain only because direct callers are absent in this snapshot when the diff adds exported/shared command helpers.
+""",
+}
+
+_DEFAULT_PR_RETRY_FOCUS_ORDER = (
+    "command_option",
+    "path_exfiltration",
+    "auth_privileged",
+)
+
+
+def _focus_area_label(focus_area: str) -> str:
+    """Return human-readable label for retry focus area."""
+    return _PR_RETRY_FOCUS_LABELS.get(focus_area, focus_area)
+
+
+def _build_pr_retry_focus_plan(
+    attempt_count: int,
+    *,
+    command_builder_signals: bool,
+    path_parser_signals: bool,
+    auth_privilege_signals: bool,
+) -> list[str]:
+    """Build adaptive focus areas for retry attempts based on diff signals."""
+    if attempt_count <= 1:
+        return []
+
+    prioritized: list[str] = []
+    if command_builder_signals:
+        prioritized.append("command_option")
+    if path_parser_signals:
+        prioritized.append("path_exfiltration")
+    if auth_privilege_signals:
+        prioritized.append("auth_privileged")
+
+    for focus_area in _DEFAULT_PR_RETRY_FOCUS_ORDER:
+        if focus_area not in prioritized:
+            prioritized.append(focus_area)
+
+    retry_plan: list[str] = []
+    total_retries = attempt_count - 1
+    for idx in range(total_retries):
+        retry_plan.append(prioritized[idx % len(prioritized)])
+    return retry_plan
+
+
+def _attempts_show_pr_disagreement(attempt_counts: list[int]) -> bool:
+    """Return True when attempt outcomes are inconsistent enough to require verification."""
+    if len(attempt_counts) < 2:
+        return False
+    if not any(count > 0 for count in attempt_counts):
+        return False
+    if any(count == 0 for count in attempt_counts):
+        return True
+    return len(set(attempt_counts)) > 1
+
+
+def _extract_observed_pr_findings(write_observer: Optional[Dict[str, Any]]) -> list[dict]:
+    """Extract highest-volume observed PR findings captured by write-observer hook state."""
+    if not write_observer:
+        return []
+
+    raw_content = write_observer.get("max_content")
+    if not isinstance(raw_content, str) or not raw_content.strip():
+        return []
+
+    try:
+        parsed = json.loads(raw_content)
+    except json.JSONDecodeError:
+        return []
+
+    if not isinstance(parsed, list):
+        return []
+    return [entry for entry in parsed if isinstance(entry, dict)]
+
+
+def _build_pr_review_retry_suffix(
+    attempt_num: int,
+    command_builder_signals: bool = False,
+    *,
+    focus_area: Optional[str] = None,
+    path_parser_signals: bool = False,
+    auth_privilege_signals: bool = False,
+) -> str:
     """Return extra guidance used when retrying PR review with LLM."""
-    focus_block = ""
+    selected_focus = focus_area
+    if not selected_focus:
+        if attempt_num == 2:
+            selected_focus = "command_option"
+        elif attempt_num == 3:
+            selected_focus = "path_exfiltration"
+        else:
+            selected_focus = "auth_privileged"
+
+    focus_block = _PR_RETRY_FOCUS_BLOCKS.get(selected_focus, "")
     command_builder_hint = ""
+    path_parser_hint = ""
+    auth_privileged_hint = ""
     if command_builder_signals:
         command_builder_hint = """
 
@@ -2192,32 +2594,19 @@ Before other hypotheses, explicitly verify:
 - host/target positional arguments cannot be interpreted as flags
 - missing `--` separators do not permit option injection pivots
 """
-    if attempt_num == 2:
-        focus_block = """
+    if path_parser_signals:
+        path_parser_hint = """
 
-## FOCUS AREA: COMMAND/OPTION INJECTION CHAINS
-Prioritize command builder and shell composition changes:
-- untrusted env/config/input interpolated into shell fragments (`sh -c`, `bash -lc`)
-- CLI option injection via untrusted args that can start with '-' (host/target/remote values)
-- parser functions feeding command builders must reject dash-prefixed target/host inputs
-- double-quoted interpolation still allows `$()` and backtick command substitution
-Validate both local and remote execution surfaces.
+## PATH-PARSER DELTA DETECTED
+Changed hunks touch path or parser logic.
+Explicitly validate source->path parser->file read/host/upload->response/exfil chains.
 """
-    elif attempt_num == 3:
-        focus_block = """
+    if auth_privilege_signals:
+        auth_privileged_hint = """
 
-## FOCUS AREA: PATH + FILE EXFILTRATION CHAINS
-Prioritize changed parser/validator logic for URLs/paths/media tokens.
-Look for acceptance of absolute/relative/home/traversal paths that can reach file read/host/upload/render sinks.
-Do not dismiss as "refactor-only" if changed code still enables exfiltration.
-"""
-    elif attempt_num >= 4:
-        focus_block = """
-
-## FOCUS AREA: AUTH + PRIVILEGED OPERATION CHAINING
-Prioritize trust-boundary changes that expose privileged operations (config/apply/update/exec/policy changes).
-Prove end-to-end chain from attacker-controlled entrypoint to privileged sink, including missing controls.
-Do not reject a chain only because direct callers are absent in this snapshot when the diff adds exported/shared command helpers.
+## AUTH/PRIVILEGE DELTA DETECTED
+Changed hunks touch trust boundaries or privileged operations.
+Explicitly validate who can reach privileged sinks and whether auth/origin/role checks actually enforce policy.
 """
 
     return f"""
@@ -2241,6 +2630,8 @@ Previous attempt was incomplete or inconclusive. Re-run the review with this str
 7. Avoid repetitive broad Grep. Use targeted reads/greps scoped to specific files or changed top-level paths.
 8. If and only if no issue is provable, output [] after explicitly checking all prioritized changed files.
 {command_builder_hint}
+{path_parser_hint}
+{auth_privileged_hint}
 {focus_block}
 """
 
@@ -2279,9 +2670,16 @@ def _load_pr_vulnerabilities_artifact(
     return normalized, None
 
 
-def _merge_pr_attempt_findings(vulns: list[dict]) -> list[dict]:
+def _merge_pr_attempt_findings(
+    vulns: list[dict], merge_stats: Optional[Dict[str, int]] = None
+) -> list[dict]:
     """Merge findings across attempts and keep one canonical finding per chain."""
     if not vulns:
+        if merge_stats is not None:
+            merge_stats["input_count"] = 0
+            merge_stats["canonical_count"] = 0
+            merge_stats["final_count"] = 0
+            merge_stats["speculative_dropped"] = 0
         return []
 
     severity_rank = {
@@ -2470,6 +2868,20 @@ def _merge_pr_attempt_findings(vulns: list[dict]) -> list[dict]:
             min(description_chars, 2000),
         )
 
+    def _has_concrete_chain_structure(entry: dict) -> bool:
+        normalized_path = normalize_repo_path(entry.get("file_path"))
+        line_number = _coerce_line_number(entry.get("line_number"))
+        evidence_text = _entry_text(entry, fields=("evidence",))
+        scenario_text = _entry_text(entry, fields=("attack_scenario",))
+        if not normalized_path or line_number <= 0:
+            return False
+        if not evidence_text or not scenario_text:
+            return False
+
+        has_flow_anchor = "->" in evidence_text or "flow" in evidence_text
+        has_step_markers = len(re.findall(r"\b[1-4][\)\.\:]", scenario_text)) >= 2
+        return has_flow_anchor or has_step_markers
+
     def _same_chain(candidate: dict, canonical: dict) -> bool:
         candidate_path = normalize_repo_path(candidate.get("file_path"))
         canonical_path = normalize_repo_path(canonical.get("file_path"))
@@ -2556,44 +2968,79 @@ def _merge_pr_attempt_findings(vulns: list[dict]) -> list[dict]:
         is_duplicate = False
         for existing in final_findings:
             existing_path = normalize_repo_path(existing.get("file_path"))
-            if not candidate_path or candidate_path != existing_path:
-                continue
-            existing_line = _coerce_line_number(existing.get("line_number"))
-            line_gap = (
-                abs(candidate_line - existing_line)
-                if candidate_line > 0 and existing_line > 0
-                else 999
-            )
-            if line_gap > 8:
-                continue
-
             existing_tokens = _finding_tokens(existing)
             token_similarity = _token_similarity(candidate_tokens, existing_tokens)
             existing_cwe_family = _coarse_cwe_family(existing.get("cwe_id"))
             candidate_proof = _proof_score(candidate)
             existing_proof = _proof_score(existing)
-            if (
-                line_gap <= 4
-                and candidate_cwe_family in {"78", "88"}
-                and existing_cwe_family in {"78", "88"}
-                and abs(candidate_proof - existing_proof) >= 2
-            ):
-                is_duplicate = True
-                break
             title_similarity = SequenceMatcher(
                 None,
                 candidate_title,
                 str(existing.get("title", "")).strip().lower(),
             ).ratio()
             same_cwe_family = candidate_cwe_family and candidate_cwe_family == existing_cwe_family
-            if token_similarity >= 0.34 or title_similarity >= 0.58 or same_cwe_family:
+            same_path = bool(candidate_path and candidate_path == existing_path)
+            if same_path:
+                existing_line = _coerce_line_number(existing.get("line_number"))
+                line_gap = (
+                    abs(candidate_line - existing_line)
+                    if candidate_line > 0 and existing_line > 0
+                    else 999
+                )
+                if line_gap > 8:
+                    continue
+                if (
+                    line_gap <= 4
+                    and candidate_cwe_family in {"78", "88"}
+                    and existing_cwe_family in {"78", "88"}
+                    and abs(candidate_proof - existing_proof) >= 2
+                ):
+                    is_duplicate = True
+                    break
+                if token_similarity >= 0.34 or title_similarity >= 0.58 or same_cwe_family:
+                    is_duplicate = True
+                    break
+                continue
+
+            # Cross-file near-duplicate collapse for the same chain across neighboring steps.
+            if (
+                same_cwe_family
+                and token_similarity >= 0.62
+                and title_similarity >= 0.66
+                and abs(candidate_proof - existing_proof) <= 3
+            ):
                 is_duplicate = True
                 break
 
         if not is_duplicate:
             final_findings.append(candidate)
 
-    return final_findings
+    filtered_findings = final_findings
+    strong_findings = [
+        finding
+        for finding in final_findings
+        if _proof_score(finding) >= 4
+        and _speculation_penalty(finding) <= 2
+        and _has_concrete_chain_structure(finding)
+    ]
+    if strong_findings:
+        filtered_findings = [
+            finding
+            for finding in final_findings
+            if _proof_score(finding) >= 3
+            and _speculation_penalty(finding) <= 2
+            and _has_concrete_chain_structure(finding)
+        ]
+        if not filtered_findings:
+            filtered_findings = strong_findings
+
+    if merge_stats is not None:
+        merge_stats["input_count"] = len(vulns)
+        merge_stats["canonical_count"] = len(canonical_findings)
+        merge_stats["final_count"] = len(filtered_findings)
+        merge_stats["speculative_dropped"] = max(0, len(final_findings) - len(filtered_findings))
+
+    return filtered_findings
 
 
 def dedupe_pr_vulns(pr_vulns: list[dict], known_vulns: list[dict]) -> list[dict]:

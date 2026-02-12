@@ -10,7 +10,7 @@ Provides hook creator functions that return async closures for:
 """
 
 from pathlib import Path
-from typing import Set
+from typing import Any, Set
 from rich.console import Console
 
 from securevibes.config import ScanConfig
@@ -333,7 +333,11 @@ def create_subagent_hook(tracker):
     return subagent_hook
 
 
-def create_json_validation_hook(console: Console, debug: bool):
+def create_json_validation_hook(
+    console: Console,
+    debug: bool,
+    write_observer: dict[str, Any] | None = None,
+):
     """
     Create PreToolUse hook that validates and auto-fixes vulnerability JSON output.
 
@@ -355,6 +359,22 @@ def create_json_validation_hook(console: Console, debug: bool):
 
     pr_invalid_attempts = 0
     max_pr_retries = 1
+
+    def _observe_pr_write(parsed_content: object, normalized_content: str) -> None:
+        if write_observer is None:
+            return
+
+        write_observer["total_writes"] = int(write_observer.get("total_writes", 0)) + 1
+        if not isinstance(parsed_content, list):
+            write_observer.setdefault("item_counts", []).append(0)
+            return
+
+        normalized_entries = [entry for entry in parsed_content if isinstance(entry, dict)]
+        item_count = len(normalized_entries)
+        write_observer.setdefault("item_counts", []).append(item_count)
+        if item_count > int(write_observer.get("max_items", 0)):
+            write_observer["max_items"] = item_count
+            write_observer["max_content"] = normalized_content
 
     async def json_validation_hook(input_data: dict, tool_use_id: str, ctx: dict) -> dict:
         nonlocal pr_invalid_attempts
@@ -413,23 +433,30 @@ def create_json_validation_hook(console: Console, debug: bool):
         else:
             fixed_content, was_modified = fix_vulnerabilities_json(content)
 
+        parsed_fixed_content: object = None
+        try:
+            import json as _json
+
+            parsed_fixed_content = _json.loads(fixed_content)
+        except Exception:
+            parsed_fixed_content = None
+
+        if is_pr_review:
+            _observe_pr_write(parsed_fixed_content, fixed_content)
+
         # Log normalization result
         if debug:
-            try:
-                import json as _json
-
-                fixed_data = _json.loads(fixed_content)
-                if isinstance(fixed_data, list) and fixed_data:
-                    first_item = fixed_data[0] if isinstance(fixed_data[0], dict) else {}
-                    has_finding_type = "finding_type" in first_item
-                    finding_type_value = first_item.get("finding_type", "N/A")
-                    console.print(
-                        f"  🔍 [Hook] After fix: was_modified={was_modified}, "
-                        f"finding_type={has_finding_type} (value={finding_type_value})",
-                        style="dim",
-                    )
-            except Exception:
-                pass
+            if isinstance(parsed_fixed_content, list) and parsed_fixed_content:
+                first_item = (
+                    parsed_fixed_content[0] if isinstance(parsed_fixed_content[0], dict) else {}
+                )
+                has_finding_type = "finding_type" in first_item
+                finding_type_value = first_item.get("finding_type", "N/A")
+                console.print(
+                    f"  🔍 [Hook] After fix: was_modified={was_modified}, "
+                    f"finding_type={has_finding_type} (value={finding_type_value})",
+                    style="dim",
+                )
 
         if was_modified:
             if debug:
