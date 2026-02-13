@@ -1753,6 +1753,11 @@ Only report findings at or above: {severity_threshold}
         final_pr_finding_count = len(pr_vulns)
         if self.debug:
             speculative_dropped = merge_stats.get("speculative_dropped", 0)
+            subchain_collapsed = merge_stats.get("subchain_collapsed", 0)
+            low_support_dropped = merge_stats.get("low_support_dropped", 0)
+            canonical_chain_count = merge_stats.get(
+                "canonical_chain_count", merged_pr_finding_count
+            )
             verifier_outcome = (
                 "confirmed"
                 if should_run_verifier and final_pr_finding_count > 0
@@ -1767,6 +1772,9 @@ Only report findings at or above: {severity_threshold}
                 f"attempt_counts={attempt_outcome_counts}, "
                 f"overwritten_attempts={attempts_with_overwritten_artifact}, "
                 f"speculative_dropped={speculative_dropped}, "
+                f"subchain_collapsed={subchain_collapsed}, "
+                f"low_support_dropped={low_support_dropped}, "
+                f"canonical_chain_count={canonical_chain_count}, "
                 f"passes_with_core_chain={passes_with_core_chain}, "
                 f"consensus_score={consensus_score:.2f}, "
                 f"weak_consensus_triggered={weak_consensus_triggered}, "
@@ -3054,8 +3062,11 @@ def _merge_pr_attempt_findings(
         if merge_stats is not None:
             merge_stats["input_count"] = 0
             merge_stats["canonical_count"] = 0
+            merge_stats["canonical_chain_count"] = 0
             merge_stats["final_count"] = 0
             merge_stats["speculative_dropped"] = 0
+            merge_stats["subchain_collapsed"] = 0
+            merge_stats["low_support_dropped"] = 0
             merge_stats["max_chain_support"] = 0
         return []
 
@@ -3153,9 +3164,101 @@ def _merge_pr_attempt_findings(
         "could be improved",
         "security consideration",
     )
+    chain_source_terms = (
+        "attacker",
+        "unauthenticated",
+        "untrusted",
+        "user input",
+        "query parameter",
+        "remote",
+        "webhook",
+        "ws://",
+        "http://",
+        "https://",
+    )
+    chain_sink_terms = (
+        "exec",
+        "spawn",
+        "sendfile",
+        "upload",
+        "download",
+        "apply",
+        "write",
+        "read",
+        "response",
+        "proxycommand",
+        "ssh",
+        "socket",
+        "websocket",
+        "render",
+        "copyfile",
+        "send_file",
+        "/media/",
+    )
 
     def _entry_text(entry: dict, *, fields: tuple[str, ...]) -> str:
         return " ".join(str(entry.get(field, "")) for field in fields).strip().lower()
+
+    def _extract_referenced_code_locations(entry: dict) -> tuple[str, ...]:
+        text = _entry_text(entry, fields=("evidence", "attack_scenario", "description"))
+        if not text:
+            return tuple()
+        raw_matches = re.findall(r"([a-z0-9_./\\-]+\.[a-z0-9_]+)(?::\d+)?", text)
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw_path in raw_matches:
+            normalized_path = _canonicalize_finding_path(raw_path)
+            if not normalized_path or normalized_path in seen:
+                continue
+            normalized.append(normalized_path)
+            seen.add(normalized_path)
+        return tuple(normalized)
+
+    def _extract_route_markers(entry: dict) -> tuple[str, ...]:
+        text = _entry_text(entry, fields=("title", "description", "attack_scenario", "evidence"))
+        if not text:
+            return tuple()
+        markers: list[str] = []
+        seen: set[str] = set()
+        for match in re.findall(r"/[a-z0-9_:\-/.]+", text):
+            if len(match) < 3 or match in seen:
+                continue
+            markers.append(match)
+            seen.add(match)
+        return tuple(markers)
+
+    def _chain_sink_anchor(entry: dict) -> str:
+        primary_path = _canonicalize_finding_path(entry.get("file_path"))
+        locations = _extract_referenced_code_locations(entry)
+        non_primary_locations = [location for location in locations if location != primary_path]
+        if non_primary_locations:
+            return non_primary_locations[-1]
+        if locations:
+            return locations[-1]
+        routes = _extract_route_markers(entry)
+        if routes:
+            return routes[-1]
+        return ""
+
+    def _chain_role(entry: dict) -> str:
+        evidence_text = _entry_text(entry, fields=("evidence",))
+        scenario_text = _entry_text(entry, fields=("attack_scenario",))
+        core_text = _entry_text(
+            entry, fields=("title", "description", "attack_scenario", "evidence")
+        )
+        locations = _extract_referenced_code_locations(entry)
+        has_multi_location = len(locations) >= 2
+        has_flow_arrow = "->" in evidence_text
+        has_step_markers = len(re.findall(r"\b[1-4][\)\.\:]", scenario_text)) >= 2
+        has_source = any(term in core_text for term in chain_source_terms)
+        has_sink = any(term in core_text for term in chain_sink_terms) or bool(
+            _chain_sink_anchor(entry)
+        )
+        if (has_multi_location and has_step_markers and has_sink) or (
+            has_flow_arrow and has_source and has_sink
+        ):
+            return "end_to_end"
+        return "step_level"
 
     def _proof_score(entry: dict) -> int:
         score = 0
@@ -3247,6 +3350,14 @@ def _merge_pr_attempt_findings(
             min(description_chars, 2000),
         )
 
+    def _chain_support(entry: dict) -> int:
+        if not chain_support_counts:
+            return 0
+        chain_identity = _build_chain_identity(entry)
+        if not chain_identity:
+            return 0
+        return chain_support_counts.get(chain_identity, 0)
+
     def _has_concrete_chain_structure(entry: dict) -> bool:
         normalized_path = _canonicalize_finding_path(entry.get("file_path"))
         line_number = _coerce_line_number(entry.get("line_number"))
@@ -3317,6 +3428,99 @@ def _merge_pr_attempt_findings(
             return True
 
         return False
+
+    def _same_subchain_family(candidate: dict, canonical: dict) -> bool:
+        candidate_path = _canonicalize_finding_path(candidate.get("file_path"))
+        canonical_path = _canonicalize_finding_path(canonical.get("file_path"))
+        if not candidate_path or candidate_path != canonical_path:
+            return False
+
+        candidate_cwe_family = _extract_cwe_family(candidate.get("cwe_id"))
+        canonical_cwe_family = _extract_cwe_family(canonical.get("cwe_id"))
+        same_cwe_family = bool(
+            candidate_cwe_family
+            and canonical_cwe_family
+            and candidate_cwe_family == canonical_cwe_family
+        )
+
+        candidate_line = _coerce_line_number(candidate.get("line_number"))
+        canonical_line = _coerce_line_number(canonical.get("line_number"))
+        line_gap = (
+            abs(candidate_line - canonical_line)
+            if candidate_line > 0 and canonical_line > 0
+            else 999
+        )
+        if line_gap > 40:
+            return False
+
+        candidate_tokens = _finding_tokens(candidate)
+        canonical_tokens = _finding_tokens(canonical)
+        token_similarity = _token_similarity(candidate_tokens, canonical_tokens)
+
+        candidate_locations = set(_extract_referenced_code_locations(candidate))
+        canonical_locations = set(_extract_referenced_code_locations(canonical))
+        shared_locations = {
+            location
+            for location in candidate_locations.intersection(canonical_locations)
+            if location not in {candidate_path, canonical_path}
+        }
+
+        candidate_anchor = _chain_sink_anchor(candidate)
+        canonical_anchor = _chain_sink_anchor(canonical)
+        shared_anchor = bool(candidate_anchor and candidate_anchor == canonical_anchor)
+
+        candidate_role = _chain_role(candidate)
+        canonical_role = _chain_role(canonical)
+        has_end_to_end_variant = "end_to_end" in {candidate_role, canonical_role}
+        candidate_type = str(candidate.get("finding_type", "")).strip().lower()
+        canonical_type = str(canonical.get("finding_type", "")).strip().lower()
+        enabler_types = {"threat_enabler", "mitigation_removal"}
+        is_enabler_pair = candidate_type in enabler_types or canonical_type in enabler_types
+
+        if same_cwe_family and shared_anchor:
+            return True
+        if same_cwe_family and shared_locations and (line_gap <= 40 or token_similarity >= 0.20):
+            return True
+        if same_cwe_family and has_end_to_end_variant and line_gap <= 30:
+            if token_similarity >= 0.16:
+                return True
+            candidate_is_self_anchor = candidate_anchor in {candidate_path, canonical_path}
+            canonical_is_self_anchor = canonical_anchor in {candidate_path, canonical_path}
+            if candidate_is_self_anchor != canonical_is_self_anchor:
+                return True
+
+        if not same_cwe_family and is_enabler_pair and line_gap <= 30:
+            if shared_anchor:
+                return True
+            if shared_locations and token_similarity >= 0.18:
+                return True
+            if has_end_to_end_variant and token_similarity >= 0.28:
+                candidate_is_self_anchor = candidate_anchor in {candidate_path, canonical_path}
+                canonical_is_self_anchor = canonical_anchor in {candidate_path, canonical_path}
+                if candidate_is_self_anchor != canonical_is_self_anchor:
+                    return True
+        return False
+
+    def _subchain_quality(
+        entry: dict,
+    ) -> tuple[int, int, int, int, int, int, int, int, int, int, int]:
+        role_bonus = 1 if _chain_role(entry) == "end_to_end" else 0
+        anchor_bonus = 1 if _chain_sink_anchor(entry) else 0
+        location_count = min(len(_extract_referenced_code_locations(entry)), 6)
+        quality = _entry_quality(entry)
+        return (
+            role_bonus,
+            anchor_bonus,
+            location_count,
+            quality[0],
+            quality[1],
+            quality[2],
+            quality[3],
+            quality[4],
+            quality[5],
+            quality[6],
+            quality[7],
+        )
 
     normalized_vulns = [dict(v) for v in vulns if isinstance(v, dict)]
     normalized_vulns.sort(key=_entry_quality, reverse=True)
@@ -3394,10 +3598,27 @@ def _merge_pr_attempt_findings(
         if not is_duplicate:
             final_findings.append(candidate)
 
-    filtered_findings = final_findings
+    compacted_findings: list[dict] = []
+    subchain_collapsed = 0
+    for candidate in final_findings:
+        merged = False
+        for idx, existing in enumerate(compacted_findings):
+            if not _same_subchain_family(candidate, existing):
+                continue
+            if _subchain_quality(candidate) > _subchain_quality(existing):
+                compacted_findings[idx] = candidate
+            subchain_collapsed += 1
+            merged = True
+            break
+        if not merged:
+            compacted_findings.append(candidate)
+
+    compacted_findings.sort(key=_entry_quality, reverse=True)
+
+    filtered_findings = compacted_findings
     strong_findings = [
         finding
-        for finding in final_findings
+        for finding in compacted_findings
         if _proof_score(finding) >= 4
         and _speculation_penalty(finding) <= 2
         and _has_concrete_chain_structure(finding)
@@ -3405,7 +3626,7 @@ def _merge_pr_attempt_findings(
     if strong_findings:
         filtered_findings = [
             finding
-            for finding in final_findings
+            for finding in compacted_findings
             if _proof_score(finding) >= 3
             and _speculation_penalty(finding) <= 2
             and _has_concrete_chain_structure(finding)
@@ -3413,12 +3634,41 @@ def _merge_pr_attempt_findings(
         if not filtered_findings:
             filtered_findings = strong_findings
 
+    low_support_dropped = 0
+    if len(filtered_findings) > 1 and total_attempts > 0 and chain_support_counts:
+        supports = [_chain_support(finding) for finding in filtered_findings]
+        max_support = max(supports, default=0)
+        if max_support >= 2:
+            retained_findings: list[dict] = []
+            for finding, support in zip(filtered_findings, supports):
+                severity = severity_rank.get(str(finding.get("severity", "")).strip().lower(), 0)
+                if support >= 2:
+                    retained_findings.append(finding)
+                    continue
+                if (
+                    severity >= 3
+                    and _proof_score(finding) >= 5
+                    and _speculation_penalty(finding) <= 1
+                ):
+                    retained_findings.append(finding)
+                    continue
+                low_support_dropped += 1
+            if retained_findings:
+                filtered_findings = retained_findings
+
     if merge_stats is not None:
         merge_stats["input_count"] = len(vulns)
         merge_stats["canonical_count"] = len(canonical_findings)
+        merge_stats["canonical_chain_count"] = len(compacted_findings)
         merge_stats["final_count"] = len(filtered_findings)
-        merge_stats["speculative_dropped"] = max(0, len(final_findings) - len(filtered_findings))
-        merge_stats["max_chain_support"] = max(chain_support_counts.values(), default=0)
+        merge_stats["speculative_dropped"] = max(
+            0, len(compacted_findings) - len(filtered_findings)
+        )
+        merge_stats["subchain_collapsed"] = subchain_collapsed
+        merge_stats["low_support_dropped"] = low_support_dropped
+        merge_stats["max_chain_support"] = (
+            max(chain_support_counts.values(), default=0) if chain_support_counts else 0
+        )
 
     return filtered_findings
 

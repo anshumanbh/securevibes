@@ -523,6 +523,197 @@ def test_merge_pr_attempt_findings_drops_speculative_noise_when_concrete_exists(
     assert "exfiltration" in merged[0]["title"].lower()
 
 
+def test_merge_pr_attempt_findings_collapses_subchain_step_variants():
+    """Same exploit chain split into parser steps should collapse to one canonical finding."""
+    merge_stats: dict[str, int] = {}
+    merged = _merge_pr_attempt_findings(
+        [
+            {
+                "title": "Parser accepts file URI local paths",
+                "description": "normalizeMediaSource turns file:// URIs into local absolute paths.",
+                "attack_scenario": (
+                    "1) Attacker returns MEDIA=file:///etc/passwd in model output. "
+                    "2) Parser keeps resulting local path."
+                ),
+                "evidence": "src/media/parse.ts:6 normalizes file:// values into local paths.",
+                "severity": "high",
+                "finding_type": "known_vuln",
+                "file_path": "src/media/parse.ts",
+                "line_number": 6,
+                "cwe_id": "CWE-22",
+            },
+            {
+                "title": "Local file exfiltration via media parser to unauthenticated route",
+                "description": (
+                    "Attacker-controlled local paths are accepted and flow to media copy + unauthenticated "
+                    "download route."
+                ),
+                "attack_scenario": (
+                    "1) Attacker sends MEDIA token containing /etc/passwd. "
+                    "2) Parser accepts local path and saveMediaSource copies file into media store. "
+                    "3) /media/:id serves copied file without auth."
+                ),
+                "evidence": (
+                    "flow: src/media/parse.ts:29 -> src/media/store.ts:91 -> src/media/server.ts:28"
+                ),
+                "severity": "high",
+                "finding_type": "known_vuln",
+                "file_path": "src/media/parse.ts",
+                "line_number": 29,
+                "cwe_id": "CWE-22",
+            },
+        ],
+        merge_stats=merge_stats,
+    )
+
+    assert len(merged) == 1
+    assert merged[0]["line_number"] == 29
+    assert merge_stats["subchain_collapsed"] == 1
+    assert merge_stats["canonical_chain_count"] == 1
+
+
+def test_merge_pr_attempt_findings_preserves_distinct_same_file_same_cwe_chains():
+    """Different sinks in same file/CWE should not be collapsed as one chain."""
+    merged = _merge_pr_attempt_findings(
+        [
+            {
+                "title": "Shell command injection in startup helper",
+                "description": "User controlled env value reaches /bin/sh -c invocation.",
+                "attack_scenario": (
+                    "1) User controls startup command value. "
+                    "2) Value is interpolated into shell command. "
+                    "3) /bin/sh executes attacker payload."
+                ),
+                "evidence": "flow: src/process/exec.ts:40 -> src/process/exec.ts:55",
+                "severity": "high",
+                "finding_type": "new_threat",
+                "file_path": "src/process/exec.ts",
+                "line_number": 40,
+                "cwe_id": "CWE-78",
+            },
+            {
+                "title": "SSH option injection in deploy helper target argument",
+                "description": "Target host reaches positional ssh argv without -- separation.",
+                "attack_scenario": (
+                    "1) Attacker sets host to -oProxyCommand payload. "
+                    "2) deploy helper appends host positional arg. "
+                    "3) ssh treats host as option."
+                ),
+                "evidence": "flow: src/process/exec.ts:220 -> src/process/exec.ts:241",
+                "severity": "high",
+                "finding_type": "new_threat",
+                "file_path": "src/process/exec.ts",
+                "line_number": 220,
+                "cwe_id": "CWE-78",
+            },
+        ]
+    )
+
+    assert len(merged) == 2
+
+
+def test_merge_pr_attempt_findings_collapses_cross_cwe_enabler_variant():
+    """Threat-enabler variants with same sink chain should collapse under concrete finding."""
+    merge_stats: dict[str, int] = {}
+    merged = _merge_pr_attempt_findings(
+        [
+            {
+                "title": "Path traversal in parser leads to file exfiltration",
+                "description": "Untrusted MEDIA path reaches copy + unauthenticated serve sink.",
+                "attack_scenario": (
+                    "1) Attacker injects MEDIA:/etc/passwd. "
+                    "2) Parser accepts path. "
+                    "3) Flow reaches saveMediaSource and /media/:id exfil."
+                ),
+                "evidence": (
+                    "flow: src/media/parse.ts:29 -> src/media/store.ts:91 -> src/media/server.ts:28"
+                ),
+                "severity": "critical",
+                "finding_type": "known_vuln",
+                "file_path": "src/media/parse.ts",
+                "line_number": 29,
+                "cwe_id": "CWE-22",
+            },
+            {
+                "title": "Exported parser could be reused in future unauthenticated contexts",
+                "description": (
+                    "Future caller risk: parser export may enable similar file exfiltration chain "
+                    "through saveMediaSource and /media/:id."
+                ),
+                "attack_scenario": (
+                    "1) Future code might call exported parser. "
+                    "2) MEDIA:file://./../../etc/passwd passes parser checks. "
+                    "3) Same sink chain copies and serves sensitive file."
+                ),
+                "evidence": (
+                    "src/media/parse.ts:11 export; flow to src/media/store.ts:91 and "
+                    "src/media/server.ts:28 in same chain."
+                ),
+                "severity": "medium",
+                "finding_type": "threat_enabler",
+                "file_path": "src/media/parse.ts",
+                "line_number": 11,
+                "cwe_id": "CWE-610",
+            },
+        ],
+        merge_stats=merge_stats,
+    )
+
+    assert len(merged) == 1
+    assert merged[0]["cwe_id"] == "CWE-22"
+    assert merge_stats["subchain_collapsed"] == 1
+    assert merge_stats["canonical_chain_count"] == 1
+
+
+def test_merge_pr_attempt_findings_drops_low_support_noise_when_core_is_repeated():
+    """Low-support chains should be dropped when a stronger repeated chain is present."""
+    core_finding = {
+        "title": "Local file exfiltration via media parser path acceptance",
+        "description": "Parser accepts attacker path and chain reaches unauthenticated file serving.",
+        "attack_scenario": (
+            "1) Attacker injects MEDIA path. 2) Path is accepted and copied. "
+            "3) Unauthenticated route serves the copied file."
+        ),
+        "evidence": "flow: src/media/parse.ts:29 -> src/media/store.ts:91 -> src/media/server.ts:28",
+        "severity": "critical",
+        "finding_type": "known_vuln",
+        "file_path": "src/media/parse.ts",
+        "line_number": 29,
+        "cwe_id": "CWE-22",
+    }
+    noisy_finding = {
+        "title": "Whitespace normalization behavior changed in parser",
+        "description": "Formatting behavior changed and might affect downstream handling.",
+        "attack_scenario": (
+            "1) Attacker sends output with control chars. "
+            "2) Parser preserves some chars. "
+            "3) Downstream formatting behavior changes."
+        ),
+        "evidence": "flow: src/media/parse.ts:41 -> src/auto-reply/reply.ts:461",
+        "severity": "medium",
+        "finding_type": "regression",
+        "file_path": "src/media/parse.ts",
+        "line_number": 41,
+        "cwe_id": "CWE-93",
+    }
+    merge_stats: dict[str, int] = {}
+    chain_support_counts = {
+        _build_chain_identity(core_finding): 3,
+        _build_chain_identity(noisy_finding): 1,
+    }
+
+    merged = _merge_pr_attempt_findings(
+        [core_finding, noisy_finding],
+        merge_stats=merge_stats,
+        chain_support_counts=chain_support_counts,
+        total_attempts=4,
+    )
+
+    assert len(merged) == 1
+    assert "exfiltration" in merged[0]["title"].lower()
+    assert merge_stats["low_support_dropped"] == 1
+
+
 def test_filter_baseline_vulns_excludes_pr_derived_with_threat_prefix():
     """A THREAT-001 entry with finding_type='known_vuln' is PR-derived, not baseline."""
     known_vulns = [
