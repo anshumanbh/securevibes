@@ -38,8 +38,8 @@ from securevibes.scanner.scanner import (
     _derive_pr_default_grep_scope,
     _build_focused_diff_context,
     _extract_observed_pr_findings,
-    _has_stable_single_chain_revalidation_support,
     _merge_pr_attempt_findings,
+    _should_run_pr_verifier,
     _summarize_revalidation_support,
     _summarize_chain_candidates_for_prompt,
     _summarize_diff_hunk_snippets,
@@ -857,16 +857,12 @@ def test_pr_review_retry_suffix_includes_candidate_revalidation_block():
         4,
         focus_area="path_exfiltration",
         candidate_summary="- Chain A (src/a.ts:10, CWE-22, support=1/3)",
-        force_chain_revalidation=True,
         require_candidate_revalidation=True,
-        pass_support_requirement=2,
     )
 
     assert "PRIOR HIGH-IMPACT CHAIN CANDIDATES TO RE-VALIDATE" in suffix
     assert "CORE CHAIN REVALIDATION REQUIREMENT" in suffix
-    assert "CONSENSUS RECOVERY MODE" in suffix
     assert "support=1/3" in suffix
-    assert "At least 2 pass(es)" in suffix
 
 
 def test_pr_review_retry_suffix_requires_candidate_revalidation_without_consensus_mode():
@@ -880,7 +876,6 @@ def test_pr_review_retry_suffix_requires_candidate_revalidation_without_consensu
 
     assert "PRIOR HIGH-IMPACT CHAIN CANDIDATES TO RE-VALIDATE" in suffix
     assert "CORE CHAIN REVALIDATION REQUIREMENT" in suffix
-    assert "CONSENSUS RECOVERY MODE" not in suffix
 
 
 def test_diff_signal_detectors_identify_path_and_auth_deltas():
@@ -944,9 +939,16 @@ def test_diff_signal_detectors_identify_path_and_auth_deltas():
 
 
 def test_attempt_disagreement_detector_flags_sparse_attempt_success():
-    """Mixed zero/non-zero attempt outputs should trigger verifier-mode disagreement."""
+    """Mixed zero/non-zero attempt outputs should be observable as disagreement telemetry."""
     assert _attempts_show_pr_disagreement([0, 2, 0, 1])
     assert not _attempts_show_pr_disagreement([2, 2, 2])
+
+
+def test_should_run_pr_verifier_only_when_consensus_is_weak():
+    """Verifier should run only when canonical findings exist and consensus is weak."""
+    assert not _should_run_pr_verifier(has_findings=False, weak_consensus=True)
+    assert not _should_run_pr_verifier(has_findings=True, weak_consensus=False)
+    assert _should_run_pr_verifier(has_findings=True, weak_consensus=True)
 
 
 def test_extract_observed_pr_findings_reads_hook_observer_payload():
@@ -1202,24 +1204,6 @@ def test_summarize_revalidation_support_counts_hits_and_misses():
     assert attempts == 3
     assert hits == 2
     assert misses == 1
-
-
-def test_has_stable_single_chain_revalidation_support_requires_all_support_axes():
-    """Stable single-chain verifier skip should require family, flow, and revalidation support."""
-    assert _has_stable_single_chain_revalidation_support(
-        finding_count=1,
-        family_support=2,
-        flow_support=2,
-        revalidation_core_hits=2,
-        required_support=2,
-    )
-    assert not _has_stable_single_chain_revalidation_support(
-        finding_count=1,
-        family_support=2,
-        flow_support=2,
-        revalidation_core_hits=1,
-        required_support=2,
-    )
 
 
 def test_summarize_chain_candidates_for_prompt_includes_support_counts():
@@ -1737,6 +1721,7 @@ async def test_pr_review_empty_follow_up_attempt_is_logged_without_warning(
     assert "passes_with_core_chain_flow=" in console_text
     assert "consensus_mode_used=" in console_text
     assert "dropped_as_secondary_chain=" in console_text
+    assert "attempt_disagreement=" in console_text
     assert "revalidation_attempts=" in console_text
     assert "revalidation_core_hits=" in console_text
     assert "revalidation_core_misses=" in console_text
