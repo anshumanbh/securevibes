@@ -1255,13 +1255,18 @@ Only report findings at or above: {severity_threshold}
         attempt_chain_exact_ids: list[set[str]] = []
         attempt_chain_family_ids: list[set[str]] = []
         attempt_chain_flow_ids: list[set[str]] = []
+        attempt_revalidation_attempted: list[bool] = []
+        attempt_core_evidence_present: list[bool] = []
         chain_support_counts: Dict[str, int] = {}
         flow_support_counts: Dict[str, int] = {}
         carry_forward_candidate_summary = ""
+        carry_forward_candidate_family_ids: set[str] = set()
+        carry_forward_candidate_flow_ids: set[str] = set()
         required_core_chain_pass_support = 2
         consensus_recovery_next_pass = False
         weak_consensus_reason = ""
         weak_consensus_triggered = False
+        revalidation_miss_count = 0
         consensus_mode_used = "family"
         support_counts_snapshot: Dict[str, int] = {"exact": 0, "family": 0, "flow": 0}
 
@@ -1282,11 +1287,15 @@ Only report findings at or above: {severity_threshold}
 
         def _refresh_carry_forward_candidates() -> None:
             nonlocal carry_forward_candidate_summary
+            nonlocal carry_forward_candidate_family_ids
+            nonlocal carry_forward_candidate_flow_ids
             cumulative_candidates = _merge_pr_attempt_findings(
                 [*collected_pr_vulns, *ephemeral_pr_vulns],
                 chain_support_counts=chain_support_counts,
                 total_attempts=len(attempt_chain_ids),
             )
+            carry_forward_candidate_family_ids = _collect_chain_family_ids(cumulative_candidates)
+            carry_forward_candidate_flow_ids = _collect_chain_flow_ids(cumulative_candidates)
             carry_forward_candidate_summary = _summarize_chain_candidates_for_prompt(
                 cumulative_candidates,
                 chain_support_counts,
@@ -1294,9 +1303,51 @@ Only report findings at or above: {severity_threshold}
                 flow_support_counts=flow_support_counts,
             )
 
-        def _maybe_schedule_consensus_recovery(attempt_num: int) -> None:
+        def _record_attempt_revalidation_observability(
+            *,
+            attempt_findings: list[dict],
+            revalidation_attempted: bool,
+            candidate_cores_present: bool,
+            expected_family_ids: set[str],
+            expected_flow_ids: set[str],
+        ) -> bool:
+            nonlocal revalidation_miss_count
+            core_evidence_present = _attempt_contains_core_chain_evidence(
+                attempt_findings=attempt_findings,
+                expected_family_ids=expected_family_ids,
+                expected_flow_ids=expected_flow_ids,
+            )
+            attempt_revalidation_attempted.append(revalidation_attempted)
+            attempt_core_evidence_present.append(core_evidence_present)
+            if revalidation_attempted and candidate_cores_present and not core_evidence_present:
+                revalidation_miss_count += 1
+            return core_evidence_present
+
+        def _maybe_schedule_consensus_recovery(
+            attempt_num: int,
+            *,
+            revalidation_attempted: bool = False,
+            candidate_cores_present: bool = False,
+            core_evidence_present: bool = False,
+        ) -> None:
             nonlocal consensus_recovery_next_pass, weak_consensus_reason, weak_consensus_triggered
-            if attempt_num < 3 or attempt_num >= pr_review_attempts:
+            if attempt_num >= pr_review_attempts:
+                return
+            if revalidation_attempted and candidate_cores_present and not core_evidence_present:
+                weak_consensus_reason = (
+                    f"revalidation_core_miss={revalidation_miss_count}/"
+                    f"{max(sum(attempt_revalidation_attempted), 1)} at pass {attempt_num}"
+                )
+                weak_consensus_triggered = True
+                consensus_recovery_next_pass = True
+                if self.debug:
+                    self.console.print(
+                        "  🧪 Revalidation pass missed carried core-chain evidence; "
+                        f"scheduling recovery ({weak_consensus_reason})",
+                        style="dim",
+                    )
+                return
+            if attempt_num < 2:
                 return
             if not chain_support_counts and not flow_support_counts:
                 return
@@ -1329,11 +1380,20 @@ Only report findings at or above: {severity_threshold}
             retry_suffix = ""
             retry_focus_area = ""
             attempt_write_observer: Dict[str, Any] = {}
+            attempt_expected_family_ids: set[str] = set(carry_forward_candidate_family_ids)
+            attempt_expected_flow_ids: set[str] = set(carry_forward_candidate_flow_ids)
+            attempt_candidate_cores_present = bool(
+                attempt_expected_family_ids or attempt_expected_flow_ids
+            )
+            attempt_force_revalidation = False
             if attempt_num > 1:
                 plan_index = attempt_num - 2
                 if plan_index < len(retry_focus_plan):
                     retry_focus_area = retry_focus_plan[plan_index]
                     attempt_focus_areas.append(retry_focus_area)
+                attempt_force_revalidation = (
+                    consensus_recovery_next_pass or attempt_candidate_cores_present
+                )
                 retry_suffix = _build_pr_review_retry_suffix(
                     attempt_num,
                     command_builder_signals=command_builder_signals,
@@ -1342,12 +1402,18 @@ Only report findings at or above: {severity_threshold}
                     auth_privilege_signals=auth_privilege_signals,
                     candidate_summary=carry_forward_candidate_summary,
                     force_chain_revalidation=consensus_recovery_next_pass,
+                    require_candidate_revalidation=attempt_candidate_cores_present,
                     pass_support_requirement=required_core_chain_pass_support,
                 )
                 if self.debug and retry_focus_area:
                     self.console.print(
                         f"  🎯 PR pass {attempt_num}/{pr_review_attempts} focus: "
                         f"{_focus_area_label(retry_focus_area)}",
+                        style="dim",
+                    )
+                if self.debug and attempt_candidate_cores_present:
+                    self.console.print(
+                        "  🧪 PR pass requires explicit carried-chain revalidation",
                         style="dim",
                     )
                 if self.debug and consensus_recovery_next_pass:
@@ -1450,9 +1516,21 @@ Only report findings at or above: {severity_threshold}
                     observed_vulns if len(observed_vulns) > attempt_finding_count else loaded_vulns
                 )
                 _record_attempt_chains(effective_attempt_vulns)
+                core_evidence_present = _record_attempt_revalidation_observability(
+                    attempt_findings=effective_attempt_vulns,
+                    revalidation_attempted=attempt_force_revalidation,
+                    candidate_cores_present=attempt_candidate_cores_present,
+                    expected_family_ids=attempt_expected_family_ids,
+                    expected_flow_ids=attempt_expected_flow_ids,
+                )
                 if effective_attempt_vulns:
                     _refresh_carry_forward_candidates()
-                _maybe_schedule_consensus_recovery(attempt_num)
+                _maybe_schedule_consensus_recovery(
+                    attempt_num,
+                    revalidation_attempted=attempt_force_revalidation,
+                    candidate_cores_present=attempt_candidate_cores_present,
+                    core_evidence_present=core_evidence_present,
+                )
                 continue
             except Exception as e:
                 attempt_warning = (
@@ -1487,9 +1565,21 @@ Only report findings at or above: {severity_threshold}
                     observed_vulns if len(observed_vulns) > attempt_finding_count else loaded_vulns
                 )
                 _record_attempt_chains(effective_attempt_vulns)
+                core_evidence_present = _record_attempt_revalidation_observability(
+                    attempt_findings=effective_attempt_vulns,
+                    revalidation_attempted=attempt_force_revalidation,
+                    candidate_cores_present=attempt_candidate_cores_present,
+                    expected_family_ids=attempt_expected_family_ids,
+                    expected_flow_ids=attempt_expected_flow_ids,
+                )
                 if effective_attempt_vulns:
                     _refresh_carry_forward_candidates()
-                _maybe_schedule_consensus_recovery(attempt_num)
+                _maybe_schedule_consensus_recovery(
+                    attempt_num,
+                    revalidation_attempted=attempt_force_revalidation,
+                    candidate_cores_present=attempt_candidate_cores_present,
+                    core_evidence_present=core_evidence_present,
+                )
                 continue
 
             loaded_vulns, load_warning = _load_pr_vulnerabilities_artifact(
@@ -1514,9 +1604,21 @@ Only report findings at or above: {severity_threshold}
                             style="dim",
                         )
                 _record_attempt_chains(observed_vulns)
+                core_evidence_present = _record_attempt_revalidation_observability(
+                    attempt_findings=observed_vulns,
+                    revalidation_attempted=attempt_force_revalidation,
+                    candidate_cores_present=attempt_candidate_cores_present,
+                    expected_family_ids=attempt_expected_family_ids,
+                    expected_flow_ids=attempt_expected_flow_ids,
+                )
                 if observed_vulns:
                     _refresh_carry_forward_candidates()
-                _maybe_schedule_consensus_recovery(attempt_num)
+                _maybe_schedule_consensus_recovery(
+                    attempt_num,
+                    revalidation_attempted=attempt_force_revalidation,
+                    candidate_cores_present=attempt_candidate_cores_present,
+                    core_evidence_present=core_evidence_present,
+                )
                 continue
 
             artifact_loaded = True
@@ -1538,9 +1640,21 @@ Only report findings at or above: {severity_threshold}
                 observed_vulns if len(observed_vulns) > attempt_finding_count else loaded_vulns
             )
             _record_attempt_chains(effective_attempt_vulns)
+            core_evidence_present = _record_attempt_revalidation_observability(
+                attempt_findings=effective_attempt_vulns,
+                revalidation_attempted=attempt_force_revalidation,
+                candidate_cores_present=attempt_candidate_cores_present,
+                expected_family_ids=attempt_expected_family_ids,
+                expected_flow_ids=attempt_expected_flow_ids,
+            )
             if effective_attempt_vulns:
                 _refresh_carry_forward_candidates()
-            _maybe_schedule_consensus_recovery(attempt_num)
+            _maybe_schedule_consensus_recovery(
+                attempt_num,
+                revalidation_attempted=attempt_force_revalidation,
+                candidate_cores_present=attempt_candidate_cores_present,
+                core_evidence_present=core_evidence_present,
+            )
             if attempt_finding_count:
                 collected_pr_vulns.extend(loaded_vulns)
                 _refresh_carry_forward_candidates()
@@ -1646,11 +1760,23 @@ Only report findings at or above: {severity_threshold}
             len(attempt_chain_ids),
             flow_support_counts=flow_support_counts,
         )
+        (
+            revalidation_attempts,
+            revalidation_core_hits,
+            revalidation_core_misses,
+        ) = _summarize_revalidation_support(
+            attempt_revalidation_attempted,
+            attempt_core_evidence_present,
+        )
         attempt_observability_notes = (
             f"- Attempt final artifact finding counts: {attempt_finding_counts}\n"
             f"- Attempt observed finding counts (including overwritten writes): {attempt_outcome_counts}\n"
             f"- Attempts with overwritten/non-final findings: {attempts_with_overwritten_artifact}\n"
             f"- Ephemeral candidate findings captured from write logs: {len(ephemeral_pr_vulns)}\n"
+            f"- Attempt revalidation required flags: {attempt_revalidation_attempted}\n"
+            f"- Attempt core-evidence-present flags: {attempt_core_evidence_present}\n"
+            f"- Revalidation support: attempts={revalidation_attempts}, "
+            f"hits={revalidation_core_hits}, misses={revalidation_core_misses}\n"
             f"- Core-chain pass support ({consensus_mode_used}): {passes_with_core_chain}/{len(attempt_chain_ids)} "
             f"(required >= {required_core_chain_pass_support})\n"
             f"- Core-chain support by mode: exact={passes_with_core_chain_exact}, "
@@ -1737,14 +1863,26 @@ Only report findings at or above: {severity_threshold}
         verifier_reason = weak_consensus_reason or (
             "attempt outcome disagreement" if attempt_disagreement else ""
         )
-        stable_single_chain = (
-            len(pr_vulns) == 1
-            and passes_with_core_chain_family >= required_core_chain_pass_support
-            and passes_with_core_chain_flow >= required_core_chain_pass_support
+        stable_single_chain_with_core_evidence = _has_stable_single_chain_revalidation_support(
+            finding_count=len(pr_vulns),
+            family_support=passes_with_core_chain_family,
+            flow_support=passes_with_core_chain_flow,
+            revalidation_core_hits=revalidation_core_hits,
+            required_support=required_core_chain_pass_support,
         )
         should_run_verifier = bool(pr_vulns) and (
-            weak_consensus or (attempt_disagreement and not stable_single_chain)
+            (weak_consensus or attempt_disagreement) and not stable_single_chain_with_core_evidence
         )
+        if (
+            self.debug
+            and not should_run_verifier
+            and stable_single_chain_with_core_evidence
+            and (weak_consensus or attempt_disagreement)
+        ):
+            self.console.print(
+                "  🧪 Skipping verifier pass; single canonical chain has stable revalidation support",
+                style="dim",
+            )
         if should_run_verifier:
             if self.debug:
                 self.console.print(
@@ -1851,6 +1989,11 @@ Only report findings at or above: {severity_threshold}
                 f"final_post_filter={final_pr_finding_count}, "
                 f"attempt_counts={attempt_outcome_counts}, "
                 f"overwritten_attempts={attempts_with_overwritten_artifact}, "
+                f"revalidation_flags={attempt_revalidation_attempted}, "
+                f"core_evidence_flags={attempt_core_evidence_present}, "
+                f"revalidation_attempts={revalidation_attempts}, "
+                f"revalidation_core_hits={revalidation_core_hits}, "
+                f"revalidation_core_misses={revalidation_core_misses}, "
                 f"speculative_dropped={speculative_dropped}, "
                 f"subchain_collapsed={subchain_collapsed}, "
                 f"low_support_dropped={low_support_dropped}, "
@@ -2996,6 +3139,65 @@ def _count_passes_with_core_chains(core_chain_ids: set[str], pass_chain_ids: lis
     return sum(1 for ids in pass_chain_ids if ids.intersection(core_chain_ids))
 
 
+def _attempt_contains_core_chain_evidence(
+    *,
+    attempt_findings: list[dict],
+    expected_family_ids: set[str],
+    expected_flow_ids: set[str],
+) -> bool:
+    """Return True when an attempt confirms any expected core-chain family/flow ids."""
+    if not attempt_findings:
+        return False
+    if not expected_family_ids and not expected_flow_ids:
+        return True
+
+    attempt_family_ids = _collect_chain_family_ids(attempt_findings)
+    if expected_family_ids and attempt_family_ids.intersection(expected_family_ids):
+        return True
+
+    attempt_flow_ids = _collect_chain_flow_ids(attempt_findings)
+    if expected_flow_ids and attempt_flow_ids.intersection(expected_flow_ids):
+        return True
+
+    return False
+
+
+def _summarize_revalidation_support(
+    revalidation_attempted: list[bool],
+    core_evidence_present: list[bool],
+) -> tuple[int, int, int]:
+    """Return (attempts, hits, misses) for passes that required chain revalidation."""
+    attempts = 0
+    hits = 0
+    misses = 0
+    for attempted, has_core_evidence in zip(revalidation_attempted, core_evidence_present):
+        if not attempted:
+            continue
+        attempts += 1
+        if has_core_evidence:
+            hits += 1
+        else:
+            misses += 1
+    return attempts, hits, misses
+
+
+def _has_stable_single_chain_revalidation_support(
+    *,
+    finding_count: int,
+    family_support: int,
+    flow_support: int,
+    revalidation_core_hits: int,
+    required_support: int,
+) -> bool:
+    """Return True when a single canonical chain is stable enough to skip verifier churn."""
+    return (
+        finding_count == 1
+        and family_support >= required_support
+        and flow_support >= required_support
+        and revalidation_core_hits >= required_support
+    )
+
+
 def _summarize_chain_candidates_for_prompt(
     findings: list[dict],
     chain_support_counts: Dict[str, int],
@@ -3337,6 +3539,7 @@ def _build_pr_review_retry_suffix(
     auth_privilege_signals: bool = False,
     candidate_summary: str = "",
     force_chain_revalidation: bool = False,
+    require_candidate_revalidation: bool = False,
     pass_support_requirement: int = 2,
 ) -> str:
     """Return extra guidance used when retrying PR review with LLM."""
@@ -3354,6 +3557,7 @@ def _build_pr_review_retry_suffix(
     path_parser_hint = ""
     auth_privileged_hint = ""
     candidate_hint = ""
+    required_revalidation_hint = ""
     consensus_recovery_hint = ""
     if command_builder_signals:
         command_builder_hint = """
@@ -3390,6 +3594,13 @@ For each candidate above:
 - REFUTE it with concrete contradictory code evidence.
 Do not ignore previously validated candidates.
 """
+    if require_candidate_revalidation:
+        required_revalidation_hint = """
+
+## CORE CHAIN REVALIDATION REQUIREMENT
+This pass must explicitly CONFIRM or REFUTE at least one carried candidate chain with concrete code evidence.
+Do not return [] unless each carried candidate is explicitly disproved.
+"""
     if force_chain_revalidation:
         consensus_recovery_hint = f"""
 
@@ -3424,6 +3635,7 @@ Previous attempt was incomplete or inconclusive. Re-run the review with this str
 {path_parser_hint}
 {auth_privileged_hint}
 {candidate_hint}
+{required_revalidation_hint}
 {consensus_recovery_hint}
 {focus_block}
 """

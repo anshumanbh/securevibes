@@ -23,21 +23,24 @@ from securevibes.diff.parser import DiffContext, DiffFile, DiffHunk, DiffLine
 from securevibes.scanner.scanner import (
     Scanner,
     _adjudicate_consensus_support,
+    _attempt_contains_core_chain_evidence,
+    _attempts_show_pr_disagreement,
     _build_chain_flow_identity,
     _build_chain_family_identity,
     _build_chain_identity,
-    _canonicalize_finding_path,
     _build_pr_review_retry_suffix,
     _build_pr_retry_focus_plan,
+    _canonicalize_finding_path,
     _count_passes_with_core_chains,
     _detect_weak_chain_consensus,
     _diff_has_auth_privilege_signals,
     _diff_has_path_parser_signals,
     _derive_pr_default_grep_scope,
     _build_focused_diff_context,
-    _attempts_show_pr_disagreement,
     _extract_observed_pr_findings,
+    _has_stable_single_chain_revalidation_support,
     _merge_pr_attempt_findings,
+    _summarize_revalidation_support,
     _summarize_chain_candidates_for_prompt,
     _summarize_diff_hunk_snippets,
     dedupe_pr_vulns,
@@ -855,13 +858,29 @@ def test_pr_review_retry_suffix_includes_candidate_revalidation_block():
         focus_area="path_exfiltration",
         candidate_summary="- Chain A (src/a.ts:10, CWE-22, support=1/3)",
         force_chain_revalidation=True,
+        require_candidate_revalidation=True,
         pass_support_requirement=2,
     )
 
     assert "PRIOR HIGH-IMPACT CHAIN CANDIDATES TO RE-VALIDATE" in suffix
+    assert "CORE CHAIN REVALIDATION REQUIREMENT" in suffix
     assert "CONSENSUS RECOVERY MODE" in suffix
     assert "support=1/3" in suffix
     assert "At least 2 pass(es)" in suffix
+
+
+def test_pr_review_retry_suffix_requires_candidate_revalidation_without_consensus_mode():
+    """Candidate revalidation requirement should be enforced even without recovery mode."""
+    suffix = _build_pr_review_retry_suffix(
+        2,
+        focus_area="path_exfiltration",
+        candidate_summary="- Chain B (src/b.ts:42, CWE-94, support=2/2)",
+        require_candidate_revalidation=True,
+    )
+
+    assert "PRIOR HIGH-IMPACT CHAIN CANDIDATES TO RE-VALIDATE" in suffix
+    assert "CORE CHAIN REVALIDATION REQUIREMENT" in suffix
+    assert "CONSENSUS RECOVERY MODE" not in suffix
 
 
 def test_diff_signal_detectors_identify_path_and_auth_deltas():
@@ -1143,6 +1162,64 @@ def test_detect_weak_chain_consensus_accepts_family_variant_agreement():
     assert not weak
     assert support == 4
     assert reason == "stable"
+
+
+def test_attempt_contains_core_chain_evidence_matches_family_or_flow():
+    """Core evidence detection should accept either family or flow overlap."""
+    finding = {
+        "title": "Local file exfiltration via parser",
+        "file_path": "src/media/parse.ts",
+        "line_number": 29,
+        "cwe_id": "CWE-22",
+        "evidence": "flow: src/media/parse.ts:29 -> src/media/store.ts:91 -> src/media/server.ts:28",
+    }
+    family_id = _build_chain_family_identity(finding)
+    flow_id = _build_chain_flow_identity(finding)
+
+    assert _attempt_contains_core_chain_evidence(
+        attempt_findings=[finding],
+        expected_family_ids={family_id},
+        expected_flow_ids=set(),
+    )
+    assert _attempt_contains_core_chain_evidence(
+        attempt_findings=[finding],
+        expected_family_ids=set(),
+        expected_flow_ids={flow_id},
+    )
+    assert not _attempt_contains_core_chain_evidence(
+        attempt_findings=[finding],
+        expected_family_ids={"src/other.ts|path_file_chain"},
+        expected_flow_ids={"src/other.ts|file_host_sink|path_file_chain"},
+    )
+
+
+def test_summarize_revalidation_support_counts_hits_and_misses():
+    """Revalidation summary should report attempts, hits, and misses correctly."""
+    attempts, hits, misses = _summarize_revalidation_support(
+        revalidation_attempted=[False, True, True, True],
+        core_evidence_present=[False, True, False, True],
+    )
+    assert attempts == 3
+    assert hits == 2
+    assert misses == 1
+
+
+def test_has_stable_single_chain_revalidation_support_requires_all_support_axes():
+    """Stable single-chain verifier skip should require family, flow, and revalidation support."""
+    assert _has_stable_single_chain_revalidation_support(
+        finding_count=1,
+        family_support=2,
+        flow_support=2,
+        revalidation_core_hits=2,
+        required_support=2,
+    )
+    assert not _has_stable_single_chain_revalidation_support(
+        finding_count=1,
+        family_support=2,
+        flow_support=2,
+        revalidation_core_hits=1,
+        required_support=2,
+    )
 
 
 def test_summarize_chain_candidates_for_prompt_includes_support_counts():
@@ -1660,6 +1737,9 @@ async def test_pr_review_empty_follow_up_attempt_is_logged_without_warning(
     assert "passes_with_core_chain_flow=" in console_text
     assert "consensus_mode_used=" in console_text
     assert "dropped_as_secondary_chain=" in console_text
+    assert "revalidation_attempts=" in console_text
+    assert "revalidation_core_hits=" in console_text
+    assert "revalidation_core_misses=" in console_text
 
 
 @pytest.mark.asyncio
