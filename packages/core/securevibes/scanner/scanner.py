@@ -1765,16 +1765,16 @@ Only report findings at or above: {severity_threshold}
             )
             self.console.print(
                 "  PR review attempt summary: "
-                f"{attempts_run}/{pr_review_attempts} attempts, "
-                f"{raw_pr_finding_count} raw finding(s), "
-                f"{merged_pr_finding_count} canonical chain(s), "
-                f"{final_pr_finding_count} final finding(s) after baseline dedupe, "
+                f"attempts={attempts_run}/{pr_review_attempts}, "
+                f"raw_findings={raw_pr_finding_count}, "
+                f"canonical_pre_filter={canonical_chain_count}, "
+                f"post_quality_filter_before_baseline={merged_pr_finding_count}, "
+                f"final_post_filter={final_pr_finding_count}, "
                 f"attempt_counts={attempt_outcome_counts}, "
                 f"overwritten_attempts={attempts_with_overwritten_artifact}, "
                 f"speculative_dropped={speculative_dropped}, "
                 f"subchain_collapsed={subchain_collapsed}, "
                 f"low_support_dropped={low_support_dropped}, "
-                f"canonical_chain_count={canonical_chain_count}, "
                 f"passes_with_core_chain={passes_with_core_chain}, "
                 f"consensus_score={consensus_score:.2f}, "
                 f"weak_consensus_triggered={weak_consensus_triggered}, "
@@ -2563,6 +2563,43 @@ _CHAIN_ID_STOPWORDS = {
     "vulnerability",
     "security",
 }
+_CHAIN_FAMILY_PATH_TERMS = (
+    "path traversal",
+    "file exfiltration",
+    "local file",
+    "file://",
+    "copyfile",
+    "fs.copyfile",
+    "fs.stat",
+    "sendfile",
+    "/media/",
+    "media/:id",
+    "download",
+    "upload",
+)
+_CHAIN_FAMILY_COMMAND_TERMS = (
+    "option injection",
+    "argument injection",
+    "argv",
+    "proxycommand",
+    "missing --",
+    "without --",
+    "/bin/sh",
+    "sh -c",
+    "exec(",
+    "spawn(",
+    "ssh",
+    "command injection",
+)
+_CHAIN_FAMILY_AUTH_TERMS = (
+    "unauth",
+    "auth bypass",
+    "allowfrom",
+    "privilege",
+    "role check",
+    "permission",
+    "origin check",
+)
 
 
 def _coerce_line_number(value: object) -> int:
@@ -2592,6 +2629,81 @@ def _chain_text_tokens(value: object, *, max_tokens: int = 5) -> tuple[str, ...]
         if len(token) >= 4 and token not in _CHAIN_ID_STOPWORDS and not token.isdigit()
     ]
     return tuple(filtered[:max_tokens])
+
+
+def _finding_text(entry: dict, *, fields: tuple[str, ...]) -> str:
+    """Return normalized lowercase joined finding fields for identity heuristics."""
+    if not isinstance(entry, dict):
+        return ""
+    return " ".join(str(entry.get(field, "")) for field in fields).strip().lower()
+
+
+def _extract_finding_locations(entry: dict) -> tuple[str, ...]:
+    """Extract canonicalized code file locations referenced in finding text."""
+    text = _finding_text(entry, fields=("evidence", "attack_scenario", "description"))
+    if not text:
+        return tuple()
+    raw_matches = re.findall(r"([a-z0-9_./\\-]+\.[a-z0-9_]+)(?::\d+)?", text)
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_path in raw_matches:
+        normalized_path = _canonicalize_finding_path(raw_path)
+        if not normalized_path or normalized_path in seen:
+            continue
+        normalized.append(normalized_path)
+        seen.add(normalized_path)
+    return tuple(normalized)
+
+
+def _extract_finding_routes(entry: dict) -> tuple[str, ...]:
+    """Extract route-like anchors referenced in finding text."""
+    text = _finding_text(entry, fields=("title", "description", "attack_scenario", "evidence"))
+    if not text:
+        return tuple()
+    routes: list[str] = []
+    seen: set[str] = set()
+    for match in re.findall(r"/[a-z0-9_:\-/.]+", text):
+        if len(match) < 3 or match in seen:
+            continue
+        routes.append(match)
+        seen.add(match)
+    return tuple(routes)
+
+
+def _extract_chain_sink_anchor(entry: dict) -> str:
+    """Return the most stable sink-ish anchor for a finding family."""
+    primary_path = _canonicalize_finding_path(entry.get("file_path"))
+    locations = _extract_finding_locations(entry)
+    non_primary_locations = [location for location in locations if location != primary_path]
+    if non_primary_locations:
+        return non_primary_locations[-1]
+    if locations:
+        return locations[-1]
+    routes = _extract_finding_routes(entry)
+    if routes:
+        return routes[-1]
+    return ""
+
+
+def _infer_chain_family_class(entry: dict) -> str:
+    """Infer a coarse exploit-chain family class from finding content."""
+    text = _finding_text(entry, fields=("title", "description", "attack_scenario", "evidence"))
+    cwe_family = _extract_cwe_family(entry.get("cwe_id"))
+    if any(term in text for term in _CHAIN_FAMILY_COMMAND_TERMS):
+        return "command_chain"
+    if any(term in text for term in _CHAIN_FAMILY_PATH_TERMS):
+        return "path_file_chain"
+    if any(term in text for term in _CHAIN_FAMILY_AUTH_TERMS):
+        return "auth_priv_chain"
+
+    if cwe_family in {"22", "23", "36", "61", "73"}:
+        return "path_file_chain"
+    if cwe_family in {"77", "78", "88"}:
+        return "command_chain"
+    if cwe_family in {"28", "30", "86"}:
+        return "auth_priv_chain"
+
+    return f"cwe_{cwe_family}" if cwe_family else "generic_chain"
 
 
 def _canonicalize_finding_path(value: object) -> str:
@@ -2640,11 +2752,52 @@ def _build_chain_identity(entry: dict) -> str:
     )
 
 
+def _build_chain_family_identity(entry: dict) -> str:
+    """Build stable exploit-chain family identity for cross-pass consensus support."""
+    if not isinstance(entry, dict):
+        return ""
+
+    path = _canonicalize_finding_path(entry.get("file_path"))
+    chain_class = _infer_chain_family_class(entry)
+
+    if not path:
+        line_number = _coerce_line_number(entry.get("line_number"))
+        line_bucket = f"line{line_number // 40}" if line_number > 0 else "line_x"
+        sink_anchor = _extract_chain_sink_anchor(entry)
+        location_anchor = sink_anchor or line_bucket
+        if sink_anchor:
+            return "|".join(
+                [
+                    "unknown",
+                    location_anchor,
+                    chain_class or "generic_chain",
+                ]
+            )
+        title_tokens = _chain_text_tokens(entry.get("title"), max_tokens=3)
+        if not title_tokens:
+            return ""
+        location_anchor = ".".join(title_tokens)
+        return "|".join(
+            [
+                "unknown",
+                location_anchor,
+                chain_class or "generic_chain",
+            ]
+        )
+
+    return "|".join(
+        [
+            path,
+            chain_class or "generic_chain",
+        ]
+    )
+
+
 def _collect_chain_ids(findings: list[dict]) -> set[str]:
-    """Collect unique chain identities for a set of findings."""
+    """Collect unique stable chain-family identities for a set of findings."""
     chain_ids: set[str] = set()
     for finding in findings:
-        chain_id = _build_chain_identity(finding)
+        chain_id = _build_chain_family_identity(finding)
         if chain_id:
             chain_ids.add(chain_id)
     return chain_ids
@@ -2671,7 +2824,7 @@ def _summarize_chain_candidates_for_prompt(
 
     lines: list[str] = []
     for finding in findings[:max_items]:
-        chain_id = _build_chain_identity(finding)
+        chain_id = _build_chain_family_identity(finding)
         support = chain_support_counts.get(chain_id, 0) if chain_id else 0
         path = _canonicalize_finding_path(finding.get("file_path")) or "unknown"
         line_no = _coerce_line_number(finding.get("line_number"))
@@ -3326,8 +3479,13 @@ def _merge_pr_attempt_findings(
     def _entry_quality(entry: dict) -> tuple[int, int, int, int, int, int, int, int]:
         severity = severity_rank.get(str(entry.get("severity", "")).strip().lower(), 0)
         finding_type = finding_type_rank.get(str(entry.get("finding_type", "")).strip().lower(), 0)
-        chain_identity = _build_chain_identity(entry)
-        chain_support = chain_support_counts.get(chain_identity, 0) if chain_support_counts else 0
+        chain_support = 0
+        if chain_support_counts:
+            chain_family_id = _build_chain_family_identity(entry)
+            chain_identity = _build_chain_identity(entry)
+            chain_support = chain_support_counts.get(
+                chain_family_id, 0
+            ) or chain_support_counts.get(chain_identity, 0)
         contradiction_penalty = (
             max(total_attempts - chain_support, 0)
             if total_attempts > 0 and chain_support > 0
@@ -3353,6 +3511,9 @@ def _merge_pr_attempt_findings(
     def _chain_support(entry: dict) -> int:
         if not chain_support_counts:
             return 0
+        chain_family_id = _build_chain_family_identity(entry)
+        if chain_family_id and chain_family_id in chain_support_counts:
+            return chain_support_counts[chain_family_id]
         chain_identity = _build_chain_identity(entry)
         if not chain_identity:
             return 0

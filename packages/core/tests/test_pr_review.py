@@ -22,6 +22,7 @@ from securevibes.diff.context import (
 from securevibes.diff.parser import DiffContext, DiffFile, DiffHunk, DiffLine
 from securevibes.scanner.scanner import (
     Scanner,
+    _build_chain_family_identity,
     _build_chain_identity,
     _canonicalize_finding_path,
     _build_pr_review_retry_suffix,
@@ -689,17 +690,17 @@ def test_merge_pr_attempt_findings_drops_low_support_noise_when_core_is_repeated
             "2) Parser preserves some chars. "
             "3) Downstream formatting behavior changes."
         ),
-        "evidence": "flow: src/media/parse.ts:41 -> src/auto-reply/reply.ts:461",
+        "evidence": "flow: src/media/format.ts:41 -> src/auto-reply/reply.ts:461",
         "severity": "medium",
         "finding_type": "regression",
-        "file_path": "src/media/parse.ts",
+        "file_path": "src/media/format.ts",
         "line_number": 41,
         "cwe_id": "CWE-93",
     }
     merge_stats: dict[str, int] = {}
     chain_support_counts = {
-        _build_chain_identity(core_finding): 3,
-        _build_chain_identity(noisy_finding): 1,
+        _build_chain_family_identity(core_finding): 3,
+        _build_chain_family_identity(noisy_finding): 1,
     }
 
     merged = _merge_pr_attempt_findings(
@@ -919,6 +920,55 @@ def test_chain_identity_and_core_pass_support_tracking():
     assert _count_passes_with_core_chains({chain_id}, pass_chain_ids) == 2
 
 
+def test_chain_family_identity_stable_across_wording_and_cwe_variants():
+    """Same sink chain should share family identity across wording/CWE drift."""
+    finding_a = {
+        "title": "Path traversal via parser enables exfiltration",
+        "description": "MEDIA path reaches local file copy and unauthenticated media route.",
+        "attack_scenario": "1) Inject MEDIA path 2) copied 3) served over /media/:id.",
+        "evidence": "flow: src/media/parse.ts:29 -> src/media/store.ts:91 -> src/media/server.ts:28",
+        "file_path": "src/media/parse.ts",
+        "line_number": 29,
+        "cwe_id": "CWE-22",
+    }
+    finding_b = {
+        "title": "Exported parser can be reused in future contexts",
+        "description": "Threat enabler chain still reaches saveMediaSource and media server sink.",
+        "attack_scenario": "1) Future caller uses parser 2) same sink chain exfiltrates file.",
+        "evidence": "src/media/parse.ts:11 export; flow to src/media/store.ts:91 and src/media/server.ts:28",
+        "file_path": "src/media/parse.ts",
+        "line_number": 11,
+        "cwe_id": "CWE-610",
+    }
+
+    assert _build_chain_family_identity(finding_a)
+    assert _build_chain_family_identity(finding_a) == _build_chain_family_identity(finding_b)
+
+
+def test_chain_family_support_counts_semantically_equivalent_pass_outputs():
+    """Pass support should count semantically equivalent chain variants."""
+    finding_a = {
+        "title": "Local file exfiltration via parser",
+        "file_path": "src/media/parse.ts",
+        "line_number": 29,
+        "cwe_id": "CWE-22",
+        "evidence": "flow: src/media/parse.ts:29 -> src/media/store.ts:91 -> src/media/server.ts:28",
+    }
+    finding_b = {
+        "title": "Parser export threat enabler for same exfil chain",
+        "file_path": "src/media/parse.ts",
+        "line_number": 11,
+        "cwe_id": "CWE-610",
+        "evidence": "src/media/parse.ts:11 export; flow to src/media/store.ts:91 and src/media/server.ts:28",
+    }
+    family_id_a = _build_chain_family_identity(finding_a)
+    family_id_b = _build_chain_family_identity(finding_b)
+    assert family_id_a == family_id_b
+
+    pass_chain_ids = [{family_id_a}, {family_id_b}, set(), {family_id_a}]
+    assert _count_passes_with_core_chains({family_id_a}, pass_chain_ids) == 3
+
+
 def test_canonicalize_finding_path_normalizes_absolute_repo_suffix():
     """Absolute finding paths should normalize to repo-style suffix for dedupe."""
     path = _canonicalize_finding_path("/Users/test/repos/openclaw/src/media/parse.ts")
@@ -978,6 +1028,36 @@ def test_detect_weak_chain_consensus_requires_minimum_support():
     assert stable_reason == "stable"
 
 
+def test_detect_weak_chain_consensus_accepts_family_variant_agreement():
+    """Family-equivalent variants across passes should not trigger weak consensus."""
+    core_finding = {
+        "title": "Path traversal exfiltration chain",
+        "file_path": "src/media/parse.ts",
+        "line_number": 29,
+        "cwe_id": "CWE-22",
+        "evidence": "flow: src/media/parse.ts:29 -> src/media/store.ts:91 -> src/media/server.ts:28",
+    }
+    variant_finding = {
+        "title": "Parser export enables same exfiltration sink",
+        "file_path": "src/media/parse.ts",
+        "line_number": 11,
+        "cwe_id": "CWE-610",
+        "evidence": "src/media/parse.ts:11 export; flow to src/media/store.ts:91 and src/media/server.ts:28",
+    }
+    core_family = _build_chain_family_identity(core_finding)
+    variant_family = _build_chain_family_identity(variant_finding)
+    assert core_family == variant_family
+
+    weak, reason, support = _detect_weak_chain_consensus(
+        core_chain_ids={core_family},
+        pass_chain_ids=[{core_family}, {variant_family}, {core_family}, {variant_family}],
+        required_support=2,
+    )
+    assert not weak
+    assert support == 4
+    assert reason == "stable"
+
+
 def test_summarize_chain_candidates_for_prompt_includes_support_counts():
     """Candidate summary should include location and pass support for carry-forward prompts."""
     finding = {
@@ -986,7 +1066,7 @@ def test_summarize_chain_candidates_for_prompt_includes_support_counts():
         "line_number": 29,
         "cwe_id": "CWE-22",
     }
-    chain_id = _build_chain_identity(finding)
+    chain_id = _build_chain_family_identity(finding)
     summary = _summarize_chain_candidates_for_prompt(
         findings=[finding],
         chain_support_counts={chain_id: 2},
@@ -1482,6 +1562,8 @@ async def test_pr_review_empty_follow_up_attempt_is_logged_without_warning(
     assert "no new findings" in console_text
     assert "cumulative remains 1" in console_text
     assert "PR review attempt summary:" in console_text
+    assert "canonical_pre_filter=" in console_text
+    assert "final_post_filter=" in console_text
 
 
 @pytest.mark.asyncio
