@@ -22,8 +22,12 @@ from securevibes.diff.context import (
 from securevibes.diff.parser import DiffContext, DiffFile, DiffHunk, DiffLine
 from securevibes.scanner.scanner import (
     Scanner,
+    _build_chain_identity,
+    _canonicalize_finding_path,
     _build_pr_review_retry_suffix,
     _build_pr_retry_focus_plan,
+    _count_passes_with_core_chains,
+    _detect_weak_chain_consensus,
     _diff_has_auth_privilege_signals,
     _diff_has_path_parser_signals,
     _derive_pr_default_grep_scope,
@@ -31,6 +35,7 @@ from securevibes.scanner.scanner import (
     _attempts_show_pr_disagreement,
     _extract_observed_pr_findings,
     _merge_pr_attempt_findings,
+    _summarize_chain_candidates_for_prompt,
     _summarize_diff_hunk_snippets,
     dedupe_pr_vulns,
     filter_baseline_vulns,
@@ -608,6 +613,22 @@ def test_pr_review_retry_suffix_respects_explicit_focus_area():
     assert "FOCUS AREA: AUTH + PRIVILEGED OPERATION CHAINING" in suffix
 
 
+def test_pr_review_retry_suffix_includes_candidate_revalidation_block():
+    """Retry guidance should carry forward prior candidate chains when provided."""
+    suffix = _build_pr_review_retry_suffix(
+        4,
+        focus_area="path_exfiltration",
+        candidate_summary="- Chain A (src/a.ts:10, CWE-22, support=1/3)",
+        force_chain_revalidation=True,
+        pass_support_requirement=2,
+    )
+
+    assert "PRIOR HIGH-IMPACT CHAIN CANDIDATES TO RE-VALIDATE" in suffix
+    assert "CONSENSUS RECOVERY MODE" in suffix
+    assert "support=1/3" in suffix
+    assert "At least 2 pass(es)" in suffix
+
+
 def test_diff_signal_detectors_identify_path_and_auth_deltas():
     """Path and auth/privilege signal helpers should detect high-risk changed hunks."""
     context = DiffContext(
@@ -690,6 +711,98 @@ def test_extract_observed_pr_findings_reads_hook_observer_payload():
 
     assert len(observed) == 2
     assert observed[0]["title"] == "A"
+
+
+def test_chain_identity_and_core_pass_support_tracking():
+    """Chain identity helpers should compute pass-level support counts consistently."""
+    finding = {
+        "title": "Local file exfiltration via media path parsing",
+        "file_path": "src/media/parse.ts",
+        "line_number": 29,
+        "cwe_id": "CWE-22",
+    }
+    chain_id = _build_chain_identity(finding)
+    assert chain_id
+
+    pass_chain_ids = [{chain_id}, set(), {chain_id}]
+    assert _count_passes_with_core_chains({chain_id}, pass_chain_ids) == 2
+
+
+def test_canonicalize_finding_path_normalizes_absolute_repo_suffix():
+    """Absolute finding paths should normalize to repo-style suffix for dedupe."""
+    path = _canonicalize_finding_path("/Users/test/repos/openclaw/src/media/parse.ts")
+    assert path == "src/media/parse.ts"
+
+
+def test_merge_pr_attempt_findings_collapses_absolute_relative_path_duplicates():
+    """Same chain reported with absolute vs relative path should dedupe to one finding."""
+    merged = _merge_pr_attempt_findings(
+        [
+            {
+                "title": "Path traversal via MEDIA token",
+                "description": "Parser accepts local file paths without canonicalization.",
+                "attack_scenario": "1) Inject MEDIA path 2) file copied 3) served back.",
+                "evidence": "flow: parse -> store -> server",
+                "severity": "high",
+                "finding_type": "known_vuln",
+                "file_path": "src/media/parse.ts",
+                "line_number": 29,
+                "cwe_id": "CWE-22",
+            },
+            {
+                "title": "Path traversal via MEDIA token",
+                "description": "Parser accepts local file paths without canonicalization.",
+                "attack_scenario": "1) Inject MEDIA path 2) file copied 3) served back.",
+                "evidence": "flow: parse -> store -> server",
+                "severity": "high",
+                "finding_type": "known_vuln",
+                "file_path": "/Users/test/repos/openclaw/src/media/parse.ts",
+                "line_number": 29,
+                "cwe_id": "CWE-22",
+            },
+        ]
+    )
+    assert len(merged) == 1
+
+
+def test_detect_weak_chain_consensus_requires_minimum_support():
+    """Weak consensus should trigger when core chains are not independently repeated."""
+    core_chain_ids = {"src/media/parse.ts|22|1|local.file.exfiltration"}
+    weak, reason, support = _detect_weak_chain_consensus(
+        core_chain_ids=core_chain_ids,
+        pass_chain_ids=[set(core_chain_ids), set(), set()],
+        required_support=2,
+    )
+    assert weak
+    assert support == 1
+    assert "core_support" in reason
+
+    stable, stable_reason, stable_support = _detect_weak_chain_consensus(
+        core_chain_ids=core_chain_ids,
+        pass_chain_ids=[set(core_chain_ids), set(core_chain_ids), set(core_chain_ids)],
+        required_support=2,
+    )
+    assert not stable
+    assert stable_support == 3
+    assert stable_reason == "stable"
+
+
+def test_summarize_chain_candidates_for_prompt_includes_support_counts():
+    """Candidate summary should include location and pass support for carry-forward prompts."""
+    finding = {
+        "title": "Local file exfiltration via parser",
+        "file_path": "src/media/parse.ts",
+        "line_number": 29,
+        "cwe_id": "CWE-22",
+    }
+    chain_id = _build_chain_identity(finding)
+    summary = _summarize_chain_candidates_for_prompt(
+        findings=[finding],
+        chain_support_counts={chain_id: 2},
+        attempts_observed=3,
+    )
+    assert "support=" in summary
+    assert "src/media/parse.ts:29" in summary
 
 
 def test_filter_baseline_vulns_normalizes_finding_type():

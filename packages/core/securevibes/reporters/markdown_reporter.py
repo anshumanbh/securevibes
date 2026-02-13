@@ -372,13 +372,23 @@ class MarkdownReporter:
         """
         import re
 
-        # If already well-formatted (has newlines with numbers), return as-is
-        if re.search(r"\n\d+\.", recommendation):
-            return recommendation
+        raw = recommendation or ""
+        if not raw.strip():
+            return raw
+
+        normalized = raw.strip()
+        # Fix malformed lead like "9. 2) ..." produced by some LLM outputs.
+        normalized = re.sub(r"^\s*\d+\.\s+(\d+)\)\s+", r"\1. ", normalized)
+        # Normalize parenthesized enumerations: "1) item" -> "1. item".
+        normalized = re.sub(r"(?<!\d)(\d+)\)\s+", r"\1. ", normalized)
+
+        # If already well-formatted multiline list, keep ordering and line breaks intact.
+        if re.search(r"\n\d+\.\s", normalized):
+            return normalized
 
         # Split on numbered patterns: "1. ", "2. ", etc.
         # Use lookahead to keep the number
-        items = re.split(r"(?=\d+\.\s+)", recommendation.strip())
+        items = re.split(r"(?=\d+\.\s+)", normalized)
         items = [item.strip() for item in items if item.strip()]
 
         # Check if any items start with numbered pattern
@@ -386,7 +396,7 @@ class MarkdownReporter:
 
         if not has_numbered_items or len(items) == 0:
             # No numbered list detected, return as-is
-            return recommendation
+            return normalized
 
         # Format each item
         formatted_items = []

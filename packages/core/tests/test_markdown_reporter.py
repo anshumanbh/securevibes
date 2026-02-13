@@ -523,3 +523,19 @@ class TestMarkdownRecommendationFormatter:
 
         # Single item might not get split but should still format code
         assert "1." in result
+
+    def test_formats_parenthesized_numbering(self):
+        """Test normalizing 1) 2) style recommendations."""
+        input_text = "1) First item. 2) Second item."
+        result = MarkdownReporter._format_recommendation(input_text)
+
+        assert "1. First item." in result
+        assert "2. Second item." in result
+
+    def test_fixes_malformed_leading_number_artifact(self):
+        """Test sanitizing malformed prefixes like '9. 2)' seen in noisy outputs."""
+        input_text = "9. 2) Only accept https URLs. 3) Add safe-root checks."
+        result = MarkdownReporter._format_recommendation(input_text)
+
+        assert "9. 2)" not in result
+        assert "2. Only accept https URLs." in result

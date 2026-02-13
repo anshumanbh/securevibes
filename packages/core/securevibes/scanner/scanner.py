@@ -340,6 +340,7 @@ async def _refine_pr_findings_with_llm(
     focus_areas: Optional[list[str]] = None,
     mode: str = "quality",
     attempt_observability: str = "",
+    consensus_context: str = "",
 ) -> Optional[list[dict]]:
     """Use an LLM-only quality pass to keep concrete exploit-primitive findings."""
     if not findings:
@@ -372,6 +373,8 @@ Rewrite the candidate findings into a final canonical set using these rules:
 - Never invent vulnerabilities not supported by diff context.
 - Use threat-delta reasoning: validate attacker entrypoint -> trust boundary -> privileged sink impact.
 - Treat baseline overlap/hardening observations as secondary unless they form a concrete exploit chain.
+- If prior attempts disagree, resolve each contradiction explicitly instead of dropping findings silently.
+- Do not return [] while unresolved candidate exploit chains remain.
 
 Cross-domain exploit checks:
 - For command/CLI helper diffs, verify whether attacker-controlled host/target values can become CLI options.
@@ -387,6 +390,9 @@ Prioritized focus areas:
 
 Attempt observability notes:
 {attempt_observability or "- None"}
+
+Cross-pass consensus context:
+{consensus_context or "- None"}
 
 CHANGED LINE ANCHORS:
 {diff_line_anchors}
@@ -1245,6 +1251,55 @@ Only report findings at or above: {severity_threshold}
         attempt_finding_counts: list[int] = []
         attempt_observed_counts: list[int] = []
         attempt_focus_areas: list[str] = []
+        attempt_chain_ids: list[set[str]] = []
+        chain_support_counts: Dict[str, int] = {}
+        carry_forward_candidate_summary = ""
+        required_core_chain_pass_support = 2
+        consensus_recovery_next_pass = False
+        weak_consensus_reason = ""
+        weak_consensus_triggered = False
+
+        def _record_attempt_chains(attempt_findings: list[dict]) -> None:
+            canonical_attempt = _merge_pr_attempt_findings(attempt_findings)
+            chain_ids = _collect_chain_ids(canonical_attempt)
+            attempt_chain_ids.append(chain_ids)
+            for chain_id in chain_ids:
+                chain_support_counts[chain_id] = chain_support_counts.get(chain_id, 0) + 1
+
+        def _refresh_carry_forward_candidates() -> None:
+            nonlocal carry_forward_candidate_summary
+            cumulative_candidates = _merge_pr_attempt_findings(
+                [*collected_pr_vulns, *ephemeral_pr_vulns],
+                chain_support_counts=chain_support_counts,
+                total_attempts=len(attempt_chain_ids),
+            )
+            carry_forward_candidate_summary = _summarize_chain_candidates_for_prompt(
+                cumulative_candidates,
+                chain_support_counts,
+                len(attempt_chain_ids),
+            )
+
+        def _maybe_schedule_consensus_recovery(attempt_num: int) -> None:
+            nonlocal consensus_recovery_next_pass, weak_consensus_reason, weak_consensus_triggered
+            if attempt_num < 3 or attempt_num >= pr_review_attempts:
+                return
+            if not chain_support_counts:
+                return
+            top_support = max(chain_support_counts.values(), default=0)
+            if top_support >= required_core_chain_pass_support:
+                return
+            weak_consensus_reason = (
+                f"top_chain_support={top_support}/{len(attempt_chain_ids)} "
+                f"(requires >= {required_core_chain_pass_support})"
+            )
+            weak_consensus_triggered = True
+            consensus_recovery_next_pass = True
+            if self.debug:
+                self.console.print(
+                    "  🧪 Weak chain consensus detected; scheduling next pass for "
+                    f"candidate re-validation ({weak_consensus_reason})",
+                    style="dim",
+                )
 
         for attempt_idx in range(pr_review_attempts):
             attempt_num = attempt_idx + 1
@@ -1263,11 +1318,19 @@ Only report findings at or above: {severity_threshold}
                     focus_area=retry_focus_area,
                     path_parser_signals=path_parser_signals,
                     auth_privilege_signals=auth_privilege_signals,
+                    candidate_summary=carry_forward_candidate_summary,
+                    force_chain_revalidation=consensus_recovery_next_pass,
+                    pass_support_requirement=required_core_chain_pass_support,
                 )
                 if self.debug and retry_focus_area:
                     self.console.print(
                         f"  🎯 PR pass {attempt_num}/{pr_review_attempts} focus: "
                         f"{_focus_area_label(retry_focus_area)}",
+                        style="dim",
+                    )
+                if self.debug and consensus_recovery_next_pass:
+                    self.console.print(
+                        "  🧪 PR pass entering consensus recovery mode to re-validate top chains",
                         style="dim",
                     )
                 try:
@@ -1278,6 +1341,7 @@ Only report findings at or above: {severity_threshold}
             agents = create_agent_definitions(cli_model=self.model)
             attempt_prompt = f"{contextualized_prompt}{retry_suffix}"
             agents["pr-code-review"].prompt = attempt_prompt
+            consensus_recovery_next_pass = False
 
             tracker = ProgressTracker(
                 self.console, debug=self.debug, single_subagent="pr-code-review"
@@ -1360,6 +1424,13 @@ Only report findings at or above: {severity_threshold}
                             f"while final artifact had {attempt_finding_count}.",
                             style="dim",
                         )
+                effective_attempt_vulns = (
+                    observed_vulns if len(observed_vulns) > attempt_finding_count else loaded_vulns
+                )
+                _record_attempt_chains(effective_attempt_vulns)
+                if effective_attempt_vulns:
+                    _refresh_carry_forward_candidates()
+                _maybe_schedule_consensus_recovery(attempt_num)
                 continue
             except Exception as e:
                 attempt_warning = (
@@ -1390,6 +1461,13 @@ Only report findings at or above: {severity_threshold}
                             f"while final artifact had {attempt_finding_count}.",
                             style="dim",
                         )
+                effective_attempt_vulns = (
+                    observed_vulns if len(observed_vulns) > attempt_finding_count else loaded_vulns
+                )
+                _record_attempt_chains(effective_attempt_vulns)
+                if effective_attempt_vulns:
+                    _refresh_carry_forward_candidates()
+                _maybe_schedule_consensus_recovery(attempt_num)
                 continue
 
             loaded_vulns, load_warning = _load_pr_vulnerabilities_artifact(
@@ -1413,6 +1491,10 @@ Only report findings at or above: {severity_threshold}
                             f"{len(observed_vulns)} finding(s).",
                             style="dim",
                         )
+                _record_attempt_chains(observed_vulns)
+                if observed_vulns:
+                    _refresh_carry_forward_candidates()
+                _maybe_schedule_consensus_recovery(attempt_num)
                 continue
 
             artifact_loaded = True
@@ -1430,8 +1512,16 @@ Only report findings at or above: {severity_threshold}
                         f"while final artifact had {attempt_finding_count}.",
                         style="dim",
                     )
+            effective_attempt_vulns = (
+                observed_vulns if len(observed_vulns) > attempt_finding_count else loaded_vulns
+            )
+            _record_attempt_chains(effective_attempt_vulns)
+            if effective_attempt_vulns:
+                _refresh_carry_forward_candidates()
+            _maybe_schedule_consensus_recovery(attempt_num)
             if attempt_finding_count:
                 collected_pr_vulns.extend(loaded_vulns)
+                _refresh_carry_forward_candidates()
                 if self.debug:
                     self.console.print(
                         f"  PR pass {attempt_num}/{pr_review_attempts}: "
@@ -1489,23 +1579,51 @@ Only report findings at or above: {severity_threshold}
         raw_candidates = [*collected_pr_vulns, *ephemeral_pr_vulns]
         raw_pr_finding_count = len(raw_candidates)
         merge_stats: Dict[str, int] = {}
-        pr_vulns = _merge_pr_attempt_findings(raw_candidates, merge_stats=merge_stats)
+        pr_vulns = _merge_pr_attempt_findings(
+            raw_candidates,
+            merge_stats=merge_stats,
+            chain_support_counts=chain_support_counts,
+            total_attempts=len(attempt_chain_ids),
+        )
 
         attempt_outcome_counts = attempt_observed_counts or attempt_finding_counts
         attempt_disagreement = _attempts_show_pr_disagreement(attempt_outcome_counts)
         high_risk_signal_count = sum(
             [command_builder_signals, path_parser_signals, auth_privilege_signals]
         )
+        initial_core_chain_ids = _collect_chain_ids(pr_vulns)
+        weak_consensus, detected_reason, passes_with_core_chain = _detect_weak_chain_consensus(
+            core_chain_ids=initial_core_chain_ids,
+            pass_chain_ids=attempt_chain_ids,
+            required_support=required_core_chain_pass_support,
+        )
+        if weak_consensus and detected_reason and not weak_consensus_reason:
+            weak_consensus_reason = detected_reason
+        weak_consensus_triggered = weak_consensus_triggered or weak_consensus
+        consensus_score = (
+            passes_with_core_chain / len(attempt_chain_ids) if attempt_chain_ids else 0.0
+        )
+        candidate_consensus_context = _summarize_chain_candidates_for_prompt(
+            pr_vulns,
+            chain_support_counts,
+            len(attempt_chain_ids),
+        )
         attempt_observability_notes = (
             f"- Attempt final artifact finding counts: {attempt_finding_counts}\n"
             f"- Attempt observed finding counts (including overwritten writes): {attempt_outcome_counts}\n"
             f"- Attempts with overwritten/non-final findings: {attempts_with_overwritten_artifact}\n"
-            f"- Ephemeral candidate findings captured from write logs: {len(ephemeral_pr_vulns)}"
+            f"- Ephemeral candidate findings captured from write logs: {len(ephemeral_pr_vulns)}\n"
+            f"- Core-chain pass support: {passes_with_core_chain}/{len(attempt_chain_ids)} "
+            f"(required >= {required_core_chain_pass_support})\n"
+            f"- Weak consensus trigger: {weak_consensus} ({weak_consensus_reason or detected_reason})"
         )
         refinement_focus_areas = attempt_focus_areas or retry_focus_plan
 
         should_refine = bool(pr_vulns) and (
-            high_risk_signal_count > 0 or attempt_disagreement or len(pr_vulns) > 1
+            high_risk_signal_count > 0
+            or attempt_disagreement
+            or weak_consensus
+            or len(pr_vulns) > 1
         )
         if should_refine:
             if self.debug:
@@ -1523,11 +1641,15 @@ Only report findings at or above: {severity_threshold}
                 focus_areas=refinement_focus_areas,
                 mode="quality",
                 attempt_observability=attempt_observability_notes,
+                consensus_context=candidate_consensus_context,
             )
             if refined_pr_vulns is not None:
                 refined_merge_stats: Dict[str, int] = {}
                 refined_canonical = _merge_pr_attempt_findings(
-                    refined_pr_vulns, merge_stats=refined_merge_stats
+                    refined_pr_vulns,
+                    merge_stats=refined_merge_stats,
+                    chain_support_counts=chain_support_counts,
+                    total_attempts=len(attempt_chain_ids),
                 )
                 if refined_canonical:
                     if self.debug:
@@ -1545,10 +1667,27 @@ Only report findings at or above: {severity_threshold}
                         style="dim",
                     )
 
-        if attempt_disagreement and pr_vulns:
+        core_chain_ids = _collect_chain_ids(pr_vulns)
+        weak_consensus, detected_reason, passes_with_core_chain = _detect_weak_chain_consensus(
+            core_chain_ids=core_chain_ids,
+            pass_chain_ids=attempt_chain_ids,
+            required_support=required_core_chain_pass_support,
+        )
+        if weak_consensus and detected_reason:
+            weak_consensus_reason = detected_reason
+        weak_consensus_triggered = weak_consensus_triggered or weak_consensus
+        consensus_score = (
+            passes_with_core_chain / len(attempt_chain_ids) if attempt_chain_ids else 0.0
+        )
+        verifier_reason = weak_consensus_reason or (
+            "attempt outcome disagreement" if attempt_disagreement else ""
+        )
+        should_run_verifier = bool(pr_vulns) and (attempt_disagreement or weak_consensus)
+        if should_run_verifier:
             if self.debug:
                 self.console.print(
-                    "  🧪 Attempt disagreement detected; running verifier pass to adjudicate chain evidence",
+                    "  🧪 Running verifier pass to adjudicate chain evidence "
+                    f"(reason: {verifier_reason or 'unspecified'})",
                     style="dim",
                 )
             verified_pr_vulns = await _refine_pr_findings_with_llm(
@@ -1561,11 +1700,19 @@ Only report findings at or above: {severity_threshold}
                 focus_areas=refinement_focus_areas,
                 mode="verifier",
                 attempt_observability=attempt_observability_notes,
+                consensus_context=_summarize_chain_candidates_for_prompt(
+                    pr_vulns,
+                    chain_support_counts,
+                    len(attempt_chain_ids),
+                ),
             )
             if verified_pr_vulns is not None:
                 verified_merge_stats: Dict[str, int] = {}
                 verified_canonical = _merge_pr_attempt_findings(
-                    verified_pr_vulns, merge_stats=verified_merge_stats
+                    verified_pr_vulns,
+                    merge_stats=verified_merge_stats,
+                    chain_support_counts=chain_support_counts,
+                    total_attempts=len(attempt_chain_ids),
                 )
                 if verified_canonical:
                     if self.debug:
@@ -1582,6 +1729,18 @@ Only report findings at or above: {severity_threshold}
                         "retaining previous canonical set.",
                         style="dim",
                     )
+        core_chain_ids = _collect_chain_ids(pr_vulns)
+        weak_consensus, detected_reason, passes_with_core_chain = _detect_weak_chain_consensus(
+            core_chain_ids=core_chain_ids,
+            pass_chain_ids=attempt_chain_ids,
+            required_support=required_core_chain_pass_support,
+        )
+        if weak_consensus and detected_reason:
+            weak_consensus_reason = detected_reason
+        weak_consensus_triggered = weak_consensus_triggered or weak_consensus
+        consensus_score = (
+            passes_with_core_chain / len(attempt_chain_ids) if attempt_chain_ids else 0.0
+        )
         merged_pr_finding_count = len(pr_vulns)
 
         if baseline_vulns and pr_vulns:
@@ -1594,6 +1753,11 @@ Only report findings at or above: {severity_threshold}
         final_pr_finding_count = len(pr_vulns)
         if self.debug:
             speculative_dropped = merge_stats.get("speculative_dropped", 0)
+            verifier_outcome = (
+                "confirmed"
+                if should_run_verifier and final_pr_finding_count > 0
+                else "rejected" if should_run_verifier else "not_run"
+            )
             self.console.print(
                 "  PR review attempt summary: "
                 f"{attempts_run}/{pr_review_attempts} attempts, "
@@ -1602,7 +1766,12 @@ Only report findings at or above: {severity_threshold}
                 f"{final_pr_finding_count} final finding(s) after baseline dedupe, "
                 f"attempt_counts={attempt_outcome_counts}, "
                 f"overwritten_attempts={attempts_with_overwritten_artifact}, "
-                f"speculative_dropped={speculative_dropped}",
+                f"speculative_dropped={speculative_dropped}, "
+                f"passes_with_core_chain={passes_with_core_chain}, "
+                f"consensus_score={consensus_score:.2f}, "
+                f"weak_consensus_triggered={weak_consensus_triggered}, "
+                f"escalation_reason={weak_consensus_reason or 'none'}, "
+                f"verifier_outcome={verifier_outcome}",
                 style="dim",
             )
 
@@ -2316,7 +2485,7 @@ def _build_vuln_match_keys(vuln: dict) -> set[tuple[str, str]]:
     if not identities:
         return set()
 
-    raw_path = normalize_repo_path(vuln.get("file_path")).lower()
+    raw_path = _canonicalize_finding_path(vuln.get("file_path")).lower()
     path_keys = {raw_path} if raw_path else {""}
     if raw_path:
         basename = raw_path.rsplit("/", 1)[-1]
@@ -2358,6 +2527,183 @@ def _issues_from_pr_vulns(pr_vulns: list[dict]) -> list[SecurityIssue]:
             )
         )
     return issues
+
+
+_CHAIN_ID_STOPWORDS = {
+    "the",
+    "and",
+    "with",
+    "from",
+    "into",
+    "via",
+    "that",
+    "this",
+    "allows",
+    "allow",
+    "enable",
+    "enables",
+    "enabled",
+    "using",
+    "when",
+    "where",
+    "code",
+    "change",
+    "changes",
+    "input",
+    "output",
+    "attack",
+    "vulnerability",
+    "security",
+}
+
+
+def _coerce_line_number(value: object) -> int:
+    """Parse line number-like values into an integer or 0."""
+    try:
+        return int(value) if value is not None else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _extract_cwe_family(value: object) -> str:
+    """Extract coarse CWE family prefix used for chain grouping."""
+    text = str(value or "").strip().upper()
+    match = re.search(r"CWE-(\d+)", text)
+    if not match:
+        return ""
+    return match.group(1)[:2]
+
+
+def _chain_text_tokens(value: object, *, max_tokens: int = 5) -> tuple[str, ...]:
+    """Extract stable lowercase tokens for chain identity construction."""
+    text = str(value or "").lower()
+    tokens = re.findall(r"[a-z0-9_]+", text)
+    filtered = [
+        token
+        for token in tokens
+        if len(token) >= 4 and token not in _CHAIN_ID_STOPWORDS and not token.isdigit()
+    ]
+    return tuple(filtered[:max_tokens])
+
+
+def _canonicalize_finding_path(value: object) -> str:
+    """Normalize finding file path into a repo-style suffix when possible."""
+    normalized = normalize_repo_path(value)
+    if not normalized:
+        return ""
+
+    path = normalized.replace("\\", "/").strip()
+    if not path:
+        return ""
+
+    if path.startswith("/"):
+        roots = ("src", "apps", "packages", "services", "server", "client", "cmd", "internal")
+        segments = [segment for segment in path.split("/") if segment]
+        for index, segment in enumerate(segments):
+            if segment in roots and index < len(segments) - 1:
+                return "/".join(segments[index:])
+        if len(segments) >= 2:
+            return "/".join(segments[-2:])
+    return path
+
+
+def _build_chain_identity(entry: dict) -> str:
+    """Build a coarse exploit-chain identity for cross-pass support tracking."""
+    if not isinstance(entry, dict):
+        return ""
+
+    path = _canonicalize_finding_path(entry.get("file_path"))
+    cwe_family = _extract_cwe_family(entry.get("cwe_id"))
+    line_number = _coerce_line_number(entry.get("line_number"))
+    line_bucket = str(line_number // 20) if line_number > 0 else ""
+    title_tokens = _chain_text_tokens(entry.get("title"))
+
+    if not path and not title_tokens:
+        return ""
+
+    token_part = ".".join(title_tokens) if title_tokens else "unknown"
+    return "|".join(
+        [
+            path or "unknown",
+            cwe_family or "xx",
+            line_bucket or "x",
+            token_part,
+        ]
+    )
+
+
+def _collect_chain_ids(findings: list[dict]) -> set[str]:
+    """Collect unique chain identities for a set of findings."""
+    chain_ids: set[str] = set()
+    for finding in findings:
+        chain_id = _build_chain_identity(finding)
+        if chain_id:
+            chain_ids.add(chain_id)
+    return chain_ids
+
+
+def _count_passes_with_core_chains(core_chain_ids: set[str], pass_chain_ids: list[set[str]]) -> int:
+    """Count attempts that independently produced any of the core chains."""
+    if not core_chain_ids or not pass_chain_ids:
+        return 0
+    return sum(1 for ids in pass_chain_ids if ids.intersection(core_chain_ids))
+
+
+def _summarize_chain_candidates_for_prompt(
+    findings: list[dict],
+    chain_support_counts: Dict[str, int],
+    attempts_observed: int,
+    *,
+    max_items: int = 3,
+    max_chars: int = 3200,
+) -> str:
+    """Summarize top chain candidates for follow-up pass re-validation."""
+    if not findings:
+        return "- None"
+
+    lines: list[str] = []
+    for finding in findings[:max_items]:
+        chain_id = _build_chain_identity(finding)
+        support = chain_support_counts.get(chain_id, 0) if chain_id else 0
+        path = _canonicalize_finding_path(finding.get("file_path")) or "unknown"
+        line_no = _coerce_line_number(finding.get("line_number"))
+        location = f"{path}:{line_no}" if line_no > 0 else path
+        title = str(finding.get("title", "")).strip()
+        if len(title) > 120:
+            title = f"{title[:117]}..."
+        cwe_id = str(finding.get("cwe_id", "")).strip() or "N/A"
+        lines.append(
+            f"- {title} ({location}, {cwe_id}, support={support}/{max(attempts_observed, 1)})"
+        )
+
+    summary = "\n".join(lines).strip() or "- None"
+    if len(summary) <= max_chars:
+        return summary
+    return f"{summary[: max_chars - 15].rstrip()}...[truncated]"
+
+
+def _detect_weak_chain_consensus(
+    *,
+    core_chain_ids: set[str],
+    pass_chain_ids: list[set[str]],
+    required_support: int,
+) -> tuple[bool, str, int]:
+    """Determine whether pass-level agreement is too weak for stable finalization."""
+    passes_with_core = _count_passes_with_core_chains(core_chain_ids, pass_chain_ids)
+    if not core_chain_ids:
+        return False, "no_core_chains", passes_with_core
+
+    if passes_with_core < required_support:
+        reason = f"core_support={passes_with_core}/{len(pass_chain_ids)} (<{required_support})"
+        return True, reason, passes_with_core
+
+    non_zero_indexes = [idx for idx, ids in enumerate(pass_chain_ids) if ids]
+    if non_zero_indexes and non_zero_indexes[-1] < len(pass_chain_ids) - 1:
+        trailing = len(pass_chain_ids) - 1 - non_zero_indexes[-1]
+        reason = f"trailing_empty_passes={trailing} after last non-empty pass"
+        return True, reason, passes_with_core
+
+    return False, "stable", passes_with_core
 
 
 def _diff_has_command_builder_signals(diff_context: DiffContext) -> bool:
@@ -2569,6 +2915,9 @@ def _build_pr_review_retry_suffix(
     focus_area: Optional[str] = None,
     path_parser_signals: bool = False,
     auth_privilege_signals: bool = False,
+    candidate_summary: str = "",
+    force_chain_revalidation: bool = False,
+    pass_support_requirement: int = 2,
 ) -> str:
     """Return extra guidance used when retrying PR review with LLM."""
     selected_focus = focus_area
@@ -2584,6 +2933,8 @@ def _build_pr_review_retry_suffix(
     command_builder_hint = ""
     path_parser_hint = ""
     auth_privileged_hint = ""
+    candidate_hint = ""
+    consensus_recovery_hint = ""
     if command_builder_signals:
         command_builder_hint = """
 
@@ -2607,6 +2958,26 @@ Explicitly validate source->path parser->file read/host/upload->response/exfil c
 ## AUTH/PRIVILEGE DELTA DETECTED
 Changed hunks touch trust boundaries or privileged operations.
 Explicitly validate who can reach privileged sinks and whether auth/origin/role checks actually enforce policy.
+"""
+    if candidate_summary.strip():
+        candidate_hint = f"""
+
+## PRIOR HIGH-IMPACT CHAIN CANDIDATES TO RE-VALIDATE
+{candidate_summary}
+
+For each candidate above:
+- either CONFIRM it with concrete source->sink evidence from code, or
+- REFUTE it with concrete contradictory code evidence.
+Do not ignore previously validated candidates.
+"""
+    if force_chain_revalidation:
+        consensus_recovery_hint = f"""
+
+## CONSENSUS RECOVERY MODE
+Pass-level agreement is currently weak for the top exploit chains.
+At least {pass_support_requirement} pass(es) should independently confirm the core chain(s).
+This pass must re-validate candidate chains and resolve contradictions.
+Do not output [] unless every carried candidate is concretely disproved.
 """
 
     return f"""
@@ -2632,6 +3003,8 @@ Previous attempt was incomplete or inconclusive. Re-run the review with this str
 {command_builder_hint}
 {path_parser_hint}
 {auth_privileged_hint}
+{candidate_hint}
+{consensus_recovery_hint}
 {focus_block}
 """
 
@@ -2671,7 +3044,10 @@ def _load_pr_vulnerabilities_artifact(
 
 
 def _merge_pr_attempt_findings(
-    vulns: list[dict], merge_stats: Optional[Dict[str, int]] = None
+    vulns: list[dict],
+    merge_stats: Optional[Dict[str, int]] = None,
+    chain_support_counts: Optional[Dict[str, int]] = None,
+    total_attempts: int = 0,
 ) -> list[dict]:
     """Merge findings across attempts and keep one canonical finding per chain."""
     if not vulns:
@@ -2680,6 +3056,7 @@ def _merge_pr_attempt_findings(
             merge_stats["canonical_count"] = 0
             merge_stats["final_count"] = 0
             merge_stats["speculative_dropped"] = 0
+            merge_stats["max_chain_support"] = 0
         return []
 
     severity_rank = {
@@ -2762,6 +3139,12 @@ def _merge_pr_attempt_findings(
         "potential",
         "possible",
         "hypothetical",
+        "future",
+        "future caller",
+        "future callsite",
+        "future code path",
+        "current pr does not introduce",
+        "if future",
         "warrant defense-in-depth",
     )
     hardening_terms = (
@@ -2793,7 +3176,7 @@ def _merge_pr_attempt_findings(
             score += 3
         if "1)" in scenario_text and "2)" in scenario_text:
             score += 1
-        if normalize_repo_path(entry.get("file_path")):
+        if _canonicalize_finding_path(entry.get("file_path")):
             score += 1
         if _coerce_line_number(entry.get("line_number")) > 0:
             score += 1
@@ -2818,19 +3201,6 @@ def _merge_pr_attempt_findings(
             penalty += 1
         return min(penalty, 6)
 
-    def _coerce_line_number(value: object) -> int:
-        try:
-            return int(value) if value is not None else 0
-        except (TypeError, ValueError):
-            return 0
-
-    def _coarse_cwe_family(value: object) -> str:
-        text = str(value or "").strip().upper()
-        match = re.search(r"CWE-(\d+)", text)
-        if not match:
-            return ""
-        return match.group(1)[:2]
-
     def _finding_tokens(entry: dict) -> set[str]:
         text = " ".join(
             str(entry.get(field, ""))
@@ -2850,9 +3220,16 @@ def _merge_pr_attempt_findings(
         union = len(a | b)
         return overlap / union if union else 0.0
 
-    def _entry_quality(entry: dict) -> tuple[int, int, int, int, int, int]:
+    def _entry_quality(entry: dict) -> tuple[int, int, int, int, int, int, int, int]:
         severity = severity_rank.get(str(entry.get("severity", "")).strip().lower(), 0)
         finding_type = finding_type_rank.get(str(entry.get("finding_type", "")).strip().lower(), 0)
+        chain_identity = _build_chain_identity(entry)
+        chain_support = chain_support_counts.get(chain_identity, 0) if chain_support_counts else 0
+        contradiction_penalty = (
+            max(total_attempts - chain_support, 0)
+            if total_attempts > 0 and chain_support > 0
+            else 0
+        )
         proof_score = _proof_score(entry)
         speculation_penalty = _speculation_penalty(entry)
         evidence_chars = len(str(entry.get("evidence", ""))) + len(
@@ -2862,14 +3239,16 @@ def _merge_pr_attempt_findings(
         return (
             severity,
             finding_type,
+            chain_support,
             proof_score,
+            -contradiction_penalty,
             -speculation_penalty,
             min(evidence_chars, 4000),
             min(description_chars, 2000),
         )
 
     def _has_concrete_chain_structure(entry: dict) -> bool:
-        normalized_path = normalize_repo_path(entry.get("file_path"))
+        normalized_path = _canonicalize_finding_path(entry.get("file_path"))
         line_number = _coerce_line_number(entry.get("line_number"))
         evidence_text = _entry_text(entry, fields=("evidence",))
         scenario_text = _entry_text(entry, fields=("attack_scenario",))
@@ -2883,8 +3262,8 @@ def _merge_pr_attempt_findings(
         return has_flow_anchor or has_step_markers
 
     def _same_chain(candidate: dict, canonical: dict) -> bool:
-        candidate_path = normalize_repo_path(candidate.get("file_path"))
-        canonical_path = normalize_repo_path(canonical.get("file_path"))
+        candidate_path = _canonicalize_finding_path(candidate.get("file_path"))
+        canonical_path = _canonicalize_finding_path(canonical.get("file_path"))
         if not candidate_path or not canonical_path:
             return False
 
@@ -2908,8 +3287,8 @@ def _merge_pr_attempt_findings(
             else 0.0
         )
 
-        candidate_cwe_family = _coarse_cwe_family(candidate.get("cwe_id"))
-        canonical_cwe_family = _coarse_cwe_family(canonical.get("cwe_id"))
+        candidate_cwe_family = _extract_cwe_family(candidate.get("cwe_id"))
+        canonical_cwe_family = _extract_cwe_family(canonical.get("cwe_id"))
         same_cwe_family = candidate_cwe_family == canonical_cwe_family
 
         if candidate_path == canonical_path:
@@ -2959,18 +3338,18 @@ def _merge_pr_attempt_findings(
     canonical_findings.sort(key=_entry_quality, reverse=True)
     final_findings: list[dict] = []
     for candidate in canonical_findings:
-        candidate_path = normalize_repo_path(candidate.get("file_path"))
+        candidate_path = _canonicalize_finding_path(candidate.get("file_path"))
         candidate_line = _coerce_line_number(candidate.get("line_number"))
-        candidate_cwe_family = _coarse_cwe_family(candidate.get("cwe_id"))
+        candidate_cwe_family = _extract_cwe_family(candidate.get("cwe_id"))
         candidate_tokens = _finding_tokens(candidate)
         candidate_title = str(candidate.get("title", "")).strip().lower()
 
         is_duplicate = False
         for existing in final_findings:
-            existing_path = normalize_repo_path(existing.get("file_path"))
+            existing_path = _canonicalize_finding_path(existing.get("file_path"))
             existing_tokens = _finding_tokens(existing)
             token_similarity = _token_similarity(candidate_tokens, existing_tokens)
-            existing_cwe_family = _coarse_cwe_family(existing.get("cwe_id"))
+            existing_cwe_family = _extract_cwe_family(existing.get("cwe_id"))
             candidate_proof = _proof_score(candidate)
             existing_proof = _proof_score(existing)
             title_similarity = SequenceMatcher(
@@ -3039,6 +3418,7 @@ def _merge_pr_attempt_findings(
         merge_stats["canonical_count"] = len(canonical_findings)
         merge_stats["final_count"] = len(filtered_findings)
         merge_stats["speculative_dropped"] = max(0, len(final_findings) - len(filtered_findings))
+        merge_stats["max_chain_support"] = max(chain_support_counts.values(), default=0)
 
     return filtered_findings
 
