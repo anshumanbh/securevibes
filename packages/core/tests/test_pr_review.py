@@ -862,6 +862,7 @@ def test_pr_review_retry_suffix_includes_candidate_revalidation_block():
 
     assert "PRIOR HIGH-IMPACT CHAIN CANDIDATES TO RE-VALIDATE" in suffix
     assert "CORE CHAIN REVALIDATION REQUIREMENT" in suffix
+    assert "UNRESOLVED HYPOTHESIS DISPOSITION (MANDATORY)" in suffix
     assert "support=1/3" in suffix
 
 
@@ -876,6 +877,7 @@ def test_pr_review_retry_suffix_requires_candidate_revalidation_without_consensu
 
     assert "PRIOR HIGH-IMPACT CHAIN CANDIDATES TO RE-VALIDATE" in suffix
     assert "CORE CHAIN REVALIDATION REQUIREMENT" in suffix
+    assert "UNRESOLVED HYPOTHESIS DISPOSITION (MANDATORY)" in suffix
 
 
 def test_diff_signal_detectors_identify_path_and_auth_deltas():
@@ -1722,6 +1724,7 @@ async def test_pr_review_empty_follow_up_attempt_is_logged_without_warning(
     assert "consensus_mode_used=" in console_text
     assert "dropped_as_secondary_chain=" in console_text
     assert "attempt_disagreement=" in console_text
+    assert "blocked_out_of_repo_tool_calls=" in console_text
     assert "revalidation_attempts=" in console_text
     assert "revalidation_core_hits=" in console_text
     assert "revalidation_core_misses=" in console_text

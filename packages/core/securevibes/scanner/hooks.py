@@ -10,7 +10,7 @@ Provides hook creator functions that return async closures for:
 """
 
 from pathlib import Path
-from typing import Any, Set
+from typing import Any, Optional, Set
 from rich.console import Console
 
 from securevibes.config import ScanConfig
@@ -78,6 +78,8 @@ def create_pre_tool_hook(
     debug: bool,
     detected_languages: Set[str],
     pr_grep_default_path: str = "src",
+    pr_repo_root: Optional[Path] = None,
+    pr_tool_guard_observer: Optional[dict[str, Any]] = None,
 ):
     """
     Create pre-tool hook for infrastructure exclusions and DAST restrictions.
@@ -94,6 +96,8 @@ def create_pre_tool_hook(
         debug: Whether to show debug messages
         detected_languages: Set of detected languages for exclusion rules
         pr_grep_default_path: Default path used for pathless Grep calls in PR review
+        pr_repo_root: Repository root path for PR review repo-boundary enforcement
+        pr_tool_guard_observer: Optional mutable observer for PR review guard telemetry
 
     Returns:
         Async hook function compatible with ClaudeSDKClient PreToolUse hook
@@ -108,9 +112,10 @@ def create_pre_tool_hook(
 
         # Block reads from infrastructure directories
         if tool_name in ["Read", "Grep", "Glob", "LS"]:
+            current_phase = tracker.current_phase or "assessment"
             # Get phase-specific exclusions (DAST needs .claude/skills/ access)
             active_exclude_dirs = ScanConfig.get_excluded_dirs_for_phase(
-                tracker.current_phase or "assessment", detected_languages
+                current_phase, detected_languages
             )
             # Extract path from tool input (different tools use different param names)
             path = (
@@ -119,6 +124,43 @@ def create_pre_tool_hook(
                 or tool_input.get("directory_path")
                 or ""
             )
+
+            if current_phase == "pr-code-review" and pr_repo_root and path:
+                root_path = pr_repo_root.resolve(strict=False)
+                candidate_path = Path(path)
+                if not candidate_path.is_absolute():
+                    candidate_path = root_path / candidate_path
+                resolved_candidate = candidate_path.resolve(strict=False)
+                is_inside_repo = (
+                    resolved_candidate == root_path or root_path in resolved_candidate.parents
+                )
+                if not is_inside_repo:
+                    if pr_tool_guard_observer is not None:
+                        blocked_count = int(
+                            pr_tool_guard_observer.get("blocked_out_of_repo_count", 0)
+                        )
+                        pr_tool_guard_observer["blocked_out_of_repo_count"] = blocked_count + 1
+                        blocked_paths = pr_tool_guard_observer.setdefault("blocked_paths", [])
+                        if isinstance(blocked_paths, list):
+                            blocked_paths.append(str(resolved_candidate))
+                    if debug:
+                        console.print(
+                            f"  🚫 Blocked out-of-repo {tool_name}: {resolved_candidate}",
+                            style="dim yellow",
+                        )
+                    return {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": (
+                                "PR review cannot access files outside repository root"
+                            ),
+                            "reason": (
+                                "PR review guard blocked out-of-repo access: "
+                                f"{resolved_candidate}"
+                            ),
+                        }
+                    }
 
             if path:
                 # Check if path contains any excluded directory
@@ -136,7 +178,7 @@ def create_pre_tool_hook(
                         }
                     }
 
-            if tool_name == "Read" and tracker.current_phase == "pr-code-review":
+            if tool_name == "Read" and current_phase == "pr-code-review":
                 normalized_path = str(path or "").replace("\\", "/")
                 is_diff_context_read = normalized_path.endswith(
                     "/.securevibes/DIFF_CONTEXT.json"
@@ -152,7 +194,7 @@ def create_pre_tool_hook(
                         }
                     }
 
-            if tool_name == "Grep" and tracker.current_phase == "pr-code-review":
+            if tool_name == "Grep" and current_phase == "pr-code-review":
                 normalized_path = str(path or "").replace("\\", "/")
                 if normalized_path.endswith("/.securevibes/DIFF_CONTEXT.json") or (
                     normalized_path == ".securevibes/DIFF_CONTEXT.json"

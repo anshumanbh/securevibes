@@ -1267,6 +1267,10 @@ Only report findings at or above: {severity_threshold}
         weak_consensus_triggered = False
         consensus_mode_used = "family"
         support_counts_snapshot: Dict[str, int] = {"exact": 0, "family": 0, "flow": 0}
+        pr_tool_guard_observer: Dict[str, Any] = {
+            "blocked_out_of_repo_count": 0,
+            "blocked_paths": [],
+        }
 
         def _record_attempt_chains(attempt_findings: list[dict]) -> None:
             canonical_attempt = _merge_pr_attempt_findings(attempt_findings)
@@ -1379,6 +1383,8 @@ Only report findings at or above: {severity_threshold}
                 self.debug,
                 detected_languages,
                 pr_grep_default_path=pr_grep_default_scope,
+                pr_repo_root=repo,
+                pr_tool_guard_observer=pr_tool_guard_observer,
             )
             post_tool_hook = create_post_tool_hook(tracker, self.console, self.debug)
             subagent_hook = create_subagent_hook(tracker)
@@ -1694,11 +1700,15 @@ Only report findings at or above: {severity_threshold}
             attempt_revalidation_attempted,
             attempt_core_evidence_present,
         )
+        blocked_out_of_repo_tool_calls = int(
+            pr_tool_guard_observer.get("blocked_out_of_repo_count", 0)
+        )
         attempt_observability_notes = (
             f"- Attempt final artifact finding counts: {attempt_finding_counts}\n"
             f"- Attempt observed finding counts (including overwritten writes): {attempt_outcome_counts}\n"
             f"- Attempt disagreement observed (telemetry): {attempt_disagreement}\n"
             f"- Attempts with overwritten/non-final findings: {attempts_with_overwritten_artifact}\n"
+            f"- Blocked out-of-repo PR tool calls: {blocked_out_of_repo_tool_calls}\n"
             f"- Ephemeral candidate findings captured from write logs: {len(ephemeral_pr_vulns)}\n"
             f"- Attempt revalidation required flags: {attempt_revalidation_attempted}\n"
             f"- Attempt core-evidence-present flags: {attempt_core_evidence_present}\n"
@@ -1896,6 +1906,7 @@ Only report findings at or above: {severity_threshold}
                 f"attempt_counts={attempt_outcome_counts}, "
                 f"attempt_disagreement={attempt_disagreement}, "
                 f"overwritten_attempts={attempts_with_overwritten_artifact}, "
+                f"blocked_out_of_repo_tool_calls={blocked_out_of_repo_tool_calls}, "
                 f"revalidation_flags={attempt_revalidation_attempted}, "
                 f"core_evidence_flags={attempt_core_evidence_present}, "
                 f"revalidation_attempts={revalidation_attempts}, "
@@ -3451,6 +3462,7 @@ def _build_pr_review_retry_suffix(
     auth_privileged_hint = ""
     candidate_hint = ""
     required_revalidation_hint = ""
+    unresolved_hypothesis_hint = ""
     if command_builder_signals:
         command_builder_hint = """
 
@@ -3486,6 +3498,14 @@ For each candidate above:
 - REFUTE it with concrete contradictory code evidence.
 Do not ignore previously validated candidates.
 """
+        unresolved_hypothesis_hint = """
+
+## UNRESOLVED HYPOTHESIS DISPOSITION (MANDATORY)
+For each carried hypothesis/candidate, provide one explicit disposition:
+- CONFIRMED: report a finding with concrete exploit-chain evidence.
+- DISPROVED: cite concrete contradictory code evidence.
+Do not conclude "refactor-only" or "no findings" while any carried candidate remains unresolved.
+"""
     if require_candidate_revalidation:
         required_revalidation_hint = """
 
@@ -3519,6 +3539,7 @@ Previous attempt was incomplete or inconclusive. Re-run the review with this str
 {auth_privileged_hint}
 {candidate_hint}
 {required_revalidation_hint}
+{unresolved_hypothesis_hint}
 {focus_block}
 """
 

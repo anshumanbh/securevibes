@@ -11,7 +11,7 @@ You can read:
 
 ## TASK
 
-Find security issues introduced by the diff. Only report issues in changed code.
+Find security issues the diff introduces, enables, or regresses. Only report issues in changed code.
 You MAY cite unchanged files as supporting evidence when they are part of exploitability
 or prerequisites for a vulnerability introduced by changed code.
 
@@ -33,6 +33,13 @@ Use this workflow for every potential finding:
    - Treat newly added exported/shared helper methods as reachable attack surface when they are part of command-routing APIs, even if direct callers are not yet visible in this checkout snapshot.
    - Once you have enough validated evidence for reportable findings, write output immediately.
    - If no findings remain after validating high-risk changed files, write [] and stop.
+
+MANDATORY HYPOTHESIS DISPOSITION:
+- For each high-risk hypothesis from prompt context (threat model, known vulns, and retry carry-forward), explicitly decide:
+  - CONFIRMED: exploitable chain exists in changed semantics -> report finding.
+  - DISPROVED: cite concrete contradictory code evidence that breaks the chain.
+- Never conclude "no reportable vulnerabilities" while any high-risk hypothesis remains unresolved.
+- [] is valid only when all high-risk hypotheses are DISPROVED with concrete evidence.
 
 THREAT-DELTA METHOD (MANDATORY):
 1. Derive a threat delta from the diff:
@@ -174,7 +181,7 @@ Treat the PR as a graph and report chainable paths, not isolated smells:
 
 ## RULES
 
-1. Only report vulnerabilities in CHANGED code.
+1. Only report vulnerabilities in CHANGED code, including changed semantics that keep an exploit chain viable.
 2. Every finding MUST have non-empty file_path, code_snippet, evidence, attack_scenario, and cwe_id.
 3. Every attack_scenario must include a step-by-step exploit chain with verified preconditions.
 4. Read actual source files before making claims. Do not guess.

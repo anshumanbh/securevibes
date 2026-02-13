@@ -384,6 +384,99 @@ class TestPreToolHook:
         assert result == {}
 
     @pytest.mark.asyncio
+    async def test_blocks_out_of_repo_read_in_pr_code_review(self, tracker, console, tmp_path):
+        """PR code review should deny reads outside repository root."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        outside_file = tmp_path / "outside.txt"
+        outside_file.write_text("x", encoding="utf-8")
+        guard_observer = {"blocked_out_of_repo_count": 0}
+        hook = create_pre_tool_hook(
+            tracker,
+            console,
+            debug=False,
+            detected_languages=detected_languages,
+            pr_repo_root=repo_root,
+            pr_tool_guard_observer=guard_observer,
+        )
+
+        input_data = {
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(outside_file)},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "outside repository root" in result["hookSpecificOutput"]["permissionDecisionReason"]
+        assert guard_observer["blocked_out_of_repo_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_blocks_out_of_repo_grep_in_pr_code_review(self, tracker, console, tmp_path):
+        """PR code review should deny grep paths outside repository root."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+        guard_observer = {"blocked_out_of_repo_count": 0}
+        hook = create_pre_tool_hook(
+            tracker,
+            console,
+            debug=False,
+            detected_languages=detected_languages,
+            pr_repo_root=repo_root,
+            pr_tool_guard_observer=guard_observer,
+        )
+
+        input_data = {
+            "tool_name": "Grep",
+            "tool_input": {"pattern": "secret", "path": str(outside_dir)},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert guard_observer["blocked_out_of_repo_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_allows_in_repo_read_with_repo_guard_in_pr_code_review(
+        self, tracker, console, tmp_path
+    ):
+        """PR code review should allow reads under repository root when guard is enabled."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        repo_root = tmp_path / "repo"
+        source_dir = repo_root / "src"
+        source_dir.mkdir(parents=True)
+        app_file = source_dir / "app.py"
+        app_file.write_text("print('ok')", encoding="utf-8")
+        guard_observer = {"blocked_out_of_repo_count": 0}
+        hook = create_pre_tool_hook(
+            tracker,
+            console,
+            debug=False,
+            detected_languages=detected_languages,
+            pr_repo_root=repo_root,
+            pr_tool_guard_observer=guard_observer,
+        )
+
+        input_data = {
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(app_file)},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert result == {}
+        assert guard_observer["blocked_out_of_repo_count"] == 0
+
+    @pytest.mark.asyncio
     async def test_blocks_grep_over_diff_context_in_pr_code_review(self, tracker, console):
         """PR code review should block Grep against DIFF_CONTEXT.json."""
         tracker.current_phase = "pr-code-review"
