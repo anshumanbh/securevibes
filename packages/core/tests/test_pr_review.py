@@ -22,6 +22,8 @@ from securevibes.diff.context import (
 from securevibes.diff.parser import DiffContext, DiffFile, DiffHunk, DiffLine
 from securevibes.scanner.scanner import (
     Scanner,
+    _adjudicate_consensus_support,
+    _build_chain_flow_identity,
     _build_chain_family_identity,
     _build_chain_identity,
     _canonicalize_finding_path,
@@ -715,6 +717,47 @@ def test_merge_pr_attempt_findings_drops_low_support_noise_when_core_is_repeated
     assert merge_stats["low_support_dropped"] == 1
 
 
+def test_merge_pr_attempt_findings_drops_secondary_chain_variant():
+    """Weaker same-family chain variants should be dropped as secondary findings."""
+    merge_stats: dict[str, int] = {}
+    merged = _merge_pr_attempt_findings(
+        [
+            {
+                "title": "Local file exfiltration via parser to media route",
+                "description": "Untrusted MEDIA path reaches saveMediaSource and /media/:id serving.",
+                "attack_scenario": (
+                    "1) Attacker injects MEDIA path. "
+                    "2) Parser accepts and file is copied. "
+                    "3) /media/:id serves exfiltrated file."
+                ),
+                "evidence": (
+                    "flow: src/media/parse.ts:29 -> src/media/store.ts:91 -> src/media/server.ts:28"
+                ),
+                "severity": "high",
+                "finding_type": "known_vuln",
+                "file_path": "src/media/parse.ts",
+                "line_number": 29,
+                "cwe_id": "CWE-22",
+            },
+            {
+                "title": "Additional parser note for same media hosting sink",
+                "description": "Parser behavior may impact media hosting security in similar flows.",
+                "attack_scenario": "Parser accepts input and may reach media hosting.",
+                "evidence": "flow: src/media/parse.ts:109 -> src/media/server.ts:28",
+                "severity": "medium",
+                "finding_type": "regression",
+                "file_path": "src/media/parse.ts",
+                "line_number": 109,
+                "cwe_id": "CWE-73",
+            },
+        ],
+        merge_stats=merge_stats,
+    )
+
+    assert len(merged) == 1
+    assert merge_stats["dropped_as_secondary_chain"] == 1
+
+
 def test_filter_baseline_vulns_excludes_pr_derived_with_threat_prefix():
     """A THREAT-001 entry with finding_type='known_vuln' is PR-derived, not baseline."""
     known_vulns = [
@@ -969,6 +1012,50 @@ def test_chain_family_support_counts_semantically_equivalent_pass_outputs():
     assert _count_passes_with_core_chains({family_id_a}, pass_chain_ids) == 3
 
 
+def test_chain_flow_identity_stable_for_same_sink_family():
+    """Flow identity should remain stable across wording/CWE drift for same sink family."""
+    finding_a = {
+        "title": "Local file exfiltration via parser",
+        "file_path": "src/media/parse.ts",
+        "line_number": 29,
+        "cwe_id": "CWE-22",
+        "evidence": "flow: src/media/parse.ts:29 -> src/media/store.ts:91 -> src/media/server.ts:28",
+    }
+    finding_b = {
+        "title": "Exported parser misuse for same file host sink",
+        "file_path": "src/media/parse.ts",
+        "line_number": 11,
+        "cwe_id": "CWE-691",
+        "evidence": "src/media/parse.ts:11 export; flow to src/media/store.ts:91 and src/media/server.ts:28",
+    }
+
+    flow_a = _build_chain_flow_identity(finding_a)
+    flow_b = _build_chain_flow_identity(finding_b)
+    assert flow_a
+    assert flow_a == flow_b
+
+
+def test_adjudicate_consensus_support_falls_back_to_flow_mode_when_exact_is_weak():
+    """Consensus mode should choose flow when exact support is weak and flow is stable."""
+    weak, reason, support, mode, metrics = _adjudicate_consensus_support(
+        required_support=2,
+        core_exact_ids={"exact-core"},
+        pass_exact_ids=[{"exact-core"}, set(), set(), set()],
+        core_family_ids={"family-core"},
+        pass_family_ids=[{"family-core"}, set(), {"family-core"}, set()],
+        core_flow_ids={"flow-core"},
+        pass_flow_ids=[{"flow-core"}, {"flow-core"}, {"flow-core"}, set()],
+    )
+
+    assert not weak
+    assert mode == "flow"
+    assert support == 3
+    assert metrics["exact"] == 1
+    assert metrics["family"] == 2
+    assert metrics["flow"] == 3
+    assert reason == "stable"
+
+
 def test_canonicalize_finding_path_normalizes_absolute_repo_suffix():
     """Absolute finding paths should normalize to repo-style suffix for dedupe."""
     path = _canonicalize_finding_path("/Users/test/repos/openclaw/src/media/parse.ts")
@@ -1065,14 +1152,18 @@ def test_summarize_chain_candidates_for_prompt_includes_support_counts():
         "file_path": "src/media/parse.ts",
         "line_number": 29,
         "cwe_id": "CWE-22",
+        "evidence": "flow: src/media/parse.ts:29 -> src/media/store.ts:91 -> src/media/server.ts:28",
     }
     chain_id = _build_chain_family_identity(finding)
+    flow_id = _build_chain_flow_identity(finding)
     summary = _summarize_chain_candidates_for_prompt(
         findings=[finding],
         chain_support_counts={chain_id: 2},
+        flow_support_counts={flow_id: 3},
         attempts_observed=3,
     )
     assert "support=" in summary
+    assert "support=3/3" in summary
     assert "src/media/parse.ts:29" in summary
 
 
@@ -1564,6 +1655,11 @@ async def test_pr_review_empty_follow_up_attempt_is_logged_without_warning(
     assert "PR review attempt summary:" in console_text
     assert "canonical_pre_filter=" in console_text
     assert "final_post_filter=" in console_text
+    assert "passes_with_core_chain_exact=" in console_text
+    assert "passes_with_core_chain_family=" in console_text
+    assert "passes_with_core_chain_flow=" in console_text
+    assert "consensus_mode_used=" in console_text
+    assert "dropped_as_secondary_chain=" in console_text
 
 
 @pytest.mark.asyncio

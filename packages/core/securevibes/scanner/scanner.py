@@ -1252,19 +1252,33 @@ Only report findings at or above: {severity_threshold}
         attempt_observed_counts: list[int] = []
         attempt_focus_areas: list[str] = []
         attempt_chain_ids: list[set[str]] = []
+        attempt_chain_exact_ids: list[set[str]] = []
+        attempt_chain_family_ids: list[set[str]] = []
+        attempt_chain_flow_ids: list[set[str]] = []
         chain_support_counts: Dict[str, int] = {}
+        flow_support_counts: Dict[str, int] = {}
         carry_forward_candidate_summary = ""
         required_core_chain_pass_support = 2
         consensus_recovery_next_pass = False
         weak_consensus_reason = ""
         weak_consensus_triggered = False
+        consensus_mode_used = "family"
+        support_counts_snapshot: Dict[str, int] = {"exact": 0, "family": 0, "flow": 0}
 
         def _record_attempt_chains(attempt_findings: list[dict]) -> None:
             canonical_attempt = _merge_pr_attempt_findings(attempt_findings)
-            chain_ids = _collect_chain_ids(canonical_attempt)
-            attempt_chain_ids.append(chain_ids)
-            for chain_id in chain_ids:
+            exact_ids = _collect_chain_exact_ids(canonical_attempt)
+            family_ids = _collect_chain_family_ids(canonical_attempt)
+            flow_ids = _collect_chain_flow_ids(canonical_attempt)
+            attempt_chain_exact_ids.append(exact_ids)
+            attempt_chain_family_ids.append(family_ids)
+            attempt_chain_flow_ids.append(flow_ids)
+            # Backward-compatible alias used by existing code paths.
+            attempt_chain_ids.append(family_ids)
+            for chain_id in family_ids:
                 chain_support_counts[chain_id] = chain_support_counts.get(chain_id, 0) + 1
+            for chain_id in flow_ids:
+                flow_support_counts[chain_id] = flow_support_counts.get(chain_id, 0) + 1
 
         def _refresh_carry_forward_candidates() -> None:
             nonlocal carry_forward_candidate_summary
@@ -1277,19 +1291,27 @@ Only report findings at or above: {severity_threshold}
                 cumulative_candidates,
                 chain_support_counts,
                 len(attempt_chain_ids),
+                flow_support_counts=flow_support_counts,
             )
 
         def _maybe_schedule_consensus_recovery(attempt_num: int) -> None:
             nonlocal consensus_recovery_next_pass, weak_consensus_reason, weak_consensus_triggered
             if attempt_num < 3 or attempt_num >= pr_review_attempts:
                 return
-            if not chain_support_counts:
+            if not chain_support_counts and not flow_support_counts:
                 return
-            top_support = max(chain_support_counts.values(), default=0)
+            top_family_support = max(chain_support_counts.values(), default=0)
+            top_flow_support = max(flow_support_counts.values(), default=0)
+            if top_flow_support > top_family_support:
+                top_support = top_flow_support
+                top_mode = "flow"
+            else:
+                top_support = top_family_support
+                top_mode = "family"
             if top_support >= required_core_chain_pass_support:
                 return
             weak_consensus_reason = (
-                f"top_chain_support={top_support}/{len(attempt_chain_ids)} "
+                f"top_{top_mode}_support={top_support}/{len(attempt_chain_ids)} "
                 f"(requires >= {required_core_chain_pass_support})"
             )
             weak_consensus_triggered = True
@@ -1591,15 +1613,30 @@ Only report findings at or above: {severity_threshold}
         high_risk_signal_count = sum(
             [command_builder_signals, path_parser_signals, auth_privilege_signals]
         )
-        initial_core_chain_ids = _collect_chain_ids(pr_vulns)
-        weak_consensus, detected_reason, passes_with_core_chain = _detect_weak_chain_consensus(
-            core_chain_ids=initial_core_chain_ids,
-            pass_chain_ids=attempt_chain_ids,
+        initial_core_exact_ids = _collect_chain_exact_ids(pr_vulns)
+        initial_core_family_ids = _collect_chain_family_ids(pr_vulns)
+        initial_core_flow_ids = _collect_chain_flow_ids(pr_vulns)
+        (
+            weak_consensus,
+            detected_reason,
+            passes_with_core_chain,
+            consensus_mode_used,
+            support_counts_snapshot,
+        ) = _adjudicate_consensus_support(
             required_support=required_core_chain_pass_support,
+            core_exact_ids=initial_core_exact_ids,
+            pass_exact_ids=attempt_chain_exact_ids,
+            core_family_ids=initial_core_family_ids,
+            pass_family_ids=attempt_chain_family_ids,
+            core_flow_ids=initial_core_flow_ids,
+            pass_flow_ids=attempt_chain_flow_ids,
         )
         if weak_consensus and detected_reason and not weak_consensus_reason:
             weak_consensus_reason = detected_reason
         weak_consensus_triggered = weak_consensus_triggered or weak_consensus
+        passes_with_core_chain_exact = support_counts_snapshot.get("exact", 0)
+        passes_with_core_chain_family = support_counts_snapshot.get("family", 0)
+        passes_with_core_chain_flow = support_counts_snapshot.get("flow", 0)
         consensus_score = (
             passes_with_core_chain / len(attempt_chain_ids) if attempt_chain_ids else 0.0
         )
@@ -1607,14 +1644,17 @@ Only report findings at or above: {severity_threshold}
             pr_vulns,
             chain_support_counts,
             len(attempt_chain_ids),
+            flow_support_counts=flow_support_counts,
         )
         attempt_observability_notes = (
             f"- Attempt final artifact finding counts: {attempt_finding_counts}\n"
             f"- Attempt observed finding counts (including overwritten writes): {attempt_outcome_counts}\n"
             f"- Attempts with overwritten/non-final findings: {attempts_with_overwritten_artifact}\n"
             f"- Ephemeral candidate findings captured from write logs: {len(ephemeral_pr_vulns)}\n"
-            f"- Core-chain pass support: {passes_with_core_chain}/{len(attempt_chain_ids)} "
+            f"- Core-chain pass support ({consensus_mode_used}): {passes_with_core_chain}/{len(attempt_chain_ids)} "
             f"(required >= {required_core_chain_pass_support})\n"
+            f"- Core-chain support by mode: exact={passes_with_core_chain_exact}, "
+            f"family={passes_with_core_chain_family}, flow={passes_with_core_chain_flow}\n"
             f"- Weak consensus trigger: {weak_consensus} ({weak_consensus_reason or detected_reason})"
         )
         refinement_focus_areas = attempt_focus_areas or retry_focus_plan
@@ -1667,22 +1707,44 @@ Only report findings at or above: {severity_threshold}
                         style="dim",
                     )
 
-        core_chain_ids = _collect_chain_ids(pr_vulns)
-        weak_consensus, detected_reason, passes_with_core_chain = _detect_weak_chain_consensus(
-            core_chain_ids=core_chain_ids,
-            pass_chain_ids=attempt_chain_ids,
+        core_exact_ids = _collect_chain_exact_ids(pr_vulns)
+        core_family_ids = _collect_chain_family_ids(pr_vulns)
+        core_flow_ids = _collect_chain_flow_ids(pr_vulns)
+        (
+            weak_consensus,
+            detected_reason,
+            passes_with_core_chain,
+            consensus_mode_used,
+            support_counts_snapshot,
+        ) = _adjudicate_consensus_support(
             required_support=required_core_chain_pass_support,
+            core_exact_ids=core_exact_ids,
+            pass_exact_ids=attempt_chain_exact_ids,
+            core_family_ids=core_family_ids,
+            pass_family_ids=attempt_chain_family_ids,
+            core_flow_ids=core_flow_ids,
+            pass_flow_ids=attempt_chain_flow_ids,
         )
         if weak_consensus and detected_reason:
             weak_consensus_reason = detected_reason
         weak_consensus_triggered = weak_consensus_triggered or weak_consensus
+        passes_with_core_chain_exact = support_counts_snapshot.get("exact", 0)
+        passes_with_core_chain_family = support_counts_snapshot.get("family", 0)
+        passes_with_core_chain_flow = support_counts_snapshot.get("flow", 0)
         consensus_score = (
             passes_with_core_chain / len(attempt_chain_ids) if attempt_chain_ids else 0.0
         )
         verifier_reason = weak_consensus_reason or (
             "attempt outcome disagreement" if attempt_disagreement else ""
         )
-        should_run_verifier = bool(pr_vulns) and (attempt_disagreement or weak_consensus)
+        stable_single_chain = (
+            len(pr_vulns) == 1
+            and passes_with_core_chain_family >= required_core_chain_pass_support
+            and passes_with_core_chain_flow >= required_core_chain_pass_support
+        )
+        should_run_verifier = bool(pr_vulns) and (
+            weak_consensus or (attempt_disagreement and not stable_single_chain)
+        )
         if should_run_verifier:
             if self.debug:
                 self.console.print(
@@ -1704,6 +1766,7 @@ Only report findings at or above: {severity_threshold}
                     pr_vulns,
                     chain_support_counts,
                     len(attempt_chain_ids),
+                    flow_support_counts=flow_support_counts,
                 ),
             )
             if verified_pr_vulns is not None:
@@ -1729,15 +1792,30 @@ Only report findings at or above: {severity_threshold}
                         "retaining previous canonical set.",
                         style="dim",
                     )
-        core_chain_ids = _collect_chain_ids(pr_vulns)
-        weak_consensus, detected_reason, passes_with_core_chain = _detect_weak_chain_consensus(
-            core_chain_ids=core_chain_ids,
-            pass_chain_ids=attempt_chain_ids,
+        core_exact_ids = _collect_chain_exact_ids(pr_vulns)
+        core_family_ids = _collect_chain_family_ids(pr_vulns)
+        core_flow_ids = _collect_chain_flow_ids(pr_vulns)
+        (
+            weak_consensus,
+            detected_reason,
+            passes_with_core_chain,
+            consensus_mode_used,
+            support_counts_snapshot,
+        ) = _adjudicate_consensus_support(
             required_support=required_core_chain_pass_support,
+            core_exact_ids=core_exact_ids,
+            pass_exact_ids=attempt_chain_exact_ids,
+            core_family_ids=core_family_ids,
+            pass_family_ids=attempt_chain_family_ids,
+            core_flow_ids=core_flow_ids,
+            pass_flow_ids=attempt_chain_flow_ids,
         )
         if weak_consensus and detected_reason:
             weak_consensus_reason = detected_reason
         weak_consensus_triggered = weak_consensus_triggered or weak_consensus
+        passes_with_core_chain_exact = support_counts_snapshot.get("exact", 0)
+        passes_with_core_chain_family = support_counts_snapshot.get("family", 0)
+        passes_with_core_chain_flow = support_counts_snapshot.get("flow", 0)
         consensus_score = (
             passes_with_core_chain / len(attempt_chain_ids) if attempt_chain_ids else 0.0
         )
@@ -1755,6 +1833,7 @@ Only report findings at or above: {severity_threshold}
             speculative_dropped = merge_stats.get("speculative_dropped", 0)
             subchain_collapsed = merge_stats.get("subchain_collapsed", 0)
             low_support_dropped = merge_stats.get("low_support_dropped", 0)
+            dropped_as_secondary_chain = merge_stats.get("dropped_as_secondary_chain", 0)
             canonical_chain_count = merge_stats.get(
                 "canonical_chain_count", merged_pr_finding_count
             )
@@ -1775,7 +1854,12 @@ Only report findings at or above: {severity_threshold}
                 f"speculative_dropped={speculative_dropped}, "
                 f"subchain_collapsed={subchain_collapsed}, "
                 f"low_support_dropped={low_support_dropped}, "
+                f"dropped_as_secondary_chain={dropped_as_secondary_chain}, "
                 f"passes_with_core_chain={passes_with_core_chain}, "
+                f"passes_with_core_chain_exact={passes_with_core_chain_exact}, "
+                f"passes_with_core_chain_family={passes_with_core_chain_family}, "
+                f"passes_with_core_chain_flow={passes_with_core_chain_flow}, "
+                f"consensus_mode_used={consensus_mode_used}, "
                 f"consensus_score={consensus_score:.2f}, "
                 f"weak_consensus_triggered={weak_consensus_triggered}, "
                 f"escalation_reason={weak_consensus_reason or 'none'}, "
@@ -2752,6 +2836,66 @@ def _build_chain_identity(entry: dict) -> str:
     )
 
 
+def _infer_chain_sink_family(entry: dict) -> str:
+    """Infer coarse sink family from finding evidence and referenced locations."""
+    text = _finding_text(entry, fields=("title", "description", "attack_scenario", "evidence"))
+    locations = _extract_finding_locations(entry)
+    routes = _extract_finding_routes(entry)
+    sink_anchor = _extract_chain_sink_anchor(entry)
+    combined = " ".join([text, " ".join(locations), " ".join(routes), sink_anchor]).lower()
+
+    file_sink_terms = (
+        "copyfile",
+        "fs.copyfile",
+        "fs.stat",
+        "sendfile",
+        "send_file",
+        "/media/",
+        "media/:id",
+        "upload",
+        "download",
+    )
+    command_sink_terms = (
+        "exec(",
+        "spawn(",
+        "/bin/sh",
+        "sh -c",
+        "ssh",
+        "proxycommand",
+        "argv",
+        "option injection",
+    )
+    auth_sink_terms = (
+        "allowfrom",
+        "auth",
+        "unauth",
+        "permission",
+        "role",
+        "origin",
+    )
+
+    if any(term in combined for term in file_sink_terms):
+        return "file_host_sink"
+    if any(term in combined for term in command_sink_terms):
+        return "command_exec_sink"
+    if any(term in combined for term in auth_sink_terms):
+        return "authz_sink"
+    return "generic_sink"
+
+
+def _normalize_chain_class_for_sink(chain_class: str, sink_family: str) -> str:
+    """Normalize chain class for consensus using sink family when class is generic."""
+    if chain_class in {"path_file_chain", "command_chain", "auth_priv_chain"}:
+        return chain_class
+    if sink_family == "file_host_sink":
+        return "path_file_chain"
+    if sink_family == "command_exec_sink":
+        return "command_chain"
+    if sink_family == "authz_sink":
+        return "auth_priv_chain"
+    return chain_class or "generic_chain"
+
+
 def _build_chain_family_identity(entry: dict) -> str:
     """Build stable exploit-chain family identity for cross-pass consensus support."""
     if not isinstance(entry, dict):
@@ -2793,14 +2937,56 @@ def _build_chain_family_identity(entry: dict) -> str:
     )
 
 
-def _collect_chain_ids(findings: list[dict]) -> set[str]:
-    """Collect unique stable chain-family identities for a set of findings."""
+def _build_chain_flow_identity(entry: dict) -> str:
+    """Build flow-family identity for consensus fallback across wording/CWE variance."""
+    if not isinstance(entry, dict):
+        return ""
+
+    path = _canonicalize_finding_path(entry.get("file_path"))
+    if not path:
+        locations = _extract_finding_locations(entry)
+        path = locations[0] if locations else ""
+    if not path:
+        return ""
+
+    sink_family = _infer_chain_sink_family(entry)
+    chain_class = _normalize_chain_class_for_sink(_infer_chain_family_class(entry), sink_family)
+    return "|".join([path, sink_family, chain_class])
+
+
+def _collect_chain_exact_ids(findings: list[dict]) -> set[str]:
+    """Collect exact chain identities for support diagnostics."""
+    chain_ids: set[str] = set()
+    for finding in findings:
+        chain_id = _build_chain_identity(finding)
+        if chain_id:
+            chain_ids.add(chain_id)
+    return chain_ids
+
+
+def _collect_chain_family_ids(findings: list[dict]) -> set[str]:
+    """Collect stable chain-family identities for consensus support."""
     chain_ids: set[str] = set()
     for finding in findings:
         chain_id = _build_chain_family_identity(finding)
         if chain_id:
             chain_ids.add(chain_id)
     return chain_ids
+
+
+def _collect_chain_flow_ids(findings: list[dict]) -> set[str]:
+    """Collect flow-family identities for consensus fallback support."""
+    chain_ids: set[str] = set()
+    for finding in findings:
+        chain_id = _build_chain_flow_identity(finding)
+        if chain_id:
+            chain_ids.add(chain_id)
+    return chain_ids
+
+
+def _collect_chain_ids(findings: list[dict]) -> set[str]:
+    """Backward-compatible alias to collect chain-family ids."""
+    return _collect_chain_family_ids(findings)
 
 
 def _count_passes_with_core_chains(core_chain_ids: set[str], pass_chain_ids: list[set[str]]) -> int:
@@ -2815,6 +3001,7 @@ def _summarize_chain_candidates_for_prompt(
     chain_support_counts: Dict[str, int],
     attempts_observed: int,
     *,
+    flow_support_counts: Optional[Dict[str, int]] = None,
     max_items: int = 3,
     max_chars: int = 3200,
 ) -> str:
@@ -2825,7 +3012,10 @@ def _summarize_chain_candidates_for_prompt(
     lines: list[str] = []
     for finding in findings[:max_items]:
         chain_id = _build_chain_family_identity(finding)
+        flow_id = _build_chain_flow_identity(finding)
         support = chain_support_counts.get(chain_id, 0) if chain_id else 0
+        if flow_support_counts and flow_id:
+            support = max(support, flow_support_counts.get(flow_id, 0))
         path = _canonicalize_finding_path(finding.get("file_path")) or "unknown"
         line_no = _coerce_line_number(finding.get("line_number"))
         location = f"{path}:{line_no}" if line_no > 0 else path
@@ -2865,6 +3055,75 @@ def _detect_weak_chain_consensus(
         return True, reason, passes_with_core
 
     return False, "stable", passes_with_core
+
+
+def _adjudicate_consensus_support(
+    *,
+    required_support: int,
+    core_exact_ids: set[str],
+    pass_exact_ids: list[set[str]],
+    core_family_ids: set[str],
+    pass_family_ids: list[set[str]],
+    core_flow_ids: set[str],
+    pass_flow_ids: list[set[str]],
+) -> tuple[bool, str, int, str, Dict[str, int]]:
+    """Adjudicate consensus across exact/family/flow support modes."""
+    weak_exact, reason_exact, support_exact = _detect_weak_chain_consensus(
+        core_chain_ids=core_exact_ids,
+        pass_chain_ids=pass_exact_ids,
+        required_support=required_support,
+    )
+    weak_family, reason_family, support_family = _detect_weak_chain_consensus(
+        core_chain_ids=core_family_ids,
+        pass_chain_ids=pass_family_ids,
+        required_support=required_support,
+    )
+    weak_flow, reason_flow, support_flow = _detect_weak_chain_consensus(
+        core_chain_ids=core_flow_ids,
+        pass_chain_ids=pass_flow_ids,
+        required_support=required_support,
+    )
+
+    support_metrics = {
+        "exact": support_exact,
+        "family": support_family,
+        "flow": support_flow,
+    }
+
+    def _mode_is_stable(weak: bool, reason: str, support: int) -> bool:
+        if not weak:
+            return True
+        return reason.startswith("trailing_empty_passes=") and support >= required_support
+
+    stable_priority = (
+        ("exact", weak_exact, reason_exact, support_exact),
+        ("flow", weak_flow, reason_flow, support_flow),
+        ("family", weak_family, reason_family, support_family),
+    )
+    for mode, weak, reason, support in stable_priority:
+        if _mode_is_stable(weak, reason, support):
+            normalized_reason = (
+                "stable" if weak and reason.startswith("trailing_empty_passes=") else reason
+            )
+            return False, normalized_reason, support, mode, support_metrics
+
+    fallback_priority = ("flow", "family", "exact")
+    selected_mode = max(
+        fallback_priority,
+        key=lambda mode: (support_metrics.get(mode, 0), -fallback_priority.index(mode)),
+    )
+    selected_reason = {
+        "exact": reason_exact,
+        "family": reason_family,
+        "flow": reason_flow,
+    }.get(selected_mode, "weak_consensus")
+    return (
+        True,
+        f"{selected_mode}:{selected_reason}",
+        support_metrics.get(selected_mode, 0),
+        selected_mode,
+        support_metrics,
+    )
 
 
 def _diff_has_command_builder_signals(diff_context: DiffContext) -> bool:
@@ -3220,6 +3479,7 @@ def _merge_pr_attempt_findings(
             merge_stats["speculative_dropped"] = 0
             merge_stats["subchain_collapsed"] = 0
             merge_stats["low_support_dropped"] = 0
+            merge_stats["dropped_as_secondary_chain"] = 0
             merge_stats["max_chain_support"] = 0
         return []
 
@@ -3776,10 +4036,59 @@ def _merge_pr_attempt_findings(
 
     compacted_findings.sort(key=_entry_quality, reverse=True)
 
-    filtered_findings = compacted_findings
+    secondary_chain_dropped = 0
+    secondary_filtered_findings: list[dict] = []
+    for candidate in compacted_findings:
+        suppress_as_secondary = False
+        candidate_path = _canonicalize_finding_path(candidate.get("file_path"))
+        candidate_class = _infer_chain_family_class(candidate)
+        candidate_sink_family = _infer_chain_sink_family(candidate)
+        candidate_line = _coerce_line_number(candidate.get("line_number"))
+        candidate_role = _chain_role(candidate)
+        candidate_proof = _proof_score(candidate)
+
+        for existing in secondary_filtered_findings:
+            existing_path = _canonicalize_finding_path(existing.get("file_path"))
+            if not candidate_path or candidate_path != existing_path:
+                continue
+            existing_class = _infer_chain_family_class(existing)
+            if candidate_class != existing_class:
+                continue
+            existing_sink_family = _infer_chain_sink_family(existing)
+            if candidate_sink_family != existing_sink_family:
+                continue
+
+            existing_line = _coerce_line_number(existing.get("line_number"))
+            line_gap = (
+                abs(candidate_line - existing_line)
+                if candidate_line > 0 and existing_line > 0
+                else 999
+            )
+            if line_gap > 120:
+                continue
+
+            existing_role = _chain_role(existing)
+            existing_proof = _proof_score(existing)
+            if (
+                existing_role == "end_to_end"
+                and candidate_role != "end_to_end"
+                and existing_proof >= candidate_proof
+            ):
+                suppress_as_secondary = True
+                break
+            if existing_proof - candidate_proof >= 2:
+                suppress_as_secondary = True
+                break
+
+        if suppress_as_secondary:
+            secondary_chain_dropped += 1
+            continue
+        secondary_filtered_findings.append(candidate)
+
+    filtered_findings = secondary_filtered_findings
     strong_findings = [
         finding
-        for finding in compacted_findings
+        for finding in secondary_filtered_findings
         if _proof_score(finding) >= 4
         and _speculation_penalty(finding) <= 2
         and _has_concrete_chain_structure(finding)
@@ -3787,7 +4096,7 @@ def _merge_pr_attempt_findings(
     if strong_findings:
         filtered_findings = [
             finding
-            for finding in compacted_findings
+            for finding in secondary_filtered_findings
             if _proof_score(finding) >= 3
             and _speculation_penalty(finding) <= 2
             and _has_concrete_chain_structure(finding)
@@ -3827,6 +4136,7 @@ def _merge_pr_attempt_findings(
         )
         merge_stats["subchain_collapsed"] = subchain_collapsed
         merge_stats["low_support_dropped"] = low_support_dropped
+        merge_stats["dropped_as_secondary_chain"] = secondary_chain_dropped
         merge_stats["max_chain_support"] = (
             max(chain_support_counts.values(), default=0) if chain_support_counts else 0
         )
