@@ -59,55 +59,19 @@ class TestFixVulnerabilitiesJson:
         assert modified is False
         assert json.loads(fixed) == [vuln]
 
-    def test_wrapped_vulnerabilities_unwrapped(self):
-        """Wrapped {'vulnerabilities': [...]} should be unwrapped."""
+    @pytest.mark.parametrize(
+        "wrapper_key",
+        ["vulnerabilities", "issues", "results", "findings", "data"],
+    )
+    def test_wrapped_key_unwrapped(self, wrapper_key):
+        """Wrapped {key: [...]} should be unwrapped for each wrapper key."""
         vuln = self._make_valid_vuln()
-        content = json.dumps({"vulnerabilities": [vuln]})
+        content = json.dumps({wrapper_key: [vuln]})
 
         fixed, modified = fix_vulnerabilities_json(content)
 
         assert modified is True
         assert fixed.startswith("[")
-        assert json.loads(fixed) == [vuln]
-
-    def test_wrapped_issues_unwrapped(self):
-        """Wrapped {'issues': [...]} should be unwrapped."""
-        vuln = self._make_valid_vuln()
-        content = json.dumps({"issues": [vuln]})
-
-        fixed, modified = fix_vulnerabilities_json(content)
-
-        assert modified is True
-        assert json.loads(fixed) == [vuln]
-
-    def test_wrapped_results_unwrapped(self):
-        """Wrapped {'results': [...]} should be unwrapped."""
-        vuln = self._make_valid_vuln()
-        content = json.dumps({"results": [vuln]})
-
-        fixed, modified = fix_vulnerabilities_json(content)
-
-        assert modified is True
-        assert json.loads(fixed) == [vuln]
-
-    def test_wrapped_findings_unwrapped(self):
-        """Wrapped {'findings': [...]} should be unwrapped."""
-        vuln = self._make_valid_vuln()
-        content = json.dumps({"findings": [vuln]})
-
-        fixed, modified = fix_vulnerabilities_json(content)
-
-        assert modified is True
-        assert json.loads(fixed) == [vuln]
-
-    def test_wrapped_data_unwrapped(self):
-        """Wrapped {'data': [...]} should be unwrapped."""
-        vuln = self._make_valid_vuln()
-        content = json.dumps({"data": [vuln]})
-
-        fixed, modified = fix_vulnerabilities_json(content)
-
-        assert modified is True
         assert json.loads(fixed) == [vuln]
 
     def test_empty_string_returns_empty_array(self):

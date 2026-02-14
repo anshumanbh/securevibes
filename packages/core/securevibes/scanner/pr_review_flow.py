@@ -14,11 +14,11 @@ from securevibes.agents.definitions import create_agent_definitions
 from securevibes.config import config
 from securevibes.diff.parser import DiffContext
 from securevibes.scanner.chain_analysis import (
-    _attempt_contains_core_chain_evidence,
-    _collect_chain_exact_ids,
-    _collect_chain_family_ids,
-    _collect_chain_flow_ids,
-    _summarize_chain_candidates_for_prompt,
+    attempt_contains_core_chain_evidence,
+    collect_chain_exact_ids,
+    collect_chain_family_ids,
+    collect_chain_flow_ids,
+    summarize_chain_candidates_for_prompt,
 )
 from securevibes.scanner.hooks import (
     create_json_validation_hook,
@@ -140,9 +140,9 @@ class PRReviewAttemptRunner:
     ) -> None:
         """Record chain IDs from an attempt's findings into state."""
         canonical_attempt = _merge_pr_attempt_findings(attempt_findings)
-        exact_ids = _collect_chain_exact_ids(canonical_attempt)
-        family_ids = _collect_chain_family_ids(canonical_attempt)
-        flow_ids = _collect_chain_flow_ids(canonical_attempt)
+        exact_ids = collect_chain_exact_ids(canonical_attempt)
+        family_ids = collect_chain_family_ids(canonical_attempt)
+        flow_ids = collect_chain_flow_ids(canonical_attempt)
         state.attempt_chain_exact_ids.append(exact_ids)
         state.attempt_chain_family_ids.append(family_ids)
         state.attempt_chain_flow_ids.append(flow_ids)
@@ -163,14 +163,14 @@ class PRReviewAttemptRunner:
             chain_support_counts=state.chain_support_counts,
             total_attempts=len(state.attempt_chain_ids),
         )
-        state.attempt_state.carry_forward_candidate_family_ids = _collect_chain_family_ids(
+        state.attempt_state.carry_forward_candidate_family_ids = collect_chain_family_ids(
             cumulative_candidates
         )
-        state.attempt_state.carry_forward_candidate_flow_ids = _collect_chain_flow_ids(
+        state.attempt_state.carry_forward_candidate_flow_ids = collect_chain_flow_ids(
             cumulative_candidates
         )
         state.attempt_state.carry_forward_candidate_summary = (
-            _summarize_chain_candidates_for_prompt(
+            summarize_chain_candidates_for_prompt(
                 cumulative_candidates,
                 state.chain_support_counts,
                 len(state.attempt_chain_ids),
@@ -188,7 +188,7 @@ class PRReviewAttemptRunner:
         expected_flow_ids: set,
     ) -> bool:
         """Record revalidation observability data and return whether core evidence was present."""
-        core_evidence_present = _attempt_contains_core_chain_evidence(
+        core_evidence_present = attempt_contains_core_chain_evidence(
             attempt_findings=attempt_findings,
             expected_family_ids=expected_family_ids,
             expected_flow_ids=expected_flow_ids,

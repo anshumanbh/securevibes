@@ -22,27 +22,27 @@ from securevibes.diff.context import (
 from securevibes.diff.parser import DiffContext, DiffFile, DiffHunk, DiffLine
 from securevibes.scanner.scanner import (
     Scanner,
-    _adjudicate_consensus_support,
-    _attempt_contains_core_chain_evidence,
+    adjudicate_consensus_support,
+    attempt_contains_core_chain_evidence,
     _attempts_show_pr_disagreement,
-    _build_chain_flow_identity,
-    _build_chain_family_identity,
-    _build_chain_identity,
+    build_chain_flow_identity,
+    build_chain_family_identity,
+    build_chain_identity,
     _build_pr_review_retry_suffix,
     _build_pr_retry_focus_plan,
-    _canonicalize_finding_path,
-    _count_passes_with_core_chains,
-    _detect_weak_chain_consensus,
-    _diff_has_auth_privilege_signals,
-    _diff_has_path_parser_signals,
+    canonicalize_finding_path,
+    count_passes_with_core_chains,
+    detect_weak_chain_consensus,
+    diff_has_auth_privilege_signals,
+    diff_has_path_parser_signals,
     _derive_pr_default_grep_scope,
     _enforce_focused_diff_coverage,
     _build_focused_diff_context,
     _extract_observed_pr_findings,
     _merge_pr_attempt_findings,
     _should_run_pr_verifier,
-    _summarize_revalidation_support,
-    _summarize_chain_candidates_for_prompt,
+    summarize_revalidation_support,
+    summarize_chain_candidates_for_prompt,
     _summarize_diff_hunk_snippets,
     dedupe_pr_vulns,
     filter_baseline_vulns,
@@ -833,8 +833,8 @@ def test_merge_pr_attempt_findings_drops_low_support_noise_when_core_is_repeated
     }
     merge_stats: dict[str, int] = {}
     chain_support_counts = {
-        _build_chain_family_identity(core_finding): 3,
-        _build_chain_family_identity(noisy_finding): 1,
+        build_chain_family_identity(core_finding): 3,
+        build_chain_family_identity(noisy_finding): 1,
     }
 
     merged = _merge_pr_attempt_findings(
@@ -1065,8 +1065,8 @@ def test_diff_signal_detectors_identify_path_and_auth_deltas():
         changed_files=["src/media/parse.ts", "src/gateway/server-methods/config.ts"],
     )
 
-    assert _diff_has_path_parser_signals(context)
-    assert _diff_has_auth_privilege_signals(context)
+    assert diff_has_path_parser_signals(context)
+    assert diff_has_auth_privilege_signals(context)
 
 
 def test_attempt_disagreement_detector_flags_sparse_attempt_success():
@@ -1108,11 +1108,11 @@ def test_chain_identity_and_core_pass_support_tracking():
         "line_number": 29,
         "cwe_id": "CWE-22",
     }
-    chain_id = _build_chain_identity(finding)
+    chain_id = build_chain_identity(finding)
     assert chain_id
 
     pass_chain_ids = [{chain_id}, set(), {chain_id}]
-    assert _count_passes_with_core_chains({chain_id}, pass_chain_ids) == 2
+    assert count_passes_with_core_chains({chain_id}, pass_chain_ids) == 2
 
 
 def test_chain_family_identity_stable_across_wording_and_cwe_variants():
@@ -1136,8 +1136,8 @@ def test_chain_family_identity_stable_across_wording_and_cwe_variants():
         "cwe_id": "CWE-610",
     }
 
-    assert _build_chain_family_identity(finding_a)
-    assert _build_chain_family_identity(finding_a) == _build_chain_family_identity(finding_b)
+    assert build_chain_family_identity(finding_a)
+    assert build_chain_family_identity(finding_a) == build_chain_family_identity(finding_b)
 
 
 def test_chain_family_support_counts_semantically_equivalent_pass_outputs():
@@ -1156,12 +1156,12 @@ def test_chain_family_support_counts_semantically_equivalent_pass_outputs():
         "cwe_id": "CWE-610",
         "evidence": "src/media/parse.ts:11 export; flow to src/media/store.ts:91 and src/media/server.ts:28",
     }
-    family_id_a = _build_chain_family_identity(finding_a)
-    family_id_b = _build_chain_family_identity(finding_b)
+    family_id_a = build_chain_family_identity(finding_a)
+    family_id_b = build_chain_family_identity(finding_b)
     assert family_id_a == family_id_b
 
     pass_chain_ids = [{family_id_a}, {family_id_b}, set(), {family_id_a}]
-    assert _count_passes_with_core_chains({family_id_a}, pass_chain_ids) == 3
+    assert count_passes_with_core_chains({family_id_a}, pass_chain_ids) == 3
 
 
 def test_chain_flow_identity_stable_for_same_sink_family():
@@ -1181,15 +1181,15 @@ def test_chain_flow_identity_stable_for_same_sink_family():
         "evidence": "src/media/parse.ts:11 export; flow to src/media/store.ts:91 and src/media/server.ts:28",
     }
 
-    flow_a = _build_chain_flow_identity(finding_a)
-    flow_b = _build_chain_flow_identity(finding_b)
+    flow_a = build_chain_flow_identity(finding_a)
+    flow_b = build_chain_flow_identity(finding_b)
     assert flow_a
     assert flow_a == flow_b
 
 
-def test_adjudicate_consensus_support_falls_back_to_flow_mode_when_exact_is_weak():
+def testadjudicate_consensus_support_falls_back_to_flow_mode_when_exact_is_weak():
     """Consensus mode should choose flow when exact support is weak and flow is stable."""
-    weak, reason, support, mode, metrics = _adjudicate_consensus_support(
+    weak, reason, support, mode, metrics = adjudicate_consensus_support(
         required_support=2,
         core_exact_ids={"exact-core"},
         pass_exact_ids=[{"exact-core"}, set(), set(), set()],
@@ -1208,9 +1208,9 @@ def test_adjudicate_consensus_support_falls_back_to_flow_mode_when_exact_is_weak
     assert reason == "stable"
 
 
-def test_canonicalize_finding_path_normalizes_absolute_repo_suffix():
+def testcanonicalize_finding_path_normalizes_absolute_repo_suffix():
     """Absolute finding paths should normalize to repo-style suffix for dedupe."""
-    path = _canonicalize_finding_path("/Users/test/repos/openclaw/src/media/parse.ts")
+    path = canonicalize_finding_path("/Users/test/repos/openclaw/src/media/parse.ts")
     assert path == "src/media/parse.ts"
 
 
@@ -1245,10 +1245,10 @@ def test_merge_pr_attempt_findings_collapses_absolute_relative_path_duplicates()
     assert len(merged) == 1
 
 
-def test_detect_weak_chain_consensus_requires_minimum_support():
+def testdetect_weak_chain_consensus_requires_minimum_support():
     """Weak consensus should trigger when core chains are not independently repeated."""
     core_chain_ids = {"src/media/parse.ts|22|1|local.file.exfiltration"}
-    weak, reason, support = _detect_weak_chain_consensus(
+    weak, reason, support = detect_weak_chain_consensus(
         core_chain_ids=core_chain_ids,
         pass_chain_ids=[set(core_chain_ids), set(), set()],
         required_support=2,
@@ -1257,7 +1257,7 @@ def test_detect_weak_chain_consensus_requires_minimum_support():
     assert support == 1
     assert "core_support" in reason
 
-    stable, stable_reason, stable_support = _detect_weak_chain_consensus(
+    stable, stable_reason, stable_support = detect_weak_chain_consensus(
         core_chain_ids=core_chain_ids,
         pass_chain_ids=[set(core_chain_ids), set(core_chain_ids), set(core_chain_ids)],
         required_support=2,
@@ -1267,7 +1267,7 @@ def test_detect_weak_chain_consensus_requires_minimum_support():
     assert stable_reason == "stable"
 
 
-def test_detect_weak_chain_consensus_accepts_family_variant_agreement():
+def testdetect_weak_chain_consensus_accepts_family_variant_agreement():
     """Family-equivalent variants across passes should not trigger weak consensus."""
     core_finding = {
         "title": "Path traversal exfiltration chain",
@@ -1283,11 +1283,11 @@ def test_detect_weak_chain_consensus_accepts_family_variant_agreement():
         "cwe_id": "CWE-610",
         "evidence": "src/media/parse.ts:11 export; flow to src/media/store.ts:91 and src/media/server.ts:28",
     }
-    core_family = _build_chain_family_identity(core_finding)
-    variant_family = _build_chain_family_identity(variant_finding)
+    core_family = build_chain_family_identity(core_finding)
+    variant_family = build_chain_family_identity(variant_finding)
     assert core_family == variant_family
 
-    weak, reason, support = _detect_weak_chain_consensus(
+    weak, reason, support = detect_weak_chain_consensus(
         core_chain_ids={core_family},
         pass_chain_ids=[{core_family}, {variant_family}, {core_family}, {variant_family}],
         required_support=2,
@@ -1297,7 +1297,7 @@ def test_detect_weak_chain_consensus_accepts_family_variant_agreement():
     assert reason == "stable"
 
 
-def test_attempt_contains_core_chain_evidence_matches_family_or_flow():
+def testattempt_contains_core_chain_evidence_matches_family_or_flow():
     """Core evidence detection should accept either family or flow overlap."""
     finding = {
         "title": "Local file exfiltration via parser",
@@ -1306,29 +1306,29 @@ def test_attempt_contains_core_chain_evidence_matches_family_or_flow():
         "cwe_id": "CWE-22",
         "evidence": "flow: src/media/parse.ts:29 -> src/media/store.ts:91 -> src/media/server.ts:28",
     }
-    family_id = _build_chain_family_identity(finding)
-    flow_id = _build_chain_flow_identity(finding)
+    family_id = build_chain_family_identity(finding)
+    flow_id = build_chain_flow_identity(finding)
 
-    assert _attempt_contains_core_chain_evidence(
+    assert attempt_contains_core_chain_evidence(
         attempt_findings=[finding],
         expected_family_ids={family_id},
         expected_flow_ids=set(),
     )
-    assert _attempt_contains_core_chain_evidence(
+    assert attempt_contains_core_chain_evidence(
         attempt_findings=[finding],
         expected_family_ids=set(),
         expected_flow_ids={flow_id},
     )
-    assert not _attempt_contains_core_chain_evidence(
+    assert not attempt_contains_core_chain_evidence(
         attempt_findings=[finding],
         expected_family_ids={"src/other.ts|path_file_chain"},
         expected_flow_ids={"src/other.ts|file_host_sink|path_file_chain"},
     )
 
 
-def test_summarize_revalidation_support_counts_hits_and_misses():
+def testsummarize_revalidation_support_counts_hits_and_misses():
     """Revalidation summary should report attempts, hits, and misses correctly."""
-    attempts, hits, misses = _summarize_revalidation_support(
+    attempts, hits, misses = summarize_revalidation_support(
         revalidation_attempted=[False, True, True, True],
         core_evidence_present=[False, True, False, True],
     )
@@ -1337,7 +1337,7 @@ def test_summarize_revalidation_support_counts_hits_and_misses():
     assert misses == 1
 
 
-def test_summarize_chain_candidates_for_prompt_includes_support_counts():
+def testsummarize_chain_candidates_for_prompt_includes_support_counts():
     """Candidate summary should include location and pass support for carry-forward prompts."""
     finding = {
         "title": "Local file exfiltration via parser",
@@ -1346,9 +1346,9 @@ def test_summarize_chain_candidates_for_prompt_includes_support_counts():
         "cwe_id": "CWE-22",
         "evidence": "flow: src/media/parse.ts:29 -> src/media/store.ts:91 -> src/media/server.ts:28",
     }
-    chain_id = _build_chain_family_identity(finding)
-    flow_id = _build_chain_flow_identity(finding)
-    summary = _summarize_chain_candidates_for_prompt(
+    chain_id = build_chain_family_identity(finding)
+    flow_id = build_chain_flow_identity(finding)
+    summary = summarize_chain_candidates_for_prompt(
         findings=[finding],
         chain_support_counts={chain_id: 2},
         flow_support_counts={flow_id: 3},

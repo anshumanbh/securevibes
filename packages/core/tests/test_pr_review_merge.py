@@ -639,12 +639,12 @@ class TestMergePrAttemptFindings:
             "evidence": "src/auth.py:100 -> flow to login handler",
         }
         from securevibes.scanner.chain_analysis import (
-            _build_chain_family_identity,
-            _build_chain_identity,
+            build_chain_family_identity,
+            build_chain_identity,
         )
 
         chain_support = {}
-        for identity_fn in (_build_chain_family_identity, _build_chain_identity):
+        for identity_fn in (build_chain_family_identity, build_chain_identity):
             key = identity_fn(high_support_finding)
             if key:
                 chain_support[key] = 3

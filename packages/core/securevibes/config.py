@@ -96,9 +96,15 @@ class ScanConfig:
         ".pnp",  # Yarn PnP
     }
 
-    EXCLUDED_DIRS_GO = {"vendor", "bin"}  # Go vendored dependencies  # Go binaries
+    EXCLUDED_DIRS_GO = {
+        "vendor",  # Go vendored dependencies
+        "bin",  # Go binaries
+    }
 
-    EXCLUDED_DIRS_RUBY = {"vendor/bundle", ".bundle"}  # Bundled gems  # Bundle config
+    EXCLUDED_DIRS_RUBY = {
+        "vendor/bundle",  # Bundled gems
+        ".bundle",  # Bundle config
+    }
 
     EXCLUDED_DIRS_JAVA = {
         "target",  # Maven build

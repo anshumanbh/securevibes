@@ -314,6 +314,51 @@ def validate_threat_model_json(
     return True, None, warnings
 
 
+def _unwrap_json_array(content: str) -> Tuple[str, Any, bool]:
+    """Shared unwrapping logic for vulnerability JSON output.
+
+    Handles empty/whitespace input, code fences, flat arrays, wrapper dicts,
+    and single-object wrapping.
+
+    Args:
+        content: Raw JSON string from agent output.
+
+    Returns:
+        Tuple of (stripped_content, parsed_data_or_None, was_modified).
+        When parsed_data is None the caller should return stripped_content as-is.
+    """
+    if not content or not content.strip():
+        return "[]", None, True
+
+    content = content.strip()
+
+    # Already a flat array - no fix needed
+    if content.startswith("["):
+        return content, None, False
+
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        return content, None, False
+
+    if isinstance(data, list):
+        return json.dumps(data, indent=2), None, False
+
+    if isinstance(data, dict):
+        for key in WRAPPER_KEYS:
+            if key in data and isinstance(data[key], list):
+                return "", data[key], True
+
+        for value in data.values():
+            if isinstance(value, list):
+                return "", value, True
+
+        if "threat_id" in data or "title" in data:
+            return "", [data], True
+
+    return content, None, False
+
+
 def fix_vulnerabilities_json(content: str) -> Tuple[str, bool]:
     """
     Fix common JSON format issues in vulnerability output.
@@ -329,45 +374,10 @@ def fix_vulnerabilities_json(content: str) -> Tuple[str, bool]:
     Returns:
         Tuple of (fixed_content, was_modified)
     """
-    if not content or not content.strip():
-        return "[]", True
-
-    content = content.strip()
-
-    # Already a flat array - no fix needed
-    if content.startswith("["):
-        return content, False
-
-    # Try to parse and unwrap
-    try:
-        data = json.loads(content)
-    except json.JSONDecodeError:
-        # Can't parse, return as-is
-        return content, False
-
-    # If it's already a list, serialize it back
-    if isinstance(data, list):
-        return json.dumps(data, indent=2), False
-
-    # If it's a dict, try to find the array inside
-    if isinstance(data, dict):
-        # Try common wrapper keys
-        for key in WRAPPER_KEYS:
-            if key in data and isinstance(data[key], list):
-                return json.dumps(data[key], indent=2), True
-
-        # Try to find any array value
-        for key, value in data.items():
-            if isinstance(value, list):
-                return json.dumps(value, indent=2), True
-
-        # No array found - might be a single vulnerability
-        # Check if it looks like a vulnerability object
-        if "threat_id" in data or "title" in data:
-            return json.dumps([data], indent=2), True
-
-    # Couldn't fix, return as-is
-    return content, False
+    stripped, unwrapped, was_modified = _unwrap_json_array(content)
+    if unwrapped is None:
+        return stripped, was_modified
+    return json.dumps(unwrapped, indent=2), True
 
 
 def fix_pr_vulnerabilities_json(content: str) -> Tuple[str, bool]:
@@ -385,48 +395,24 @@ def fix_pr_vulnerabilities_json(content: str) -> Tuple[str, bool]:
     Returns:
         Tuple of (fixed_content, was_modified)
     """
-    if not content or not content.strip():
-        return "[]", True
+    stripped, unwrapped, was_modified = _unwrap_json_array(content)
 
-    content = content.strip()
+    if unwrapped is not None:
+        normalized, normalized_modified = _normalize_pr_vulnerability_list(unwrapped)
+        return json.dumps(normalized, indent=2), was_modified or normalized_modified
 
-    try:
-        data = json.loads(content)
-    except json.JSONDecodeError:
-        return content, False
+    # For flat arrays / already-parsed content, try to normalize in place.
+    if not was_modified and stripped.lstrip().startswith("["):
+        try:
+            data = json.loads(stripped)
+        except json.JSONDecodeError:
+            return stripped, False
+        if isinstance(data, list):
+            normalized, normalized_modified = _normalize_pr_vulnerability_list(data)
+            if normalized_modified:
+                return json.dumps(normalized, indent=2), True
 
-    was_modified = False
-
-    if isinstance(data, list):
-        normalized, normalized_modified = _normalize_pr_vulnerability_list(data)
-        if normalized_modified:
-            return json.dumps(normalized, indent=2), True
-        return content, False
-
-    if isinstance(data, dict):
-        unwrapped = None
-        for key in WRAPPER_KEYS:
-            if key in data and isinstance(data[key], list):
-                unwrapped = data[key]
-                break
-
-        if unwrapped is None:
-            for value in data.values():
-                if isinstance(value, list):
-                    unwrapped = value
-                    break
-
-        if unwrapped is not None:
-            was_modified = True
-            normalized, normalized_modified = _normalize_pr_vulnerability_list(unwrapped)
-            return json.dumps(normalized, indent=2), was_modified or normalized_modified
-
-        if "threat_id" in data or "title" in data:
-            was_modified = True
-            normalized, normalized_modified = _normalize_pr_vulnerability_list([data])
-            return json.dumps(normalized, indent=2), was_modified or normalized_modified
-
-    return content, False
+    return stripped, was_modified
 
 
 def _normalize_pr_vulnerability_list(

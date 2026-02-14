@@ -46,23 +46,23 @@ from securevibes.scanner.hooks import (
 )
 from securevibes.scanner.artifacts import update_pr_review_artifacts
 from securevibes.scanner.chain_analysis import (
-    _adjudicate_consensus_support,
-    _attempt_contains_core_chain_evidence,
-    _build_chain_family_identity,
-    _build_chain_flow_identity,
-    _build_chain_identity,
-    _canonicalize_finding_path,
-    _collect_chain_exact_ids,
-    _collect_chain_family_ids,
-    _collect_chain_flow_ids,
-    _count_passes_with_core_chains,
-    _detect_weak_chain_consensus,
-    _diff_file_path,
-    _diff_has_auth_privilege_signals,
-    _diff_has_command_builder_signals,
-    _diff_has_path_parser_signals,
-    _summarize_chain_candidates_for_prompt,
-    _summarize_revalidation_support,
+    adjudicate_consensus_support,
+    attempt_contains_core_chain_evidence,
+    build_chain_family_identity,
+    build_chain_flow_identity,
+    build_chain_identity,
+    canonicalize_finding_path,
+    collect_chain_exact_ids,
+    collect_chain_family_ids,
+    collect_chain_flow_ids,
+    count_passes_with_core_chains,
+    detect_weak_chain_consensus,
+    diff_file_path,
+    diff_has_auth_privilege_signals,
+    diff_has_command_builder_signals,
+    diff_has_path_parser_signals,
+    summarize_chain_candidates_for_prompt,
+    summarize_revalidation_support,
 )
 from securevibes.scanner.state import (
     build_full_scan_entry,
@@ -93,33 +93,33 @@ from securevibes.scanner.pr_review_flow import (
 __all__ = [
     "Scanner",
     "ProgressTracker",
-    "_adjudicate_consensus_support",
-    "_attempt_contains_core_chain_evidence",
+    "adjudicate_consensus_support",
+    "attempt_contains_core_chain_evidence",
     "_attempts_show_pr_disagreement",
-    "_build_chain_family_identity",
-    "_build_chain_flow_identity",
-    "_build_chain_identity",
+    "build_chain_family_identity",
+    "build_chain_flow_identity",
+    "build_chain_identity",
     "_build_focused_diff_context",
     "_enforce_focused_diff_coverage",
     "_build_pr_retry_focus_plan",
     "_build_pr_review_retry_suffix",
-    "_canonicalize_finding_path",
-    "_collect_chain_exact_ids",
-    "_collect_chain_family_ids",
-    "_collect_chain_flow_ids",
-    "_count_passes_with_core_chains",
+    "canonicalize_finding_path",
+    "collect_chain_exact_ids",
+    "collect_chain_family_ids",
+    "collect_chain_flow_ids",
+    "count_passes_with_core_chains",
     "_derive_pr_default_grep_scope",
-    "_detect_weak_chain_consensus",
-    "_diff_has_auth_privilege_signals",
-    "_diff_has_command_builder_signals",
-    "_diff_has_path_parser_signals",
+    "detect_weak_chain_consensus",
+    "diff_has_auth_privilege_signals",
+    "diff_has_command_builder_signals",
+    "diff_has_path_parser_signals",
     "_extract_observed_pr_findings",
     "_load_pr_vulnerabilities_artifact",
     "_merge_pr_attempt_findings",
     "_should_run_pr_verifier",
-    "_summarize_chain_candidates_for_prompt",
+    "summarize_chain_candidates_for_prompt",
     "_summarize_diff_hunk_snippets",
-    "_summarize_revalidation_support",
+    "summarize_revalidation_support",
     "dedupe_pr_vulns",
     "filter_baseline_vulns",
 ]
@@ -182,7 +182,7 @@ def _summarize_diff_line_anchors(
 
     lines: list[str] = []
     for diff_file in diff_context.files[:max_files]:
-        path = _diff_file_path(diff_file)
+        path = diff_file_path(diff_file)
         if not path:
             continue
         added = [
@@ -224,7 +224,7 @@ def _summarize_diff_hunk_snippets(
 
     output: list[str] = []
     for diff_file in diff_context.files[:max_files]:
-        path = _diff_file_path(diff_file)
+        path = diff_file_path(diff_file)
         if not path:
             continue
 
@@ -517,7 +517,7 @@ CANDIDATE FINDINGS JSON:
 
 
 def _score_diff_file_for_security_review(diff_file: DiffFile) -> int:
-    path = _diff_file_path(diff_file).lower()
+    path = diff_file_path(diff_file).lower()
     if not path:
         return 0
 
@@ -549,7 +549,7 @@ def _build_focused_diff_context(diff_context: DiffContext) -> DiffContext:
 
     scored_files = sorted(
         diff_context.files,
-        key=lambda f: (_score_diff_file_for_security_review(f), _diff_file_path(f)),
+        key=lambda f: (_score_diff_file_for_security_review(f), diff_file_path(f)),
         reverse=True,
     )
 
@@ -590,7 +590,7 @@ def _build_focused_diff_context(diff_context: DiffContext) -> DiffContext:
             )
         )
 
-    changed_files = [path for path in (_diff_file_path(file) for file in focused_files) if path]
+    changed_files = [path for path in (diff_file_path(file) for file in focused_files) if path]
     added_lines = sum(
         1
         for file in focused_files
@@ -1305,9 +1305,9 @@ class Scanner:
         )
         diff_line_anchors = _summarize_diff_line_anchors(focused_diff_context)
         diff_hunk_snippets = _summarize_diff_hunk_snippets(focused_diff_context)
-        command_builder_signals = _diff_has_command_builder_signals(focused_diff_context)
-        path_parser_signals = _diff_has_path_parser_signals(focused_diff_context)
-        auth_privilege_signals = _diff_has_auth_privilege_signals(focused_diff_context)
+        command_builder_signals = diff_has_command_builder_signals(focused_diff_context)
+        path_parser_signals = diff_has_path_parser_signals(focused_diff_context)
+        auth_privilege_signals = diff_has_auth_privilege_signals(focused_diff_context)
         pr_grep_default_scope = _derive_pr_default_grep_scope(focused_diff_context)
         pr_review_attempts = config.get_pr_review_attempts()
         retry_focus_plan = _build_pr_retry_focus_plan(
@@ -1449,16 +1449,16 @@ Only report findings at or above: {severity_threshold}
         high_risk_signal_count = sum(
             [ctx.command_builder_signals, ctx.path_parser_signals, ctx.auth_privilege_signals]
         )
-        initial_core_exact_ids = _collect_chain_exact_ids(state.pr_vulns)
-        initial_core_family_ids = _collect_chain_family_ids(state.pr_vulns)
-        initial_core_flow_ids = _collect_chain_flow_ids(state.pr_vulns)
+        initial_core_exact_ids = collect_chain_exact_ids(state.pr_vulns)
+        initial_core_family_ids = collect_chain_family_ids(state.pr_vulns)
+        initial_core_flow_ids = collect_chain_flow_ids(state.pr_vulns)
         (
             weak_consensus,
             detected_reason,
             passes_with_core_chain,
             consensus_mode_used,
             support_counts_snapshot,
-        ) = _adjudicate_consensus_support(
+        ) = adjudicate_consensus_support(
             required_support=state.required_core_chain_pass_support,
             core_exact_ids=initial_core_exact_ids,
             pass_exact_ids=state.attempt_chain_exact_ids,
@@ -1473,7 +1473,7 @@ Only report findings at or above: {severity_threshold}
         passes_with_core_chain_exact = support_counts_snapshot.get("exact", 0)
         passes_with_core_chain_family = support_counts_snapshot.get("family", 0)
         passes_with_core_chain_flow = support_counts_snapshot.get("flow", 0)
-        candidate_consensus_context = _summarize_chain_candidates_for_prompt(
+        candidate_consensus_context = summarize_chain_candidates_for_prompt(
             state.pr_vulns,
             state.chain_support_counts,
             len(state.attempt_chain_ids),
@@ -1483,7 +1483,7 @@ Only report findings at or above: {severity_threshold}
             revalidation_attempts,
             revalidation_core_hits,
             revalidation_core_misses,
-        ) = _summarize_revalidation_support(
+        ) = summarize_revalidation_support(
             state.attempt_revalidation_attempted,
             state.attempt_core_evidence_present,
         )
@@ -1554,16 +1554,16 @@ Only report findings at or above: {severity_threshold}
                         style="dim",
                     )
 
-        core_exact_ids = _collect_chain_exact_ids(state.pr_vulns)
-        core_family_ids = _collect_chain_family_ids(state.pr_vulns)
-        core_flow_ids = _collect_chain_flow_ids(state.pr_vulns)
+        core_exact_ids = collect_chain_exact_ids(state.pr_vulns)
+        core_family_ids = collect_chain_family_ids(state.pr_vulns)
+        core_flow_ids = collect_chain_flow_ids(state.pr_vulns)
         (
             weak_consensus,
             detected_reason,
             passes_with_core_chain,
             consensus_mode_used,
             support_counts_snapshot,
-        ) = _adjudicate_consensus_support(
+        ) = adjudicate_consensus_support(
             required_support=state.required_core_chain_pass_support,
             core_exact_ids=core_exact_ids,
             pass_exact_ids=state.attempt_chain_exact_ids,
@@ -1600,7 +1600,7 @@ Only report findings at or above: {severity_threshold}
                 focus_areas=refinement_focus_areas,
                 mode="verifier",
                 attempt_observability=attempt_observability_notes,
-                consensus_context=_summarize_chain_candidates_for_prompt(
+                consensus_context=summarize_chain_candidates_for_prompt(
                     state.pr_vulns,
                     state.chain_support_counts,
                     len(state.attempt_chain_ids),
@@ -1630,16 +1630,16 @@ Only report findings at or above: {severity_threshold}
                         "retaining previous canonical set.",
                         style="dim",
                     )
-        core_exact_ids = _collect_chain_exact_ids(state.pr_vulns)
-        core_family_ids = _collect_chain_family_ids(state.pr_vulns)
-        core_flow_ids = _collect_chain_flow_ids(state.pr_vulns)
+        core_exact_ids = collect_chain_exact_ids(state.pr_vulns)
+        core_family_ids = collect_chain_family_ids(state.pr_vulns)
+        core_flow_ids = collect_chain_flow_ids(state.pr_vulns)
         (
             weak_consensus,
             detected_reason,
             passes_with_core_chain,
             state.consensus_mode_used,
             state.support_counts_snapshot,
-        ) = _adjudicate_consensus_support(
+        ) = adjudicate_consensus_support(
             required_support=state.required_core_chain_pass_support,
             core_exact_ids=core_exact_ids,
             pass_exact_ids=state.attempt_chain_exact_ids,

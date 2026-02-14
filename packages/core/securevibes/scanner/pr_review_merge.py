@@ -14,18 +14,18 @@ from rich.console import Console
 from securevibes.models.issue import SecurityIssue, Severity
 from securevibes.models.schemas import fix_pr_vulnerabilities_json
 from securevibes.scanner.chain_analysis import (
-    _build_chain_family_identity,
-    _build_chain_identity,
-    _canonicalize_finding_path,
-    _coerce_line_number,
-    _extract_chain_sink_anchor,
-    _extract_cwe_family,
-    _extract_finding_locations,
-    _extract_finding_routes,
-    _finding_text,
-    _infer_chain_family_class,
-    _infer_chain_sink_family,
     CHAIN_STOPWORDS,
+    build_chain_family_identity,
+    build_chain_identity,
+    canonicalize_finding_path,
+    coerce_line_number,
+    extract_chain_sink_anchor,
+    extract_cwe_family,
+    extract_finding_locations,
+    extract_finding_routes,
+    finding_text,
+    infer_chain_family_class,
+    infer_chain_sink_family,
 )
 
 _PR_FINDING_TYPES = frozenset(
@@ -38,6 +38,110 @@ _PR_FINDING_TYPES = frozenset(
         "unknown",
     }
 )
+
+# ---------------------------------------------------------------------------
+# Keyword tuples used for chain classification and speculation detection
+# ---------------------------------------------------------------------------
+EXPLOIT_PRIMITIVE_TERMS = (
+    "option injection",
+    "argument injection",
+    "argv",
+    "positional arg",
+    "positional argument",
+    "dash-prefixed",
+    "dash prefixed",
+    "missing --",
+    "without --",
+    "proxycommand",
+    "cwe-88",
+)
+CONCRETE_PAYLOAD_TERMS = (
+    "-o",
+    "--",
+    "payload",
+    "proxycommand=",
+    "attacker@",
+    "example payload",
+    "value starts with -",
+)
+SPECULATIVE_TERMS = (
+    "if bypass exists",
+    "testing needed",
+    "edge case",
+    "could",
+    "might",
+    "may",
+    "potential",
+    "possible",
+    "hypothetical",
+    "future",
+    "future caller",
+    "future callsite",
+    "future code path",
+    "current pr does not introduce",
+    "if future",
+    "warrant defense-in-depth",
+)
+HARDENING_TERMS = (
+    "defense-in-depth",
+    "hardening",
+    "could be improved",
+    "security consideration",
+)
+CHAIN_SOURCE_TERMS = (
+    "attacker",
+    "unauthenticated",
+    "untrusted",
+    "user input",
+    "query parameter",
+    "remote",
+    "webhook",
+    "ws://",
+    "http://",
+    "https://",
+)
+CHAIN_SINK_TERMS = (
+    "exec",
+    "spawn",
+    "sendfile",
+    "upload",
+    "download",
+    "apply",
+    "write",
+    "read",
+    "response",
+    "proxycommand",
+    "ssh",
+    "socket",
+    "websocket",
+    "render",
+    "copyfile",
+    "send_file",
+    "/media/",
+)
+
+# ---------------------------------------------------------------------------
+# Numeric thresholds for chain deduplication and quality scoring
+# ---------------------------------------------------------------------------
+MAX_LINE_GAP_CLOSE = 4
+MIN_TOKEN_SIMILARITY_ADJACENT = 0.24
+MIN_TOKEN_SIMILARITY_CWE78_88 = 0.16
+MIN_TOKEN_SIMILARITY_SAME_FILE = 0.52
+MIN_TITLE_SIMILARITY_SAME_FILE = 0.82
+MIN_TOKEN_SIMILARITY_SAME_DIR = 0.68
+MAX_LINE_GAP_SUBCHAIN = 40
+MIN_TOKEN_SIMILARITY_SUBCHAIN_SHARED_LOC = 0.20
+MAX_LINE_GAP_SUBCHAIN_E2E = 30
+MIN_TOKEN_SIMILARITY_SUBCHAIN_E2E = 0.16
+MAX_LINE_GAP_SUBCHAIN_ENABLER = 30
+MIN_TOKEN_SIMILARITY_ENABLER_SHARED_LOC = 0.18
+MIN_TOKEN_SIMILARITY_ENABLER_E2E = 0.28
+MAX_LINE_GAP_SECONDARY_GUARD = 8
+MIN_TOKEN_SIMILARITY_SECONDARY_SAME_PATH = 0.34
+MIN_TITLE_SIMILARITY_SECONDARY_SAME_PATH = 0.58
+MIN_TOKEN_SIMILARITY_CROSS_FILE_NEAR_DUP = 0.62
+MIN_TITLE_SIMILARITY_CROSS_FILE_NEAR_DUP = 0.66
+MAX_LINE_GAP_SECONDARY_CHAIN = 120
 
 
 def filter_baseline_vulns(known_vulns: list[dict]) -> list[dict]:
@@ -83,7 +187,7 @@ def _build_vuln_match_keys(vuln: dict) -> set[tuple[str, str]]:
     if not identities:
         return set()
 
-    raw_path = _canonicalize_finding_path(vuln.get("file_path")).lower()
+    raw_path = canonicalize_finding_path(vuln.get("file_path")).lower()
     path_keys = {raw_path} if raw_path else {""}
     if raw_path:
         basename = raw_path.rsplit("/", 1)[-1]
@@ -412,95 +516,18 @@ def _merge_pr_attempt_findings(
         "unknown": 1,
     }
     chain_stopwords = CHAIN_STOPWORDS
-    exploit_primitive_terms = (
-        "option injection",
-        "argument injection",
-        "argv",
-        "positional arg",
-        "positional argument",
-        "dash-prefixed",
-        "dash prefixed",
-        "missing --",
-        "without --",
-        "proxycommand",
-        "cwe-88",
-    )
-    concrete_payload_terms = (
-        "-o",
-        "--",
-        "payload",
-        "proxycommand=",
-        "attacker@",
-        "example payload",
-        "value starts with -",
-    )
-    speculative_terms = (
-        "if bypass exists",
-        "testing needed",
-        "edge case",
-        "could",
-        "might",
-        "may",
-        "potential",
-        "possible",
-        "hypothetical",
-        "future",
-        "future caller",
-        "future callsite",
-        "future code path",
-        "current pr does not introduce",
-        "if future",
-        "warrant defense-in-depth",
-    )
-    hardening_terms = (
-        "defense-in-depth",
-        "hardening",
-        "could be improved",
-        "security consideration",
-    )
-    chain_source_terms = (
-        "attacker",
-        "unauthenticated",
-        "untrusted",
-        "user input",
-        "query parameter",
-        "remote",
-        "webhook",
-        "ws://",
-        "http://",
-        "https://",
-    )
-    chain_sink_terms = (
-        "exec",
-        "spawn",
-        "sendfile",
-        "upload",
-        "download",
-        "apply",
-        "write",
-        "read",
-        "response",
-        "proxycommand",
-        "ssh",
-        "socket",
-        "websocket",
-        "render",
-        "copyfile",
-        "send_file",
-        "/media/",
-    )
 
     def _entry_text(entry: dict, *, fields: tuple[str, ...]) -> str:
-        return _finding_text(entry, fields=fields)
+        return finding_text(entry, fields=fields)
 
     def _extract_referenced_code_locations(entry: dict) -> tuple[str, ...]:
-        return _extract_finding_locations(entry)
+        return extract_finding_locations(entry)
 
     def _extract_route_markers(entry: dict) -> tuple[str, ...]:
-        return _extract_finding_routes(entry)
+        return extract_finding_routes(entry)
 
     def _chain_sink_anchor(entry: dict) -> str:
-        return _extract_chain_sink_anchor(entry)
+        return extract_chain_sink_anchor(entry)
 
     def _chain_role(entry: dict) -> str:
         evidence_text = _entry_text(entry, fields=("evidence",))
@@ -512,8 +539,8 @@ def _merge_pr_attempt_findings(
         has_multi_location = len(locations) >= 2
         has_flow_arrow = "->" in evidence_text
         has_step_markers = len(re.findall(r"\b[1-4][\)\.\:]", scenario_text)) >= 2
-        has_source = any(term in core_text for term in chain_source_terms)
-        has_sink = any(term in core_text for term in chain_sink_terms) or bool(
+        has_source = any(term in core_text for term in CHAIN_SOURCE_TERMS)
+        has_sink = any(term in core_text for term in CHAIN_SINK_TERMS) or bool(
             _chain_sink_anchor(entry)
         )
         if (has_multi_location and has_step_markers and has_sink) or (
@@ -531,19 +558,19 @@ def _merge_pr_attempt_findings(
         )
         cwe_text = str(entry.get("cwe_id", "")).strip().upper()
 
-        if any(term in core_text for term in exploit_primitive_terms):
+        if any(term in core_text for term in EXPLOIT_PRIMITIVE_TERMS):
             score += 4
         if "CWE-88" in cwe_text:
             score += 4
         if "cwe-78" in cwe_text and any(term in core_text for term in ("argv", "option injection")):
             score += 2
-        if any(term in scenario_text for term in concrete_payload_terms):
+        if any(term in scenario_text for term in CONCRETE_PAYLOAD_TERMS):
             score += 3
         if "1)" in scenario_text and "2)" in scenario_text:
             score += 1
-        if _canonicalize_finding_path(entry.get("file_path")):
+        if canonicalize_finding_path(entry.get("file_path")):
             score += 1
-        if _coerce_line_number(entry.get("line_number")) > 0:
+        if coerce_line_number(entry.get("line_number")) > 0:
             score += 1
         if ":" in evidence_text and ("->" in evidence_text or "flow" in evidence_text):
             score += 1
@@ -555,14 +582,14 @@ def _merge_pr_attempt_findings(
     def _speculation_penalty(entry: dict) -> int:
         text = _entry_text(entry, fields=("title", "description", "attack_scenario", "evidence"))
         penalty = 0
-        for term in speculative_terms:
+        for term in SPECULATIVE_TERMS:
             if " " in term:
                 if term in text:
                     penalty += 1
                 continue
             if re.search(rf"\b{re.escape(term)}\b", text):
                 penalty += 1
-        if any(term in text for term in hardening_terms):
+        if any(term in text for term in HARDENING_TERMS):
             penalty += 1
         return min(penalty, 6)
 
@@ -593,16 +620,14 @@ def _merge_pr_attempt_findings(
         Negative values for penalties ensure lower-penalty entries rank higher.
         """
 
-        severity: int  # severity_rank: low=1, medium=2, high=3, critical=4
-        finding_type: int  # finding_type_rank: unknown=1, new_threat=3, mitigation_removal=4, regression/threat_enabler=5, known_vuln=6
-        chain_support: int  # Cross-pass chain consensus support count
-        proof_score: (
-            int  # Exploit proof quality score (exploit primitives, concrete payloads, CWE-88, etc.)
-        )
-        contradiction_penalty: int  # Negated: -(total_attempts - chain_support) when contradicted
-        speculation_penalty: int  # Negated: -count of speculative/hardening terms (capped at -6)
-        evidence_length: int  # min(len(evidence + attack_scenario), 4000)
-        description_length: int  # min(len(description), 2000)
+        severity: int
+        finding_type: int
+        chain_support: int
+        proof_score: int
+        contradiction_penalty: int
+        speculation_penalty: int
+        evidence_length: int
+        description_length: int
 
     @dataclass(order=True)
     class _SubchainQuality:
@@ -611,25 +636,25 @@ def _merge_pr_attempt_findings(
         Extends _EntryQuality with chain-structural fields.
         """
 
-        role_bonus: int  # 1 if end_to_end chain role, else 0
-        anchor_bonus: int  # 1 if has a sink anchor, else 0
-        location_count: int  # Number of referenced code locations (capped at 6)
-        severity: int  # From _EntryQuality
-        finding_type: int  # From _EntryQuality
-        chain_support: int  # From _EntryQuality
-        proof_score: int  # From _EntryQuality
-        contradiction_penalty: int  # From _EntryQuality
-        speculation_penalty: int  # From _EntryQuality
-        evidence_length: int  # From _EntryQuality
-        description_length: int  # From _EntryQuality
+        role_bonus: int
+        anchor_bonus: int
+        location_count: int
+        severity: int
+        finding_type: int
+        chain_support: int
+        proof_score: int
+        contradiction_penalty: int
+        speculation_penalty: int
+        evidence_length: int
+        description_length: int
 
     def _entry_quality(entry: dict) -> _EntryQuality:
         severity = severity_rank.get(str(entry.get("severity", "")).strip().lower(), 0)
         finding_type = finding_type_rank.get(str(entry.get("finding_type", "")).strip().lower(), 0)
         chain_support = 0
         if chain_support_counts:
-            chain_family_id = _build_chain_family_identity(entry)
-            chain_identity = _build_chain_identity(entry)
+            chain_family_id = build_chain_family_identity(entry)
+            chain_identity = build_chain_identity(entry)
             chain_support = chain_support_counts.get(
                 chain_family_id, 0
             ) or chain_support_counts.get(chain_identity, 0)
@@ -658,17 +683,17 @@ def _merge_pr_attempt_findings(
     def _chain_support(entry: dict) -> int:
         if not chain_support_counts:
             return 0
-        chain_family_id = _build_chain_family_identity(entry)
+        chain_family_id = build_chain_family_identity(entry)
         if chain_family_id and chain_family_id in chain_support_counts:
             return chain_support_counts[chain_family_id]
-        chain_identity = _build_chain_identity(entry)
+        chain_identity = build_chain_identity(entry)
         if not chain_identity:
             return 0
         return chain_support_counts.get(chain_identity, 0)
 
     def _has_concrete_chain_structure(entry: dict) -> bool:
-        normalized_path = _canonicalize_finding_path(entry.get("file_path"))
-        line_number = _coerce_line_number(entry.get("line_number"))
+        normalized_path = canonicalize_finding_path(entry.get("file_path"))
+        line_number = coerce_line_number(entry.get("line_number"))
         evidence_text = _entry_text(entry, fields=("evidence",))
         scenario_text = _entry_text(entry, fields=("attack_scenario",))
         if not normalized_path or line_number <= 0:
@@ -681,18 +706,13 @@ def _merge_pr_attempt_findings(
         return has_flow_anchor or has_step_markers
 
     def _same_chain(candidate: dict, canonical: dict) -> bool:
-        # Similarity thresholds for chain deduplication.
-        # Lower thresholds allow more aggressive merging of duplicate findings.
-        # Same-file thresholds are relaxed (0.16-0.52) because findings in the
-        # same file are likely about the same vulnerability.
-        # Cross-file thresholds are stricter (0.62-0.68) to avoid false merges.
-        candidate_path = _canonicalize_finding_path(candidate.get("file_path"))
-        canonical_path = _canonicalize_finding_path(canonical.get("file_path"))
+        candidate_path = canonicalize_finding_path(candidate.get("file_path"))
+        canonical_path = canonicalize_finding_path(canonical.get("file_path"))
         if not candidate_path or not canonical_path:
             return False
 
-        candidate_line = _coerce_line_number(candidate.get("line_number"))
-        canonical_line = _coerce_line_number(canonical.get("line_number"))
+        candidate_line = coerce_line_number(candidate.get("line_number"))
+        canonical_line = coerce_line_number(canonical.get("line_number"))
         line_gap = (
             abs(candidate_line - canonical_line)
             if candidate_line > 0 and canonical_line > 0
@@ -711,26 +731,23 @@ def _merge_pr_attempt_findings(
             else 0.0
         )
 
-        candidate_cwe_family = _extract_cwe_family(candidate.get("cwe_id"))
-        canonical_cwe_family = _extract_cwe_family(canonical.get("cwe_id"))
+        candidate_cwe_family = extract_cwe_family(candidate.get("cwe_id"))
+        canonical_cwe_family = extract_cwe_family(canonical.get("cwe_id"))
         same_cwe_family = candidate_cwe_family == canonical_cwe_family
 
         if candidate_path == canonical_path:
-            # 4: max line gap for close-line same-file matching
-            # 0.24: min token similarity for same-file, close-line matches
-            if line_gap <= 4 and token_similarity >= 0.24:
+            if line_gap <= MAX_LINE_GAP_CLOSE and token_similarity >= MIN_TOKEN_SIMILARITY_ADJACENT:
                 return True
             if (
-                line_gap <= 4  # max line gap for CWE-78/88 close-line matching
+                line_gap <= MAX_LINE_GAP_CLOSE
                 and candidate_cwe_family in {"78", "88"}
                 and canonical_cwe_family in {"78", "88"}
-                and token_similarity
-                >= 0.16  # relaxed token similarity for CWE-78/88 same-file close-line matches
+                and token_similarity >= MIN_TOKEN_SIMILARITY_CWE78_88
             ):
                 return True
-            if token_similarity >= 0.52:  # min token similarity for same-file any-line matches
+            if token_similarity >= MIN_TOKEN_SIMILARITY_SAME_FILE:
                 return True
-            if title_similarity >= 0.82:  # min title similarity for same-file matches
+            if title_similarity >= MIN_TITLE_SIMILARITY_SAME_FILE:
                 return True
 
         candidate_dir = candidate_path.rsplit("/", 1)[0] if "/" in candidate_path else ""
@@ -739,35 +756,34 @@ def _merge_pr_attempt_findings(
             candidate_dir
             and candidate_dir == canonical_dir
             and same_cwe_family
-            and token_similarity
-            >= 0.68  # min token similarity for same-directory, same-CWE matches
+            and token_similarity >= MIN_TOKEN_SIMILARITY_SAME_DIR
         ):
             return True
 
         return False
 
     def _same_subchain_family(candidate: dict, canonical: dict) -> bool:
-        candidate_path = _canonicalize_finding_path(candidate.get("file_path"))
-        canonical_path = _canonicalize_finding_path(canonical.get("file_path"))
+        candidate_path = canonicalize_finding_path(candidate.get("file_path"))
+        canonical_path = canonicalize_finding_path(canonical.get("file_path"))
         if not candidate_path or candidate_path != canonical_path:
             return False
 
-        candidate_cwe_family = _extract_cwe_family(candidate.get("cwe_id"))
-        canonical_cwe_family = _extract_cwe_family(canonical.get("cwe_id"))
+        candidate_cwe_family = extract_cwe_family(candidate.get("cwe_id"))
+        canonical_cwe_family = extract_cwe_family(canonical.get("cwe_id"))
         same_cwe_family = bool(
             candidate_cwe_family
             and canonical_cwe_family
             and candidate_cwe_family == canonical_cwe_family
         )
 
-        candidate_line = _coerce_line_number(candidate.get("line_number"))
-        canonical_line = _coerce_line_number(canonical.get("line_number"))
+        candidate_line = coerce_line_number(candidate.get("line_number"))
+        canonical_line = coerce_line_number(canonical.get("line_number"))
         line_gap = (
             abs(candidate_line - canonical_line)
             if candidate_line > 0 and canonical_line > 0
             else 999
         )
-        if line_gap > 40:  # 40: max line gap for subchain family matching
+        if line_gap > MAX_LINE_GAP_SUBCHAIN:
             return False
 
         candidate_tokens = _finding_tokens(candidate)
@@ -796,27 +812,24 @@ def _merge_pr_attempt_findings(
 
         if same_cwe_family and shared_anchor:
             return True
-        # 0.20: min token similarity with shared locations for subchain family
-        if same_cwe_family and shared_locations and (line_gap <= 40 or token_similarity >= 0.20):
+        if same_cwe_family and shared_locations and (
+            line_gap <= MAX_LINE_GAP_SUBCHAIN or token_similarity >= MIN_TOKEN_SIMILARITY_SUBCHAIN_SHARED_LOC
+        ):
             return True
-        # 30: max line gap for end-to-end variant subchain matching
-        if same_cwe_family and has_end_to_end_variant and line_gap <= 30:
-            if token_similarity >= 0.16:  # 0.16: min token similarity for end-to-end variant
+        if same_cwe_family and has_end_to_end_variant and line_gap <= MAX_LINE_GAP_SUBCHAIN_E2E:
+            if token_similarity >= MIN_TOKEN_SIMILARITY_SUBCHAIN_E2E:
                 return True
             candidate_is_self_anchor = candidate_anchor in {candidate_path, canonical_path}
             canonical_is_self_anchor = canonical_anchor in {candidate_path, canonical_path}
             if candidate_is_self_anchor != canonical_is_self_anchor:
                 return True
 
-        # 30: max line gap for enabler pair matching
-        if not same_cwe_family and is_enabler_pair and line_gap <= 30:
+        if not same_cwe_family and is_enabler_pair and line_gap <= MAX_LINE_GAP_SUBCHAIN_ENABLER:
             if shared_anchor:
                 return True
-            # 0.18: min token similarity for enabler pairs with shared locations
-            if shared_locations and token_similarity >= 0.18:
+            if shared_locations and token_similarity >= MIN_TOKEN_SIMILARITY_ENABLER_SHARED_LOC:
                 return True
-            # 0.28: min token similarity for enabler pairs with end-to-end variant
-            if has_end_to_end_variant and token_similarity >= 0.28:
+            if has_end_to_end_variant and token_similarity >= MIN_TOKEN_SIMILARITY_ENABLER_E2E:
                 candidate_is_self_anchor = candidate_anchor in {candidate_path, canonical_path}
                 canonical_is_self_anchor = canonical_anchor in {candidate_path, canonical_path}
                 if candidate_is_self_anchor != canonical_is_self_anchor:
@@ -864,18 +877,18 @@ def _merge_pr_attempt_findings(
     canonical_findings.sort(key=_entry_quality, reverse=True)
     final_findings: list[dict] = []
     for candidate in canonical_findings:
-        candidate_path = _canonicalize_finding_path(candidate.get("file_path"))
-        candidate_line = _coerce_line_number(candidate.get("line_number"))
-        candidate_cwe_family = _extract_cwe_family(candidate.get("cwe_id"))
+        candidate_path = canonicalize_finding_path(candidate.get("file_path"))
+        candidate_line = coerce_line_number(candidate.get("line_number"))
+        candidate_cwe_family = extract_cwe_family(candidate.get("cwe_id"))
         candidate_tokens = _finding_tokens(candidate)
         candidate_title = str(candidate.get("title", "")).strip().lower()
 
         is_duplicate = False
         for existing in final_findings:
-            existing_path = _canonicalize_finding_path(existing.get("file_path"))
+            existing_path = canonicalize_finding_path(existing.get("file_path"))
             existing_tokens = _finding_tokens(existing)
             token_similarity = _token_similarity(candidate_tokens, existing_tokens)
-            existing_cwe_family = _extract_cwe_family(existing.get("cwe_id"))
+            existing_cwe_family = extract_cwe_family(existing.get("cwe_id"))
             candidate_proof = _proof_score(candidate)
             existing_proof = _proof_score(existing)
             title_similarity = SequenceMatcher(
@@ -886,25 +899,27 @@ def _merge_pr_attempt_findings(
             same_cwe_family = candidate_cwe_family and candidate_cwe_family == existing_cwe_family
             same_path = bool(candidate_path and candidate_path == existing_path)
             if same_path:
-                existing_line = _coerce_line_number(existing.get("line_number"))
+                existing_line = coerce_line_number(existing.get("line_number"))
                 line_gap = (
                     abs(candidate_line - existing_line)
                     if candidate_line > 0 and existing_line > 0
                     else 999
                 )
-                if line_gap > 8:  # 8: max line gap for same-path secondary guard
+                if line_gap > MAX_LINE_GAP_SECONDARY_GUARD:
                     continue
                 if (
-                    line_gap <= 4
+                    line_gap <= MAX_LINE_GAP_CLOSE
                     and candidate_cwe_family in {"78", "88"}
                     and existing_cwe_family in {"78", "88"}
                     and abs(candidate_proof - existing_proof) >= 2
                 ):
                     is_duplicate = True
                     break
-                # 0.34: min token similarity for same-path near-duplicate
-                # 0.58: min title similarity for same-path near-duplicate
-                if token_similarity >= 0.34 or title_similarity >= 0.58 or same_cwe_family:
+                if (
+                    token_similarity >= MIN_TOKEN_SIMILARITY_SECONDARY_SAME_PATH
+                    or title_similarity >= MIN_TITLE_SIMILARITY_SECONDARY_SAME_PATH
+                    or same_cwe_family
+                ):
                     is_duplicate = True
                     break
                 continue
@@ -912,8 +927,8 @@ def _merge_pr_attempt_findings(
             # Cross-file near-duplicate collapse for the same chain across neighboring steps.
             if (
                 same_cwe_family
-                and token_similarity >= 0.62  # min token similarity for cross-file near-duplicate
-                and title_similarity >= 0.66  # min title similarity for cross-file near-duplicate
+                and token_similarity >= MIN_TOKEN_SIMILARITY_CROSS_FILE_NEAR_DUP
+                and title_similarity >= MIN_TITLE_SIMILARITY_CROSS_FILE_NEAR_DUP
                 and abs(candidate_proof - existing_proof) <= 3
             ):
                 is_duplicate = True
@@ -943,31 +958,31 @@ def _merge_pr_attempt_findings(
     secondary_filtered_findings: list[dict] = []
     for candidate in compacted_findings:
         suppress_as_secondary = False
-        candidate_path = _canonicalize_finding_path(candidate.get("file_path"))
-        candidate_class = _infer_chain_family_class(candidate)
-        candidate_sink_family = _infer_chain_sink_family(candidate)
-        candidate_line = _coerce_line_number(candidate.get("line_number"))
+        candidate_path = canonicalize_finding_path(candidate.get("file_path"))
+        candidate_class = infer_chain_family_class(candidate)
+        candidate_sink_family = infer_chain_sink_family(candidate)
+        candidate_line = coerce_line_number(candidate.get("line_number"))
         candidate_role = _chain_role(candidate)
         candidate_proof = _proof_score(candidate)
 
         for existing in secondary_filtered_findings:
-            existing_path = _canonicalize_finding_path(existing.get("file_path"))
+            existing_path = canonicalize_finding_path(existing.get("file_path"))
             if not candidate_path or candidate_path != existing_path:
                 continue
-            existing_class = _infer_chain_family_class(existing)
+            existing_class = infer_chain_family_class(existing)
             if candidate_class != existing_class:
                 continue
-            existing_sink_family = _infer_chain_sink_family(existing)
+            existing_sink_family = infer_chain_sink_family(existing)
             if candidate_sink_family != existing_sink_family:
                 continue
 
-            existing_line = _coerce_line_number(existing.get("line_number"))
+            existing_line = coerce_line_number(existing.get("line_number"))
             line_gap = (
                 abs(candidate_line - existing_line)
                 if candidate_line > 0 and existing_line > 0
                 else 999
             )
-            if line_gap > 120:  # 120: max line gap for secondary chain suppression
+            if line_gap > MAX_LINE_GAP_SECONDARY_CHAIN:
                 continue
 
             existing_role = _chain_role(existing)
