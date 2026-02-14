@@ -36,6 +36,7 @@ from securevibes.scanner.scanner import (
     _diff_has_auth_privilege_signals,
     _diff_has_path_parser_signals,
     _derive_pr_default_grep_scope,
+    _enforce_focused_diff_coverage,
     _build_focused_diff_context,
     _extract_observed_pr_findings,
     _merge_pr_attempt_findings,
@@ -194,6 +195,30 @@ def test_suggest_security_adjacent_files_returns_ranked_neighbors(tmp_path: Path
     assert "src/gateway/server-methods/config.ts" not in hints
 
 
+def test_suggest_security_adjacent_files_skips_unreadable_dirs(tmp_path: Path, monkeypatch):
+    """Unreadable sibling directories should be skipped instead of crashing."""
+    repo = tmp_path / "repo"
+    blocked_dir = repo / "src/gateway/server-methods"
+    blocked_dir.mkdir(parents=True)
+    (blocked_dir / "config.ts").write_text("export const x = 1;\n", "utf-8")
+    (repo / "src/gateway/auth.ts").write_text("export const y = 1;\n", "utf-8")
+
+    original_iterdir = Path.iterdir
+
+    def _guarded_iterdir(path_obj: Path):
+        if path_obj == blocked_dir:
+            raise PermissionError("permission denied for test")
+        return original_iterdir(path_obj)
+
+    monkeypatch.setattr(Path, "iterdir", _guarded_iterdir)
+
+    hints = suggest_security_adjacent_files(
+        repo, ["src/gateway/server-methods/config.ts"], max_items=5
+    )
+
+    assert "src/gateway/auth.ts" in hints
+
+
 def test_build_focused_diff_context_prioritizes_source_over_docs():
     """Focused diff should prioritize code paths over docs noise."""
     docs_file = DiffFile(
@@ -279,6 +304,110 @@ def test_build_focused_diff_context_trims_oversized_hunks():
     assert len(focused.files) == 1
     assert len(focused.files[0].hunks) == 1
     assert len(focused.files[0].hunks[0].lines) == 200
+
+
+def test_enforce_focused_diff_coverage_rejects_dropped_files():
+    """PR review should fail closed when focused context drops changed files."""
+    diff_files = [
+        DiffFile(
+            old_path=f"src/file_{idx}.py",
+            new_path=f"src/file_{idx}.py",
+            is_new=False,
+            is_deleted=False,
+            is_renamed=False,
+            hunks=[
+                DiffHunk(
+                    old_start=1,
+                    old_count=1,
+                    new_start=1,
+                    new_count=1,
+                    lines=[
+                        DiffLine(type="add", content="x = 1", old_line_num=None, new_line_num=1)
+                    ],
+                )
+            ],
+        )
+        for idx in range(17)
+    ]
+    context = DiffContext(
+        files=diff_files,
+        added_lines=17,
+        removed_lines=0,
+        changed_files=[f"src/file_{idx}.py" for idx in range(17)],
+    )
+
+    focused = _build_focused_diff_context(context)
+
+    with pytest.raises(RuntimeError, match="diff context exceeds safe analysis limits"):
+        _enforce_focused_diff_coverage(context, focused)
+
+
+def test_enforce_focused_diff_coverage_rejects_truncated_hunks():
+    """PR review should fail closed when any hunk exceeds safe max lines."""
+    many_lines = [
+        DiffLine(type="add", content=f"line {idx}", old_line_num=None, new_line_num=idx)
+        for idx in range(1, 280)
+    ]
+    noisy_file = DiffFile(
+        old_path="src/gateway/server.ts",
+        new_path="src/gateway/server.ts",
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+        hunks=[
+            DiffHunk(
+                old_start=1,
+                old_count=200,
+                new_start=1,
+                new_count=200,
+                lines=many_lines,
+            )
+        ],
+    )
+    context = DiffContext(
+        files=[noisy_file],
+        added_lines=len(many_lines),
+        removed_lines=0,
+        changed_files=["src/gateway/server.ts"],
+    )
+    focused = _build_focused_diff_context(context)
+
+    with pytest.raises(RuntimeError, match="would be truncated"):
+        _enforce_focused_diff_coverage(context, focused)
+
+
+def test_enforce_focused_diff_coverage_allows_boundary_diff():
+    """Focused context at limits should pass coverage checks."""
+    diff_files = [
+        DiffFile(
+            old_path=f"src/file_{idx}.py",
+            new_path=f"src/file_{idx}.py",
+            is_new=False,
+            is_deleted=False,
+            is_renamed=False,
+            hunks=[
+                DiffHunk(
+                    old_start=1,
+                    old_count=1,
+                    new_start=1,
+                    new_count=1,
+                    lines=[
+                        DiffLine(type="add", content="x = 1", old_line_num=None, new_line_num=1)
+                    ],
+                )
+            ],
+        )
+        for idx in range(16)
+    ]
+    context = DiffContext(
+        files=diff_files,
+        added_lines=16,
+        removed_lines=0,
+        changed_files=[f"src/file_{idx}.py" for idx in range(16)],
+    )
+    focused = _build_focused_diff_context(context)
+
+    _enforce_focused_diff_coverage(context, focused)
 
 
 def test_summarize_diff_hunk_snippets_includes_diff_lines():

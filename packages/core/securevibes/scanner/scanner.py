@@ -100,6 +100,7 @@ __all__ = [
     "_build_chain_flow_identity",
     "_build_chain_identity",
     "_build_focused_diff_context",
+    "_enforce_focused_diff_coverage",
     "_build_pr_retry_focus_plan",
     "_build_pr_review_retry_suffix",
     "_canonicalize_finding_path",
@@ -610,6 +611,42 @@ def _build_focused_diff_context(diff_context: DiffContext) -> DiffContext:
         added_lines=added_lines,
         removed_lines=removed_lines,
         changed_files=changed_files,
+    )
+
+
+def _enforce_focused_diff_coverage(
+    original_diff_context: DiffContext,
+    focused_diff_context: DiffContext,
+) -> None:
+    """Fail closed when focused diff pruning would hide parts of the reviewed diff."""
+    original_file_count = len(original_diff_context.files)
+    focused_file_count = len(focused_diff_context.files)
+    dropped_file_count = max(0, original_file_count - focused_file_count)
+    truncated_hunk_count = sum(
+        1
+        for diff_file in original_diff_context.files
+        for hunk in diff_file.hunks
+        if len(hunk.lines) > _FOCUSED_DIFF_MAX_HUNK_LINES
+    )
+    if dropped_file_count == 0 and truncated_hunk_count == 0:
+        return
+
+    details: list[str] = []
+    if dropped_file_count:
+        details.append(
+            f"{dropped_file_count} file(s) would be excluded "
+            f"(focused limit: {_FOCUSED_DIFF_MAX_FILES} files)"
+        )
+    if truncated_hunk_count:
+        details.append(
+            f"{truncated_hunk_count} hunk(s) exceed {_FOCUSED_DIFF_MAX_HUNK_LINES} lines "
+            "and would be truncated"
+        )
+    detail_text = "; ".join(details)
+    raise RuntimeError(
+        "PR review aborted: diff context exceeds safe analysis limits and would be truncated. "
+        f"{detail_text}. "
+        "Split the review into smaller ranges using --range/--last/--since and rerun."
     )
 
 
@@ -1225,6 +1262,7 @@ class Scanner:
         scan_start_time = time.time()
 
         focused_diff_context = _build_focused_diff_context(diff_context)
+        _enforce_focused_diff_coverage(diff_context, focused_diff_context)
         diff_context_path = securevibes_dir / DIFF_CONTEXT_FILE
         diff_context_path.write_text(json.dumps(focused_diff_context.to_json(), indent=2))
 

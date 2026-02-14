@@ -229,6 +229,7 @@ The threat modeling agent can load technology-specific skills to identify specia
 - Respects the configured severity threshold
 - Baseline filtering: `VULNERABILITIES.json` is pre-filtered via `filter_baseline_vulns()` before being injected into the prompt and used for post-processing dedupe. PR-derived entries (identified by `source: "pr_review"`, `finding_type` membership, or `PR-`/`NEW-` threat_id prefix) are excluded so they don't suppress valid findings.
 - Includes critical attack pattern detection for credential exposure, sandbox bypass, SSRF-to-RCE chains, and multi-stage exploit chains (with CWE references)
+- Fails closed when focused diff context would truncate review coverage (`>16` prioritized files or any hunk over `200` lines), requiring smaller review windows
 
 ### 5. Report Generator Agent
 

@@ -351,7 +351,7 @@ def _load_pr_vulnerabilities_artifact(
 ) -> tuple[list[dict], Optional[str]]:
     """Read and normalize PR_VULNERABILITIES.json."""
     if not pr_vulns_path.exists():
-        return [], "PR_VULNERABILITIES.json was not produced"
+        return [], "PR_VULNERABILITIES.json was not produced (write may have been rejected)"
 
     try:
         raw_content = pr_vulns_path.read_text(encoding="utf-8")

@@ -194,6 +194,10 @@ export SECUREVIBES_PR_REVIEW_TIMEOUT_SECONDS=300
 export SECUREVIBES_PR_REVIEW_ATTEMPTS=5
 ```
 
+PR review fails closed if diff context would be truncated
+(more than 16 prioritized files or any hunk over 200 lines).
+Split large reviews with smaller `--range`, `--last`, or `--since` windows.
+
 PR review artifacts (written to `.securevibes/`):
 - `DIFF_CONTEXT.json` (parsed diff summary)
 - `PR_VULNERABILITIES.json` (raw findings)

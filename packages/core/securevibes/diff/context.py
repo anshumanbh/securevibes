@@ -424,6 +424,10 @@ def suggest_security_adjacent_files(
     """Suggest nearby security-sensitive files that should be inspected for exploit chains."""
     if max_items <= 0:
         return []
+    try:
+        repo_root_resolved = repo_root.resolve()
+    except OSError:
+        return []
 
     changed_set = {
         normalize_repo_path(path)
@@ -441,22 +445,29 @@ def suggest_security_adjacent_files(
             if not directory.exists() or not directory.is_dir():
                 continue
             try:
-                directory.relative_to(repo_root.resolve())
-            except ValueError:
+                directory.relative_to(repo_root_resolved)
+            except (ValueError, OSError):
                 continue
 
-            for entry in directory.iterdir():
-                if not entry.is_file():
-                    continue
-                if entry.suffix and entry.suffix.lower() not in CODE_FILE_SUFFIXES:
-                    continue
-                entry_lower_name = entry.name.lower()
-                if any(token in entry_lower_name for token in ("test", "spec")):
-                    continue
+            try:
+                entries = list(directory.iterdir())
+            except (OSError, PermissionError) as exc:
+                logger.debug("Skipping unreadable adjacent directory %s: %s", directory, exc)
+                continue
 
+            for entry in entries:
                 try:
+                    if not entry.is_file():
+                        continue
+                    if entry.suffix and entry.suffix.lower() not in CODE_FILE_SUFFIXES:
+                        continue
+                    entry_lower_name = entry.name.lower()
+                    if any(token in entry_lower_name for token in ("test", "spec")):
+                        continue
+
                     rel_path = normalize_repo_path(str(entry.relative_to(repo_root)))
-                except ValueError:
+                except (ValueError, OSError, PermissionError) as exc:
+                    logger.debug("Skipping unreadable adjacent path %s: %s", entry, exc)
                     continue
                 if not rel_path or rel_path in changed_set:
                     continue

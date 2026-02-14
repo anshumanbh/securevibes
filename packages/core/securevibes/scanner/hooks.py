@@ -590,10 +590,22 @@ def create_json_validation_hook(
                     }
 
                 console.print(
-                    "  ⚠️  PR_VULNERABILITIES.json still failed validation after retry budget; "
-                    "allowing write with warnings.",
-                    style="yellow",
+                    "  ❌ PR_VULNERABILITIES.json still failed validation after retry budget; "
+                    "rejecting write and failing closed.",
+                    style="bold red",
                 )
+                return {
+                    "override_result": {
+                        "content": (
+                            "Write rejected by SecureVibes PR validation.\n"
+                            f"Reason: {reason}\n"
+                            "Retry budget exhausted: invalid PR_VULNERABILITIES.json cannot be accepted.\n\n"
+                            "Read the actual source files and populate file_path, "
+                            "line_number, code_snippet, evidence, and cwe_id for every finding."
+                        ),
+                        "is_error": True,
+                    }
+                }
             else:
                 console.print(
                     f"  ❌ VULNERABILITIES.json validation failed: {error_msg}",

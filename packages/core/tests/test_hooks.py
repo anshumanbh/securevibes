@@ -1363,8 +1363,8 @@ class TestPRJsonValidationHook:
         assert "file_path" in result["override_result"]["content"]
 
     @pytest.mark.asyncio
-    async def test_pr_invalid_empty_evidence_allows_after_retry_budget(self, console):
-        """After retry budget is exhausted, invalid PR payload should pass through."""
+    async def test_pr_invalid_empty_evidence_rejected_after_retry_budget(self, console):
+        """After retry budget is exhausted, invalid PR payload should still be rejected."""
         import json
 
         hook = create_json_validation_hook(console, debug=False)
@@ -1385,11 +1385,13 @@ class TestPRJsonValidationHook:
         second = await hook(input_data, "tool-124", {})
 
         assert "override_result" in first
-        assert "override_result" not in second
+        assert "override_result" in second
+        assert second["override_result"]["is_error"] is True
+        assert "Retry budget exhausted" in second["override_result"]["content"]
 
     @pytest.mark.asyncio
-    async def test_pr_retry_exhaustion_preserves_updated_input(self, console):
-        """After max retries with wrapper input, updatedInput with format fixes still returned."""
+    async def test_pr_retry_exhaustion_blocks_even_with_wrapper_fixes(self, console):
+        """Retry exhaustion should reject writes even if wrapper normalization succeeds."""
         import json
 
         hook = create_json_validation_hook(console, debug=False)
@@ -1411,11 +1413,8 @@ class TestPRJsonValidationHook:
         first = await hook(input_data, "tool-123", {})
         assert "override_result" in first
 
-        # Second attempt: retry budget exhausted — should pass through
-        # but because the wrapper was fixed, updatedInput should be returned
+        # Second attempt: retry budget exhausted — should remain rejected
         second = await hook(input_data, "tool-124", {})
-        assert "override_result" not in second
-        assert "hookSpecificOutput" in second
-        updated = second["hookSpecificOutput"]["updatedInput"]
-        fixed_data = json.loads(updated["content"])
-        assert isinstance(fixed_data, list), "Wrapper should have been unwrapped"
+        assert "override_result" in second
+        assert second["override_result"]["is_error"] is True
+        assert "Retry budget exhausted" in second["override_result"]["content"]
