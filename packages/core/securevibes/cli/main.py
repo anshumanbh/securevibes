@@ -654,6 +654,13 @@ def catchup(
             )
             sys.exit(1)
 
+        if _repo_has_local_changes(repo):
+            console.print(
+                "[bold red]❌ Working tree is not clean. "
+                "Commit, stash, or discard local changes before running catchup.[/bold red]"
+            )
+            sys.exit(1)
+
         try:
             _git_pull(repo, branch)
         except RuntimeError as e:
@@ -806,6 +813,20 @@ def _git_pull(repo: Path, branch: str) -> None:
     if result.returncode != 0:
         stderr = result.stderr.strip() or "Unknown git pull error"
         raise RuntimeError(stderr)
+
+
+def _repo_has_local_changes(repo: Path) -> bool:
+    """Return True if the repository has local changes or git status fails."""
+    result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return True
+    return bool(result.stdout.strip())
 
 
 def _check_target_reachability(target_url: str, timeout: int = 5) -> bool:

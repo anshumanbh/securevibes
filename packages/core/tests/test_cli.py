@@ -81,6 +81,9 @@ class TestCatchupCommand:
         monkeypatch.setattr("securevibes.cli.main.pr_review", fake_pr_review)
         monkeypatch.setattr("securevibes.cli.main._git_pull", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(
+            "securevibes.cli.main._repo_has_local_changes", lambda *_args, **_kwargs: False
+        )
+        monkeypatch.setattr(
             "securevibes.cli.main.get_repo_branch", lambda *_args, **_kwargs: "main"
         )
 
@@ -88,6 +91,25 @@ class TestCatchupCommand:
 
         assert result.exit_code == 0
         assert called["since_last_scan"] is True
+
+    def test_catchup_fails_when_worktree_dirty(self, runner, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        monkeypatch.setattr("securevibes.cli.main._repo_has_local_changes", lambda *_a, **_k: True)
+        monkeypatch.setattr(
+            "securevibes.cli.main.get_repo_branch", lambda *_args, **_kwargs: "main"
+        )
+
+        def fail_pull(*_args, **_kwargs):
+            pytest.fail("_git_pull should not be called when worktree is dirty")
+
+        monkeypatch.setattr("securevibes.cli.main._git_pull", fail_pull)
+
+        result = runner.invoke(cli, ["catchup", str(repo), "--branch", "main"])
+
+        assert result.exit_code == 1
+        assert "working tree is not clean" in result.output.lower()
 
 
 class TestProductionUrlDetection:

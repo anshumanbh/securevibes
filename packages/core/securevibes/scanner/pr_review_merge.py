@@ -596,7 +596,9 @@ def _merge_pr_attempt_findings(
         severity: int  # severity_rank: low=1, medium=2, high=3, critical=4
         finding_type: int  # finding_type_rank: unknown=1, new_threat=3, mitigation_removal=4, regression/threat_enabler=5, known_vuln=6
         chain_support: int  # Cross-pass chain consensus support count
-        proof_score: int  # Exploit proof quality score (exploit primitives, concrete payloads, CWE-88, etc.)
+        proof_score: (
+            int  # Exploit proof quality score (exploit primitives, concrete payloads, CWE-88, etc.)
+        )
         contradiction_penalty: int  # Negated: -(total_attempts - chain_support) when contradicted
         speculation_penalty: int  # Negated: -count of speculative/hardening terms (capped at -6)
         evidence_length: int  # min(len(evidence + attack_scenario), 4000)
@@ -722,7 +724,8 @@ def _merge_pr_attempt_findings(
                 line_gap <= 4  # max line gap for CWE-78/88 close-line matching
                 and candidate_cwe_family in {"78", "88"}
                 and canonical_cwe_family in {"78", "88"}
-                and token_similarity >= 0.16  # relaxed token similarity for CWE-78/88 same-file close-line matches
+                and token_similarity
+                >= 0.16  # relaxed token similarity for CWE-78/88 same-file close-line matches
             ):
                 return True
             if token_similarity >= 0.52:  # min token similarity for same-file any-line matches
@@ -736,7 +739,8 @@ def _merge_pr_attempt_findings(
             candidate_dir
             and candidate_dir == canonical_dir
             and same_cwe_family
-            and token_similarity >= 0.68  # min token similarity for same-directory, same-CWE matches
+            and token_similarity
+            >= 0.68  # min token similarity for same-directory, same-CWE matches
         ):
             return True
 

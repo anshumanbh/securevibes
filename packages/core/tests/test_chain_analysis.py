@@ -32,6 +32,7 @@ from securevibes.scanner.chain_analysis import (
 # CHAIN_STOPWORDS
 # ---------------------------------------------------------------------------
 
+
 def test_chain_stopwords_contains_extended_terms():
     """Shared stopwords should include terms used by merge-token dedupe."""
     for token in ("through", "command", "configuration", "path", "line", "file"):
@@ -41,6 +42,7 @@ def test_chain_stopwords_contains_extended_terms():
 # ---------------------------------------------------------------------------
 # _coerce_line_number
 # ---------------------------------------------------------------------------
+
 
 def test_coerce_line_number_none_returns_zero():
     assert _coerce_line_number(None) == 0
@@ -77,6 +79,7 @@ def test_coerce_line_number_empty_string():
 # ---------------------------------------------------------------------------
 # _extract_cwe_family
 # ---------------------------------------------------------------------------
+
 
 def test_extract_cwe_family_two_digit_cwe():
     assert _extract_cwe_family("CWE-78") == "78"
@@ -115,6 +118,7 @@ def test_extract_cwe_family_single_digit():
 # ---------------------------------------------------------------------------
 # _chain_text_tokens
 # ---------------------------------------------------------------------------
+
 
 def test_chain_text_tokens_normal_text():
     tokens = _chain_text_tokens("SQL Injection via user_input parameter")
@@ -178,6 +182,7 @@ def test_chain_text_tokens_digits_only_excluded():
 # _finding_text
 # ---------------------------------------------------------------------------
 
+
 def test_finding_text_dict_with_fields():
     entry = {"title": "SQL Injection", "description": "A vuln", "extra": "ignored"}
     result = _finding_text(entry, fields=("title", "description"))
@@ -205,6 +210,7 @@ def test_finding_text_empty_dict():
 # ---------------------------------------------------------------------------
 # _extract_finding_locations
 # ---------------------------------------------------------------------------
+
 
 def test_extract_finding_locations_with_file_path():
     entry = {
@@ -239,6 +245,7 @@ def test_extract_finding_locations_deduplicates():
 # _extract_finding_routes
 # ---------------------------------------------------------------------------
 
+
 def test_extract_finding_routes_with_route():
     entry = {
         "title": "auth bypass on /api/v1/admin",
@@ -271,6 +278,7 @@ def test_extract_finding_routes_deduplicates():
 # ---------------------------------------------------------------------------
 # _extract_chain_sink_anchor
 # ---------------------------------------------------------------------------
+
 
 def test_extract_chain_sink_anchor_prefers_non_primary_location():
     entry = {
@@ -312,6 +320,7 @@ def test_extract_chain_sink_anchor_empty_entry():
 # _canonicalize_finding_path
 # ---------------------------------------------------------------------------
 
+
 def test_canonicalize_finding_path_prefers_repo_suffix():
     path = "/tmp/workspace/services/api/routes/tasks.py"
     assert _canonicalize_finding_path(path) == "services/api/routes/tasks.py"
@@ -338,52 +347,102 @@ def test_canonicalize_finding_path_non_string():
 # _infer_chain_family_class
 # ---------------------------------------------------------------------------
 
+
 def test_infer_chain_family_class_command_injection_keyword():
-    entry = {"title": "command injection risk", "description": "", "attack_scenario": "", "evidence": ""}
+    entry = {
+        "title": "command injection risk",
+        "description": "",
+        "attack_scenario": "",
+        "evidence": "",
+    }
     assert _infer_chain_family_class(entry) == "command_chain"
 
 
 def test_infer_chain_family_class_option_injection():
-    entry = {"title": "option injection in ssh args", "description": "", "attack_scenario": "", "evidence": ""}
+    entry = {
+        "title": "option injection in ssh args",
+        "description": "",
+        "attack_scenario": "",
+        "evidence": "",
+    }
     assert _infer_chain_family_class(entry) == "command_chain"
 
 
 def test_infer_chain_family_class_path_traversal_keyword():
-    entry = {"title": "path traversal via upload", "description": "", "attack_scenario": "", "evidence": ""}
+    entry = {
+        "title": "path traversal via upload",
+        "description": "",
+        "attack_scenario": "",
+        "evidence": "",
+    }
     assert _infer_chain_family_class(entry) == "path_file_chain"
 
 
 def test_infer_chain_family_class_auth_bypass_keyword():
-    entry = {"title": "auth bypass allows admin", "description": "", "attack_scenario": "", "evidence": ""}
+    entry = {
+        "title": "auth bypass allows admin",
+        "description": "",
+        "attack_scenario": "",
+        "evidence": "",
+    }
     assert _infer_chain_family_class(entry) == "auth_priv_chain"
 
 
 def test_infer_chain_family_class_cwe_based_path():
     """CWE-22 (path traversal) should map to path_file_chain."""
-    entry = {"title": "generic title", "description": "", "attack_scenario": "", "evidence": "", "cwe_id": "CWE-22"}
+    entry = {
+        "title": "generic title",
+        "description": "",
+        "attack_scenario": "",
+        "evidence": "",
+        "cwe_id": "CWE-22",
+    }
     assert _infer_chain_family_class(entry) == "path_file_chain"
 
 
 def test_infer_chain_family_class_cwe_based_command():
     """CWE-78 (OS command injection) should map to command_chain."""
-    entry = {"title": "generic title", "description": "", "attack_scenario": "", "evidence": "", "cwe_id": "CWE-78"}
+    entry = {
+        "title": "generic title",
+        "description": "",
+        "attack_scenario": "",
+        "evidence": "",
+        "cwe_id": "CWE-78",
+    }
     assert _infer_chain_family_class(entry) == "command_chain"
 
 
 def test_infer_chain_family_class_cwe_based_auth():
     """CWE-86 should map to auth_priv_chain."""
-    entry = {"title": "generic title", "description": "", "attack_scenario": "", "evidence": "", "cwe_id": "CWE-86"}
+    entry = {
+        "title": "generic title",
+        "description": "",
+        "attack_scenario": "",
+        "evidence": "",
+        "cwe_id": "CWE-86",
+    }
     assert _infer_chain_family_class(entry) == "auth_priv_chain"
 
 
 def test_infer_chain_family_class_generic_fallback():
-    entry = {"title": "some generic finding", "description": "", "attack_scenario": "", "evidence": ""}
+    entry = {
+        "title": "some generic finding",
+        "description": "",
+        "attack_scenario": "",
+        "evidence": "",
+    }
     assert _infer_chain_family_class(entry) == "generic_chain"
 
 
 def test_infer_chain_family_class_cwe_fallback_with_unknown_cwe():
     """Unknown CWE should produce cwe_XX format."""
-    entry = {"title": "generic title", "description": "", "attack_scenario": "", "evidence": "", "cwe_id": "CWE-999"}
+    entry = {
+        "title": "generic title",
+        "description": "",
+        "attack_scenario": "",
+        "evidence": "",
+        "cwe_id": "CWE-999",
+    }
     result = _infer_chain_family_class(entry)
     assert result == "cwe_99"
 
@@ -403,6 +462,7 @@ def test_infer_chain_family_class_keyword_priority_over_cwe():
 # ---------------------------------------------------------------------------
 # _infer_chain_sink_family
 # ---------------------------------------------------------------------------
+
 
 def test_infer_chain_sink_family_file_operations():
     entry = {
@@ -448,6 +508,7 @@ def test_infer_chain_sink_family_generic():
 # _normalize_chain_class_for_sink
 # ---------------------------------------------------------------------------
 
+
 def test_normalize_chain_class_already_specific():
     assert _normalize_chain_class_for_sink("command_chain", "generic_sink") == "command_chain"
     assert _normalize_chain_class_for_sink("path_file_chain", "generic_sink") == "path_file_chain"
@@ -482,6 +543,7 @@ def test_normalize_chain_class_cwe_class_with_file_sink():
 # ---------------------------------------------------------------------------
 # _build_chain_identity
 # ---------------------------------------------------------------------------
+
 
 def test_build_chain_identity_full_entry():
     entry = {
@@ -571,6 +633,7 @@ def test_build_chain_identity_no_cwe():
 # _build_chain_family_identity
 # ---------------------------------------------------------------------------
 
+
 def test_build_chain_family_identity_with_path():
     entry = {
         "file_path": "services/api/routes/tasks.py",
@@ -636,6 +699,7 @@ def test_build_chain_family_identity_non_dict():
 # _build_chain_flow_identity
 # ---------------------------------------------------------------------------
 
+
 def test_build_chain_flow_identity_with_path_and_cwe():
     entry = {
         "file_path": "services/api/routes/tasks.py",
@@ -688,6 +752,7 @@ def test_build_chain_flow_identity_non_dict():
 # _collect_chain_exact_ids
 # ---------------------------------------------------------------------------
 
+
 def test_collect_chain_exact_ids_empty():
     assert _collect_chain_exact_ids([]) == set()
 
@@ -737,6 +802,7 @@ def test_collect_chain_exact_ids_skips_empty_identities():
 # _collect_chain_family_ids
 # ---------------------------------------------------------------------------
 
+
 def test_collect_chain_family_ids_empty():
     assert _collect_chain_family_ids([]) == set()
 
@@ -758,6 +824,7 @@ def test_collect_chain_family_ids_single():
 # ---------------------------------------------------------------------------
 # _collect_chain_flow_ids
 # ---------------------------------------------------------------------------
+
 
 def test_collect_chain_flow_ids_empty():
     assert _collect_chain_flow_ids([]) == set()
@@ -781,6 +848,7 @@ def test_collect_chain_flow_ids_single():
 # ---------------------------------------------------------------------------
 # _count_passes_with_core_chains
 # ---------------------------------------------------------------------------
+
 
 def test_count_passes_empty_core():
     assert _count_passes_with_core_chains(set(), [{"a"}, {"b"}]) == 0
@@ -806,12 +874,16 @@ def test_count_passes_full_overlap():
 # _attempt_contains_core_chain_evidence
 # ---------------------------------------------------------------------------
 
+
 def test_attempt_contains_core_chain_evidence_empty_findings():
-    assert _attempt_contains_core_chain_evidence(
-        attempt_findings=[],
-        expected_family_ids={"some_id"},
-        expected_flow_ids=set(),
-    ) is False
+    assert (
+        _attempt_contains_core_chain_evidence(
+            attempt_findings=[],
+            expected_family_ids={"some_id"},
+            expected_flow_ids=set(),
+        )
+        is False
+    )
 
 
 def test_attempt_contains_core_chain_evidence_no_expectations():
@@ -823,11 +895,14 @@ def test_attempt_contains_core_chain_evidence_no_expectations():
         "attack_scenario": "",
         "evidence": "",
     }
-    assert _attempt_contains_core_chain_evidence(
-        attempt_findings=[finding],
-        expected_family_ids=set(),
-        expected_flow_ids=set(),
-    ) is True
+    assert (
+        _attempt_contains_core_chain_evidence(
+            attempt_findings=[finding],
+            expected_family_ids=set(),
+            expected_flow_ids=set(),
+        )
+        is True
+    )
 
 
 def test_attempt_contains_core_chain_evidence_matching_family():
@@ -839,11 +914,14 @@ def test_attempt_contains_core_chain_evidence_matching_family():
         "evidence": "",
     }
     family_id = _build_chain_family_identity(finding)
-    assert _attempt_contains_core_chain_evidence(
-        attempt_findings=[finding],
-        expected_family_ids={family_id},
-        expected_flow_ids=set(),
-    ) is True
+    assert (
+        _attempt_contains_core_chain_evidence(
+            attempt_findings=[finding],
+            expected_family_ids={family_id},
+            expected_flow_ids=set(),
+        )
+        is True
+    )
 
 
 def test_attempt_contains_core_chain_evidence_matching_flow():
@@ -857,11 +935,14 @@ def test_attempt_contains_core_chain_evidence_matching_flow():
     }
     flow_id = _build_chain_flow_identity(finding)
     assert flow_id != ""
-    assert _attempt_contains_core_chain_evidence(
-        attempt_findings=[finding],
-        expected_family_ids=set(),
-        expected_flow_ids={flow_id},
-    ) is True
+    assert (
+        _attempt_contains_core_chain_evidence(
+            attempt_findings=[finding],
+            expected_family_ids=set(),
+            expected_flow_ids={flow_id},
+        )
+        is True
+    )
 
 
 def test_attempt_contains_core_chain_evidence_no_match():
@@ -872,16 +953,20 @@ def test_attempt_contains_core_chain_evidence_no_match():
         "attack_scenario": "",
         "evidence": "",
     }
-    assert _attempt_contains_core_chain_evidence(
-        attempt_findings=[finding],
-        expected_family_ids={"nonexistent|id"},
-        expected_flow_ids={"also|nonexistent|id"},
-    ) is False
+    assert (
+        _attempt_contains_core_chain_evidence(
+            attempt_findings=[finding],
+            expected_family_ids={"nonexistent|id"},
+            expected_flow_ids={"also|nonexistent|id"},
+        )
+        is False
+    )
 
 
 # ---------------------------------------------------------------------------
 # _summarize_revalidation_support
 # ---------------------------------------------------------------------------
+
 
 def test_summarize_revalidation_support_all_hits():
     attempts, hits, misses = _summarize_revalidation_support(
@@ -923,6 +1008,7 @@ def test_summarize_revalidation_support_empty():
 # ---------------------------------------------------------------------------
 # _detect_weak_chain_consensus
 # ---------------------------------------------------------------------------
+
 
 def test_detect_weak_consensus_stable():
     weak, reason, support = _detect_weak_chain_consensus(
@@ -969,6 +1055,7 @@ def test_detect_weak_consensus_trailing_empty():
 # ---------------------------------------------------------------------------
 # _adjudicate_consensus_support
 # ---------------------------------------------------------------------------
+
 
 def test_adjudicate_consensus_support_exact_stable():
     weak, reason, support, mode, metrics = _adjudicate_consensus_support(
@@ -1068,6 +1155,7 @@ def test_adjudicate_consensus_trailing_empty_with_enough_support():
 # _summarize_chain_candidates_for_prompt
 # ---------------------------------------------------------------------------
 
+
 def test_summarize_chain_candidates_empty():
     assert _summarize_chain_candidates_for_prompt([], {}, 1) == "- None"
 
@@ -1151,7 +1239,11 @@ def test_summarize_chain_candidates_max_chars_truncation():
         for i in range(5)
     ]
     result = _summarize_chain_candidates_for_prompt(
-        findings, {}, 5, max_items=5, max_chars=200,
+        findings,
+        {},
+        5,
+        max_items=5,
+        max_chars=200,
     )
     assert len(result) <= 200
     assert result.endswith("...[truncated]")
@@ -1187,6 +1279,9 @@ def test_summarize_chain_candidates_flow_support():
     chain_support = {chain_id: 1}
     flow_support = {flow_id: 4}
     result = _summarize_chain_candidates_for_prompt(
-        [finding], chain_support, 5, flow_support_counts=flow_support,
+        [finding],
+        chain_support,
+        5,
+        flow_support_counts=flow_support,
     )
     assert "support=4/5" in result

@@ -12,6 +12,7 @@ from securevibes.diff.parser import DiffContext, DiffFile
 def _diff_file_path(diff_file: DiffFile) -> str:
     return str(diff_file.new_path or diff_file.old_path or "")
 
+
 CHAIN_STOPWORDS = {
     "the",
     "and",
@@ -663,4 +664,3 @@ def _diff_has_auth_privilege_signals(diff_context: DiffContext) -> bool:
                     return True
 
     return False
-

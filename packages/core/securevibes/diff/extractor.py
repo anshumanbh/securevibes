@@ -24,7 +24,11 @@ def _validate_git_ref(ref: str) -> None:
     # Handle commit ranges (e.g., abc123~1..def456 or base...head)
     parts = re.split(r"\.{2,3}", ref)
     for part in parts:
-        if part and not GIT_REF_PATTERN.match(part):
+        if not part:
+            continue
+        if part.startswith("-"):
+            raise ValueError(f"Invalid git ref: {ref!r} (option-style refs are not allowed)")
+        if not GIT_REF_PATTERN.match(part):
             raise ValueError(f"Invalid git ref: {ref!r} (contains invalid characters)")
 
 

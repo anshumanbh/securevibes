@@ -182,6 +182,8 @@ securevibes pr-review . --base main --head feature-branch --model haiku --debug
 securevibes catchup . --branch main
 ```
 
+`securevibes catchup` requires a clean working tree (commit, stash, or discard local changes first).
+
 PR review runtime controls:
 
 ```bash

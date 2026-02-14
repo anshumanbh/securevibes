@@ -293,6 +293,12 @@ class TestGitRefValidation:
             with pytest.raises(ValueError, match="Invalid git ref"):
                 _validate_git_ref(ref)
 
+    @pytest.mark.parametrize("ref", ["--name-only", "-U0", "--help", "main..--name-only"])
+    def test_invalid_option_style_refs(self, ref):
+        """Refs that look like CLI options should be rejected."""
+        with pytest.raises(ValueError, match="option-style refs are not allowed"):
+            _validate_git_ref(ref)
+
     def test_empty_ref_rejected(self):
         """Empty refs should be rejected."""
         with pytest.raises(ValueError, match="cannot be empty"):
@@ -320,3 +326,14 @@ class TestGitRefValidation:
 
         with pytest.raises(ValueError, match="Invalid git ref"):
             get_diff_from_commits(Path("."), "abc$(id)..def")
+
+    def test_get_diff_from_commits_rejects_option_style_range(self, monkeypatch):
+        """Option-like commit ranges should be rejected before running git."""
+
+        def fail_if_called(*_args, **_kwargs):
+            pytest.fail("subprocess.run should not be called for option-style refs")
+
+        monkeypatch.setattr("securevibes.diff.extractor.subprocess.run", fail_if_called)
+
+        with pytest.raises(ValueError, match="option-style refs are not allowed"):
+            get_diff_from_commits(Path("."), "--name-only")
