@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>securevibes pr-review Architecture</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0c0e14;--surface:#13151f;--elevated:#1b1e2b;--border:#262a3a;
+  --text:#d4daf0;--muted:#6b7394;--dim:#3d4260;
+  --blue:#4a90ff;--purple:#9b6dff;--orange:#ff8c3a;--green:#3dd68c;
+  --red:#ff5a5a;--yellow:#ffc23a;--cyan:#3adfff;
+  --blue-bg:rgba(74,144,255,.08);--purple-bg:rgba(155,109,255,.08);
+  --orange-bg:rgba(255,140,58,.08);--green-bg:rgba(61,214,140,.08);
+  --red-bg:rgba(255,90,90,.1);
+}
+body{font-family:'SF Mono','JetBrains Mono','Fira Code',monospace;background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column;overflow:hidden}
+
+/* ── Header ── */
+.hdr{display:flex;align-items:center;gap:14px;padding:10px 18px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;z-index:20}
+.hdr-title{font-size:13px;font-weight:700;white-space:nowrap}.hdr-title em{font-style:normal;color:var(--blue)}
+.bc{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted)}
+.bc span{cursor:pointer;padding:2px 7px;border-radius:4px;transition:.15s}
+.bc span:hover{background:var(--elevated);color:var(--text)}
+.bc span.on{color:var(--blue);background:var(--blue-bg)}
+.bc .sep{opacity:.3;cursor:default;padding:0}
+.search{margin-left:auto;position:relative}
+.search input{background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:5px 10px 5px 26px;color:var(--text);font:inherit;font-size:11px;width:200px;outline:0;transition:.15s}
+.search input:focus{border-color:var(--blue)}
+.search input::placeholder{color:var(--dim)}
+.search::before{content:'S';position:absolute;left:9px;top:50%;transform:translateY(-50%);color:var(--dim);font-size:9px;font-weight:700;border:1px solid var(--dim);border-radius:2px;padding:0 3px;line-height:14px}
+.zc{display:flex;gap:3px}
+.zc button{background:var(--bg);border:1px solid var(--border);color:var(--muted);width:26px;height:26px;border-radius:4px;cursor:pointer;font:inherit;font-size:12px;transition:.15s;display:flex;align-items:center;justify-content:center}
+.zc button:hover{background:var(--elevated);color:var(--text)}
+
+/* ── Layout ── */
+.layout{display:flex;flex:1;overflow:hidden}
+
+/* ── Sidebar ── */
+.sb{width:270px;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0}
+.sb-head{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.sb-head h2{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)}
+.sb-badge{background:var(--elevated);color:var(--muted);font-size:9px;padding:1px 7px;border-radius:8px}
+.sb-filters{display:flex;gap:3px;padding:7px 14px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.fb{font:inherit;font-size:9px;padding:3px 7px;border-radius:4px;border:1px solid var(--border);background:0;color:var(--muted);cursor:pointer;transition:.15s}
+.fb:hover{background:var(--elevated)}
+.fb.on{border-color:var(--blue);color:var(--blue);background:var(--blue-bg)}
+.fb.on[data-c="question"]{border-color:var(--red);color:var(--red);background:var(--red-bg)}
+.fb.on[data-c="improvement"]{border-color:var(--yellow);color:var(--yellow);background:rgba(255,194,58,.08)}
+.fb.on[data-c="good"]{border-color:var(--green);color:var(--green);background:var(--green-bg)}
+.fb.on[data-c="note"]{border-color:var(--cyan);color:var(--cyan);background:rgba(58,223,255,.08)}
+.sb-list{flex:1;overflow-y:auto;padding:6px}
+.sb-list::-webkit-scrollbar{width:3px}.sb-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+.lb-item{padding:7px 10px;border-radius:5px;margin-bottom:3px;cursor:pointer;transition:.12s;display:flex;gap:7px;align-items:flex-start}
+.lb-item:hover{background:var(--elevated)}
+.lb-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;margin-top:4px}
+.lb-dot.question{background:var(--red)}.lb-dot.improvement{background:var(--yellow)}.lb-dot.good{background:var(--green)}.lb-dot.note{background:var(--cyan)}
+.lb-body{flex:1;min-width:0}
+.lb-where{font-size:9px;color:var(--muted);margin-bottom:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lb-txt{font-size:10px;color:var(--text);line-height:1.4;word-break:break-word}
+.lb-x{opacity:0;background:0;border:0;color:var(--muted);cursor:pointer;font-size:13px;padding:0 3px;transition:.12s;flex-shrink:0}
+.lb-item:hover .lb-x{opacity:1}.lb-x:hover{color:var(--red)}
+.sb-empty{text-align:center;padding:36px 18px;color:var(--dim);font-size:10px;line-height:1.7}
+.sb-foot{padding:10px 14px;border-top:1px solid var(--border)}
+.sb-foot button{width:100%;padding:7px;background:var(--blue);color:#fff;border:0;border-radius:5px;font:inherit;font-size:11px;font-weight:600;cursor:pointer;transition:.12s}
+.sb-foot button:hover{opacity:.85}.sb-foot button:disabled{opacity:.3;cursor:default}
+
+/* ── Canvas ── */
+.canvas{flex:1;position:relative;overflow:hidden;background:var(--bg)}
+.canvas svg{width:100%;height:100%;cursor:grab}.canvas svg:active{cursor:grabbing}
+
+/* ── SVG Nodes ── */
+.phase{cursor:pointer}
+.phase rect{transition:filter .2s,stroke-width .2s}
+.phase:hover rect{filter:brightness(1.25);stroke-width:2.5}
+.phase.hl rect{stroke-width:3;filter:brightness(1.35) drop-shadow(0 0 14px currentColor)}
+.phase text{pointer-events:none}
+.sub{cursor:pointer}
+.sub rect{transition:filter .2s,stroke-width .2s}
+.sub:hover rect{filter:brightness(1.2);stroke-width:2}
+.sub.hl rect{stroke-width:2.5;filter:brightness(1.35) drop-shadow(0 0 10px currentColor)}
+.sub text{pointer-events:none}
+.conn{fill:none;stroke:var(--dim);stroke-width:1.2}
+.conn-label{font-size:9px;fill:var(--muted);font-family:inherit}
+.dot-ind{cursor:pointer;transition:transform .12s}.dot-ind:hover{transform:scale(1.4)}
+
+/* ── Bottom bar ── */
+.bbar{background:var(--surface);border-top:1px solid var(--border);flex-shrink:0;max-height:170px;display:flex;flex-direction:column}
+.bbar-head{display:flex;align-items:center;justify-content:space-between;padding:7px 18px}
+.bbar-head h3{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)}
+.cpbtn{background:var(--bg);border:1px solid var(--border);color:var(--muted);padding:3px 10px;border-radius:4px;font:inherit;font-size:10px;cursor:pointer;transition:.12s}
+.cpbtn:hover{background:var(--elevated);color:var(--text)}
+.pout{padding:0 18px 10px;overflow-y:auto;flex:1;font-size:10px;line-height:1.5;color:var(--muted);white-space:pre-wrap;font-family:inherit}
+.pout::-webkit-scrollbar{width:3px}.pout::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+
+/* ── Modal ── */
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:100}
+.modal-bg.on{display:flex}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:10px;width:380px;padding:20px;box-shadow:0 24px 64px rgba(0,0,0,.55)}
+.modal h3{font-size:13px;margin-bottom:3px}
+.modal .mt{font-size:10px;color:var(--muted);margin-bottom:14px}
+.cat-row{display:flex;gap:6px;margin-bottom:14px}
+.cat-btn{flex:1;padding:7px 3px;border-radius:6px;border:1.5px solid var(--border);background:0;cursor:pointer;text-align:center;font:inherit;font-size:9px;color:var(--muted);transition:.15s}
+.cat-btn:hover{background:var(--elevated)}
+.cat-btn .ci{font-size:15px;display:block;margin-bottom:3px}
+.cat-btn.sel[data-c="question"]{border-color:var(--red);color:var(--red);background:var(--red-bg)}
+.cat-btn.sel[data-c="improvement"]{border-color:var(--yellow);color:var(--yellow);background:rgba(255,194,58,.08)}
+.cat-btn.sel[data-c="good"]{border-color:var(--green);color:var(--green);background:var(--green-bg)}
+.cat-btn.sel[data-c="note"]{border-color:var(--cyan);color:var(--cyan);background:rgba(58,223,255,.08)}
+.modal textarea{width:100%;height:72px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--text);font:inherit;font-size:11px;resize:none;outline:0;transition:.15s}
+.modal textarea:focus{border-color:var(--blue)}
+.modal textarea::placeholder{color:var(--dim)}
+.m-acts{display:flex;justify-content:flex-end;gap:7px;margin-top:14px}
+.m-acts button{padding:7px 18px;border-radius:5px;font:inherit;font-size:11px;cursor:pointer;border:1px solid var(--border);transition:.12s}
+.m-cancel{background:0;color:var(--muted)}.m-cancel:hover{background:var(--elevated);color:var(--text)}
+.m-save{background:var(--blue);border-color:var(--blue);color:#fff}.m-save:hover{opacity:.85}.m-save:disabled{opacity:.3;cursor:default}
+
+/* ── Toast ── */
+.toast{position:fixed;bottom:190px;left:50%;transform:translateX(-50%) translateY(16px);background:var(--elevated);border:1px solid var(--border);padding:6px 18px;border-radius:6px;font-size:11px;color:var(--text);opacity:0;transition:.25s;pointer-events:none;z-index:50}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+  <div class="hdr-title"><em>securevibes</em>&nbsp;pr-review</div>
+  <div class="bc" id="bc"><span class="on" data-v="overview">Overview</span></div>
+  <div class="search"><input id="qry" placeholder="Search  ( / )"/></div>
+  <div class="zc">
+    <button id="zi" title="Zoom in">+</button>
+    <button id="zo" title="Zoom out">&minus;</button>
+    <button id="zr" title="Reset">R</button>
+  </div>
+</div>
+
+<div class="layout">
+  <div class="sb">
+    <div class="sb-head"><h2>Labels</h2><span class="sb-badge" id="lc">0</span></div>
+    <div class="sb-filters" id="filters">
+      <button class="fb on" data-c="all">All</button>
+      <button class="fb" data-c="question">Question</button>
+      <button class="fb" data-c="improvement">Improve</button>
+      <button class="fb" data-c="good">Good</button>
+      <button class="fb" data-c="note">Note</button>
+    </div>
+    <div class="sb-list" id="ll"><div class="sb-empty">Click any node to add<br>a label or annotation</div></div>
+    <div class="sb-foot"><button id="expBtn" disabled>Export Labels as Markdown</button></div>
+  </div>
+
+  <div class="canvas" id="cv">
+    <svg id="svg" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="ah" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#3d4260"/></marker>
+        <marker id="ahb" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#4a90ff"/></marker>
+        <marker id="aho" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#ff8c3a"/></marker>
+        <marker id="ahg" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#3dd68c"/></marker>
+        <marker id="ahp" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#9b6dff"/></marker>
+        <pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse">
+          <circle cx="12" cy="12" r=".4" fill="#1f2233"/>
+        </pattern>
+      </defs>
+      <rect width="10000" height="10000" fill="url(#dots)"/>
+      <g id="pg"></g>
+    </svg>
+  </div>
+</div>
+
+<div class="bbar">
+  <div class="bbar-head"><h3>Prompt Output</h3><button class="cpbtn" id="cpBtn">Copy</button></div>
+  <div class="pout" id="po">No labels yet. Click nodes in the diagram to annotate them.</div>
+</div>
+
+<div class="modal-bg" id="mbg">
+  <div class="modal">
+    <h3>Add Label</h3>
+    <div class="mt" id="mTgt"></div>
+    <div class="cat-row" id="cats">
+      <button class="cat-btn" data-c="question"><span class="ci">?</span>Question</button>
+      <button class="cat-btn" data-c="improvement"><span class="ci">!</span>Improve</button>
+      <button class="cat-btn" data-c="good"><span class="ci">&#10003;</span>Good</button>
+      <button class="cat-btn" data-c="note"><span class="ci">&#9998;</span>Note</button>
+    </div>
+    <textarea id="mIn" placeholder="Write your note..."></textarea>
+    <div class="m-acts">
+      <button class="m-cancel" id="mNo">Cancel</button>
+      <button class="m-save" id="mOk" disabled>Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════════
+// DATA — sourced from securevibes codebase (PR #34)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const P = [
+  {
+    id:'cli', n:1, title:'CLI Entry', color:'#4a90ff', bg:'rgba(74,144,255,.07)',
+    src:'cli/main.py:358-602', layer:'input',
+    desc:'Parse arguments, validate inputs, extract diff, invoke scanner',
+    steps:[
+      {id:'parse-args',t:'Parse CLI Arguments',d:'--base/--head, --range, --diff, --since-last-scan, --since, --last',s:'cli/main.py:358-410'},
+      {id:'validate-sel',t:'Validate Selection',d:'Exactly one diff source required; both --base and --head must be present together',s:'cli/main.py:426-445'},
+      {id:'check-artifacts',t:'Check Required Artifacts',d:'SECURITY.md + THREAT_MODEL.json must exist (.securevibes/)',s:'cli/main.py:450-455'},
+      {id:'extract-diff',t:'Extract Diff Content',d:'get_diff_from_git_range / get_diff_from_commits / get_diff_from_file / get_diff_from_commit_list',s:'cli/main.py:464-503'},
+      {id:'parse-diff',t:'Parse DiffContext',d:'parse_unified_diff(diff_content) \u2192 DiffContext{changed_files, hunks, files}',s:'cli/main.py:509-512'},
+      {id:'call-scan',t:'Call Scanner.pr_review()',d:'asyncio.run(_run_pr_review(repo, model, diff_context, known_vulns, severity, update_artifacts))',s:'cli/main.py:517-527'},
+    ]
+  },
+  {
+    id:'ctx', n:2, title:'Context Assembly', color:'#4a90ff', bg:'rgba(74,144,255,.07)',
+    src:'scanner.py:1090-1236', layer:'input',
+    desc:'Build focused diff, extract architecture, generate hypotheses, assemble prompt',
+    steps:[
+      {id:'focused-diff',t:'Build Focused Diff',d:'_build_focused_diff_context() \u2014 score files for security relevance, trim oversized hunks',s:'scanner.py:1119, :540-589'},
+      {id:'arch-ctx',t:'Extract Architecture',d:'extract_relevant_architecture(SECURITY.md, changed_files)',s:'scanner.py:1123-1126'},
+      {id:'filter-threats',t:'Filter Relevant Threats',d:'filter_relevant_threats(THREAT_MODEL.json, changed_files)',s:'scanner.py:1128-1131'},
+      {id:'filter-vulns',t:'Filter Baseline Vulns',d:'filter_baseline_vulns() + filter_relevant_vulnerabilities(VULNERABILITIES.json)',s:'scanner.py:1133-1149'},
+      {id:'risk-signals',t:'Detect Risk Signals',d:'command_builder, path_parser, auth_privilege signal detection on diff hunks',s:'scanner.py:1162-1164',crit:true},
+      {id:'adjacent',t:'Detect Adjacent Files',d:'suggest_security_adjacent_files(repo, changed_files, max=20) for reachability',s:'scanner.py:1150-1158'},
+      {id:'hypotheses',t:'Generate Hypotheses',d:'_generate_pr_hypotheses() \u2014 LLM pre-pass: 3-8 exploit scenarios from diff+baseline',s:'scanner.py:323-382, :1173-1184',crit:true},
+      {id:'retry-plan',t:'Build Retry Focus Plan',d:'_build_pr_retry_focus_plan() \u2014 ordered focus areas based on risk signals',s:'scanner.py:1167-1172'},
+      {id:'assemble',t:'Assemble Contextualized Prompt',d:'base_prompt + architecture + threats + vulns + diff anchors + hunk snippets + hypotheses + severity',s:'scanner.py:1203-1236'},
+    ]
+  },
+  {
+    id:'loop', n:3, title:'Multi-Pass Loop', color:'#9b6dff', bg:'rgba(155,109,255,.07)',
+    src:'scanner.py:1329-1689', layer:'agent',
+    desc:'N attempts with retry focus, Claude agent execution, finding extraction, chain tracking',
+    steps:[
+      {id:'retry-suffix',t:'Build Retry Suffix',d:'_build_pr_review_retry_suffix(attempt_num, focus_area, candidate_summary, require_revalidation)',s:'pr_review_merge.py:239+'},
+      {id:'create-agent',t:'Create Agent',d:'create_agent_definitions(cli_model) \u2192 pr-code-review agent with attempt_prompt',s:'scanner.py:1372-1374'},
+      {id:'hooks',t:'Configure Hooks',d:'PreToolUse[json_validation, pre_tool], PostToolUse, SubagentStop \u2014 tool guard blocks out-of-repo access',s:'scanner.py:1380-1411, hooks.py'},
+      {id:'query-llm',t:'Query Claude',d:'ClaudeSDKClient(options).query(prompt) \u2192 consume_messages() with pr_timeout_seconds',s:'scanner.py:1413-1428',crit:true},
+      {id:'load-art',t:'Load Artifact',d:'_load_pr_vulnerabilities_artifact(PR_VULNERABILITIES.json) from disk',s:'scanner.py:1590-1593'},
+      {id:'observed',t:'Extract Observed Findings',d:'_extract_observed_pr_findings(write_observer) \u2014 catches overwritten/intermediate writes',s:'scanner.py:1594, 1631-1640'},
+      {id:'chains',t:'Record Chain IDs',d:'_record_attempt_chains() \u2192 exact_ids, family_ids, flow_ids per attempt',s:'scanner.py:1275-1288, chain_analysis.py:357-397',crit:true},
+      {id:'support',t:'Track Support Counts',d:'chain_support_counts[family_id]++ and flow_support_counts[flow_id]++ each pass',s:'scanner.py:1285-1288'},
+      {id:'reval',t:'Revalidation Check',d:'_record_attempt_revalidation_observability() \u2014 does pass reproduce carried core-chain evidence?',s:'scanner.py:1308-1327',crit:true},
+      {id:'carry',t:'Carry Forward Candidates',d:'_refresh_carry_forward_candidates() builds candidate_summary for next pass prompt',s:'scanner.py:1290-1306'},
+      {id:'timeout',t:'Timeout / Error Recovery',d:'TimeoutError or Exception \u2192 partial artifact recovery from write logs, chain recording continues',s:'scanner.py:1496-1588',crit:true},
+    ]
+  },
+  {
+    id:'cons', n:4, title:'Consensus', color:'#ff8c3a', bg:'rgba(255,140,58,.07)',
+    src:'chain_analysis.py:478-568', layer:'verify',
+    desc:'Multi-mode consensus adjudication: exact, family, flow chain agreement across passes',
+    steps:[
+      {id:'merge-raw',t:'Initial Merge',d:'_merge_pr_attempt_findings(collected + ephemeral) \u2192 canonical finding set',s:'scanner.py:1714-1722'},
+      {id:'exact-count',t:'Count Exact Matches',d:'_detect_weak_chain_consensus(core_exact_ids, pass_exact_ids, required=2)',s:'chain_analysis.py:478-499'},
+      {id:'family-count',t:'Count Family Matches',d:'_detect_weak_chain_consensus(core_family_ids, pass_family_ids, required=2)',s:'chain_analysis.py:478-499'},
+      {id:'flow-count',t:'Count Flow Matches',d:'_detect_weak_chain_consensus(core_flow_ids, pass_flow_ids, required=2)',s:'chain_analysis.py:478-499'},
+      {id:'mode-select',t:'Select Best Mode',d:'Priority: exact > flow > family; prefer stable modes where !weak OR trailing_empty + sufficient support',s:'chain_analysis.py:535-550',crit:true},
+      {id:'stability',t:'Stability Check',d:'_mode_is_stable(weak, reason, support) \u2014 non-weak OR trailing-empty-passes with support >= required',s:'chain_analysis.py:535-538'},
+      {id:'weak-fall',t:'Weak Consensus Fallback',d:'If no mode is stable: fallback_priority=(flow,family,exact), select by max support then priority',s:'chain_analysis.py:552-568',crit:true},
+    ]
+  },
+  {
+    id:'refine', n:5, title:'Quality Refinement', color:'#ff8c3a', bg:'rgba(255,140,58,.07)',
+    src:'scanner.py:1792-1835', layer:'verify',
+    desc:'Conditional LLM pass for exploit-chain quality verification',
+    steps:[
+      {id:'should-refine',t:'Decide Whether to Refine',d:'should_refine = findings AND (risk_signals > 0 OR weak_consensus OR len(findings) > 1)',s:'scanner.py:1792-1794',crit:true},
+      {id:'refine-llm',t:'LLM Quality Pass',d:'_refine_pr_findings_with_llm(mode="quality") with diff anchors, focus areas, observability notes',s:'scanner.py:1801-1812'},
+      {id:'refine-merge',t:'Re-Merge Refined',d:'_merge_pr_attempt_findings(refined) \u2192 updated canonical set (may shrink or keep)',s:'scanner.py:1815-1835'},
+      {id:'re-consensus',t:'Re-Adjudicate Consensus',d:'_adjudicate_consensus_support() re-run on post-refinement canonical chains',s:'scanner.py:1840-1863'},
+    ]
+  },
+  {
+    id:'verify', n:6, title:'Verifier Pass', color:'#ff8c3a', bg:'rgba(255,140,58,.07)',
+    src:'scanner.py:1865-1915', layer:'verify',
+    desc:'Conditional on weak consensus \u2014 independent LLM verification of chain evidence',
+    steps:[
+      {id:'should-verify',t:'Decide Whether to Verify',d:'_should_run_pr_verifier(has_findings, weak_consensus) gates this pass',s:'scanner.py:1865-1868',crit:true},
+      {id:'verify-llm',t:'LLM Verifier Pass',d:'_refine_pr_findings_with_llm(mode="verifier") with consensus_context + observability',s:'scanner.py:1876-1892'},
+      {id:'verify-merge',t:'Re-Merge Verified',d:'_merge_pr_attempt_findings(verified) \u2192 final canonical set after verification',s:'scanner.py:1895-1915'},
+      {id:'final-cons',t:'Final Consensus Check',d:'_adjudicate_consensus_support() final run: produces consensus_score, mode, weak trigger',s:'scanner.py:1919-1942'},
+    ]
+  },
+  {
+    id:'merge', n:7, title:'Merge & Dedup', color:'#ff8c3a', bg:'rgba(255,140,58,.07)',
+    src:'pr_review_merge.py:379+', layer:'verify',
+    desc:'Build chain identities, rank, drop speculative, keep canonical, baseline dedup',
+    steps:[
+      {id:'chain-id',t:'Build Chain Identities',d:'family_id = normalized title keywords; flow_id = exploit primitive terms (option injection, argv, ...)',s:'pr_review_merge.py:413-426'},
+      {id:'rank',t:'Rank Findings',d:'severity_rank \u00d7 finding_type_rank; known_vuln(6) > regression(5) > threat_enabler(5) > ...',s:'pr_review_merge.py:399-412'},
+      {id:'drop-spec',t:'Drop Speculative',d:'Remove findings with speculative_terms ("could","might","potential") lacking concrete evidence',s:'pr_review_merge.py:436-453',crit:true},
+      {id:'keep-canon',t:'Keep Canonical',d:'One finding per chain \u2014 highest-ranked representative wins',s:'pr_review_merge.py:385'},
+      {id:'drop-sub',t:'Drop Subsumed Chains',d:'Collapse subchains into parent chains when fully overlapping',s:'pr_review_merge.py:394'},
+      {id:'drop-low',t:'Drop Low Support',d:'Remove findings below required_support threshold from chain_support_counts',s:'pr_review_merge.py:396',crit:true},
+      {id:'baseline-dd',t:'Baseline Dedup',d:'dedupe_pr_vulns(pr_vulns, baseline_vulns) removes already-known issues',s:'scanner.py:1945-1950'},
+    ]
+  },
+  {
+    id:'out', n:8, title:'Output', color:'#3dd68c', bg:'rgba(61,214,140,.07)',
+    src:'cli/main.py:529-602', layer:'output',
+    desc:'Severity filter, format, write artifacts, update scan state, exit code',
+    steps:[
+      {id:'sev-filter',t:'Severity Filter',d:'Filter findings below --severity threshold (defense in depth, post-scanner)',s:'cli/main.py:530-538'},
+      {id:'format',t:'Format Output',d:'MarkdownReporter / JSON / table rendering; save to .securevibes/pr_review_report.md',s:'cli/main.py:540-580'},
+      {id:'artifacts',t:'Write Artifacts',d:'Optional --update-artifacts: update_pr_review_artifacts() updates THREAT_MODEL + VULNERABILITIES',s:'scanner.py:1998-2004'},
+      {id:'scan-state',t:'Update scan_state.json',d:'build_pr_review_entry(commit, commits_reviewed, timestamp) \u2192 update_scan_state()',s:'cli/main.py:582-591'},
+      {id:'exit',t:'Exit Code',d:'Exit 2 = critical findings, 1 = high findings, 0 = clean',s:'cli/main.py:593-597',crit:true},
+    ]
+  },
+];
+
+// Colors per category
+const CC = {question:'#ff5a5a',improvement:'#ffc23a',good:'#3dd68c',note:'#3adfff'};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════════════════════
+
+let view='overview', phase=null, labels=[], filter='all';
+let zm=1, px=0, py=0, dragging=false, dx0=0, dy0=0, px0=0, py0=0;
+let mNode=null, mTitle=null, mCat=null, lid=0;
+
+const $=s=>document.getElementById(s);
+const qs=(s,p)=>(p||document).querySelectorAll(s);
+const el=s=>document.querySelector(s);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RENDER — Overview
+// ═══════════════════════════════════════════════════════════════════════════
+
+function renderOverview(){
+  view='overview'; phase=null; updBC();
+  // 2-row layout: top row L-to-R (phases 1-4), bottom row R-to-L (phases 5-8)
+  const W=210, H=88, gx=36, gy=120;
+  const pos=[
+    {x:60,y:80},{x:60+W+gx,y:80},{x:60+2*(W+gx),y:80},{x:60+3*(W+gx),y:80},
+    {x:60+3*(W+gx),y:80+H+gy},{x:60+2*(W+gx),y:80+H+gy},{x:60+(W+gx),y:80+H+gy},{x:60,y:80+H+gy}
+  ];
+
+  let h='';
+
+  // Top row connections (1->2->3->4)
+  const conns=[
+    {i:0,j:1,l:'DiffContext'},{i:1,j:2,l:'Contextualized\nPrompt'},{i:2,j:3,l:'All Attempt\nFindings'},
+    {i:3,j:4,l:'Consensus\nMetrics'},{i:4,j:5,l:'Refined\nChains'},{i:5,j:6,l:'Verified\nChains'},
+    {i:6,j:7,l:'Canonical\nFindings'}
+  ];
+
+  conns.forEach(c=>{
+    const a=pos[c.i], b=pos[c.j];
+    let x1,y1,x2,y2;
+    if(c.i<3){// horizontal right
+      x1=a.x+W; y1=a.y+H/2; x2=b.x; y2=b.y+H/2;
+      h+=`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" class="conn" marker-end="url(#ah)"/>`;
+      const lines=c.l.split('\n');
+      lines.forEach((ln,li)=>{
+        h+=`<text x="${(x1+x2)/2}" y="${y1-10+li*11}" class="conn-label" text-anchor="middle">${ln}</text>`;
+      });
+    } else if(c.i===3){// vertical down
+      x1=a.x+W/2; y1=a.y+H; x2=b.x+W/2; y2=b.y;
+      h+=`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" class="conn" marker-end="url(#ah)"/>`;
+      const lines=c.l.split('\n');
+      lines.forEach((ln,li)=>{
+        h+=`<text x="${x1+16}" y="${(y1+y2)/2-6+li*11}" class="conn-label">${ln}</text>`;
+      });
+    } else {// horizontal left
+      x1=a.x; y1=a.y+H/2; x2=b.x+W; y2=b.y+H/2;
+      h+=`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" class="conn" marker-end="url(#ah)"/>`;
+      const lines=c.l.split('\n');
+      lines.forEach((ln,li)=>{
+        h+=`<text x="${(x1+x2)/2}" y="${y1-10+li*11}" class="conn-label" text-anchor="middle">${ln}</text>`;
+      });
+    }
+  });
+
+  // Phase nodes
+  P.forEach((p,i)=>{
+    const {x,y}=pos[i];
+    const dots=labels.filter(l=>l.nid===p.id);
+    const condTag=(p.id==='refine'||p.id==='verify')?' (conditional)':'';
+    h+=`<g class="phase" data-id="${p.id}" onclick="drill('${p.id}')">
+      <rect x="${x}" y="${y}" width="${W}" height="${H}" fill="${p.bg}" stroke="${p.color}" stroke-width="1.5" rx="10"/>
+      <text x="${x+14}" y="${y+22}" fill="${p.color}" font-size="9.5" font-weight="700">PHASE ${p.n}${condTag}</text>
+      <text x="${x+14}" y="${y+42}" fill="#d4daf0" font-size="13" font-weight="700">${p.title}</text>
+      <text x="${x+14}" y="${y+60}" fill="#6b7394" font-size="8.5">${p.src}</text>
+      <text x="${x+14}" y="${y+74}" fill="#3d4260" font-size="8">${p.steps.length} sub-steps</text>`;
+    dots.forEach((lb,di)=>{
+      h+=`<circle cx="${x+W-12-di*13}" cy="${y+12}" r="4.5" fill="${CC[lb.cat]}" class="dot-ind" onclick="event.stopPropagation();navLabel('${lb.id}')"/>`;
+    });
+    h+=`</g>`;
+  });
+
+  // Legend
+  const ly=pos[7].y+H+40;
+  h+=`<text x="60" y="${ly}" fill="#6b7394" font-size="9" font-weight="700">LEGEND</text>`;
+  const leg=[
+    {c:'#4a90ff',bg:'rgba(74,144,255,.07)',t:'Input / Prep'},
+    {c:'#9b6dff',bg:'rgba(155,109,255,.07)',t:'LLM Agent'},
+    {c:'#ff8c3a',bg:'rgba(255,140,58,.07)',t:'Verify / Merge'},
+    {c:'#3dd68c',bg:'rgba(61,214,140,.07)',t:'Output'},
+    {c:'#ff5a5a',bg:'rgba(255,90,90,.1)',t:'Critical Decision'},
+  ];
+  leg.forEach((l,i)=>{
+    const lx=60+i*170;
+    h+=`<rect x="${lx}" y="${ly+8}" width="10" height="10" rx="2" fill="${l.bg}" stroke="${l.c}" stroke-width="1"/>`;
+    h+=`<text x="${lx+16}" y="${ly+17}" fill="#6b7394" font-size="9">${l.t}</text>`;
+  });
+
+  h+=`<text x="60" y="${ly+40}" fill="#262a3a" font-size="9" font-style="italic">Click any phase to drill down. Click nodes to add labels. Press Esc to go back. Press / to search.</text>`;
+
+  $('pg').innerHTML=h;
+  resetView();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RENDER — Drill-down
+// ═══════════════════════════════════════════════════════════════════════════
+
+function renderDrill(pid){
+  const p=P.find(x=>x.id===pid);
+  if(!p) return;
+  view='drill'; phase=p; updBC();
+
+  const sx=120, sy=56, sw=660, sh=56, gap=14;
+  let h='';
+
+  // Phase banner
+  h+=`<rect x="50" y="10" width="${sw+140}" height="30" rx="5" fill="${p.bg}" stroke="${p.color}" stroke-dasharray="4,3" opacity=".45"/>`;
+  h+=`<text x="66" y="30" fill="${p.color}" font-size="12" font-weight="700">Phase ${p.n}: ${p.title}</text>`;
+  h+=`<text x="${sw+158}" y="30" fill="#6b7394" font-size="9" text-anchor="end">${p.src}</text>`;
+
+  p.steps.forEach((s,i)=>{
+    const y=sy+i*(sh+gap);
+    const sc=s.crit?'#ff5a5a':p.color;
+    const sf=s.crit?'rgba(255,90,90,.06)':p.bg;
+    const dots=labels.filter(l=>l.nid===s.id);
+
+    // Connector
+    if(i<p.steps.length-1){
+      h+=`<line x1="${sx+sw/2}" y1="${y+sh}" x2="${sx+sw/2}" y2="${y+sh+gap}" class="conn" marker-end="url(#ah)"/>`;
+    }
+
+    h+=`<g class="sub" data-id="${s.id}" onclick="openModal('${s.id}','${esc(s.t)}')">
+      <rect x="${sx}" y="${y}" width="${sw}" height="${sh}" fill="${sf}" stroke="${sc}" stroke-width="1.2" rx="7"/>
+      <text x="${sx+14}" y="${y+22}" fill="#d4daf0" font-size="11.5" font-weight="600">${s.t}</text>
+      <text x="${sx+14}" y="${y+40}" fill="#6b7394" font-size="9">${truncate(s.d,85)}</text>
+      <text x="${sx+sw-10}" y="${y+22}" fill="#3d4260" font-size="8" text-anchor="end">${s.s}</text>`;
+    if(s.crit) h+=`<text x="${sx+sw-10}" y="${y+40}" fill="#ff5a5a" font-size="8" text-anchor="end" font-weight="600">CRITICAL</text>`;
+    dots.forEach((lb,di)=>{
+      h+=`<circle cx="${sx+sw-26-di*13}" cy="${y+10}" r="4" fill="${CC[lb.cat]}" class="dot-ind" onclick="event.stopPropagation();navLabel('${lb.id}')"/>`;
+    });
+    h+=`</g>`;
+
+    // Step number
+    h+=`<circle cx="${sx-18}" cy="${y+sh/2}" r="12" fill="${p.bg}" stroke="${p.color}" stroke-width="1.2"/>`;
+    h+=`<text x="${sx-18}" y="${y+sh/2+3.5}" fill="${p.color}" font-size="9" font-weight="700" text-anchor="middle">${i+1}</text>`;
+  });
+
+  $('pg').innerHTML=h;
+  resetView();
+}
+
+function truncate(s,n){return s.length>n?s.slice(0,n)+'\u2026':s}
+function esc(s){return s.replace(/'/g,"\\'")}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// NAVIGATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+function drill(id){renderDrill(id)}
+function goHome(){renderOverview()}
+
+function updBC(){
+  let h=`<span class="${view==='overview'?'on':''}" onclick="goHome()">Overview</span>`;
+  if(phase){
+    h+=`<span class="sep">/</span><span class="on">Phase ${phase.n}: ${phase.title}</span>`;
+  }
+  $('bc').innerHTML=h;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PAN & ZOOM
+// ═══════════════════════════════════════════════════════════════════════════
+
+function applyTx(){$('pg').setAttribute('transform',`translate(${px},${py}) scale(${zm})`)}
+function resetView(){zm=1;px=0;py=0;applyTx()}
+
+$('cv').addEventListener('wheel',e=>{
+  e.preventDefault();
+  const d=e.deltaY>0?-0.07:0.07;
+  const nz=Math.max(.25,Math.min(3,zm+d));
+  const r=$('svg').getBoundingClientRect();
+  const mx=e.clientX-r.left, my=e.clientY-r.top;
+  px=mx-(mx-px)*(nz/zm);
+  py=my-(my-py)*(nz/zm);
+  zm=nz;applyTx();
+},{passive:false});
+
+$('svg').addEventListener('mousedown',e=>{
+  const t=e.target;
+  if(t.id==='svg'||t.tagName==='rect'&&t.getAttribute('fill')==='url(#dots)'){
+    dragging=true;dx0=e.clientX;dy0=e.clientY;px0=px;py0=py;
+  }
+});
+window.addEventListener('mousemove',e=>{if(!dragging)return;px=px0+(e.clientX-dx0);py=py0+(e.clientY-dy0);applyTx()});
+window.addEventListener('mouseup',()=>{dragging=false});
+
+$('zi').onclick=()=>{zm=Math.min(3,zm+.18);applyTx()};
+$('zo').onclick=()=>{zm=Math.max(.25,zm-.18);applyTx()};
+$('zr').onclick=resetView;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SEARCH
+// ═══════════════════════════════════════════════════════════════════════════
+
+$('qry').addEventListener('input',()=>{
+  const q=$('qry').value.toLowerCase().trim();
+  qs('.hl').forEach(e=>e.classList.remove('hl'));
+  if(!q)return;
+  qs('.phase,.sub').forEach(n=>{
+    const txt=Array.from(n.querySelectorAll('text')).map(t=>t.textContent.toLowerCase()).join(' ');
+    if(txt.includes(q))n.classList.add('hl');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LABEL SYSTEM
+// ═══════════════════════════════════════════════════════════════════════════
+
+function openModal(nid,ntitle){
+  mNode=nid;mTitle=ntitle;mCat=null;
+  $('mTgt').textContent=ntitle;
+  $('mIn').value='';
+  $('mOk').disabled=true;
+  qs('.cat-btn').forEach(b=>b.classList.remove('sel'));
+  $('mbg').classList.add('on');
+  setTimeout(()=>$('mIn').focus(),80);
+}
+
+function closeModal(){$('mbg').classList.remove('on');mNode=null;mTitle=null;mCat=null}
+
+$('cats').onclick=e=>{
+  const b=e.target.closest('.cat-btn');
+  if(!b)return;
+  qs('.cat-btn').forEach(x=>x.classList.remove('sel'));
+  b.classList.add('sel');
+  mCat=b.dataset.c;
+  $('mOk').disabled=!mCat||!$('mIn').value.trim();
+};
+
+$('mIn').oninput=()=>{$('mOk').disabled=!mCat||!$('mIn').value.trim()};
+$('mIn').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!$('mOk').disabled){e.preventDefault();saveLabel()}};
+$('mOk').onclick=saveLabel;
+$('mNo').onclick=closeModal;
+$('mbg').onclick=e=>{if(e.target===$('mbg'))closeModal()};
+
+function saveLabel(){
+  if(!mCat||!$('mIn').value.trim())return;
+  // Find the source reference for this node
+  let srcRef='';
+  for(const p of P){
+    if(p.id===mNode){srcRef=p.src;break}
+    const s=p.steps.find(s=>s.id===mNode);
+    if(s){srcRef=s.s;break}
+  }
+  labels.push({id:'l'+(++lid),nid:mNode,title:mTitle,cat:mCat,text:$('mIn').value.trim(),src:srcRef,ts:Date.now()});
+  closeModal();renderLabels();updPrompt();
+  if(view==='overview')renderOverview();else if(phase)renderDrill(phase.id);
+  toast('Label added');
+}
+
+function delLabel(id){
+  labels=labels.filter(l=>l.id!==id);
+  renderLabels();updPrompt();
+  if(view==='overview')renderOverview();else if(phase)renderDrill(phase.id);
+}
+
+function navLabel(id){
+  const lb=labels.find(l=>l.id===id);if(!lb)return;
+  const isPhase=P.some(p=>p.id===lb.nid);
+  if(isPhase){if(view!=='overview')goHome()}
+  else{
+    const pp=P.find(p=>p.steps.some(s=>s.id===lb.nid));
+    if(pp&&(view!=='drill'||phase?.id!==pp.id))renderDrill(pp.id);
+  }
+  setTimeout(()=>{
+    const nd=document.querySelector(`[data-id="${lb.nid}"]`);
+    if(nd){nd.classList.add('hl');setTimeout(()=>nd.classList.remove('hl'),1400)}
+  },80);
+}
+
+function renderLabels(){
+  const fl=filter==='all'?labels:labels.filter(l=>l.cat===filter);
+  $('lc').textContent=labels.length;
+  $('expBtn').disabled=!labels.length;
+  if(!fl.length){
+    $('ll').innerHTML=`<div class="sb-empty">${labels.length?'No labels match this filter':'Click any node to add<br>a label or annotation'}</div>`;
+    return;
+  }
+  $('ll').innerHTML=fl.map(l=>`
+    <div class="lb-item" onclick="navLabel('${l.id}')">
+      <div class="lb-dot ${l.cat}"></div>
+      <div class="lb-body">
+        <div class="lb-where">${xss(l.title)}</div>
+        <div class="lb-txt">${xss(l.text)}</div>
+      </div>
+      <button class="lb-x" onclick="event.stopPropagation();delLabel('${l.id}')">&times;</button>
+    </div>`).join('');
+}
+
+function xss(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+
+// Filters
+$('filters').onclick=e=>{
+  const b=e.target.closest('.fb');if(!b)return;
+  qs('.fb').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on');
+  filter=b.dataset.c;
+  renderLabels();
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PROMPT OUTPUT
+// ═══════════════════════════════════════════════════════════════════════════
+
+function updPrompt(){
+  if(!labels.length){$('po').textContent='No labels yet. Click nodes in the diagram to annotate them.';return}
+  const ci={question:'\u2753',improvement:'\u26a0\ufe0f',good:'\u2705',note:'\ud83d\udcdd'};
+  const ct={question:'Questions',improvement:'Improvements',good:'Good Patterns',note:'Notes'};
+  let md=`# PR Review Notes: securevibes pr-review Architecture\n`;
+  md+=`# Source: PR #34\n\n`;
+
+  const gr={};
+  labels.forEach(l=>{(gr[l.cat]=gr[l.cat]||[]).push(l)});
+
+  for(const c of['question','improvement','good','note']){
+    if(!gr[c])continue;
+    md+=`## ${ci[c]} ${ct[c]}\n\n`;
+    gr[c].forEach(l=>{
+      md+=`- **${l.title}**`;
+      if(l.src) md+=` (\`${l.src}\`)`;
+      md+=`: ${l.text}\n`;
+    });
+    md+=`\n`;
+  }
+
+  $('po').textContent=md;
+}
+
+// Export / Copy
+$('expBtn').onclick=()=>{
+  navigator.clipboard.writeText($('po').textContent).then(()=>toast('Markdown copied'));
+};
+$('cpBtn').onclick=()=>{
+  navigator.clipboard.writeText($('po').textContent).then(()=>toast('Copied'));
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TOAST
+// ═══════════════════════════════════════════════════════════════════════════
+
+function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1800)}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// KEYS
+// ═══════════════════════════════════════════════════════════════════════════
+
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){
+    if($('mbg').classList.contains('on'))closeModal();
+    else if(view==='drill')goHome();
+  }
+  if(e.key==='/'&&!$('mbg').classList.contains('on')){e.preventDefault();$('qry').focus()}
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════════════════════
+
+renderOverview();
+renderLabels();
+</script>
+</body>
+</html>

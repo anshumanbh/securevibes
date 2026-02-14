@@ -36,8 +36,10 @@ CRITICAL: Apply these checks to reduce false positives and improve finding quali
    - TRUSTED: Admin configuration files, code constants, environment variables set by operators
    - SYSTEM: Internal function calls, hardcoded values, compile-time constants
    
-   RULE: Only flag injection/tampering when UNTRUSTED or SEMI-TRUSTED data flows to sensitive sinks.
-   If data originates from TRUSTED sources (admin config, code), it's a "security consideration" not a vulnerability.
+   RULE: Flag injection/tampering when attacker-influenced data reaches sensitive sinks.
+   If data originates from operator-only static config and cannot be attacker-modified at runtime, treat as lower risk.
+   IMPORTANT EXCEPTION FOR PR REVIEW: if changed code routes user-modifiable config/preferences/env values into
+   command argv, shell bodies, network targets, or auth decisions, treat it as an exploitable vulnerability chain.
    
    Example - Flag this (user input → template):
      userInput = request.body.template
@@ -57,7 +59,8 @@ CRITICAL: Apply these checks to reduce false positives and improve finding quali
    - Unauthenticated remote → severity as-is
    - Requires authentication → reduce severity by one level (unless auth bypass)
    - Requires admin access → reduce to LOW or MEDIUM (admins can already do damage)
-   - Requires local access → reduce severity (local attacker has many options)
+   - Requires local access → usually reduce severity, unless changed code creates direct command/option injection,
+     credential exfiltration, or privileged execution pivots.
    
    Example - Don't flag as HIGH:
      "IDOR allows accessing other users' sessions" 

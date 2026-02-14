@@ -8,6 +8,12 @@ from securevibes.diff.extractor import (
     get_diff_from_commits,
     get_diff_from_git_range,
     _validate_git_ref,
+    get_commits_after,
+    get_commits_between,
+    get_commits_for_range,
+    get_commits_since,
+    get_last_n_commits,
+    get_diff_from_commit_list,
 )
 from securevibes.diff.parser import extract_changed_code_with_context, parse_unified_diff
 
@@ -97,6 +103,150 @@ def test_get_diff_from_commits_error(monkeypatch):
         get_diff_from_commits(Path("."), "bad..range")
 
 
+def test_get_commits_since_parses_output(monkeypatch):
+    """get_commits_since should parse git output into commit list."""
+
+    class DummyResult:
+        returncode = 0
+        stdout = "def456\nghi789\n"
+        stderr = ""
+
+    def fake_run(*_args, **_kwargs):
+        return DummyResult()
+
+    monkeypatch.setattr("securevibes.diff.extractor.subprocess.run", fake_run)
+
+    commits = get_commits_since(Path("."), "2026-02-01T00:00:00-0800")
+
+    assert commits == ["def456", "ghi789"]
+
+
+def test_get_commits_after_parses_output(monkeypatch):
+    """get_commits_after should parse git output into commit list."""
+
+    class DummyResult:
+        returncode = 0
+        stdout = "def456\n"
+        stderr = ""
+
+    def fake_run(*_args, **_kwargs):
+        return DummyResult()
+
+    monkeypatch.setattr("securevibes.diff.extractor.subprocess.run", fake_run)
+
+    commits = get_commits_after(Path("."), "abc123")
+
+    assert commits == ["def456"]
+
+
+def test_get_commits_between_parses_output(monkeypatch):
+    """get_commits_between should parse git output into commit list."""
+
+    class DummyResult:
+        returncode = 0
+        stdout = "def456\n"
+        stderr = ""
+
+    def fake_run(*_args, **_kwargs):
+        return DummyResult()
+
+    monkeypatch.setattr("securevibes.diff.extractor.subprocess.run", fake_run)
+
+    commits = get_commits_between(Path("."), "abc123", "def456")
+
+    assert commits == ["def456"]
+
+
+def test_get_commits_for_range_parses_output(monkeypatch):
+    """get_commits_for_range should parse git output into commit list."""
+
+    class DummyResult:
+        returncode = 0
+        stdout = "def456\nghi789\n"
+        stderr = ""
+
+    def fake_run(*_args, **_kwargs):
+        return DummyResult()
+
+    monkeypatch.setattr("securevibes.diff.extractor.subprocess.run", fake_run)
+
+    commits = get_commits_for_range(Path("."), "abc123..def456")
+
+    assert commits == ["def456", "ghi789"]
+
+
+def test_get_last_n_commits_requires_positive_count():
+    """get_last_n_commits should reject non-positive counts."""
+    with pytest.raises(ValueError, match="count must be positive"):
+        get_last_n_commits(Path("."), 0)
+
+
+def test_get_diff_from_commit_list_empty_returns_empty():
+    """Empty commit list should produce empty diff."""
+    assert get_diff_from_commit_list(Path("."), []) == ""
+
+
+def test_get_diff_from_commit_list_with_commits(monkeypatch):
+    """Non-empty commit list should diff from parent of oldest to HEAD."""
+    calls = []
+
+    class ParentResult:
+        returncode = 0
+        stdout = "parent_sha\n"
+        stderr = ""
+
+    class DiffResult:
+        returncode = 0
+        stdout = "diff --git a/f b/f\n+added\n"
+        stderr = ""
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        if "rev-parse" in cmd:
+            return ParentResult()
+        return DiffResult()
+
+    monkeypatch.setattr("securevibes.diff.extractor.subprocess.run", fake_run)
+
+    result = get_diff_from_commit_list(Path("/repo"), ["oldest_sha", "mid_sha", "newest_sha"])
+
+    assert "diff --git" in result
+    # Should have called rev-parse for parent of oldest commit
+    assert any("oldest_sha^" in str(c) for c in calls)
+    # Should have called diff with parent..HEAD
+    assert any("parent_sha..HEAD" in str(c) for c in calls)
+
+
+def test_get_diff_from_commit_list_root_commit(monkeypatch):
+    """Root commit (no parent) should use --root HEAD."""
+    calls = []
+
+    class NoParentResult:
+        returncode = 1
+        stdout = ""
+        stderr = "unknown revision"
+
+    class DiffResult:
+        returncode = 0
+        stdout = "diff --git a/f b/f\n+init\n"
+        stderr = ""
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        if "rev-parse" in cmd:
+            return NoParentResult()
+        return DiffResult()
+
+    monkeypatch.setattr("securevibes.diff.extractor.subprocess.run", fake_run)
+
+    result = get_diff_from_commit_list(Path("/repo"), ["root_sha"])
+
+    assert "diff --git" in result
+    # Should have called diff with --root HEAD
+    diff_calls = [c for c in calls if "diff" in c and "rev-parse" not in str(c)]
+    assert any("--root" in c for c in diff_calls)
+
+
 class TestGitRefValidation:
     """Tests for git ref validation to prevent command injection."""
 
@@ -150,6 +300,7 @@ class TestGitRefValidation:
 
     def test_get_diff_from_git_range_validates_refs(self, monkeypatch):
         """get_diff_from_git_range should validate refs before execution."""
+
         # Ensure subprocess.run is never called for invalid refs
         def fail_if_called(*_args, **_kwargs):
             pytest.fail("subprocess.run should not be called for invalid refs")

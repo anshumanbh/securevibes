@@ -261,6 +261,379 @@ class TestPreToolHook:
         # Should not block
         assert "override_result" not in result
 
+    @pytest.mark.asyncio
+    async def test_blocks_arbitrary_writes_in_pr_code_review(self, tracker, console):
+        """PR code review should block arbitrary file writes."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        hook = create_pre_tool_hook(
+            tracker, console, debug=False, detected_languages=detected_languages
+        )
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/project/src/agents/pr-code-review.ts", "content": "x"},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "override_result" in result
+        assert "PR code review phase may only write" in result["override_result"]["content"]
+
+    @pytest.mark.asyncio
+    async def test_allows_pr_vulnerabilities_write_in_pr_code_review(self, tracker, console):
+        """PR code review should allow PR_VULNERABILITIES.json artifact write."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        hook = create_pre_tool_hook(
+            tracker, console, debug=False, detected_languages=detected_languages
+        )
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/PR_VULNERABILITIES.json",
+                "content": "[]",
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "override_result" not in result
+
+    @pytest.mark.asyncio
+    async def test_blocks_out_of_repo_pr_artifact_write_in_pr_code_review(
+        self, tracker, console, tmp_path
+    ):
+        """PR code review should deny PR artifact writes outside repository root."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        guard_observer = {"blocked_out_of_repo_count": 0}
+        hook = create_pre_tool_hook(
+            tracker,
+            console,
+            debug=False,
+            detected_languages=detected_languages,
+            pr_repo_root=repo_root,
+            pr_tool_guard_observer=guard_observer,
+        )
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/tmp/.securevibes/PR_VULNERABILITIES.json",
+                "content": "[]",
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "outside repository root" in result["hookSpecificOutput"]["permissionDecisionReason"]
+        assert guard_observer["blocked_out_of_repo_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_blocks_path_traversal_pr_artifact_write_in_pr_code_review(
+        self, tracker, console, tmp_path
+    ):
+        """PR code review should deny traversal writes that escape the repository root."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        guard_observer = {"blocked_out_of_repo_count": 0}
+        hook = create_pre_tool_hook(
+            tracker,
+            console,
+            debug=False,
+            detected_languages=detected_languages,
+            pr_repo_root=repo_root,
+            pr_tool_guard_observer=guard_observer,
+        )
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "../../tmp/.securevibes/PR_VULNERABILITIES.json",
+                "content": "[]",
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert guard_observer["blocked_out_of_repo_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_blocks_tmp_writes_in_pr_code_review(self, tracker, console):
+        """PR code review should not allow /tmp writes."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        hook = create_pre_tool_hook(
+            tracker, console, debug=False, detected_languages=detected_languages
+        )
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/pr-review-helper.py", "content": "print('x')"},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "override_result" in result
+        assert "/tmp/pr-review-helper.py" in result["override_result"]["content"]
+
+    @pytest.mark.asyncio
+    async def test_blocks_other_securevibes_writes_in_pr_code_review(self, tracker, console):
+        """PR code review should block non-PR_VULNERABILITIES artifacts."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        hook = create_pre_tool_hook(
+            tracker, console, debug=False, detected_languages=detected_languages
+        )
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/VULNERABILITIES.json",
+                "content": "[]",
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "override_result" in result
+        assert "PR code review phase may only write" in result["override_result"]["content"]
+
+    @pytest.mark.asyncio
+    async def test_normalizes_bare_pr_vulnerabilities_write_path(self, tracker, console):
+        """PR code review should normalize bare artifact path to .securevibes location."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        hook = create_pre_tool_hook(
+            tracker, console, debug=False, detected_languages=detected_languages
+        )
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "PR_VULNERABILITIES.json",
+                "content": "[]",
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        updated = result["hookSpecificOutput"]["updatedInput"]
+        assert updated["file_path"] == ".securevibes/PR_VULNERABILITIES.json"
+
+    @pytest.mark.asyncio
+    async def test_read_operations_unaffected_in_pr_code_review(self, tracker, console):
+        """PR code review restrictions should not affect reads."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        hook = create_pre_tool_hook(
+            tracker, console, debug=False, detected_languages=detected_languages
+        )
+
+        input_data = {
+            "tool_name": "Read",
+            "tool_input": {"file_path": "/project/src/app.py"},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_blocks_out_of_repo_read_in_pr_code_review(self, tracker, console, tmp_path):
+        """PR code review should deny reads outside repository root."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        outside_file = tmp_path / "outside.txt"
+        outside_file.write_text("x", encoding="utf-8")
+        guard_observer = {"blocked_out_of_repo_count": 0}
+        hook = create_pre_tool_hook(
+            tracker,
+            console,
+            debug=False,
+            detected_languages=detected_languages,
+            pr_repo_root=repo_root,
+            pr_tool_guard_observer=guard_observer,
+        )
+
+        input_data = {
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(outside_file)},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "outside repository root" in result["hookSpecificOutput"]["permissionDecisionReason"]
+        assert guard_observer["blocked_out_of_repo_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_blocks_out_of_repo_grep_in_pr_code_review(self, tracker, console, tmp_path):
+        """PR code review should deny grep paths outside repository root."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+        guard_observer = {"blocked_out_of_repo_count": 0}
+        hook = create_pre_tool_hook(
+            tracker,
+            console,
+            debug=False,
+            detected_languages=detected_languages,
+            pr_repo_root=repo_root,
+            pr_tool_guard_observer=guard_observer,
+        )
+
+        input_data = {
+            "tool_name": "Grep",
+            "tool_input": {"pattern": "secret", "path": str(outside_dir)},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert guard_observer["blocked_out_of_repo_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_allows_in_repo_read_with_repo_guard_in_pr_code_review(
+        self, tracker, console, tmp_path
+    ):
+        """PR code review should allow reads under repository root when guard is enabled."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        repo_root = tmp_path / "repo"
+        source_dir = repo_root / "src"
+        source_dir.mkdir(parents=True)
+        app_file = source_dir / "app.py"
+        app_file.write_text("print('ok')", encoding="utf-8")
+        guard_observer = {"blocked_out_of_repo_count": 0}
+        hook = create_pre_tool_hook(
+            tracker,
+            console,
+            debug=False,
+            detected_languages=detected_languages,
+            pr_repo_root=repo_root,
+            pr_tool_guard_observer=guard_observer,
+        )
+
+        input_data = {
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(app_file)},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert result == {}
+        assert guard_observer["blocked_out_of_repo_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_blocks_grep_over_diff_context_in_pr_code_review(self, tracker, console):
+        """PR code review should block Grep against DIFF_CONTEXT.json."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        hook = create_pre_tool_hook(
+            tracker, console, debug=False, detected_languages=detected_languages
+        )
+
+        input_data = {
+            "tool_name": "Grep",
+            "tool_input": {
+                "pattern": "new_path",
+                "path": "/project/.securevibes/DIFF_CONTEXT.json",
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "override_result" in result
+        assert "do not grep DIFF_CONTEXT.json" in result["override_result"]["content"]
+
+    @pytest.mark.asyncio
+    async def test_scopes_pathless_grep_to_src_in_pr_code_review(self, tracker, console):
+        """PR code review should scope pathless Grep requests to src/."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        hook = create_pre_tool_hook(
+            tracker, console, debug=False, detected_languages=detected_languages
+        )
+
+        input_data = {
+            "tool_name": "Grep",
+            "tool_input": {
+                "pattern": "authorizeGatewayConnect",
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        updated = result["hookSpecificOutput"]["updatedInput"]
+        assert updated["path"] == "src"
+
+    @pytest.mark.asyncio
+    async def test_scopes_pathless_grep_to_configured_path_in_pr_code_review(
+        self, tracker, console
+    ):
+        """PR code review should honor configured default path for pathless Grep."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"swift"}
+        hook = create_pre_tool_hook(
+            tracker,
+            console,
+            debug=False,
+            detected_languages=detected_languages,
+            pr_grep_default_path="apps",
+        )
+
+        input_data = {
+            "tool_name": "Grep",
+            "tool_input": {
+                "pattern": "sshNodeCommand",
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        updated = result["hookSpecificOutput"]["updatedInput"]
+        assert updated["path"] == "apps"
+
+    @pytest.mark.asyncio
+    async def test_blocks_diff_context_reads_in_pr_code_review(self, tracker, console):
+        """PR code review should block DIFF_CONTEXT.json reads in favor of prompt anchors."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        hook = create_pre_tool_hook(
+            tracker, console, debug=False, detected_languages=detected_languages
+        )
+
+        input_data = {
+            "tool_name": "Read",
+            "tool_input": {"file_path": "/project/.securevibes/DIFF_CONTEXT.json"},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "override_result" in result
+        assert "reads are disabled" in result["override_result"]["content"]
+
     # Note: test_logs_skill_invocations_in_debug removed - SDK auto-loads skills
     # from .claude/skills/ without explicit Skill tool calls, so the logging
     # code was dead code and has been removed.
@@ -508,9 +881,11 @@ class TestJsonValidationHook:
 
         result = await hook(input_data, "tool-123", {})
 
-        # Should return updatedInput with fixed content
-        assert "updatedInput" in result
-        fixed_content = result["updatedInput"]["content"]
+        # Should return hookSpecificOutput with updatedInput
+        assert "hookSpecificOutput" in result
+        assert result["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+        assert "updatedInput" in result["hookSpecificOutput"]
+        fixed_content = result["hookSpecificOutput"]["updatedInput"]["content"]
         assert fixed_content.startswith("[")
         assert json.loads(fixed_content) == [vuln]
 
@@ -534,8 +909,8 @@ class TestJsonValidationHook:
 
         result = await hook(input_data, "tool-123", {})
 
-        assert "updatedInput" in result
-        fixed_content = result["updatedInput"]["content"]
+        assert "hookSpecificOutput" in result
+        fixed_content = result["hookSpecificOutput"]["updatedInput"]["content"]
         assert json.loads(fixed_content) == [vuln]
 
     @pytest.mark.asyncio
@@ -623,6 +998,423 @@ class TestJsonValidationHook:
 
         result = await hook(input_data, "tool-123", {})
 
-        assert "updatedInput" in result
-        assert result["updatedInput"]["file_path"] == "/project/.securevibes/VULNERABILITIES.json"
-        assert result["updatedInput"]["encoding"] == "utf-8"
+        assert "hookSpecificOutput" in result
+        updated_input = result["hookSpecificOutput"]["updatedInput"]
+        assert updated_input["file_path"] == "/project/.securevibes/VULNERABILITIES.json"
+        assert updated_input["encoding"] == "utf-8"
+
+    @pytest.mark.asyncio
+    async def test_malformed_json_passes_through(self, console):
+        """Malformed JSON passes through (validation warns but doesn't block)."""
+        hook = create_json_validation_hook(console, debug=False)
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/VULNERABILITIES.json",
+                "content": "{ invalid json ]]",
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        # Should not block - passes through
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_empty_array_passes_through(self, console):
+        """Empty array [] passes through unchanged."""
+        hook = create_json_validation_hook(console, debug=False)
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/VULNERABILITIES.json",
+                "content": "[]",
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        # No modification needed
+        assert "updatedInput" not in result
+
+    @pytest.mark.asyncio
+    async def test_array_with_non_dict_items_handled(self, console):
+        """Array containing non-dict items passes validation to downstream."""
+        import json
+
+        hook = create_json_validation_hook(console, debug=False)
+
+        # Array with a non-dict item - validation will warn but hook passes through
+        content = json.dumps(["not a dict", {"threat_id": "T1"}])
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/VULNERABILITIES.json",
+                "content": content,
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        # Should not block - validation happens downstream
+        assert "override_result" not in result
+
+
+class TestPRJsonValidationHook:
+    """Tests for PR_VULNERABILITIES.json handling in json_validation_hook."""
+
+    @pytest.fixture
+    def console(self):
+        """Create a Rich console."""
+        return Console(file=StringIO())
+
+    def _make_valid_pr_vuln(self):
+        """Helper to create a valid PR vulnerability dict."""
+        return {
+            "threat_id": "THREAT-001",
+            "finding_type": "new_threat",
+            "title": "SQL Injection in Login",
+            "description": "Test vulnerability",
+            "severity": "high",
+            "file_path": "app.py",
+            "line_number": 42,
+            "code_snippet": "cursor.execute(query)",
+            "attack_scenario": "Attacker provides malicious input",
+            "evidence": "User input concatenated into SQL query",
+            "cwe_id": "CWE-89",
+            "recommendation": "Use parameterized queries",
+        }
+
+    @pytest.mark.asyncio
+    async def test_pr_vulnerabilities_passes_through_valid_array(self, console):
+        """Valid flat array passes through unchanged."""
+        import json
+
+        hook = create_json_validation_hook(console, debug=False)
+
+        vuln = self._make_valid_pr_vuln()
+        content = json.dumps([vuln])
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/PR_VULNERABILITIES.json",
+                "content": content,
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        # Should not modify (no updatedInput)
+        assert "updatedInput" not in result
+
+    @pytest.mark.asyncio
+    async def test_pr_write_observer_tracks_largest_nonempty_payload(self, console):
+        """Observer should record max payload even if a later write overwrites with empty array."""
+        import json
+
+        observer: dict[str, object] = {}
+        hook = create_json_validation_hook(console, debug=False, write_observer=observer)
+
+        vuln = self._make_valid_pr_vuln()
+        first_input = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/PR_VULNERABILITIES.json",
+                "content": json.dumps([vuln]),
+            },
+        }
+        second_input = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/PR_VULNERABILITIES.json",
+                "content": "[]",
+            },
+        }
+
+        await hook(first_input, "tool-123", {})
+        await hook(second_input, "tool-124", {})
+
+        assert observer["total_writes"] == 2
+        assert observer["item_counts"] == [1, 0]
+        assert observer["max_items"] == 1
+        max_payload = json.loads(str(observer["max_content"]))
+        assert isinstance(max_payload, list)
+        assert len(max_payload) == 1
+
+    @pytest.mark.asyncio
+    async def test_pr_wrapped_findings_gets_fixed(self, console):
+        """{'findings': [...]} wrapper gets unwrapped."""
+        import json
+
+        hook = create_json_validation_hook(console, debug=False)
+
+        vuln = self._make_valid_pr_vuln()
+        content = json.dumps({"findings": [vuln]})
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/PR_VULNERABILITIES.json",
+                "content": content,
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        # Should return hookSpecificOutput with updatedInput
+        assert "hookSpecificOutput" in result
+        assert result["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+        assert "updatedInput" in result["hookSpecificOutput"]
+        fixed_content = result["hookSpecificOutput"]["updatedInput"]["content"]
+        assert fixed_content.startswith("[")
+
+    @pytest.mark.asyncio
+    async def test_pr_wrapped_vulnerabilities_gets_fixed(self, console):
+        """{'vulnerabilities': [...]} wrapper gets unwrapped."""
+        import json
+
+        hook = create_json_validation_hook(console, debug=False)
+
+        vuln = self._make_valid_pr_vuln()
+        content = json.dumps({"vulnerabilities": [vuln]})
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/PR_VULNERABILITIES.json",
+                "content": content,
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        fixed_content = result["hookSpecificOutput"]["updatedInput"]["content"]
+        assert fixed_content.startswith("[")
+
+    @pytest.mark.asyncio
+    async def test_pr_single_object_gets_wrapped(self, console):
+        """Single vulnerability object gets wrapped in array."""
+        import json
+
+        hook = create_json_validation_hook(console, debug=False)
+
+        vuln = self._make_valid_pr_vuln()
+        content = json.dumps(vuln)  # Single object, not array
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/PR_VULNERABILITIES.json",
+                "content": content,
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        fixed_content = result["hookSpecificOutput"]["updatedInput"]["content"]
+        fixed_data = json.loads(fixed_content)
+        assert isinstance(fixed_data, list)
+        assert len(fixed_data) == 1
+
+    @pytest.mark.asyncio
+    async def test_pr_hookSpecificOutput_format(self, console):
+        """Verify hookSpecificOutput wrapper is returned with correct structure."""
+        import json
+
+        hook = create_json_validation_hook(console, debug=False)
+
+        vuln = self._make_valid_pr_vuln()
+        content = json.dumps({"findings": [vuln]})
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/PR_VULNERABILITIES.json",
+                "content": content,
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        # Verify structure
+        assert "hookSpecificOutput" in result
+        hook_output = result["hookSpecificOutput"]
+        assert hook_output["hookEventName"] == "PreToolUse"
+        assert "updatedInput" in hook_output
+        assert "file_path" in hook_output["updatedInput"]
+        assert "content" in hook_output["updatedInput"]
+
+    @pytest.mark.asyncio
+    async def test_pr_finding_type_normalization(self, console):
+        """Verify finding_type field is normalized during fix."""
+        import json
+
+        hook = create_json_validation_hook(console, debug=False)
+
+        # Vulnerability without finding_type but with category
+        vuln = self._make_valid_pr_vuln()
+        del vuln["finding_type"]
+        vuln["category"] = "new"  # Should be normalized to "new_threat"
+        content = json.dumps({"findings": [vuln]})
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/PR_VULNERABILITIES.json",
+                "content": content,
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        fixed_content = result["hookSpecificOutput"]["updatedInput"]["content"]
+        fixed_data = json.loads(fixed_content)
+        assert fixed_data[0]["finding_type"] == "new_threat"
+
+    @pytest.mark.asyncio
+    async def test_pr_threat_id_derivation(self, console):
+        """Verify threat_id is derived when missing."""
+        import json
+
+        hook = create_json_validation_hook(console, debug=False)
+
+        # Vulnerability without threat_id
+        vuln = self._make_valid_pr_vuln()
+        del vuln["threat_id"]
+        content = json.dumps({"findings": [vuln]})
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/PR_VULNERABILITIES.json",
+                "content": content,
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        fixed_content = result["hookSpecificOutput"]["updatedInput"]["content"]
+        fixed_data = json.loads(fixed_content)
+        # Should have a derived PR- prefixed ID
+        assert fixed_data[0]["threat_id"].startswith("PR-")
+
+    @pytest.mark.asyncio
+    async def test_pr_line_number_extraction(self, console):
+        """Verify line_number extraction from line_numbers array."""
+        import json
+
+        hook = create_json_validation_hook(console, debug=False)
+
+        # Vulnerability with line_numbers instead of line_number
+        vuln = self._make_valid_pr_vuln()
+        del vuln["line_number"]
+        vuln["line_numbers"] = [10, 20, 30]
+        content = json.dumps({"findings": [vuln]})
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/PR_VULNERABILITIES.json",
+                "content": content,
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        fixed_content = result["hookSpecificOutput"]["updatedInput"]["content"]
+        fixed_data = json.loads(fixed_content)
+        # Should extract first line number
+        assert fixed_data[0]["line_number"] == 10
+
+    @pytest.mark.asyncio
+    async def test_pr_invalid_empty_evidence_rejected_once(self, console):
+        """Invalid PR payload should be rejected on first attempt."""
+        import json
+
+        hook = create_json_validation_hook(console, debug=False)
+
+        vuln = self._make_valid_pr_vuln()
+        vuln["file_path"] = ""
+        content = json.dumps([vuln])
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/PR_VULNERABILITIES.json",
+                "content": content,
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "override_result" in result
+        assert result["override_result"]["is_error"] is True
+        assert "Write rejected by SecureVibes PR validation" in result["override_result"]["content"]
+        assert "file_path" in result["override_result"]["content"]
+
+    @pytest.mark.asyncio
+    async def test_pr_invalid_empty_evidence_allows_after_retry_budget(self, console):
+        """After retry budget is exhausted, invalid PR payload should pass through."""
+        import json
+
+        hook = create_json_validation_hook(console, debug=False)
+
+        vuln = self._make_valid_pr_vuln()
+        vuln["evidence"] = "   "
+        content = json.dumps([vuln])
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/PR_VULNERABILITIES.json",
+                "content": content,
+            },
+        }
+
+        first = await hook(input_data, "tool-123", {})
+        second = await hook(input_data, "tool-124", {})
+
+        assert "override_result" in first
+        assert "override_result" not in second
+
+    @pytest.mark.asyncio
+    async def test_pr_retry_exhaustion_preserves_updated_input(self, console):
+        """After max retries with wrapper input, updatedInput with format fixes still returned."""
+        import json
+
+        hook = create_json_validation_hook(console, debug=False)
+
+        vuln = self._make_valid_pr_vuln()
+        vuln["evidence"] = ""  # empty evidence → invalid
+        # Wrap in a dict — the fixer should unwrap AND the wrapper fix should be in updatedInput
+        content = json.dumps({"vulnerabilities": [vuln]})
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/PR_VULNERABILITIES.json",
+                "content": content,
+            },
+        }
+
+        # First attempt: rejected (retry budget not exhausted)
+        first = await hook(input_data, "tool-123", {})
+        assert "override_result" in first
+
+        # Second attempt: retry budget exhausted — should pass through
+        # but because the wrapper was fixed, updatedInput should be returned
+        second = await hook(input_data, "tool-124", {})
+        assert "override_result" not in second
+        assert "hookSpecificOutput" in second
+        updated = second["hookSpecificOutput"]["updatedInput"]
+        fixed_data = json.loads(updated["content"])
+        assert isinstance(fixed_data, list), "Wrapper should have been unwrapped"

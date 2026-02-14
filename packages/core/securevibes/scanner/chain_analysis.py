@@ -1,0 +1,706 @@
+"""Exploit-chain identity and consensus helpers for PR review."""
+
+from __future__ import annotations
+
+import re
+from typing import Dict, Optional
+
+from securevibes.diff.context import normalize_repo_path
+from securevibes.diff.parser import DiffContext, DiffFile
+
+
+def _diff_file_path(diff_file: DiffFile) -> str:
+    return str(diff_file.new_path or diff_file.old_path or "")
+
+CHAIN_STOPWORDS = {
+    "the",
+    "and",
+    "with",
+    "from",
+    "into",
+    "via",
+    "that",
+    "this",
+    "allows",
+    "allow",
+    "enable",
+    "enables",
+    "enabled",
+    "using",
+    "when",
+    "where",
+    "code",
+    "change",
+    "changes",
+    "input",
+    "output",
+    "attack",
+    "vulnerability",
+    "security",
+    "through",
+    "command",
+    "commands",
+    "config",
+    "configuration",
+    "path",
+    "line",
+    "file",
+}
+_CHAIN_ID_STOPWORDS = CHAIN_STOPWORDS
+_CHAIN_FAMILY_PATH_TERMS = (
+    "path traversal",
+    "file exfiltration",
+    "local file",
+    "file://",
+    "copyfile",
+    "fs.copyfile",
+    "fs.stat",
+    "sendfile",
+    "/media/",
+    "media/:id",
+    "download",
+    "upload",
+)
+_CHAIN_FAMILY_COMMAND_TERMS = (
+    "option injection",
+    "argument injection",
+    "argv",
+    "proxycommand",
+    "missing --",
+    "without --",
+    "/bin/sh",
+    "sh -c",
+    "exec(",
+    "spawn(",
+    "ssh",
+    "command injection",
+)
+_CHAIN_FAMILY_AUTH_TERMS = (
+    "unauth",
+    "auth bypass",
+    "allowfrom",
+    "privilege",
+    "role check",
+    "permission",
+    "origin check",
+)
+
+
+def _coerce_line_number(value: object) -> int:
+    """Parse line number-like values into an integer or 0."""
+    try:
+        return int(value) if value is not None else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _extract_cwe_family(value: object) -> str:
+    """Extract coarse CWE family prefix used for chain grouping."""
+    text = str(value or "").strip().upper()
+    match = re.search(r"CWE-(\d+)", text)
+    if not match:
+        return ""
+    return match.group(1)[:2]
+
+
+def _chain_text_tokens(value: object, *, max_tokens: int = 5) -> tuple[str, ...]:
+    """Extract stable lowercase tokens for chain identity construction."""
+    text = str(value or "").lower()
+    tokens = re.findall(r"[a-z0-9_]+", text)
+    filtered = [
+        token
+        for token in tokens
+        if len(token) >= 4 and token not in _CHAIN_ID_STOPWORDS and not token.isdigit()
+    ]
+    return tuple(filtered[:max_tokens])
+
+
+def _finding_text(entry: dict, *, fields: tuple[str, ...]) -> str:
+    """Return normalized lowercase joined finding fields for identity heuristics."""
+    if not isinstance(entry, dict):
+        return ""
+    return " ".join(str(entry.get(field, "")) for field in fields).strip().lower()
+
+
+def _extract_finding_locations(entry: dict) -> tuple[str, ...]:
+    """Extract canonicalized code file locations referenced in finding text."""
+    text = _finding_text(entry, fields=("evidence", "attack_scenario", "description"))
+    if not text:
+        return tuple()
+    raw_matches = re.findall(r"([a-z0-9_./\\-]+\.[a-z0-9_]+)(?::\d+)?", text)
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_path in raw_matches:
+        normalized_path = _canonicalize_finding_path(raw_path)
+        if not normalized_path or normalized_path in seen:
+            continue
+        normalized.append(normalized_path)
+        seen.add(normalized_path)
+    return tuple(normalized)
+
+
+def _extract_finding_routes(entry: dict) -> tuple[str, ...]:
+    """Extract route-like anchors referenced in finding text."""
+    text = _finding_text(entry, fields=("title", "description", "attack_scenario", "evidence"))
+    if not text:
+        return tuple()
+    routes: list[str] = []
+    seen: set[str] = set()
+    for match in re.findall(r"/[a-z0-9_:\-/.]+", text):
+        if len(match) < 3 or match in seen:
+            continue
+        routes.append(match)
+        seen.add(match)
+    return tuple(routes)
+
+
+def _extract_chain_sink_anchor(entry: dict) -> str:
+    """Return the most stable sink-ish anchor for a finding family."""
+    primary_path = _canonicalize_finding_path(entry.get("file_path"))
+    locations = _extract_finding_locations(entry)
+    non_primary_locations = [location for location in locations if location != primary_path]
+    if non_primary_locations:
+        return non_primary_locations[-1]
+    if locations:
+        return locations[-1]
+    routes = _extract_finding_routes(entry)
+    if routes:
+        return routes[-1]
+    return ""
+
+
+def _infer_chain_family_class(entry: dict) -> str:
+    """Infer a coarse exploit-chain family class from finding content."""
+    text = _finding_text(entry, fields=("title", "description", "attack_scenario", "evidence"))
+    cwe_family = _extract_cwe_family(entry.get("cwe_id"))
+    if any(term in text for term in _CHAIN_FAMILY_COMMAND_TERMS):
+        return "command_chain"
+    if any(term in text for term in _CHAIN_FAMILY_PATH_TERMS):
+        return "path_file_chain"
+    if any(term in text for term in _CHAIN_FAMILY_AUTH_TERMS):
+        return "auth_priv_chain"
+
+    if cwe_family in {"22", "23", "36", "61", "73"}:
+        return "path_file_chain"
+    if cwe_family in {"77", "78", "88"}:
+        return "command_chain"
+    if cwe_family in {"28", "30", "86"}:
+        return "auth_priv_chain"
+
+    return f"cwe_{cwe_family}" if cwe_family else "generic_chain"
+
+
+def _canonicalize_finding_path(value: object) -> str:
+    """Normalize finding file path into a repo-style suffix when possible."""
+    normalized = normalize_repo_path(value)
+    if not normalized:
+        return ""
+
+    path = normalized.replace("\\", "/").strip()
+    if not path:
+        return ""
+
+    if path.startswith("/"):
+        roots = ("src", "apps", "packages", "services", "server", "client", "cmd", "internal")
+        segments = [segment for segment in path.split("/") if segment]
+        for index, segment in enumerate(segments):
+            if segment in roots and index < len(segments) - 1:
+                return "/".join(segments[index:])
+        if len(segments) >= 2:
+            return "/".join(segments[-2:])
+    return path
+
+
+def _build_chain_identity(entry: dict) -> str:
+    """Build a coarse exploit-chain identity for cross-pass support tracking."""
+    if not isinstance(entry, dict):
+        return ""
+
+    path = _canonicalize_finding_path(entry.get("file_path"))
+    cwe_family = _extract_cwe_family(entry.get("cwe_id"))
+    line_number = _coerce_line_number(entry.get("line_number"))
+    line_bucket = str(line_number // 20) if line_number > 0 else ""
+    title_tokens = _chain_text_tokens(entry.get("title"))
+
+    if not path and not title_tokens:
+        return ""
+
+    token_part = ".".join(title_tokens) if title_tokens else "unknown"
+    return "|".join(
+        [
+            path or "unknown",
+            cwe_family or "xx",
+            line_bucket or "x",
+            token_part,
+        ]
+    )
+
+
+def _infer_chain_sink_family(entry: dict) -> str:
+    """Infer coarse sink family from finding evidence and referenced locations."""
+    text = _finding_text(entry, fields=("title", "description", "attack_scenario", "evidence"))
+    locations = _extract_finding_locations(entry)
+    routes = _extract_finding_routes(entry)
+    sink_anchor = _extract_chain_sink_anchor(entry)
+    combined = " ".join([text, " ".join(locations), " ".join(routes), sink_anchor]).lower()
+
+    file_sink_terms = (
+        "copyfile",
+        "fs.copyfile",
+        "fs.stat",
+        "sendfile",
+        "send_file",
+        "/media/",
+        "media/:id",
+        "upload",
+        "download",
+    )
+    command_sink_terms = (
+        "exec(",
+        "spawn(",
+        "/bin/sh",
+        "sh -c",
+        "ssh",
+        "proxycommand",
+        "argv",
+        "option injection",
+    )
+    auth_sink_terms = (
+        "allowfrom",
+        "auth",
+        "unauth",
+        "permission",
+        "role",
+        "origin",
+    )
+
+    if any(term in combined for term in file_sink_terms):
+        return "file_host_sink"
+    if any(term in combined for term in command_sink_terms):
+        return "command_exec_sink"
+    if any(term in combined for term in auth_sink_terms):
+        return "authz_sink"
+    return "generic_sink"
+
+
+def _normalize_chain_class_for_sink(chain_class: str, sink_family: str) -> str:
+    """Normalize chain class for consensus using sink family when class is generic."""
+    if chain_class in {"path_file_chain", "command_chain", "auth_priv_chain"}:
+        return chain_class
+    if sink_family == "file_host_sink":
+        return "path_file_chain"
+    if sink_family == "command_exec_sink":
+        return "command_chain"
+    if sink_family == "authz_sink":
+        return "auth_priv_chain"
+    return chain_class or "generic_chain"
+
+
+def _build_chain_family_identity(entry: dict) -> str:
+    """Build stable exploit-chain family identity for cross-pass consensus support."""
+    if not isinstance(entry, dict):
+        return ""
+
+    path = _canonicalize_finding_path(entry.get("file_path"))
+    chain_class = _infer_chain_family_class(entry)
+
+    if not path:
+        line_number = _coerce_line_number(entry.get("line_number"))
+        line_bucket = f"line{line_number // 40}" if line_number > 0 else "line_x"
+        sink_anchor = _extract_chain_sink_anchor(entry)
+        location_anchor = sink_anchor or line_bucket
+        if sink_anchor:
+            return "|".join(
+                [
+                    "unknown",
+                    location_anchor,
+                    chain_class or "generic_chain",
+                ]
+            )
+        title_tokens = _chain_text_tokens(entry.get("title"), max_tokens=3)
+        if not title_tokens:
+            return ""
+        location_anchor = ".".join(title_tokens)
+        return "|".join(
+            [
+                "unknown",
+                location_anchor,
+                chain_class or "generic_chain",
+            ]
+        )
+
+    return "|".join(
+        [
+            path,
+            chain_class or "generic_chain",
+        ]
+    )
+
+
+def _build_chain_flow_identity(entry: dict) -> str:
+    """Build flow-family identity for consensus fallback across wording/CWE variance."""
+    if not isinstance(entry, dict):
+        return ""
+
+    path = _canonicalize_finding_path(entry.get("file_path"))
+    if not path:
+        locations = _extract_finding_locations(entry)
+        path = locations[0] if locations else ""
+    if not path:
+        return ""
+
+    sink_family = _infer_chain_sink_family(entry)
+    chain_class = _normalize_chain_class_for_sink(_infer_chain_family_class(entry), sink_family)
+    return "|".join([path, sink_family, chain_class])
+
+
+def _collect_chain_exact_ids(findings: list[dict]) -> set[str]:
+    """Collect exact chain identities for support diagnostics."""
+    chain_ids: set[str] = set()
+    for finding in findings:
+        chain_id = _build_chain_identity(finding)
+        if chain_id:
+            chain_ids.add(chain_id)
+    return chain_ids
+
+
+def _collect_chain_family_ids(findings: list[dict]) -> set[str]:
+    """Collect stable chain-family identities for consensus support."""
+    chain_ids: set[str] = set()
+    for finding in findings:
+        chain_id = _build_chain_family_identity(finding)
+        if chain_id:
+            chain_ids.add(chain_id)
+    return chain_ids
+
+
+def _collect_chain_flow_ids(findings: list[dict]) -> set[str]:
+    """Collect flow-family identities for consensus fallback support."""
+    chain_ids: set[str] = set()
+    for finding in findings:
+        chain_id = _build_chain_flow_identity(finding)
+        if chain_id:
+            chain_ids.add(chain_id)
+    return chain_ids
+
+
+def _collect_chain_ids(findings: list[dict]) -> set[str]:
+    """Backward-compatible alias to collect chain-family ids."""
+    return _collect_chain_family_ids(findings)
+
+
+def _count_passes_with_core_chains(core_chain_ids: set[str], pass_chain_ids: list[set[str]]) -> int:
+    """Count attempts that independently produced any of the core chains."""
+    if not core_chain_ids or not pass_chain_ids:
+        return 0
+    return sum(1 for ids in pass_chain_ids if ids.intersection(core_chain_ids))
+
+
+def _attempt_contains_core_chain_evidence(
+    *,
+    attempt_findings: list[dict],
+    expected_family_ids: set[str],
+    expected_flow_ids: set[str],
+) -> bool:
+    """Return True when an attempt confirms any expected core-chain family/flow ids."""
+    if not attempt_findings:
+        return False
+    if not expected_family_ids and not expected_flow_ids:
+        return True
+
+    attempt_family_ids = _collect_chain_family_ids(attempt_findings)
+    if expected_family_ids and attempt_family_ids.intersection(expected_family_ids):
+        return True
+
+    attempt_flow_ids = _collect_chain_flow_ids(attempt_findings)
+    if expected_flow_ids and attempt_flow_ids.intersection(expected_flow_ids):
+        return True
+
+    return False
+
+
+def _summarize_revalidation_support(
+    revalidation_attempted: list[bool],
+    core_evidence_present: list[bool],
+) -> tuple[int, int, int]:
+    """Return (attempts, hits, misses) for passes that required chain revalidation."""
+    attempts = 0
+    hits = 0
+    misses = 0
+    for attempted, has_core_evidence in zip(revalidation_attempted, core_evidence_present):
+        if not attempted:
+            continue
+        attempts += 1
+        if has_core_evidence:
+            hits += 1
+        else:
+            misses += 1
+    return attempts, hits, misses
+
+
+def _summarize_chain_candidates_for_prompt(
+    findings: list[dict],
+    chain_support_counts: Dict[str, int],
+    attempts_observed: int,
+    *,
+    flow_support_counts: Optional[Dict[str, int]] = None,
+    max_items: int = 3,
+    max_chars: int = 3200,
+) -> str:
+    """Summarize top chain candidates for follow-up pass re-validation."""
+    if not findings:
+        return "- None"
+
+    lines: list[str] = []
+    for finding in findings[:max_items]:
+        chain_id = _build_chain_family_identity(finding)
+        flow_id = _build_chain_flow_identity(finding)
+        support = chain_support_counts.get(chain_id, 0) if chain_id else 0
+        if flow_support_counts and flow_id:
+            support = max(support, flow_support_counts.get(flow_id, 0))
+        path = _canonicalize_finding_path(finding.get("file_path")) or "unknown"
+        line_no = _coerce_line_number(finding.get("line_number"))
+        location = f"{path}:{line_no}" if line_no > 0 else path
+        title = str(finding.get("title", "")).strip()
+        if len(title) > 120:
+            title = f"{title[:117]}..."
+        cwe_id = str(finding.get("cwe_id", "")).strip() or "N/A"
+        lines.append(
+            f"- {title} ({location}, {cwe_id}, support={support}/{max(attempts_observed, 1)})"
+        )
+
+    summary = "\n".join(lines).strip() or "- None"
+    if len(summary) <= max_chars:
+        return summary
+    return f"{summary[: max_chars - 15].rstrip()}...[truncated]"
+
+
+def _detect_weak_chain_consensus(
+    *,
+    core_chain_ids: set[str],
+    pass_chain_ids: list[set[str]],
+    required_support: int,
+) -> tuple[bool, str, int]:
+    """Determine whether pass-level agreement is too weak for stable finalization."""
+    passes_with_core = _count_passes_with_core_chains(core_chain_ids, pass_chain_ids)
+    if not core_chain_ids:
+        return False, "no_core_chains", passes_with_core
+
+    if passes_with_core < required_support:
+        reason = f"core_support={passes_with_core}/{len(pass_chain_ids)} (<{required_support})"
+        return True, reason, passes_with_core
+
+    non_zero_indexes = [idx for idx, ids in enumerate(pass_chain_ids) if ids]
+    if non_zero_indexes and non_zero_indexes[-1] < len(pass_chain_ids) - 1:
+        trailing = len(pass_chain_ids) - 1 - non_zero_indexes[-1]
+        reason = f"trailing_empty_passes={trailing} after last non-empty pass"
+        return True, reason, passes_with_core
+
+    return False, "stable", passes_with_core
+
+
+def _adjudicate_consensus_support(
+    *,
+    required_support: int,
+    core_exact_ids: set[str],
+    pass_exact_ids: list[set[str]],
+    core_family_ids: set[str],
+    pass_family_ids: list[set[str]],
+    core_flow_ids: set[str],
+    pass_flow_ids: list[set[str]],
+) -> tuple[bool, str, int, str, Dict[str, int]]:
+    """Adjudicate consensus across exact/family/flow support modes."""
+    weak_exact, reason_exact, support_exact = _detect_weak_chain_consensus(
+        core_chain_ids=core_exact_ids,
+        pass_chain_ids=pass_exact_ids,
+        required_support=required_support,
+    )
+    weak_family, reason_family, support_family = _detect_weak_chain_consensus(
+        core_chain_ids=core_family_ids,
+        pass_chain_ids=pass_family_ids,
+        required_support=required_support,
+    )
+    weak_flow, reason_flow, support_flow = _detect_weak_chain_consensus(
+        core_chain_ids=core_flow_ids,
+        pass_chain_ids=pass_flow_ids,
+        required_support=required_support,
+    )
+
+    support_metrics = {
+        "exact": support_exact,
+        "family": support_family,
+        "flow": support_flow,
+    }
+
+    def _mode_is_stable(weak: bool, reason: str, support: int) -> bool:
+        if not weak:
+            return True
+        return reason.startswith("trailing_empty_passes=") and support >= required_support
+
+    stable_priority = (
+        ("exact", weak_exact, reason_exact, support_exact),
+        ("flow", weak_flow, reason_flow, support_flow),
+        ("family", weak_family, reason_family, support_family),
+    )
+    for mode, weak, reason, support in stable_priority:
+        if _mode_is_stable(weak, reason, support):
+            normalized_reason = (
+                "stable" if weak and reason.startswith("trailing_empty_passes=") else reason
+            )
+            return False, normalized_reason, support, mode, support_metrics
+
+    fallback_priority = ("flow", "family", "exact")
+    selected_mode = max(
+        fallback_priority,
+        key=lambda mode: (support_metrics.get(mode, 0), -fallback_priority.index(mode)),
+    )
+    selected_reason = {
+        "exact": reason_exact,
+        "family": reason_family,
+        "flow": reason_flow,
+    }.get(selected_mode, "weak_consensus")
+    return (
+        True,
+        f"{selected_mode}:{selected_reason}",
+        support_metrics.get(selected_mode, 0),
+        selected_mode,
+        support_metrics,
+    )
+
+
+def _diff_has_command_builder_signals(diff_context: DiffContext) -> bool:
+    """Return True when changed diff hunks look like command/argv construction code."""
+    signal_snippets = (
+        "ssh",
+        "args.append",
+        "/bin/sh",
+        "sh -c",
+        "bash -lc",
+        "spawn(",
+        "exec(",
+        "subprocess",
+        "command -v",
+    )
+    signal_paths = ("command", "shell", "process", "exec", "ssh", "cli", "util")
+
+    for diff_file in diff_context.files:
+        path = _diff_file_path(diff_file).lower()
+        if path and any(token in path for token in signal_paths):
+            return True
+
+        for hunk in diff_file.hunks:
+            for line in hunk.lines:
+                content = str(line.content or "").lower()
+                if any(token in content for token in signal_snippets):
+                    return True
+
+    return False
+
+
+def _diff_has_path_parser_signals(diff_context: DiffContext) -> bool:
+    """Return True when changed hunks look like parser/path/file handling logic."""
+    signal_snippets = (
+        "normalize",
+        "resolve(",
+        "realpath",
+        "sendfile",
+        "readfile",
+        "copyfile",
+        "filepath",
+        "path.",
+        "file://",
+        "../",
+        "~/",
+        "media",
+        "upload",
+        "download",
+    )
+    signal_paths = ("path", "file", "media", "upload", "download", "parse", "store", "server")
+
+    for diff_file in diff_context.files:
+        path = _diff_file_path(diff_file).lower()
+        if path and any(token in path for token in signal_paths):
+            return True
+
+        for hunk in diff_file.hunks:
+            for line in hunk.lines:
+                content = str(line.content or "").lower()
+                if any(token in content for token in signal_snippets):
+                    return True
+
+    return False
+
+
+def _diff_has_auth_privilege_signals(diff_context: DiffContext) -> bool:
+    """Return True when diff hints at trust-boundary or privileged operation changes."""
+    signal_snippets = (
+        "auth",
+        "authorize",
+        "permission",
+        "session",
+        "token",
+        "localhost",
+        "origin",
+        "config.apply",
+        "apply(",
+        "privilege",
+        "admin",
+        "role",
+        "policy",
+        "websocket",
+    )
+    signal_paths = ("auth", "gateway", "server", "config", "policy", "permission", "session")
+
+    for diff_file in diff_context.files:
+        path = _diff_file_path(diff_file).lower()
+        if path and any(token in path for token in signal_paths):
+            return True
+
+        for hunk in diff_file.hunks:
+            for line in hunk.lines:
+                content = str(line.content or "").lower()
+                if any(token in content for token in signal_snippets):
+                    return True
+
+    return False
+
+
+_PR_RETRY_FOCUS_LABELS = {
+    "command_option": "COMMAND/OPTION INJECTION CHAINS",
+    "path_exfiltration": "PATH + FILE EXFILTRATION CHAINS",
+    "auth_privileged": "AUTH + PRIVILEGED OPERATION CHAINING",
+}
+
+_PR_RETRY_FOCUS_BLOCKS = {
+    "command_option": """
+
+## FOCUS AREA: COMMAND/OPTION INJECTION CHAINS
+Prioritize command builder and shell composition changes:
+- untrusted env/config/input interpolated into shell fragments (`sh -c`, `bash -lc`)
+- CLI option injection via untrusted args that can start with '-' (host/target/remote values)
+- parser functions feeding command builders must reject dash-prefixed target/host inputs
+- double-quoted interpolation still allows `$()` and backtick command substitution
+Validate both local and remote execution surfaces.
+""",
+    "path_exfiltration": """
+
+## FOCUS AREA: PATH + FILE EXFILTRATION CHAINS
+Prioritize changed parser/validator logic for URLs/paths/media tokens.
+Look for acceptance of absolute/relative/home/traversal paths that can reach file read/host/upload/render sinks.
+Do not dismiss as "refactor-only" if changed code still enables exfiltration.
+""",
+    "auth_privileged": """
+
+## FOCUS AREA: AUTH + PRIVILEGED OPERATION CHAINING
+Prioritize trust-boundary changes that expose privileged operations (config/apply/update/exec/policy changes).
+Prove end-to-end chain from attacker-controlled entrypoint to privileged sink, including missing controls.
+Do not reject a chain only because direct callers are absent in this snapshot when the diff adds exported/shared command helpers.
+""",
+}
+
+_DEFAULT_PR_RETRY_FOCUS_ORDER = (
+    "command_option",
+    "path_exfiltration",
+    "auth_privileged",
+)
+

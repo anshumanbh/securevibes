@@ -2,7 +2,7 @@
 
 import pytest
 from click.testing import CliRunner
-from securevibes.cli.main import cli
+from securevibes.cli.main import _is_production_url, cli
 
 
 @pytest.fixture
@@ -48,6 +48,76 @@ class TestCLIBasics:
         result = runner.invoke(cli, ["scan", "--help"])
         assert result.exit_code == 0
         assert "scan" in result.output.lower()
+
+    def test_catchup_help(self, runner):
+        """Test catchup command help"""
+        result = runner.invoke(cli, ["catchup", "--help"])
+        assert result.exit_code == 0
+        assert "catchup" in result.output.lower()
+
+
+class TestCatchupCommand:
+    """Tests for catchup command."""
+
+    def test_catchup_branch_mismatch(self, runner, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        monkeypatch.setattr("securevibes.cli.main.get_repo_branch", lambda *_args, **_kwargs: "dev")
+
+        result = runner.invoke(cli, ["catchup", str(repo), "--branch", "main"])
+
+        assert result.exit_code == 1
+        assert "checkout" in result.output.lower()
+
+    def test_catchup_invokes_pr_review(self, runner, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        called = {}
+
+        def fake_pr_review(**kwargs):
+            called["since_last_scan"] = kwargs.get("since_last_scan")
+
+        monkeypatch.setattr("securevibes.cli.main.pr_review", fake_pr_review)
+        monkeypatch.setattr("securevibes.cli.main._git_pull", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            "securevibes.cli.main.get_repo_branch", lambda *_args, **_kwargs: "main"
+        )
+
+        result = runner.invoke(cli, ["catchup", str(repo), "--branch", "main"])
+
+        assert result.exit_code == 0
+        assert called["since_last_scan"] is True
+
+
+class TestProductionUrlDetection:
+    """Tests for production URL safety gate detection."""
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://localhost:3000",
+            "https://127.0.0.1:8443",
+            "http://service.dev",
+            "https://qa.internal.local",
+            "http://my-test-api",
+        ],
+    )
+    def test_is_production_url_detects_safe_urls(self, url):
+        assert _is_production_url(url) is False
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://example.com",
+            "https://api.company.io",
+            "https://www.company.org",
+            "https://my-production-host",
+            "https://prod.internal",
+        ],
+    )
+    def test_is_production_url_detects_production_urls(self, url):
+        assert _is_production_url(url) is True
 
 
 class TestScanCommand:

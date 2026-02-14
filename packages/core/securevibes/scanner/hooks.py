@@ -10,7 +10,7 @@ Provides hook creator functions that return async closures for:
 """
 
 from pathlib import Path
-from typing import Set
+from typing import Any, Optional, Set
 from rich.console import Console
 
 from securevibes.config import ScanConfig
@@ -72,7 +72,15 @@ def create_dast_security_hook(tracker, console: Console, debug: bool):
     return dast_security_hook
 
 
-def create_pre_tool_hook(tracker, console: Console, debug: bool, detected_languages: Set[str]):
+def create_pre_tool_hook(
+    tracker,
+    console: Console,
+    debug: bool,
+    detected_languages: Set[str],
+    pr_grep_default_path: str = "src",
+    pr_repo_root: Optional[Path] = None,
+    pr_tool_guard_observer: Optional[dict[str, Any]] = None,
+):
     """
     Create pre-tool hook for infrastructure exclusions and DAST restrictions.
 
@@ -87,6 +95,9 @@ def create_pre_tool_hook(tracker, console: Console, debug: bool, detected_langua
         console: Rich console for debug output
         debug: Whether to show debug messages
         detected_languages: Set of detected languages for exclusion rules
+        pr_grep_default_path: Default path used for pathless Grep calls in PR review
+        pr_repo_root: Repository root path for PR review repo-boundary enforcement
+        pr_tool_guard_observer: Optional mutable observer for PR review guard telemetry
 
     Returns:
         Async hook function compatible with ClaudeSDKClient PreToolUse hook
@@ -101,9 +112,10 @@ def create_pre_tool_hook(tracker, console: Console, debug: bool, detected_langua
 
         # Block reads from infrastructure directories
         if tool_name in ["Read", "Grep", "Glob", "LS"]:
+            current_phase = tracker.current_phase or "assessment"
             # Get phase-specific exclusions (DAST needs .claude/skills/ access)
             active_exclude_dirs = ScanConfig.get_excluded_dirs_for_phase(
-                tracker.current_phase or "assessment", detected_languages
+                current_phase, detected_languages
             )
             # Extract path from tool input (different tools use different param names)
             path = (
@@ -112,6 +124,43 @@ def create_pre_tool_hook(tracker, console: Console, debug: bool, detected_langua
                 or tool_input.get("directory_path")
                 or ""
             )
+
+            if current_phase == "pr-code-review" and pr_repo_root and path:
+                root_path = pr_repo_root.resolve(strict=False)
+                candidate_path = Path(path)
+                if not candidate_path.is_absolute():
+                    candidate_path = root_path / candidate_path
+                resolved_candidate = candidate_path.resolve(strict=False)
+                is_inside_repo = (
+                    resolved_candidate == root_path or root_path in resolved_candidate.parents
+                )
+                if not is_inside_repo:
+                    if pr_tool_guard_observer is not None:
+                        blocked_count = int(
+                            pr_tool_guard_observer.get("blocked_out_of_repo_count", 0)
+                        )
+                        pr_tool_guard_observer["blocked_out_of_repo_count"] = blocked_count + 1
+                        blocked_paths = pr_tool_guard_observer.setdefault("blocked_paths", [])
+                        if isinstance(blocked_paths, list):
+                            blocked_paths.append(str(resolved_candidate))
+                    if debug:
+                        console.print(
+                            f"  🚫 Blocked out-of-repo {tool_name}: {resolved_candidate}",
+                            style="dim yellow",
+                        )
+                    return {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": (
+                                "PR review cannot access files outside repository root"
+                            ),
+                            "reason": (
+                                "PR review guard blocked out-of-repo access: "
+                                f"{resolved_candidate}"
+                            ),
+                        }
+                    }
 
             if path:
                 # Check if path contains any excluded directory
@@ -126,6 +175,53 @@ def create_pre_tool_hook(tracker, console: Console, debug: bool, detected_langua
                         "override_result": {
                             "content": f"Skipped: Infrastructure directory excluded from scan ({path})",
                             "is_error": False,
+                        }
+                    }
+
+            if tool_name == "Read" and current_phase == "pr-code-review":
+                normalized_path = str(path or "").replace("\\", "/")
+                is_diff_context_read = normalized_path.endswith(
+                    "/.securevibes/DIFF_CONTEXT.json"
+                ) or (normalized_path == ".securevibes/DIFF_CONTEXT.json")
+                if is_diff_context_read:
+                    return {
+                        "override_result": {
+                            "content": (
+                                "PR review guard: DIFF_CONTEXT.json reads are disabled. "
+                                "Use prompt-provided changed files and changed-line anchors."
+                            ),
+                            "is_error": False,
+                        }
+                    }
+
+            if tool_name == "Grep" and current_phase == "pr-code-review":
+                normalized_path = str(path or "").replace("\\", "/")
+                if normalized_path.endswith("/.securevibes/DIFF_CONTEXT.json") or (
+                    normalized_path == ".securevibes/DIFF_CONTEXT.json"
+                ):
+                    return {
+                        "override_result": {
+                            "content": (
+                                "PR review guard: do not grep DIFF_CONTEXT.json. "
+                                "Use the prompt-provided changed file lists and inspect source files directly."
+                            ),
+                            "is_error": False,
+                        }
+                    }
+                if not normalized_path:
+                    # Prevent expensive repo-wide Grep loops in PR review.
+                    # Scope to an injected top-level directory derived from changed files.
+                    scope_path = (pr_grep_default_path or "src").strip() or "src"
+                    updated_input = {**tool_input, "path": scope_path}
+                    if debug:
+                        console.print(
+                            f"  🔧 Scoped PR Grep without path to {scope_path}/",
+                            style="dim yellow",
+                        )
+                    return {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "updatedInput": updated_input,
                         }
                     }
 
@@ -174,6 +270,86 @@ def create_pre_tool_hook(tracker, console: Console, debug: bool, detected_langua
                                 f"Blocked write to: {file_path}"
                             ),
                             "is_error": False,
+                        }
+                    }
+
+        # Enforce PR review write restrictions:
+        # only allow writing .securevibes/PR_VULNERABILITIES.json
+        if tool_name == "Write" and tracker.current_phase == "pr-code-review":
+            file_path = tool_input.get("file_path", "")
+            if file_path:
+                normalized_file_path = file_path
+                try:
+                    p = Path(file_path)
+                    wants_pr_artifact = p.name == "PR_VULNERABILITIES.json"
+                    if wants_pr_artifact and p.parent.name != ".securevibes":
+                        normalized_file_path = ".securevibes/PR_VULNERABILITIES.json"
+                    normalized_path_obj = Path(normalized_file_path)
+                    allowed = (
+                        wants_pr_artifact and normalized_path_obj.parent.name == ".securevibes"
+                    )
+                except Exception:
+                    wants_pr_artifact = False
+                    allowed = False
+
+                # Enforce repo boundary for PR review writes.
+                if pr_repo_root and wants_pr_artifact:
+                    root_path = pr_repo_root.resolve(strict=False)
+                    candidate_path = Path(normalized_file_path)
+                    if not candidate_path.is_absolute():
+                        candidate_path = root_path / candidate_path
+                    resolved_candidate = candidate_path.resolve(strict=False)
+                    is_inside_repo = (
+                        resolved_candidate == root_path or root_path in resolved_candidate.parents
+                    )
+                    if not is_inside_repo:
+                        if pr_tool_guard_observer is not None:
+                            blocked_count = int(
+                                pr_tool_guard_observer.get("blocked_out_of_repo_count", 0)
+                            )
+                            pr_tool_guard_observer["blocked_out_of_repo_count"] = blocked_count + 1
+                            blocked_paths = pr_tool_guard_observer.setdefault("blocked_paths", [])
+                            if isinstance(blocked_paths, list):
+                                blocked_paths.append(str(resolved_candidate))
+                        return {
+                            "hookSpecificOutput": {
+                                "hookEventName": "PreToolUse",
+                                "permissionDecision": "deny",
+                                "permissionDecisionReason": (
+                                    "PR review cannot write files outside repository root"
+                                ),
+                                "reason": (
+                                    "PR review guard blocked out-of-repo write: "
+                                    f"{resolved_candidate}"
+                                ),
+                            }
+                        }
+
+                # Normalize legacy/bare artifact path writes (e.g., PR_VULNERABILITIES.json)
+                # to the required .securevibes location so orchestration can find the file.
+                if wants_pr_artifact and normalized_file_path != file_path:
+                    if debug:
+                        console.print(
+                            f"  🔧 Normalized PR artifact path: {file_path} -> {normalized_file_path}",
+                            style="dim yellow",
+                        )
+                    return {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "updatedInput": {**tool_input, "file_path": normalized_file_path},
+                        }
+                    }
+
+                if not allowed:
+                    return {
+                        "override_result": {
+                            "content": (
+                                "Write rejected by SecureVibes PR review guard. "
+                                "PR code review phase may only write "
+                                ".securevibes/PR_VULNERABILITIES.json. "
+                                f"Blocked write to: {file_path}"
+                            ),
+                            "is_error": True,
                         }
                     }
 
@@ -237,7 +413,11 @@ def create_subagent_hook(tracker):
     return subagent_hook
 
 
-def create_json_validation_hook(console: Console, debug: bool):
+def create_json_validation_hook(
+    console: Console,
+    debug: bool,
+    write_observer: dict[str, Any] | None = None,
+):
     """
     Create PreToolUse hook that validates and auto-fixes vulnerability JSON output.
 
@@ -257,7 +437,28 @@ def create_json_validation_hook(console: Console, debug: bool):
         Async hook function compatible with ClaudeSDKClient PreToolUse hook
     """
 
+    pr_invalid_attempts = 0
+    max_pr_retries = 1
+
+    def _observe_pr_write(parsed_content: object, normalized_content: str) -> None:
+        if write_observer is None:
+            return
+
+        write_observer["total_writes"] = int(write_observer.get("total_writes", 0)) + 1
+        if not isinstance(parsed_content, list):
+            write_observer.setdefault("item_counts", []).append(0)
+            return
+
+        normalized_entries = [entry for entry in parsed_content if isinstance(entry, dict)]
+        item_count = len(normalized_entries)
+        write_observer.setdefault("item_counts", []).append(item_count)
+        if item_count > int(write_observer.get("max_items", 0)):
+            write_observer["max_items"] = item_count
+            write_observer["max_content"] = normalized_content
+
     async def json_validation_hook(input_data: dict, tool_use_id: str, ctx: dict) -> dict:
+        nonlocal pr_invalid_attempts
+
         tool_name = input_data.get("tool_name")
 
         # Only intercept Write operations
@@ -271,17 +472,71 @@ def create_json_validation_hook(console: Console, debug: bool):
         if not file_path or "VULNERABILITIES.json" not in file_path:
             return {}
 
+        if debug:
+            console.print(
+                f"  🔍 [Hook] Intercepted Write to: {file_path}",
+                style="dim",
+            )
+
         content = tool_input.get("content", "")
         if not content:
+            if debug:
+                console.print("  🔍 [Hook] Empty content, skipping", style="dim")
             return {}
 
         is_pr_review = "PR_VULNERABILITIES.json" in file_path
+
+        # Log original content analysis
+        if debug:
+            try:
+                import json as _json
+
+                original_data = _json.loads(content)
+                if isinstance(original_data, list) and original_data:
+                    first_item = original_data[0] if isinstance(original_data[0], dict) else {}
+                    has_finding_type = "finding_type" in first_item
+                    has_extra_fields = any(
+                        k in first_item
+                        for k in ["impact_analysis", "exploitability", "cvss_v3_score"]
+                    )
+                    console.print(
+                        f"  🔍 [Hook] Original: finding_type={has_finding_type}, "
+                        f"extra_fields={has_extra_fields}, items={len(original_data)}",
+                        style="dim",
+                    )
+            except Exception:
+                pass
 
         # Attempt to fix common format issues
         if is_pr_review:
             fixed_content, was_modified = fix_pr_vulnerabilities_json(content)
         else:
             fixed_content, was_modified = fix_vulnerabilities_json(content)
+
+        parsed_fixed_content: object = None
+        try:
+            import json as _json
+
+            parsed_fixed_content = _json.loads(fixed_content)
+        except Exception:
+            parsed_fixed_content = None
+
+        if is_pr_review:
+            _observe_pr_write(parsed_fixed_content, fixed_content)
+
+        # Log normalization result
+        if debug:
+            if isinstance(parsed_fixed_content, list) and parsed_fixed_content:
+                first_item = (
+                    parsed_fixed_content[0] if isinstance(parsed_fixed_content[0], dict) else {}
+                )
+                has_finding_type = "finding_type" in first_item
+                finding_type_value = first_item.get("finding_type", "N/A")
+                console.print(
+                    f"  🔍 [Hook] After fix: was_modified={was_modified}, "
+                    f"finding_type={has_finding_type} (value={finding_type_value})",
+                    style="dim",
+                )
 
         if was_modified:
             if debug:
@@ -312,16 +567,42 @@ def create_json_validation_hook(console: Console, debug: bool):
             is_valid, error_msg = validate_vulnerabilities_json(fixed_content)
 
         if not is_valid:
-            console.print(
-                (
-                    f"  ❌ PR_VULNERABILITIES.json validation failed: {error_msg}"
-                    if is_pr_review
-                    else f"  ❌ VULNERABILITIES.json validation failed: {error_msg}"
-                ),
-                style="bold red",
-            )
-            # Don't block - let it write but warn
-            # The Pydantic validation in scanner.py will catch it later
+            if is_pr_review:
+                pr_invalid_attempts += 1
+                remaining = max(0, max_pr_retries - pr_invalid_attempts + 1)
+                reason = error_msg or "Unknown validation error"
+
+                if pr_invalid_attempts <= max_pr_retries:
+                    console.print(
+                        f"  ❌ PR_VULNERABILITIES.json validation failed "
+                        f"(retry {pr_invalid_attempts}/{max_pr_retries}): {reason}",
+                        style="bold red",
+                    )
+                    return {
+                        "override_result": {
+                            "content": (
+                                "Write rejected by SecureVibes PR validation.\n"
+                                f"Reason: {reason}\n"
+                                f"Retries remaining: {remaining}\n\n"
+                                "PR_VULNERABILITIES.json rejected: empty evidence fields. "
+                                "Read the actual source files and populate file_path, "
+                                "line_number, code_snippet, evidence, and cwe_id for every finding."
+                            ),
+                            "is_error": True,
+                        }
+                    }
+
+                console.print(
+                    "  ⚠️  PR_VULNERABILITIES.json still failed validation after retry budget; "
+                    "allowing write with warnings.",
+                    style="yellow",
+                )
+            else:
+                console.print(
+                    f"  ❌ VULNERABILITIES.json validation failed: {error_msg}",
+                    style="bold red",
+                )
+                # Non-PR code review remains warn-only for compatibility.
         elif debug:
             console.print(
                 (
@@ -334,8 +615,20 @@ def create_json_validation_hook(console: Console, debug: bool):
 
         # If content was modified, return updated input
         if was_modified:
-            return {"updatedInput": {**tool_input, "content": fixed_content}}
+            if debug:
+                console.print(
+                    f"  🔍 [Hook] Returning updatedInput (content_len={len(fixed_content)})",
+                    style="dim",
+                )
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "updatedInput": {**tool_input, "content": fixed_content},
+                }
+            }
 
+        if debug:
+            console.print("  🔍 [Hook] No modifications, returning empty dict", style="dim")
         return {}
 
     return json_validation_hook
@@ -429,9 +722,12 @@ def create_threat_model_validation_hook(
                     style="yellow",
                 )
             return {
-                "updatedInput": {
-                    **tool_input,
-                    "content": fixed_content,
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "updatedInput": {
+                        **tool_input,
+                        "content": fixed_content,
+                    },
                 }
             }
 

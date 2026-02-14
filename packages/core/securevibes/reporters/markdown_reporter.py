@@ -112,6 +112,40 @@ class MarkdownReporter:
                 lines.append(f"- ✅ {len(result.validated_issues)} Validated")
                 lines.append(f"- ❌ {len(result.false_positives)} False Positives")
                 lines.append(f"- ❓ {len(result.unvalidated_issues)} Unvalidated")
+
+            severity_order = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+            primary_issue = max(
+                result.issues,
+                key=lambda issue: (
+                    severity_order.get(issue.severity.value, 0),
+                    len(issue.attack_scenario or ""),
+                    len(issue.evidence or ""),
+                ),
+            )
+            primary_location = (
+                f"`{primary_issue.file_path}:{primary_issue.line_number}`"
+                if primary_issue.line_number
+                else f"`{primary_issue.file_path}`"
+            )
+            chain_text = (
+                primary_issue.attack_scenario
+                or primary_issue.evidence
+                or primary_issue.description
+                or primary_issue.title
+            )
+            chain_text = " ".join(chain_text.split())
+            if len(chain_text) > 420:
+                chain_text = f"{chain_text[:417]}..."
+
+            lines.append("")
+            lines.append("## Primary Exploit Chain")
+            lines.append("")
+            lines.append(f"**Finding:** {primary_issue.title}")
+            lines.append(f"**Location:** {primary_location}")
+            if primary_issue.cwe_id:
+                lines.append(f"**CWE:** {primary_issue.cwe_id}")
+            lines.append("")
+            lines.append(chain_text)
         else:
             lines.append("## Executive Summary")
             lines.append("")
@@ -338,13 +372,23 @@ class MarkdownReporter:
         """
         import re
 
-        # If already well-formatted (has newlines with numbers), return as-is
-        if re.search(r"\n\d+\.", recommendation):
-            return recommendation
+        raw = recommendation or ""
+        if not raw.strip():
+            return raw
+
+        normalized = raw.strip()
+        # Fix malformed lead like "9. 2) ..." produced by some LLM outputs.
+        normalized = re.sub(r"^\s*\d+\.\s+(\d+)\)\s+", r"\1. ", normalized)
+        # Normalize parenthesized enumerations: "1) item" -> "1. item".
+        normalized = re.sub(r"(?<!\d)(\d+)\)\s+", r"\1. ", normalized)
+
+        # If already well-formatted multiline list, keep ordering and line breaks intact.
+        if re.search(r"\n\d+\.\s", normalized):
+            return normalized
 
         # Split on numbered patterns: "1. ", "2. ", etc.
         # Use lookahead to keep the number
-        items = re.split(r"(?=\d+\.\s+)", recommendation.strip())
+        items = re.split(r"(?=\d+\.\s+)", normalized)
         items = [item.strip() for item in items if item.strip()]
 
         # Check if any items start with numbered pattern
@@ -352,7 +396,7 @@ class MarkdownReporter:
 
         if not has_numbered_items or len(items) == 0:
             # No numbered list detected, return as-is
-            return recommendation
+            return normalized
 
         # Format each item
         formatted_items = []

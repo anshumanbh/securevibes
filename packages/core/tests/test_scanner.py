@@ -52,6 +52,40 @@ def api():
     return tmp_path
 
 
+class TestScanResultWarnings:
+    """Test ScanResult warning behavior."""
+
+    def test_scan_result_warnings_default_empty(self):
+        """Warnings should default to an empty list."""
+        result = ScanResult(repository_path="/tmp/repo")
+
+        assert result.warnings == []
+
+    def test_scan_result_warnings_stores_values(self):
+        """Warnings passed to constructor should be stored."""
+        warnings = ["Analysis may be incomplete."]
+        result = ScanResult(repository_path="/tmp/repo", warnings=warnings)
+
+        assert result.warnings == warnings
+
+    def test_scan_result_to_dict_includes_warnings_when_non_empty(self):
+        """to_dict should include warnings only when present."""
+        warnings = ["Missing PR_VULNERABILITIES.json"]
+        result = ScanResult(repository_path="/tmp/repo", warnings=warnings)
+
+        data = result.to_dict()
+
+        assert data["warnings"] == warnings
+
+    def test_scan_result_to_dict_omits_warnings_when_empty(self):
+        """to_dict should not include warnings when list is empty."""
+        result = ScanResult(repository_path="/tmp/repo")
+
+        data = result.to_dict()
+
+        assert "warnings" not in data
+
+
 class TestProgressTracker:
     """Test ProgressTracker functionality"""
 
@@ -111,15 +145,17 @@ class TestProgressTracker:
 
     def test_on_tool_complete_success(self, progress_tracker):
         """Test tracking successful tool completion"""
+        initial_count = progress_tracker.tool_count
         progress_tracker.on_tool_complete("Read", success=True)
-        # Should not raise any errors
-        assert True
+        assert progress_tracker.tool_count == initial_count
+        assert progress_tracker.console.file.getvalue() == ""
 
     def test_on_tool_complete_failure(self, progress_tracker):
         """Test tracking failed tool completion"""
         progress_tracker.on_tool_complete("Read", success=False, error_msg="File not found")
-        # Should handle error gracefully
-        assert True
+        output = progress_tracker.console.file.getvalue()
+        assert "Tool Read failed" in output
+        assert "File not found" in output
 
     def test_on_subagent_stop(self, progress_tracker):
         """Test tracking sub-agent completion"""
@@ -157,17 +193,17 @@ class TestProgressTracker:
         """Test agent narration in debug mode"""
         text = "I am analyzing the authentication system for security vulnerabilities"
 
-        # Should not raise errors
         debug_progress_tracker.on_assistant_text(text)
-        assert True
+        output = debug_progress_tracker.console.file.getvalue()
+        assert "I am analyzing the authentication system" in output
+        assert "💭" in output
 
     def test_non_debug_mode_skips_narration(self, progress_tracker):
         """Test agent narration is skipped in non-debug mode"""
         text = "Some agent thinking"
 
-        # Should be a no-op in non-debug mode
         progress_tracker.on_assistant_text(text)
-        assert True
+        assert progress_tracker.console.file.getvalue() == ""
 
     def test_smart_truncation_in_debug(self, debug_progress_tracker):
         """Test smart truncation of long prompts in debug mode"""
@@ -401,6 +437,112 @@ class TestScannerResultLoading:
                 securevibes_dir, test_repo, files_scanned=10, scan_start_time=0
             )
 
+    @pytest.mark.asyncio
+    @patch("securevibes.scanner.scanner.update_scan_state")
+    @patch("securevibes.scanner.scanner.get_repo_branch")
+    @patch("securevibes.scanner.scanner.get_repo_head_commit")
+    async def test_load_updates_scan_state_for_full_scan(
+        self, mock_commit, mock_branch, mock_update_state, scanner, test_repo
+    ):
+        """Test scan state is updated when single_subagent and resume_from are both None"""
+        securevibes_dir = test_repo / ".securevibes"
+        securevibes_dir.mkdir()
+
+        mock_commit.return_value = "abc123"
+        mock_branch.return_value = "main"
+
+        scan_results = {
+            "issues": [
+                {
+                    "threat_id": "TEST-1",
+                    "title": "Test Issue",
+                    "description": "Test",
+                    "severity": "low",
+                    "file_path": "test.py",
+                    "line_number": 1,
+                    "code_snippet": "test",
+                    "cwe_id": "CWE-000",
+                    "recommendation": "Fix it",
+                }
+            ]
+        }
+
+        import json
+
+        (securevibes_dir / "scan_results.json").write_text(json.dumps(scan_results))
+
+        # Call without single_subagent or resume_from (full scan)
+        result = scanner._load_scan_results(
+            securevibes_dir, test_repo, files_scanned=10, scan_start_time=0
+        )
+
+        assert isinstance(result, ScanResult)
+        mock_update_state.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("securevibes.scanner.scanner.update_scan_state")
+    @patch("securevibes.scanner.scanner.get_repo_branch")
+    @patch("securevibes.scanner.scanner.get_repo_head_commit")
+    async def test_load_skips_scan_state_for_subagent(
+        self, mock_commit, mock_branch, mock_update_state, scanner, test_repo
+    ):
+        """Test scan state is NOT updated when single_subagent is set"""
+        securevibes_dir = test_repo / ".securevibes"
+        securevibes_dir.mkdir()
+
+        mock_commit.return_value = "abc123"
+        mock_branch.return_value = "main"
+
+        scan_results = {"issues": []}
+
+        import json
+
+        (securevibes_dir / "scan_results.json").write_text(json.dumps(scan_results))
+
+        # Call with single_subagent set
+        result = scanner._load_scan_results(
+            securevibes_dir,
+            test_repo,
+            files_scanned=10,
+            scan_start_time=0,
+            single_subagent="assessment",
+        )
+
+        assert isinstance(result, ScanResult)
+        mock_update_state.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("securevibes.scanner.scanner.update_scan_state")
+    @patch("securevibes.scanner.scanner.get_repo_branch")
+    @patch("securevibes.scanner.scanner.get_repo_head_commit")
+    async def test_load_skips_scan_state_for_resume(
+        self, mock_commit, mock_branch, mock_update_state, scanner, test_repo
+    ):
+        """Test scan state is NOT updated when resume_from is set"""
+        securevibes_dir = test_repo / ".securevibes"
+        securevibes_dir.mkdir()
+
+        mock_commit.return_value = "abc123"
+        mock_branch.return_value = "main"
+
+        scan_results = {"issues": []}
+
+        import json
+
+        (securevibes_dir / "scan_results.json").write_text(json.dumps(scan_results))
+
+        # Call with resume_from set
+        result = scanner._load_scan_results(
+            securevibes_dir,
+            test_repo,
+            files_scanned=10,
+            scan_start_time=0,
+            resume_from="code-review",
+        )
+
+        assert isinstance(result, ScanResult)
+        mock_update_state.assert_not_called()
+
 
 class TestProgressTrackerEdgeCases:
     """Test edge cases in progress tracking"""
@@ -447,3 +589,62 @@ class TestProgressTrackerEdgeCases:
 
         assert long_path in progress_tracker.files_read
         assert progress_tracker.tool_count == 1
+
+
+class TestFullScanAllowedTools:
+    """Test that full scan includes Task in allowed_tools for subagent dispatch."""
+
+    @pytest.mark.asyncio
+    async def test_full_scan_allows_task_tool(self, test_repo):
+        """Full scan must include Task in allowed_tools for subagent dispatch."""
+        scanner = Scanner(model="sonnet", debug=False)
+        scanner.console = Console(file=StringIO())
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+            mock_instance = MagicMock()
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_instance.query = AsyncMock()
+
+            async def async_gen():
+                return
+                yield  # pragma: no cover
+
+            mock_instance.receive_messages = async_gen
+
+            try:
+                await scanner.scan(str(test_repo))
+            except RuntimeError:
+                pass  # Expected — no results file
+
+        options = mock_client.call_args[1]["options"]
+        assert (
+            "Task" in options.allowed_tools
+        ), f"Task tool missing from allowed_tools: {options.allowed_tools}"
+
+    @pytest.mark.asyncio
+    async def test_full_scan_has_subagent_hook(self, test_repo):
+        """Full scan must wire up SubagentStop hook for subagent lifecycle tracking."""
+        scanner = Scanner(model="sonnet", debug=False)
+        scanner.console = Console(file=StringIO())
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+            mock_instance = MagicMock()
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_instance.query = AsyncMock()
+
+            async def async_gen():
+                return
+                yield  # pragma: no cover
+
+            mock_instance.receive_messages = async_gen
+
+            try:
+                await scanner.scan(str(test_repo))
+            except RuntimeError:
+                pass  # Expected — no results file
+
+        options = mock_client.call_args[1]["options"]
+        assert "SubagentStop" in options.hooks, "SubagentStop hook must be configured"
+        assert len(options.hooks["SubagentStop"]) > 0
