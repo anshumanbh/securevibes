@@ -1,0 +1,78 @@
+id: "sqli-string-concatenation-001"
+name: "SQL Injection via String Concatenation"
+description: |
+  Tests detection of SQL injection where user input is directly
+  concatenated into a SQL query string. This is a classic vulnerability
+  pattern that SecureVibes should reliably detect.
+
+category: "capability"
+tags: ["sqli", "injection", "cwe-89", "python", "flask"]
+
+fixture:
+  source: "vulnerable-flask-app"
+
+scanner_options:
+  model: "sonnet"
+  # No agentic override - let it auto-detect (should be non-agentic)
+
+expected_outcome:
+  vulnerabilities:
+    - threat_id_pattern: "THREAT-(STRIDE|CWE)-\\d+"
+      title_contains: ["SQL", "injection"]
+      severity: ["CRITICAL", "HIGH"]
+      cwe_id: "CWE-89"
+      file_path_contains: "routes.py"
+      has_code_snippet: true
+      has_recommendation: true
+  
+  # The threat model should include injection-related threats
+  threat_model:
+    stride_categories: ["Tampering", "Information Disclosure"]
+
+graders:
+  - type: artifact_exists
+    files:
+      - ".securevibes/SECURITY.md"
+      - ".securevibes/THREAT_MODEL.json"
+      - ".securevibes/VULNERABILITIES.json"
+      - ".securevibes/scan_results.json"
+  
+  - type: vulnerability_match
+    config:
+      require_all: true
+  
+  - type: json_schema
+    file: ".securevibes/scan_results.json"
+    schema: "scan_results.schema.json"
+  
+  - type: llm_rubric
+    rubric: |
+      Evaluate the SQL injection vulnerability finding on a scale of 1-5:
+      
+      5 - Excellent: Clear identification of SQLi, specific file/line,
+          actual vulnerable code shown, explains the attack vector,
+          provides specific remediation (parameterized queries).
+      
+      4 - Good: Identifies SQLi correctly, has file location,
+          code snippet present, reasonable recommendation.
+      
+      3 - Adequate: Identifies injection issue, but missing
+          specificity or generic recommendation.
+      
+      2 - Poor: Vague finding, wrong severity, or incorrect
+          vulnerability classification.
+      
+      1 - Fail: Did not detect SQL injection, or completely wrong.
+    
+    min_score: 4
+    assertions:
+      - "The vulnerability correctly identifies string concatenation as the issue"
+      - "The recommendation suggests parameterized queries or prepared statements"
+      - "The code snippet shows the actual vulnerable query construction"
+
+tracked_metrics:
+  - n_turns
+  - n_tool_calls
+  - total_tokens
+  - scan_time_seconds
+  - cost_usd

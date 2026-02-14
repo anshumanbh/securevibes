@@ -1,0 +1,78 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SecureVibes Scan Results",
+  "description": "Schema for scan_results.json output from SecureVibes",
+  "type": "object",
+  "required": ["vulnerabilities"],
+  "properties": {
+    "vulnerabilities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["threat_id", "title", "severity"],
+        "properties": {
+          "threat_id": {
+            "type": "string",
+            "description": "Unique identifier for the threat",
+            "pattern": "^THREAT-"
+          },
+          "title": {
+            "type": "string",
+            "description": "Short title describing the vulnerability",
+            "minLength": 1
+          },
+          "description": {
+            "type": "string",
+            "description": "Detailed description of the vulnerability"
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
+            "description": "Severity level of the vulnerability"
+          },
+          "cwe_id": {
+            "type": "string",
+            "description": "Common Weakness Enumeration ID",
+            "pattern": "^CWE-\\d+$"
+          },
+          "file_path": {
+            "type": "string",
+            "description": "Path to the affected file"
+          },
+          "line_number": {
+            "type": ["integer", "null"],
+            "description": "Line number where the vulnerability exists"
+          },
+          "code_snippet": {
+            "type": "string",
+            "description": "Relevant code snippet showing the vulnerability"
+          },
+          "recommendation": {
+            "type": "string",
+            "description": "Recommended fix for the vulnerability"
+          },
+          "affected_files": {
+            "type": "array",
+            "description": "List of affected files",
+            "items": {
+              "type": "object",
+              "properties": {
+                "file_path": {"type": "string"},
+                "line_number": {"type": ["integer", "array", "null"]},
+                "code_snippet": {"type": "string"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "scan_time_seconds": {"type": "number"},
+        "files_scanned": {"type": "integer"},
+        "model": {"type": "string"}
+      }
+    }
+  }
+}
