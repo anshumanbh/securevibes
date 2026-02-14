@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -584,7 +585,43 @@ def _merge_pr_attempt_findings(
         union = len(a | b)
         return overlap / union if union else 0.0
 
-    def _entry_quality(entry: dict) -> tuple[int, int, int, int, int, int, int, int]:
+    @dataclass(order=True)
+    class _EntryQuality:
+        """Composite quality ranking for a PR finding entry.
+
+        Fields are ordered by comparison priority (leftmost = highest priority).
+        Negative values for penalties ensure lower-penalty entries rank higher.
+        """
+
+        severity: int  # severity_rank: low=1, medium=2, high=3, critical=4
+        finding_type: int  # finding_type_rank: unknown=1, new_threat=3, mitigation_removal=4, regression/threat_enabler=5, known_vuln=6
+        chain_support: int  # Cross-pass chain consensus support count
+        proof_score: int  # Exploit proof quality score (exploit primitives, concrete payloads, CWE-88, etc.)
+        contradiction_penalty: int  # Negated: -(total_attempts - chain_support) when contradicted
+        speculation_penalty: int  # Negated: -count of speculative/hardening terms (capped at -6)
+        evidence_length: int  # min(len(evidence + attack_scenario), 4000)
+        description_length: int  # min(len(description), 2000)
+
+    @dataclass(order=True)
+    class _SubchainQuality:
+        """Composite quality ranking for subchain collapse decisions.
+
+        Extends _EntryQuality with chain-structural fields.
+        """
+
+        role_bonus: int  # 1 if end_to_end chain role, else 0
+        anchor_bonus: int  # 1 if has a sink anchor, else 0
+        location_count: int  # Number of referenced code locations (capped at 6)
+        severity: int  # From _EntryQuality
+        finding_type: int  # From _EntryQuality
+        chain_support: int  # From _EntryQuality
+        proof_score: int  # From _EntryQuality
+        contradiction_penalty: int  # From _EntryQuality
+        speculation_penalty: int  # From _EntryQuality
+        evidence_length: int  # From _EntryQuality
+        description_length: int  # From _EntryQuality
+
+    def _entry_quality(entry: dict) -> _EntryQuality:
         severity = severity_rank.get(str(entry.get("severity", "")).strip().lower(), 0)
         finding_type = finding_type_rank.get(str(entry.get("finding_type", "")).strip().lower(), 0)
         chain_support = 0
@@ -605,15 +642,15 @@ def _merge_pr_attempt_findings(
             str(entry.get("attack_scenario", ""))
         )
         description_chars = len(str(entry.get("description", "")))
-        return (
-            severity,
-            finding_type,
-            chain_support,
-            proof_score,
-            -contradiction_penalty,
-            -speculation_penalty,
-            min(evidence_chars, 4000),
-            min(description_chars, 2000),
+        return _EntryQuality(
+            severity=severity,
+            finding_type=finding_type,
+            chain_support=chain_support,
+            proof_score=proof_score,
+            contradiction_penalty=-contradiction_penalty,
+            speculation_penalty=-speculation_penalty,
+            evidence_length=min(evidence_chars, 4000),
+            description_length=min(description_chars, 2000),
         )
 
     def _chain_support(entry: dict) -> int:
@@ -642,6 +679,11 @@ def _merge_pr_attempt_findings(
         return has_flow_anchor or has_step_markers
 
     def _same_chain(candidate: dict, canonical: dict) -> bool:
+        # Similarity thresholds for chain deduplication.
+        # Lower thresholds allow more aggressive merging of duplicate findings.
+        # Same-file thresholds are relaxed (0.16-0.52) because findings in the
+        # same file are likely about the same vulnerability.
+        # Cross-file thresholds are stricter (0.62-0.68) to avoid false merges.
         candidate_path = _canonicalize_finding_path(candidate.get("file_path"))
         canonical_path = _canonicalize_finding_path(canonical.get("file_path"))
         if not candidate_path or not canonical_path:
@@ -672,18 +714,20 @@ def _merge_pr_attempt_findings(
         same_cwe_family = candidate_cwe_family == canonical_cwe_family
 
         if candidate_path == canonical_path:
+            # 4: max line gap for close-line same-file matching
+            # 0.24: min token similarity for same-file, close-line matches
             if line_gap <= 4 and token_similarity >= 0.24:
                 return True
             if (
-                line_gap <= 4
+                line_gap <= 4  # max line gap for CWE-78/88 close-line matching
                 and candidate_cwe_family in {"78", "88"}
                 and canonical_cwe_family in {"78", "88"}
-                and token_similarity >= 0.16
+                and token_similarity >= 0.16  # relaxed token similarity for CWE-78/88 same-file close-line matches
             ):
                 return True
-            if token_similarity >= 0.52:
+            if token_similarity >= 0.52:  # min token similarity for same-file any-line matches
                 return True
-            if title_similarity >= 0.82:
+            if title_similarity >= 0.82:  # min title similarity for same-file matches
                 return True
 
         candidate_dir = candidate_path.rsplit("/", 1)[0] if "/" in candidate_path else ""
@@ -692,7 +736,7 @@ def _merge_pr_attempt_findings(
             candidate_dir
             and candidate_dir == canonical_dir
             and same_cwe_family
-            and token_similarity >= 0.68
+            and token_similarity >= 0.68  # min token similarity for same-directory, same-CWE matches
         ):
             return True
 
@@ -719,7 +763,7 @@ def _merge_pr_attempt_findings(
             if candidate_line > 0 and canonical_line > 0
             else 999
         )
-        if line_gap > 40:
+        if line_gap > 40:  # 40: max line gap for subchain family matching
             return False
 
         candidate_tokens = _finding_tokens(candidate)
@@ -748,21 +792,26 @@ def _merge_pr_attempt_findings(
 
         if same_cwe_family and shared_anchor:
             return True
+        # 0.20: min token similarity with shared locations for subchain family
         if same_cwe_family and shared_locations and (line_gap <= 40 or token_similarity >= 0.20):
             return True
+        # 30: max line gap for end-to-end variant subchain matching
         if same_cwe_family and has_end_to_end_variant and line_gap <= 30:
-            if token_similarity >= 0.16:
+            if token_similarity >= 0.16:  # 0.16: min token similarity for end-to-end variant
                 return True
             candidate_is_self_anchor = candidate_anchor in {candidate_path, canonical_path}
             canonical_is_self_anchor = canonical_anchor in {candidate_path, canonical_path}
             if candidate_is_self_anchor != canonical_is_self_anchor:
                 return True
 
+        # 30: max line gap for enabler pair matching
         if not same_cwe_family and is_enabler_pair and line_gap <= 30:
             if shared_anchor:
                 return True
+            # 0.18: min token similarity for enabler pairs with shared locations
             if shared_locations and token_similarity >= 0.18:
                 return True
+            # 0.28: min token similarity for enabler pairs with end-to-end variant
             if has_end_to_end_variant and token_similarity >= 0.28:
                 candidate_is_self_anchor = candidate_anchor in {candidate_path, canonical_path}
                 canonical_is_self_anchor = canonical_anchor in {candidate_path, canonical_path}
@@ -772,23 +821,23 @@ def _merge_pr_attempt_findings(
 
     def _subchain_quality(
         entry: dict,
-    ) -> tuple[int, int, int, int, int, int, int, int, int, int, int]:
+    ) -> _SubchainQuality:
         role_bonus = 1 if _chain_role(entry) == "end_to_end" else 0
         anchor_bonus = 1 if _chain_sink_anchor(entry) else 0
         location_count = min(len(_extract_referenced_code_locations(entry)), 6)
         quality = _entry_quality(entry)
-        return (
-            role_bonus,
-            anchor_bonus,
-            location_count,
-            quality[0],
-            quality[1],
-            quality[2],
-            quality[3],
-            quality[4],
-            quality[5],
-            quality[6],
-            quality[7],
+        return _SubchainQuality(
+            role_bonus=role_bonus,
+            anchor_bonus=anchor_bonus,
+            location_count=location_count,
+            severity=quality.severity,
+            finding_type=quality.finding_type,
+            chain_support=quality.chain_support,
+            proof_score=quality.proof_score,
+            contradiction_penalty=quality.contradiction_penalty,
+            speculation_penalty=quality.speculation_penalty,
+            evidence_length=quality.evidence_length,
+            description_length=quality.description_length,
         )
 
     normalized_vulns = [dict(v) for v in vulns if isinstance(v, dict)]
@@ -839,7 +888,7 @@ def _merge_pr_attempt_findings(
                     if candidate_line > 0 and existing_line > 0
                     else 999
                 )
-                if line_gap > 8:
+                if line_gap > 8:  # 8: max line gap for same-path secondary guard
                     continue
                 if (
                     line_gap <= 4
@@ -849,6 +898,8 @@ def _merge_pr_attempt_findings(
                 ):
                     is_duplicate = True
                     break
+                # 0.34: min token similarity for same-path near-duplicate
+                # 0.58: min title similarity for same-path near-duplicate
                 if token_similarity >= 0.34 or title_similarity >= 0.58 or same_cwe_family:
                     is_duplicate = True
                     break
@@ -857,8 +908,8 @@ def _merge_pr_attempt_findings(
             # Cross-file near-duplicate collapse for the same chain across neighboring steps.
             if (
                 same_cwe_family
-                and token_similarity >= 0.62
-                and title_similarity >= 0.66
+                and token_similarity >= 0.62  # min token similarity for cross-file near-duplicate
+                and title_similarity >= 0.66  # min title similarity for cross-file near-duplicate
                 and abs(candidate_proof - existing_proof) <= 3
             ):
                 is_duplicate = True
@@ -912,7 +963,7 @@ def _merge_pr_attempt_findings(
                 if candidate_line > 0 and existing_line > 0
                 else 999
             )
-            if line_gap > 120:
+            if line_gap > 120:  # 120: max line gap for secondary chain suppression
                 continue
 
             existing_role = _chain_role(existing)

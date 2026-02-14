@@ -5,6 +5,7 @@ import os
 import json
 import logging
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any
@@ -23,7 +24,7 @@ from securevibes.models.result import ScanResult
 from securevibes.models.issue import SecurityIssue
 from securevibes.prompts.loader import load_prompt
 from securevibes.config import config, LanguageConfig, ScanConfig
-from securevibes.scanner.subagent_manager import SubAgentManager, ScanMode
+from securevibes.scanner.subagent_manager import SubAgentManager, ScanMode, SUBAGENT_ORDER
 from securevibes.scanner.detection import collect_agentic_detection_files, detect_agentic_patterns
 from securevibes.diff.context import (
     extract_relevant_architecture,
@@ -157,6 +158,7 @@ _NON_CODE_SUFFIXES = {
     ".jsonl",
     ".lock",
 }
+_VALID_SUBAGENT_NAMES = frozenset(SUBAGENT_ORDER) | {"pr-code-review"}
 
 logger = logging.getLogger(__name__)
 
@@ -1000,10 +1002,7 @@ class Scanner:
 
                 if choice == 1:
                     # Find which sub-agent creates the required artifact
-                    from securevibes.scanner.subagent_manager import (
-                        SUBAGENT_ARTIFACTS,
-                        SUBAGENT_ORDER,
-                    )
+                    from securevibes.scanner.subagent_manager import SUBAGENT_ARTIFACTS
 
                     for sa_name in SUBAGENT_ORDER:
                         if SUBAGENT_ARTIFACTS[sa_name]["creates"] == required:
@@ -1028,7 +1027,12 @@ class Scanner:
                         return await self.scan(repo_path)
                     # else: ScanMode.USE_EXISTING - continue with single sub-agent
 
-        # Set environment variable to run only this sub-agent
+        # Validate and set environment variable to run only this sub-agent
+        if subagent not in _VALID_SUBAGENT_NAMES:
+            raise ValueError(
+                f"Invalid subagent name: {subagent!r}. "
+                f"Must be one of: {sorted(_VALID_SUBAGENT_NAMES)}"
+            )
         os.environ["RUN_ONLY_SUBAGENT"] = subagent
 
         # Auto-enable DAST if running dast sub-agent
@@ -1101,8 +1105,6 @@ class Scanner:
         os.environ["RESUME_FROM_SUBAGENT"] = from_subagent
 
         # Calculate which sub-agents to skip
-        from securevibes.scanner.subagent_manager import SUBAGENT_ORDER
-
         skip_index = SUBAGENT_ORDER.index(from_subagent)
         skip_subagents = SUBAGENT_ORDER[:skip_index]
         if skip_subagents:
@@ -1154,6 +1156,75 @@ class Scanner:
 
         return await self._execute_scan(repo)
 
+    @dataclass
+    class _PRAttemptState:
+        """Mutable state container for PR review attempt loop."""
+
+        carry_forward_candidate_summary: str = ""
+        carry_forward_candidate_family_ids: set = field(default_factory=set)
+        carry_forward_candidate_flow_ids: set = field(default_factory=set)
+
+    @dataclass
+    class _PRReviewContext:
+        """Prepared context for PR review attempt loop."""
+
+        repo: Path
+        securevibes_dir: Path
+        focused_diff_context: DiffContext
+        diff_context: DiffContext
+        contextualized_prompt: str
+        baseline_vulns: list
+        pr_review_attempts: int
+        pr_timeout_seconds: int
+        pr_vulns_path: Path
+        detected_languages: set
+        command_builder_signals: bool
+        path_parser_signals: bool
+        auth_privilege_signals: bool
+        retry_focus_plan: list
+        diff_line_anchors: str
+        diff_hunk_snippets: str
+        pr_grep_default_scope: str
+        scan_start_time: float
+        severity_threshold: str
+
+    @dataclass
+    class _PRReviewState:
+        """Mutable state container for the full PR review lifecycle."""
+
+        warnings: list = field(default_factory=list)
+        pr_vulns: list = field(default_factory=list)
+        collected_pr_vulns: list = field(default_factory=list)
+        ephemeral_pr_vulns: list = field(default_factory=list)
+        artifact_loaded: bool = False
+        attempts_run: int = 0
+        attempts_with_overwritten_artifact: int = 0
+        attempt_finding_counts: list = field(default_factory=list)
+        attempt_observed_counts: list = field(default_factory=list)
+        attempt_focus_areas: list = field(default_factory=list)
+        attempt_chain_ids: list = field(default_factory=list)
+        attempt_chain_exact_ids: list = field(default_factory=list)
+        attempt_chain_family_ids: list = field(default_factory=list)
+        attempt_chain_flow_ids: list = field(default_factory=list)
+        attempt_revalidation_attempted: list = field(default_factory=list)
+        attempt_core_evidence_present: list = field(default_factory=list)
+        chain_support_counts: dict = field(default_factory=dict)
+        flow_support_counts: dict = field(default_factory=dict)
+        attempt_state: "Scanner._PRAttemptState" = field(
+            default_factory=lambda: Scanner._PRAttemptState()
+        )
+        required_core_chain_pass_support: int = 2
+        weak_consensus_reason: str = ""
+        weak_consensus_triggered: bool = False
+        consensus_mode_used: str = "family"
+        support_counts_snapshot: dict = field(
+            default_factory=lambda: {"exact": 0, "family": 0, "flow": 0}
+        )
+        pr_tool_guard_observer: dict = field(
+            default_factory=lambda: {"blocked_out_of_repo_count": 0, "blocked_paths": []}
+        )
+        merge_stats: dict = field(default_factory=dict)
+
     async def pr_review(
         self,
         repo_path: str,
@@ -1181,6 +1252,29 @@ class Scanner:
         except (OSError, PermissionError) as e:
             raise RuntimeError(f"Failed to create output directory {securevibes_dir}: {e}")
 
+        ctx = await self._prepare_pr_review_context(
+            repo, securevibes_dir, diff_context, known_vulns_path, severity_threshold,
+        )
+        state = Scanner._PRReviewState()
+
+        await self._run_pr_attempt_loop(ctx, state)
+
+        if not state.artifact_loaded and not state.collected_pr_vulns and not state.ephemeral_pr_vulns:
+            return self._build_empty_pr_result(ctx, state)
+
+        await self._run_pr_refinement_and_verification(ctx, state)
+
+        return self._build_pr_review_result(ctx, state, update_artifacts, severity_threshold)
+
+    async def _prepare_pr_review_context(
+        self,
+        repo: Path,
+        securevibes_dir: Path,
+        diff_context: DiffContext,
+        known_vulns_path: Optional[Path],
+        severity_threshold: str,
+    ) -> "Scanner._PRReviewContext":
+        """Assemble all context needed before the PR review attempt loop."""
         scan_start_time = time.time()
 
         focused_diff_context = _build_focused_diff_context(diff_context)
@@ -1302,122 +1396,189 @@ You may output [] only if every hypothesis is disproved with concrete code evide
 Only report findings at or above: {severity_threshold}
 """
 
-        from claude_agent_sdk.types import HookMatcher
-
-        warnings: list[str] = []
         pr_timeout_seconds = config.get_pr_review_timeout_seconds()
         pr_vulns_path = securevibes_dir / PR_VULNERABILITIES_FILE
         detected_languages = LanguageConfig.detect_languages(repo) if repo else set()
 
-        pr_vulns: list[dict] = []
-        collected_pr_vulns: list[dict] = []
-        ephemeral_pr_vulns: list[dict] = []
-        artifact_loaded = False
-        attempts_run = 0
-        attempts_with_overwritten_artifact = 0
-        attempt_finding_counts: list[int] = []
-        attempt_observed_counts: list[int] = []
-        attempt_focus_areas: list[str] = []
-        attempt_chain_ids: list[set[str]] = []
-        attempt_chain_exact_ids: list[set[str]] = []
-        attempt_chain_family_ids: list[set[str]] = []
-        attempt_chain_flow_ids: list[set[str]] = []
-        attempt_revalidation_attempted: list[bool] = []
-        attempt_core_evidence_present: list[bool] = []
-        chain_support_counts: Dict[str, int] = {}
-        flow_support_counts: Dict[str, int] = {}
-        carry_forward_candidate_summary = ""
-        carry_forward_candidate_family_ids: set[str] = set()
-        carry_forward_candidate_flow_ids: set[str] = set()
-        required_core_chain_pass_support = 2
-        weak_consensus_reason = ""
-        weak_consensus_triggered = False
-        consensus_mode_used = "family"
-        support_counts_snapshot: Dict[str, int] = {"exact": 0, "family": 0, "flow": 0}
-        pr_tool_guard_observer: Dict[str, Any] = {
-            "blocked_out_of_repo_count": 0,
-            "blocked_paths": [],
-        }
+        return Scanner._PRReviewContext(
+            repo=repo,
+            securevibes_dir=securevibes_dir,
+            focused_diff_context=focused_diff_context,
+            diff_context=diff_context,
+            contextualized_prompt=contextualized_prompt,
+            baseline_vulns=baseline_vulns,
+            pr_review_attempts=pr_review_attempts,
+            pr_timeout_seconds=pr_timeout_seconds,
+            pr_vulns_path=pr_vulns_path,
+            detected_languages=detected_languages,
+            command_builder_signals=command_builder_signals,
+            path_parser_signals=path_parser_signals,
+            auth_privilege_signals=auth_privilege_signals,
+            retry_focus_plan=retry_focus_plan,
+            diff_line_anchors=diff_line_anchors,
+            diff_hunk_snippets=diff_hunk_snippets,
+            pr_grep_default_scope=pr_grep_default_scope,
+            scan_start_time=scan_start_time,
+            severity_threshold=severity_threshold,
+        )
 
-        def _record_attempt_chains(attempt_findings: list[dict]) -> None:
-            canonical_attempt = _merge_pr_attempt_findings(attempt_findings)
-            exact_ids = _collect_chain_exact_ids(canonical_attempt)
-            family_ids = _collect_chain_family_ids(canonical_attempt)
-            flow_ids = _collect_chain_flow_ids(canonical_attempt)
-            attempt_chain_exact_ids.append(exact_ids)
-            attempt_chain_family_ids.append(family_ids)
-            attempt_chain_flow_ids.append(flow_ids)
-            # Backward-compatible alias used by existing code paths.
-            attempt_chain_ids.append(family_ids)
-            for chain_id in family_ids:
-                chain_support_counts[chain_id] = chain_support_counts.get(chain_id, 0) + 1
-            for chain_id in flow_ids:
-                flow_support_counts[chain_id] = flow_support_counts.get(chain_id, 0) + 1
+    def _record_attempt_chains(
+        self,
+        state: "_PRReviewState",
+        attempt_findings: list,
+    ) -> None:
+        """Record chain IDs from an attempt's findings into state."""
+        canonical_attempt = _merge_pr_attempt_findings(attempt_findings)
+        exact_ids = _collect_chain_exact_ids(canonical_attempt)
+        family_ids = _collect_chain_family_ids(canonical_attempt)
+        flow_ids = _collect_chain_flow_ids(canonical_attempt)
+        state.attempt_chain_exact_ids.append(exact_ids)
+        state.attempt_chain_family_ids.append(family_ids)
+        state.attempt_chain_flow_ids.append(flow_ids)
+        # Backward-compatible alias used by existing code paths.
+        state.attempt_chain_ids.append(family_ids)
+        for chain_id in family_ids:
+            state.chain_support_counts[chain_id] = state.chain_support_counts.get(chain_id, 0) + 1
+        for chain_id in flow_ids:
+            state.flow_support_counts[chain_id] = state.flow_support_counts.get(chain_id, 0) + 1
 
-        def _refresh_carry_forward_candidates() -> None:
-            nonlocal carry_forward_candidate_summary
-            nonlocal carry_forward_candidate_family_ids
-            nonlocal carry_forward_candidate_flow_ids
-            cumulative_candidates = _merge_pr_attempt_findings(
-                [*collected_pr_vulns, *ephemeral_pr_vulns],
-                chain_support_counts=chain_support_counts,
-                total_attempts=len(attempt_chain_ids),
-            )
-            carry_forward_candidate_family_ids = _collect_chain_family_ids(cumulative_candidates)
-            carry_forward_candidate_flow_ids = _collect_chain_flow_ids(cumulative_candidates)
-            carry_forward_candidate_summary = _summarize_chain_candidates_for_prompt(
-                cumulative_candidates,
-                chain_support_counts,
-                len(attempt_chain_ids),
-                flow_support_counts=flow_support_counts,
-            )
+    def _refresh_carry_forward_candidates(
+        self,
+        state: "_PRReviewState",
+    ) -> None:
+        """Refresh carry-forward candidate summary from cumulative findings."""
+        cumulative_candidates = _merge_pr_attempt_findings(
+            [*state.collected_pr_vulns, *state.ephemeral_pr_vulns],
+            chain_support_counts=state.chain_support_counts,
+            total_attempts=len(state.attempt_chain_ids),
+        )
+        state.attempt_state.carry_forward_candidate_family_ids = _collect_chain_family_ids(
+            cumulative_candidates
+        )
+        state.attempt_state.carry_forward_candidate_flow_ids = _collect_chain_flow_ids(
+            cumulative_candidates
+        )
+        state.attempt_state.carry_forward_candidate_summary = _summarize_chain_candidates_for_prompt(
+            cumulative_candidates,
+            state.chain_support_counts,
+            len(state.attempt_chain_ids),
+            flow_support_counts=state.flow_support_counts,
+        )
 
-        def _record_attempt_revalidation_observability(
-            *,
-            attempt_findings: list[dict],
-            revalidation_attempted: bool,
-            expected_family_ids: set[str],
-            expected_flow_ids: set[str],
-        ) -> bool:
-            core_evidence_present = _attempt_contains_core_chain_evidence(
-                attempt_findings=attempt_findings,
-                expected_family_ids=expected_family_ids,
-                expected_flow_ids=expected_flow_ids,
+    def _record_attempt_revalidation_observability(
+        self,
+        state: "_PRReviewState",
+        *,
+        attempt_findings: list,
+        revalidation_attempted: bool,
+        expected_family_ids: set,
+        expected_flow_ids: set,
+    ) -> bool:
+        """Record revalidation observability data and return whether core evidence was present."""
+        core_evidence_present = _attempt_contains_core_chain_evidence(
+            attempt_findings=attempt_findings,
+            expected_family_ids=expected_family_ids,
+            expected_flow_ids=expected_flow_ids,
+        )
+        state.attempt_revalidation_attempted.append(revalidation_attempted)
+        state.attempt_core_evidence_present.append(core_evidence_present)
+        if self.debug and revalidation_attempted and not core_evidence_present:
+            self.console.print(
+                "  🧪 Revalidation pass did not reproduce carried core-chain evidence",
+                style="dim",
             )
-            attempt_revalidation_attempted.append(revalidation_attempted)
-            attempt_core_evidence_present.append(core_evidence_present)
-            if self.debug and revalidation_attempted and not core_evidence_present:
+        return core_evidence_present
+
+    def _process_attempt_outcome(
+        self,
+        ctx: "_PRReviewContext",
+        state: "_PRReviewState",
+        *,
+        attempt_num: int,
+        attempt_write_observer: Dict[str, Any],
+        attempt_force_revalidation: bool,
+        attempt_expected_family_ids: set,
+        attempt_expected_flow_ids: set,
+        loaded_vulns: list,
+        load_warning: Optional[str],
+    ) -> None:
+        """Process the outcome of a single PR review attempt."""
+        observed_vulns = _extract_observed_pr_findings(attempt_write_observer)
+        attempt_finding_count = len(loaded_vulns) if not load_warning else 0
+        observed_count = max(attempt_finding_count, len(observed_vulns))
+        state.attempt_finding_counts.append(attempt_finding_count)
+        state.attempt_observed_counts.append(observed_count)
+        if not load_warning:
+            state.artifact_loaded = True
+            if loaded_vulns:
+                state.collected_pr_vulns.extend(loaded_vulns)
+        if observed_vulns and len(observed_vulns) > attempt_finding_count:
+            state.attempts_with_overwritten_artifact += 1
+            state.ephemeral_pr_vulns.extend(observed_vulns)
+            if self.debug:
                 self.console.print(
-                    "  🧪 Revalidation pass did not reproduce carried core-chain evidence",
+                    f"  🔎 PR pass {attempt_num}/{ctx.pr_review_attempts}: "
+                    f"captured {len(observed_vulns)} intermediate finding(s) from write logs "
+                    f"while final artifact had {attempt_finding_count}.",
                     style="dim",
                 )
-            return core_evidence_present
+        effective_attempt_vulns = (
+            observed_vulns if len(observed_vulns) > attempt_finding_count else loaded_vulns
+        )
+        self._record_attempt_chains(state, effective_attempt_vulns)
+        core_evidence_present = self._record_attempt_revalidation_observability(
+            state,
+            attempt_findings=effective_attempt_vulns,
+            revalidation_attempted=attempt_force_revalidation,
+            expected_family_ids=attempt_expected_family_ids,
+            expected_flow_ids=attempt_expected_flow_ids,
+        )
+        if effective_attempt_vulns:
+            self._refresh_carry_forward_candidates(state)
+        if attempt_force_revalidation and not core_evidence_present:
+            state.weak_consensus_triggered = True
+            if not state.weak_consensus_reason:
+                state.weak_consensus_reason = "revalidation_core_miss"
+
+    async def _run_pr_attempt_loop(
+        self,
+        ctx: "_PRReviewContext",
+        state: "_PRReviewState",
+    ) -> None:
+        """Run the multi-pass PR scanning attempt loop."""
+        from claude_agent_sdk.types import HookMatcher
+
+        pr_review_attempts = ctx.pr_review_attempts
 
         for attempt_idx in range(pr_review_attempts):
             attempt_num = attempt_idx + 1
-            attempts_run = attempt_num
+            state.attempts_run = attempt_num
             retry_suffix = ""
             retry_focus_area = ""
             attempt_write_observer: Dict[str, Any] = {}
-            attempt_expected_family_ids: set[str] = set(carry_forward_candidate_family_ids)
-            attempt_expected_flow_ids: set[str] = set(carry_forward_candidate_flow_ids)
+            attempt_expected_family_ids: set = set(
+                state.attempt_state.carry_forward_candidate_family_ids
+            )
+            attempt_expected_flow_ids: set = set(
+                state.attempt_state.carry_forward_candidate_flow_ids
+            )
             attempt_candidate_cores_present = bool(
                 attempt_expected_family_ids or attempt_expected_flow_ids
             )
             attempt_force_revalidation = False
             if attempt_num > 1:
                 plan_index = attempt_num - 2
-                if plan_index < len(retry_focus_plan):
-                    retry_focus_area = retry_focus_plan[plan_index]
-                    attempt_focus_areas.append(retry_focus_area)
+                if plan_index < len(ctx.retry_focus_plan):
+                    retry_focus_area = ctx.retry_focus_plan[plan_index]
+                    state.attempt_focus_areas.append(retry_focus_area)
                 attempt_force_revalidation = attempt_candidate_cores_present
                 retry_suffix = _build_pr_review_retry_suffix(
                     attempt_num,
-                    command_builder_signals=command_builder_signals,
+                    command_builder_signals=ctx.command_builder_signals,
                     focus_area=retry_focus_area,
-                    path_parser_signals=path_parser_signals,
-                    auth_privilege_signals=auth_privilege_signals,
-                    candidate_summary=carry_forward_candidate_summary,
+                    path_parser_signals=ctx.path_parser_signals,
+                    auth_privilege_signals=ctx.auth_privilege_signals,
+                    candidate_summary=state.attempt_state.carry_forward_candidate_summary,
                     require_candidate_revalidation=attempt_candidate_cores_present,
                 )
                 if self.debug and retry_focus_area:
@@ -1432,12 +1593,12 @@ Only report findings at or above: {severity_threshold}
                         style="dim",
                     )
                 try:
-                    pr_vulns_path.unlink()
+                    ctx.pr_vulns_path.unlink()
                 except OSError:
                     pass
 
             agents = create_agent_definitions(cli_model=self.model)
-            attempt_prompt = f"{contextualized_prompt}{retry_suffix}"
+            attempt_prompt = f"{ctx.contextualized_prompt}{retry_suffix}"
             agents["pr-code-review"].prompt = attempt_prompt
 
             tracker = ProgressTracker(
@@ -1448,10 +1609,10 @@ Only report findings at or above: {severity_threshold}
                 tracker,
                 self.console,
                 self.debug,
-                detected_languages,
-                pr_grep_default_path=pr_grep_default_scope,
-                pr_repo_root=repo,
-                pr_tool_guard_observer=pr_tool_guard_observer,
+                ctx.detected_languages,
+                pr_grep_default_path=ctx.pr_grep_default_scope,
+                pr_repo_root=ctx.repo,
+                pr_tool_guard_observer=state.pr_tool_guard_observer,
             )
             post_tool_hook = create_post_tool_hook(tracker, self.console, self.debug)
             subagent_hook = create_subagent_hook(tracker)
@@ -1461,7 +1622,7 @@ Only report findings at or above: {severity_threshold}
 
             options = ClaudeAgentOptions(
                 agents=agents,
-                cwd=str(repo),
+                cwd=str(ctx.repo),
                 setting_sources=["project"],
                 allowed_tools=["Read", "Write", "Grep", "Glob", "LS"],
                 max_turns=config.get_max_turns(),
@@ -1479,7 +1640,7 @@ Only report findings at or above: {severity_threshold}
 
             try:
                 async with ClaudeSDKClient(options=options) as client:
-                    await asyncio.wait_for(client.query(attempt_prompt), timeout=pr_timeout_seconds)
+                    await asyncio.wait_for(client.query(attempt_prompt), timeout=ctx.pr_timeout_seconds)
 
                     async def consume_messages() -> None:
                         async for message in client.receive_messages():
@@ -1492,115 +1653,61 @@ Only report findings at or above: {severity_threshold}
                                     self.total_cost = message.total_cost_usd
                                 break
 
-                    await asyncio.wait_for(consume_messages(), timeout=pr_timeout_seconds)
+                    await asyncio.wait_for(consume_messages(), timeout=ctx.pr_timeout_seconds)
             except asyncio.TimeoutError:
                 timeout_warning = (
                     f"PR code review attempt {attempt_num}/{pr_review_attempts} timed out after "
-                    f"{pr_timeout_seconds}s."
+                    f"{ctx.pr_timeout_seconds}s."
                 )
-                warnings.append(timeout_warning)
+                state.warnings.append(timeout_warning)
                 self.console.print(f"\n[bold yellow]WARNING:[/bold yellow] {timeout_warning}\n")
                 loaded_vulns, load_warning = _load_pr_vulnerabilities_artifact(
-                    pr_vulns_path=pr_vulns_path,
+                    pr_vulns_path=ctx.pr_vulns_path,
                     console=self.console,
                 )
-                observed_vulns = _extract_observed_pr_findings(attempt_write_observer)
-                attempt_finding_count = len(loaded_vulns) if not load_warning else 0
-                observed_count = max(attempt_finding_count, len(observed_vulns))
-                attempt_finding_counts.append(attempt_finding_count)
-                attempt_observed_counts.append(observed_count)
-                if not load_warning:
-                    artifact_loaded = True
-                    if loaded_vulns:
-                        collected_pr_vulns.extend(loaded_vulns)
-                if observed_vulns and len(observed_vulns) > attempt_finding_count:
-                    attempts_with_overwritten_artifact += 1
-                    ephemeral_pr_vulns.extend(observed_vulns)
-                    if self.debug:
-                        self.console.print(
-                            f"  🔎 PR pass {attempt_num}/{pr_review_attempts}: "
-                            f"captured {len(observed_vulns)} intermediate finding(s) from write logs "
-                            f"while final artifact had {attempt_finding_count}.",
-                            style="dim",
-                        )
-                effective_attempt_vulns = (
-                    observed_vulns if len(observed_vulns) > attempt_finding_count else loaded_vulns
+                self._process_attempt_outcome(
+                    ctx, state,
+                    attempt_num=attempt_num,
+                    attempt_write_observer=attempt_write_observer,
+                    attempt_force_revalidation=attempt_force_revalidation,
+                    attempt_expected_family_ids=attempt_expected_family_ids,
+                    attempt_expected_flow_ids=attempt_expected_flow_ids,
+                    loaded_vulns=loaded_vulns,
+                    load_warning=load_warning,
                 )
-                _record_attempt_chains(effective_attempt_vulns)
-                core_evidence_present = _record_attempt_revalidation_observability(
-                    attempt_findings=effective_attempt_vulns,
-                    revalidation_attempted=attempt_force_revalidation,
-                    expected_family_ids=attempt_expected_family_ids,
-                    expected_flow_ids=attempt_expected_flow_ids,
-                )
-                if effective_attempt_vulns:
-                    _refresh_carry_forward_candidates()
-                if attempt_force_revalidation and not core_evidence_present:
-                    weak_consensus_triggered = True
-                    if not weak_consensus_reason:
-                        weak_consensus_reason = "revalidation_core_miss"
                 continue
             except Exception as e:
                 attempt_warning = (
                     f"PR code review attempt {attempt_num}/{pr_review_attempts} failed: {e}"
                 )
-                warnings.append(attempt_warning)
+                state.warnings.append(attempt_warning)
                 self.console.print(f"\n[bold yellow]WARNING:[/bold yellow] {attempt_warning}\n")
                 loaded_vulns, load_warning = _load_pr_vulnerabilities_artifact(
-                    pr_vulns_path=pr_vulns_path,
+                    pr_vulns_path=ctx.pr_vulns_path,
                     console=self.console,
                 )
-                observed_vulns = _extract_observed_pr_findings(attempt_write_observer)
-                attempt_finding_count = len(loaded_vulns) if not load_warning else 0
-                observed_count = max(attempt_finding_count, len(observed_vulns))
-                attempt_finding_counts.append(attempt_finding_count)
-                attempt_observed_counts.append(observed_count)
-                if not load_warning:
-                    artifact_loaded = True
-                    if loaded_vulns:
-                        collected_pr_vulns.extend(loaded_vulns)
-                if observed_vulns and len(observed_vulns) > attempt_finding_count:
-                    attempts_with_overwritten_artifact += 1
-                    ephemeral_pr_vulns.extend(observed_vulns)
-                    if self.debug:
-                        self.console.print(
-                            f"  🔎 PR pass {attempt_num}/{pr_review_attempts}: "
-                            f"captured {len(observed_vulns)} intermediate finding(s) from write logs "
-                            f"while final artifact had {attempt_finding_count}.",
-                            style="dim",
-                        )
-                effective_attempt_vulns = (
-                    observed_vulns if len(observed_vulns) > attempt_finding_count else loaded_vulns
+                self._process_attempt_outcome(
+                    ctx, state,
+                    attempt_num=attempt_num,
+                    attempt_write_observer=attempt_write_observer,
+                    attempt_force_revalidation=attempt_force_revalidation,
+                    attempt_expected_family_ids=attempt_expected_family_ids,
+                    attempt_expected_flow_ids=attempt_expected_flow_ids,
+                    loaded_vulns=loaded_vulns,
+                    load_warning=load_warning,
                 )
-                _record_attempt_chains(effective_attempt_vulns)
-                core_evidence_present = _record_attempt_revalidation_observability(
-                    attempt_findings=effective_attempt_vulns,
-                    revalidation_attempted=attempt_force_revalidation,
-                    expected_family_ids=attempt_expected_family_ids,
-                    expected_flow_ids=attempt_expected_flow_ids,
-                )
-                if effective_attempt_vulns:
-                    _refresh_carry_forward_candidates()
-                if attempt_force_revalidation and not core_evidence_present:
-                    weak_consensus_triggered = True
-                    if not weak_consensus_reason:
-                        weak_consensus_reason = "revalidation_core_miss"
                 continue
 
             loaded_vulns, load_warning = _load_pr_vulnerabilities_artifact(
-                pr_vulns_path=pr_vulns_path,
+                pr_vulns_path=ctx.pr_vulns_path,
                 console=self.console,
             )
-            observed_vulns = _extract_observed_pr_findings(attempt_write_observer)
             if load_warning:
-                warnings.append(
+                state.warnings.append(
                     f"PR code review attempt {attempt_num}/{pr_review_attempts}: {load_warning}"
                 )
-                attempt_finding_counts.append(0)
-                attempt_observed_counts.append(len(observed_vulns))
+                observed_vulns = _extract_observed_pr_findings(attempt_write_observer)
                 if observed_vulns:
-                    attempts_with_overwritten_artifact += 1
-                    ephemeral_pr_vulns.extend(observed_vulns)
                     if self.debug:
                         self.console.print(
                             f"  🔎 PR pass {attempt_num}/{pr_review_attempts}: "
@@ -1608,60 +1715,36 @@ Only report findings at or above: {severity_threshold}
                             f"{len(observed_vulns)} finding(s).",
                             style="dim",
                         )
-                _record_attempt_chains(observed_vulns)
-                core_evidence_present = _record_attempt_revalidation_observability(
-                    attempt_findings=observed_vulns,
-                    revalidation_attempted=attempt_force_revalidation,
-                    expected_family_ids=attempt_expected_family_ids,
-                    expected_flow_ids=attempt_expected_flow_ids,
+                self._process_attempt_outcome(
+                    ctx, state,
+                    attempt_num=attempt_num,
+                    attempt_write_observer=attempt_write_observer,
+                    attempt_force_revalidation=attempt_force_revalidation,
+                    attempt_expected_family_ids=attempt_expected_family_ids,
+                    attempt_expected_flow_ids=attempt_expected_flow_ids,
+                    loaded_vulns=loaded_vulns,
+                    load_warning=load_warning,
                 )
-                if observed_vulns:
-                    _refresh_carry_forward_candidates()
-                if attempt_force_revalidation and not core_evidence_present:
-                    weak_consensus_triggered = True
-                    if not weak_consensus_reason:
-                        weak_consensus_reason = "revalidation_core_miss"
                 continue
 
-            artifact_loaded = True
+            self._process_attempt_outcome(
+                ctx, state,
+                attempt_num=attempt_num,
+                attempt_write_observer=attempt_write_observer,
+                attempt_force_revalidation=attempt_force_revalidation,
+                attempt_expected_family_ids=attempt_expected_family_ids,
+                attempt_expected_flow_ids=attempt_expected_flow_ids,
+                loaded_vulns=loaded_vulns,
+                load_warning=load_warning,
+            )
             attempt_finding_count = len(loaded_vulns)
-            observed_count = max(attempt_finding_count, len(observed_vulns))
-            attempt_finding_counts.append(attempt_finding_count)
-            attempt_observed_counts.append(observed_count)
-            if observed_vulns and len(observed_vulns) > attempt_finding_count:
-                attempts_with_overwritten_artifact += 1
-                ephemeral_pr_vulns.extend(observed_vulns)
-                if self.debug:
-                    self.console.print(
-                        f"  🔎 PR pass {attempt_num}/{pr_review_attempts}: "
-                        f"captured {len(observed_vulns)} intermediate finding(s) from write logs "
-                        f"while final artifact had {attempt_finding_count}.",
-                        style="dim",
-                    )
-            effective_attempt_vulns = (
-                observed_vulns if len(observed_vulns) > attempt_finding_count else loaded_vulns
-            )
-            _record_attempt_chains(effective_attempt_vulns)
-            core_evidence_present = _record_attempt_revalidation_observability(
-                attempt_findings=effective_attempt_vulns,
-                revalidation_attempted=attempt_force_revalidation,
-                expected_family_ids=attempt_expected_family_ids,
-                expected_flow_ids=attempt_expected_flow_ids,
-            )
-            if effective_attempt_vulns:
-                _refresh_carry_forward_candidates()
-            if attempt_force_revalidation and not core_evidence_present:
-                weak_consensus_triggered = True
-                if not weak_consensus_reason:
-                    weak_consensus_reason = "revalidation_core_miss"
             if attempt_finding_count:
-                collected_pr_vulns.extend(loaded_vulns)
-                _refresh_carry_forward_candidates()
+                self._refresh_carry_forward_candidates(state)
                 if self.debug:
                     self.console.print(
                         f"  PR pass {attempt_num}/{pr_review_attempts}: "
                         f"{attempt_finding_count} finding(s), "
-                        f"cumulative {len(collected_pr_vulns)}",
+                        f"cumulative {len(state.collected_pr_vulns)}",
                         style="dim",
                     )
                 if attempt_num < pr_review_attempts and self.debug:
@@ -1672,13 +1755,14 @@ Only report findings at or above: {severity_threshold}
                 continue
 
             if attempt_num < pr_review_attempts:
-                cumulative_findings = len(collected_pr_vulns) + len(ephemeral_pr_vulns)
+                cumulative_findings = len(state.collected_pr_vulns) + len(state.ephemeral_pr_vulns)
                 if cumulative_findings > 0:
                     if self.debug:
+                        last_observed = state.attempt_observed_counts[-1] if state.attempt_observed_counts else 0
                         no_new_note = (
                             "no new findings in final artifact; "
                             "intermediate write findings are being preserved for verification."
-                            if observed_count > attempt_finding_count
+                            if last_observed > attempt_finding_count
                             else "no new findings."
                         )
                         self.console.print(
@@ -1692,43 +1776,54 @@ Only report findings at or above: {severity_threshold}
                         f"PR code review attempt {attempt_num}/{pr_review_attempts} returned no findings "
                         "yet; retrying with chain-focused prompt."
                     )
-                    warnings.append(retry_warning)
+                    state.warnings.append(retry_warning)
                     self.console.print(f"\n[bold yellow]WARNING:[/bold yellow] {retry_warning}\n")
 
-        if not artifact_loaded and not collected_pr_vulns and not ephemeral_pr_vulns:
-            warning_msg = (
-                "PR code review agent did not produce a readable PR_VULNERABILITIES.json after "
-                f"{pr_review_attempts} attempt(s). Results may be incomplete."
-            )
-            warnings.append(warning_msg)
-            self.console.print(f"\n[bold yellow]WARNING:[/bold yellow] {warning_msg}\n")
-            return ScanResult(
-                repository_path=str(repo),
-                issues=[],
-                files_scanned=len(diff_context.changed_files),
-                scan_time_seconds=round(time.time() - scan_start_time, 2),
-                total_cost_usd=round(self.total_cost, 4),
-                warnings=warnings,
-            )
-
-        raw_candidates = [*collected_pr_vulns, *ephemeral_pr_vulns]
-        raw_pr_finding_count = len(raw_candidates)
-        merge_stats: Dict[str, int] = {}
-        pr_vulns = _merge_pr_attempt_findings(
-            raw_candidates,
-            merge_stats=merge_stats,
-            chain_support_counts=chain_support_counts,
-            total_attempts=len(attempt_chain_ids),
+    def _build_empty_pr_result(
+        self,
+        ctx: "_PRReviewContext",
+        state: "_PRReviewState",
+    ) -> ScanResult:
+        """Build a ScanResult when no findings were produced."""
+        warning_msg = (
+            "PR code review agent did not produce a readable PR_VULNERABILITIES.json after "
+            f"{ctx.pr_review_attempts} attempt(s). Results may be incomplete."
+        )
+        state.warnings.append(warning_msg)
+        self.console.print(f"\n[bold yellow]WARNING:[/bold yellow] {warning_msg}\n")
+        return ScanResult(
+            repository_path=str(ctx.repo),
+            issues=[],
+            files_scanned=len(ctx.diff_context.changed_files),
+            scan_time_seconds=round(time.time() - ctx.scan_start_time, 2),
+            total_cost_usd=round(self.total_cost, 4),
+            warnings=state.warnings,
         )
 
-        attempt_outcome_counts = attempt_observed_counts or attempt_finding_counts
+    async def _run_pr_refinement_and_verification(
+        self,
+        ctx: "_PRReviewContext",
+        state: "_PRReviewState",
+    ) -> None:
+        """Run quality refinement and verifier passes on accumulated PR findings."""
+        raw_candidates = [*state.collected_pr_vulns, *state.ephemeral_pr_vulns]
+        raw_pr_finding_count = len(raw_candidates)
+        state.merge_stats = {}
+        state.pr_vulns = _merge_pr_attempt_findings(
+            raw_candidates,
+            merge_stats=state.merge_stats,
+            chain_support_counts=state.chain_support_counts,
+            total_attempts=len(state.attempt_chain_ids),
+        )
+
+        attempt_outcome_counts = state.attempt_observed_counts or state.attempt_finding_counts
         attempt_disagreement = _attempts_show_pr_disagreement(attempt_outcome_counts)
         high_risk_signal_count = sum(
-            [command_builder_signals, path_parser_signals, auth_privilege_signals]
+            [ctx.command_builder_signals, ctx.path_parser_signals, ctx.auth_privilege_signals]
         )
-        initial_core_exact_ids = _collect_chain_exact_ids(pr_vulns)
-        initial_core_family_ids = _collect_chain_family_ids(pr_vulns)
-        initial_core_flow_ids = _collect_chain_flow_ids(pr_vulns)
+        initial_core_exact_ids = _collect_chain_exact_ids(state.pr_vulns)
+        initial_core_family_ids = _collect_chain_family_ids(state.pr_vulns)
+        initial_core_flow_ids = _collect_chain_flow_ids(state.pr_vulns)
         (
             weak_consensus,
             detected_reason,
@@ -1736,61 +1831,61 @@ Only report findings at or above: {severity_threshold}
             consensus_mode_used,
             support_counts_snapshot,
         ) = _adjudicate_consensus_support(
-            required_support=required_core_chain_pass_support,
+            required_support=state.required_core_chain_pass_support,
             core_exact_ids=initial_core_exact_ids,
-            pass_exact_ids=attempt_chain_exact_ids,
+            pass_exact_ids=state.attempt_chain_exact_ids,
             core_family_ids=initial_core_family_ids,
-            pass_family_ids=attempt_chain_family_ids,
+            pass_family_ids=state.attempt_chain_family_ids,
             core_flow_ids=initial_core_flow_ids,
-            pass_flow_ids=attempt_chain_flow_ids,
+            pass_flow_ids=state.attempt_chain_flow_ids,
         )
-        if weak_consensus and detected_reason and not weak_consensus_reason:
-            weak_consensus_reason = detected_reason
-        weak_consensus_triggered = weak_consensus_triggered or weak_consensus
+        if weak_consensus and detected_reason and not state.weak_consensus_reason:
+            state.weak_consensus_reason = detected_reason
+        state.weak_consensus_triggered = state.weak_consensus_triggered or weak_consensus
         passes_with_core_chain_exact = support_counts_snapshot.get("exact", 0)
         passes_with_core_chain_family = support_counts_snapshot.get("family", 0)
         passes_with_core_chain_flow = support_counts_snapshot.get("flow", 0)
         consensus_score = (
-            passes_with_core_chain / len(attempt_chain_ids) if attempt_chain_ids else 0.0
+            passes_with_core_chain / len(state.attempt_chain_ids) if state.attempt_chain_ids else 0.0
         )
         candidate_consensus_context = _summarize_chain_candidates_for_prompt(
-            pr_vulns,
-            chain_support_counts,
-            len(attempt_chain_ids),
-            flow_support_counts=flow_support_counts,
+            state.pr_vulns,
+            state.chain_support_counts,
+            len(state.attempt_chain_ids),
+            flow_support_counts=state.flow_support_counts,
         )
         (
             revalidation_attempts,
             revalidation_core_hits,
             revalidation_core_misses,
         ) = _summarize_revalidation_support(
-            attempt_revalidation_attempted,
-            attempt_core_evidence_present,
+            state.attempt_revalidation_attempted,
+            state.attempt_core_evidence_present,
         )
         blocked_out_of_repo_tool_calls = int(
-            pr_tool_guard_observer.get("blocked_out_of_repo_count", 0)
+            state.pr_tool_guard_observer.get("blocked_out_of_repo_count", 0)
         )
         attempt_observability_notes = (
-            f"- Attempt final artifact finding counts: {attempt_finding_counts}\n"
+            f"- Attempt final artifact finding counts: {state.attempt_finding_counts}\n"
             f"- Attempt observed finding counts (including overwritten writes): {attempt_outcome_counts}\n"
             f"- Attempt disagreement observed (telemetry): {attempt_disagreement}\n"
-            f"- Attempts with overwritten/non-final findings: {attempts_with_overwritten_artifact}\n"
+            f"- Attempts with overwritten/non-final findings: {state.attempts_with_overwritten_artifact}\n"
             f"- Blocked out-of-repo PR tool calls: {blocked_out_of_repo_tool_calls}\n"
-            f"- Ephemeral candidate findings captured from write logs: {len(ephemeral_pr_vulns)}\n"
-            f"- Attempt revalidation required flags: {attempt_revalidation_attempted}\n"
-            f"- Attempt core-evidence-present flags: {attempt_core_evidence_present}\n"
+            f"- Ephemeral candidate findings captured from write logs: {len(state.ephemeral_pr_vulns)}\n"
+            f"- Attempt revalidation required flags: {state.attempt_revalidation_attempted}\n"
+            f"- Attempt core-evidence-present flags: {state.attempt_core_evidence_present}\n"
             f"- Revalidation support: attempts={revalidation_attempts}, "
             f"hits={revalidation_core_hits}, misses={revalidation_core_misses}\n"
-            f"- Core-chain pass support ({consensus_mode_used}): {passes_with_core_chain}/{len(attempt_chain_ids)} "
-            f"(required >= {required_core_chain_pass_support})\n"
+            f"- Core-chain pass support ({consensus_mode_used}): {passes_with_core_chain}/{len(state.attempt_chain_ids)} "
+            f"(required >= {state.required_core_chain_pass_support})\n"
             f"- Core-chain support by mode: exact={passes_with_core_chain_exact}, "
             f"family={passes_with_core_chain_family}, flow={passes_with_core_chain_flow}\n"
-            f"- Weak consensus trigger: {weak_consensus} ({weak_consensus_reason or detected_reason})"
+            f"- Weak consensus trigger: {weak_consensus} ({state.weak_consensus_reason or detected_reason})"
         )
-        refinement_focus_areas = attempt_focus_areas or retry_focus_plan
+        refinement_focus_areas = state.attempt_focus_areas or ctx.retry_focus_plan
 
-        should_refine = bool(pr_vulns) and (
-            high_risk_signal_count > 0 or weak_consensus or len(pr_vulns) > 1
+        should_refine = bool(state.pr_vulns) and (
+            high_risk_signal_count > 0 or weak_consensus or len(state.pr_vulns) > 1
         )
         if should_refine:
             if self.debug:
@@ -1799,12 +1894,12 @@ Only report findings at or above: {severity_threshold}
                     style="dim",
                 )
             refined_pr_vulns = await _refine_pr_findings_with_llm(
-                repo=repo,
+                repo=ctx.repo,
                 model=self.model,
-                diff_line_anchors=diff_line_anchors,
-                diff_hunk_snippets=diff_hunk_snippets,
-                findings=pr_vulns,
-                severity_threshold=severity_threshold,
+                diff_line_anchors=ctx.diff_line_anchors,
+                diff_hunk_snippets=ctx.diff_hunk_snippets,
+                findings=state.pr_vulns,
+                severity_threshold=ctx.severity_threshold,
                 focus_areas=refinement_focus_areas,
                 mode="quality",
                 attempt_observability=attempt_observability_notes,
@@ -1815,18 +1910,18 @@ Only report findings at or above: {severity_threshold}
                 refined_canonical = _merge_pr_attempt_findings(
                     refined_pr_vulns,
                     merge_stats=refined_merge_stats,
-                    chain_support_counts=chain_support_counts,
-                    total_attempts=len(attempt_chain_ids),
+                    chain_support_counts=state.chain_support_counts,
+                    total_attempts=len(state.attempt_chain_ids),
                 )
                 if refined_canonical:
                     if self.debug:
                         self.console.print(
                             "  PR exploit-quality refinement pass updated canonical findings: "
-                            f"{len(pr_vulns)} -> {len(refined_canonical)}",
+                            f"{len(state.pr_vulns)} -> {len(refined_canonical)}",
                             style="dim",
                         )
-                    pr_vulns = refined_canonical
-                    merge_stats = refined_merge_stats
+                    state.pr_vulns = refined_canonical
+                    state.merge_stats = refined_merge_stats
                 elif self.debug:
                     self.console.print(
                         "  PR exploit-quality refinement returned no canonical findings; "
@@ -1834,9 +1929,9 @@ Only report findings at or above: {severity_threshold}
                         style="dim",
                     )
 
-        core_exact_ids = _collect_chain_exact_ids(pr_vulns)
-        core_family_ids = _collect_chain_family_ids(pr_vulns)
-        core_flow_ids = _collect_chain_flow_ids(pr_vulns)
+        core_exact_ids = _collect_chain_exact_ids(state.pr_vulns)
+        core_family_ids = _collect_chain_family_ids(state.pr_vulns)
+        core_flow_ids = _collect_chain_flow_ids(state.pr_vulns)
         (
             weak_consensus,
             detected_reason,
@@ -1844,26 +1939,26 @@ Only report findings at or above: {severity_threshold}
             consensus_mode_used,
             support_counts_snapshot,
         ) = _adjudicate_consensus_support(
-            required_support=required_core_chain_pass_support,
+            required_support=state.required_core_chain_pass_support,
             core_exact_ids=core_exact_ids,
-            pass_exact_ids=attempt_chain_exact_ids,
+            pass_exact_ids=state.attempt_chain_exact_ids,
             core_family_ids=core_family_ids,
-            pass_family_ids=attempt_chain_family_ids,
+            pass_family_ids=state.attempt_chain_family_ids,
             core_flow_ids=core_flow_ids,
-            pass_flow_ids=attempt_chain_flow_ids,
+            pass_flow_ids=state.attempt_chain_flow_ids,
         )
         if weak_consensus and detected_reason:
-            weak_consensus_reason = detected_reason
-        weak_consensus_triggered = weak_consensus_triggered or weak_consensus
+            state.weak_consensus_reason = detected_reason
+        state.weak_consensus_triggered = state.weak_consensus_triggered or weak_consensus
         passes_with_core_chain_exact = support_counts_snapshot.get("exact", 0)
         passes_with_core_chain_family = support_counts_snapshot.get("family", 0)
         passes_with_core_chain_flow = support_counts_snapshot.get("flow", 0)
         consensus_score = (
-            passes_with_core_chain / len(attempt_chain_ids) if attempt_chain_ids else 0.0
+            passes_with_core_chain / len(state.attempt_chain_ids) if state.attempt_chain_ids else 0.0
         )
-        verifier_reason = weak_consensus_reason or detected_reason
+        verifier_reason = state.weak_consensus_reason or detected_reason
         should_run_verifier = _should_run_pr_verifier(
-            has_findings=bool(pr_vulns),
+            has_findings=bool(state.pr_vulns),
             weak_consensus=weak_consensus,
         )
         if should_run_verifier:
@@ -1874,20 +1969,20 @@ Only report findings at or above: {severity_threshold}
                     style="dim",
                 )
             verified_pr_vulns = await _refine_pr_findings_with_llm(
-                repo=repo,
+                repo=ctx.repo,
                 model=self.model,
-                diff_line_anchors=diff_line_anchors,
-                diff_hunk_snippets=diff_hunk_snippets,
-                findings=pr_vulns,
-                severity_threshold=severity_threshold,
+                diff_line_anchors=ctx.diff_line_anchors,
+                diff_hunk_snippets=ctx.diff_hunk_snippets,
+                findings=state.pr_vulns,
+                severity_threshold=ctx.severity_threshold,
                 focus_areas=refinement_focus_areas,
                 mode="verifier",
                 attempt_observability=attempt_observability_notes,
                 consensus_context=_summarize_chain_candidates_for_prompt(
-                    pr_vulns,
-                    chain_support_counts,
-                    len(attempt_chain_ids),
-                    flow_support_counts=flow_support_counts,
+                    state.pr_vulns,
+                    state.chain_support_counts,
+                    len(state.attempt_chain_ids),
+                    flow_support_counts=state.flow_support_counts,
                 ),
             )
             if verified_pr_vulns is not None:
@@ -1895,62 +1990,79 @@ Only report findings at or above: {severity_threshold}
                 verified_canonical = _merge_pr_attempt_findings(
                     verified_pr_vulns,
                     merge_stats=verified_merge_stats,
-                    chain_support_counts=chain_support_counts,
-                    total_attempts=len(attempt_chain_ids),
+                    chain_support_counts=state.chain_support_counts,
+                    total_attempts=len(state.attempt_chain_ids),
                 )
                 if verified_canonical:
                     if self.debug:
                         self.console.print(
                             "  PR verifier pass updated canonical findings: "
-                            f"{len(pr_vulns)} -> {len(verified_canonical)}",
+                            f"{len(state.pr_vulns)} -> {len(verified_canonical)}",
                             style="dim",
                         )
-                    pr_vulns = verified_canonical
-                    merge_stats = verified_merge_stats
+                    state.pr_vulns = verified_canonical
+                    state.merge_stats = verified_merge_stats
                 elif self.debug:
                     self.console.print(
                         "  PR verifier pass returned no canonical findings; "
                         "retaining previous canonical set.",
                         style="dim",
                     )
-        core_exact_ids = _collect_chain_exact_ids(pr_vulns)
-        core_family_ids = _collect_chain_family_ids(pr_vulns)
-        core_flow_ids = _collect_chain_flow_ids(pr_vulns)
+        core_exact_ids = _collect_chain_exact_ids(state.pr_vulns)
+        core_family_ids = _collect_chain_family_ids(state.pr_vulns)
+        core_flow_ids = _collect_chain_flow_ids(state.pr_vulns)
         (
             weak_consensus,
             detected_reason,
             passes_with_core_chain,
-            consensus_mode_used,
-            support_counts_snapshot,
+            state.consensus_mode_used,
+            state.support_counts_snapshot,
         ) = _adjudicate_consensus_support(
-            required_support=required_core_chain_pass_support,
+            required_support=state.required_core_chain_pass_support,
             core_exact_ids=core_exact_ids,
-            pass_exact_ids=attempt_chain_exact_ids,
+            pass_exact_ids=state.attempt_chain_exact_ids,
             core_family_ids=core_family_ids,
-            pass_family_ids=attempt_chain_family_ids,
+            pass_family_ids=state.attempt_chain_family_ids,
             core_flow_ids=core_flow_ids,
-            pass_flow_ids=attempt_chain_flow_ids,
+            pass_flow_ids=state.attempt_chain_flow_ids,
         )
         if weak_consensus and detected_reason:
-            weak_consensus_reason = detected_reason
-        weak_consensus_triggered = weak_consensus_triggered or weak_consensus
-        passes_with_core_chain_exact = support_counts_snapshot.get("exact", 0)
-        passes_with_core_chain_family = support_counts_snapshot.get("family", 0)
-        passes_with_core_chain_flow = support_counts_snapshot.get("flow", 0)
-        consensus_score = (
-            passes_with_core_chain / len(attempt_chain_ids) if attempt_chain_ids else 0.0
-        )
+            state.weak_consensus_reason = detected_reason
+        state.weak_consensus_triggered = state.weak_consensus_triggered or weak_consensus
+
+        # Store final values needed by _build_pr_review_result into state attributes
+        # that are used for debug logging.
+        state._raw_pr_finding_count = raw_pr_finding_count
+        state._should_run_verifier = should_run_verifier
+        state._passes_with_core_chain = passes_with_core_chain
+        state._attempt_outcome_counts = attempt_outcome_counts
+        state._attempt_disagreement = attempt_disagreement
+        state._blocked_out_of_repo_tool_calls = blocked_out_of_repo_tool_calls
+        state._revalidation_attempts = revalidation_attempts
+        state._revalidation_core_hits = revalidation_core_hits
+        state._revalidation_core_misses = revalidation_core_misses
+
+    def _build_pr_review_result(
+        self,
+        ctx: "_PRReviewContext",
+        state: "_PRReviewState",
+        update_artifacts: bool,
+        severity_threshold: str,
+    ) -> ScanResult:
+        """Build the final ScanResult from accumulated PR review state."""
+        pr_vulns = state.pr_vulns
         merged_pr_finding_count = len(pr_vulns)
 
-        if baseline_vulns and pr_vulns:
-            pr_vulns = dedupe_pr_vulns(pr_vulns, baseline_vulns)
+        if ctx.baseline_vulns and pr_vulns:
+            pr_vulns = dedupe_pr_vulns(pr_vulns, ctx.baseline_vulns)
             try:
-                pr_vulns_path.write_text(json.dumps(pr_vulns, indent=2), encoding="utf-8")
+                ctx.pr_vulns_path.write_text(json.dumps(pr_vulns, indent=2), encoding="utf-8")
             except OSError as e:
-                warnings.append(f"Unable to persist deduped PR findings to {pr_vulns_path}: {e}")
+                state.warnings.append(f"Unable to persist deduped PR findings to {ctx.pr_vulns_path}: {e}")
 
         final_pr_finding_count = len(pr_vulns)
         if self.debug:
+            merge_stats = state.merge_stats
             speculative_dropped = merge_stats.get("speculative_dropped", 0)
             subchain_collapsed = merge_stats.get("subchain_collapsed", 0)
             low_support_dropped = merge_stats.get("low_support_dropped", 0)
@@ -1958,27 +2070,36 @@ Only report findings at or above: {severity_threshold}
             canonical_chain_count = merge_stats.get(
                 "canonical_chain_count", merged_pr_finding_count
             )
+            should_run_verifier = state._should_run_verifier
             verifier_outcome = (
                 "confirmed"
                 if should_run_verifier and final_pr_finding_count > 0
                 else "rejected" if should_run_verifier else "not_run"
             )
+            passes_with_core_chain = state._passes_with_core_chain
+            passes_with_core_chain_exact = state.support_counts_snapshot.get("exact", 0)
+            passes_with_core_chain_family = state.support_counts_snapshot.get("family", 0)
+            passes_with_core_chain_flow = state.support_counts_snapshot.get("flow", 0)
+            consensus_score = (
+                passes_with_core_chain / len(state.attempt_chain_ids) if state.attempt_chain_ids else 0.0
+            )
+            attempt_outcome_counts = state._attempt_outcome_counts
             self.console.print(
                 "  PR review attempt summary: "
-                f"attempts={attempts_run}/{pr_review_attempts}, "
-                f"raw_findings={raw_pr_finding_count}, "
+                f"attempts={state.attempts_run}/{ctx.pr_review_attempts}, "
+                f"raw_findings={state._raw_pr_finding_count}, "
                 f"canonical_pre_filter={canonical_chain_count}, "
                 f"post_quality_filter_before_baseline={merged_pr_finding_count}, "
                 f"final_post_filter={final_pr_finding_count}, "
                 f"attempt_counts={attempt_outcome_counts}, "
-                f"attempt_disagreement={attempt_disagreement}, "
-                f"overwritten_attempts={attempts_with_overwritten_artifact}, "
-                f"blocked_out_of_repo_tool_calls={blocked_out_of_repo_tool_calls}, "
-                f"revalidation_flags={attempt_revalidation_attempted}, "
-                f"core_evidence_flags={attempt_core_evidence_present}, "
-                f"revalidation_attempts={revalidation_attempts}, "
-                f"revalidation_core_hits={revalidation_core_hits}, "
-                f"revalidation_core_misses={revalidation_core_misses}, "
+                f"attempt_disagreement={state._attempt_disagreement}, "
+                f"overwritten_attempts={state.attempts_with_overwritten_artifact}, "
+                f"blocked_out_of_repo_tool_calls={state._blocked_out_of_repo_tool_calls}, "
+                f"revalidation_flags={state.attempt_revalidation_attempted}, "
+                f"core_evidence_flags={state.attempt_core_evidence_present}, "
+                f"revalidation_attempts={state._revalidation_attempts}, "
+                f"revalidation_core_hits={state._revalidation_core_hits}, "
+                f"revalidation_core_misses={state._revalidation_core_misses}, "
                 f"speculative_dropped={speculative_dropped}, "
                 f"subchain_collapsed={subchain_collapsed}, "
                 f"low_support_dropped={low_support_dropped}, "
@@ -1987,16 +2108,16 @@ Only report findings at or above: {severity_threshold}
                 f"passes_with_core_chain_exact={passes_with_core_chain_exact}, "
                 f"passes_with_core_chain_family={passes_with_core_chain_family}, "
                 f"passes_with_core_chain_flow={passes_with_core_chain_flow}, "
-                f"consensus_mode_used={consensus_mode_used}, "
+                f"consensus_mode_used={state.consensus_mode_used}, "
                 f"consensus_score={consensus_score:.2f}, "
-                f"weak_consensus_triggered={weak_consensus_triggered}, "
-                f"escalation_reason={weak_consensus_reason or 'none'}, "
+                f"weak_consensus_triggered={state.weak_consensus_triggered}, "
+                f"escalation_reason={state.weak_consensus_reason or 'none'}, "
                 f"verifier_outcome={verifier_outcome}",
                 style="dim",
             )
 
         if update_artifacts and isinstance(pr_vulns, list):
-            update_result = update_pr_review_artifacts(securevibes_dir, pr_vulns)
+            update_result = update_pr_review_artifacts(ctx.securevibes_dir, pr_vulns)
             if update_result.new_components_detected:
                 self.console.print(
                     "⚠️  New components detected. Consider running full scan.",
@@ -2004,12 +2125,12 @@ Only report findings at or above: {severity_threshold}
                 )
 
         return ScanResult(
-            repository_path=str(repo),
+            repository_path=str(ctx.repo),
             issues=_issues_from_pr_vulns(pr_vulns if isinstance(pr_vulns, list) else []),
-            files_scanned=len(diff_context.changed_files),
-            scan_time_seconds=round(time.time() - scan_start_time, 2),
+            files_scanned=len(ctx.diff_context.changed_files),
+            scan_time_seconds=round(time.time() - ctx.scan_start_time, 2),
             total_cost_usd=round(self.total_cost, 4),
-            warnings=warnings,
+            warnings=state.warnings,
         )
 
     async def _execute_scan(
