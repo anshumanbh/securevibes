@@ -182,6 +182,16 @@ securevibes pr-review . --base main --head feature-branch --model haiku --debug
 securevibes catchup . --branch main
 ```
 
+PR review runtime controls:
+
+```bash
+# Timeout per PR review attempt in seconds (default: 240)
+export SECUREVIBES_PR_REVIEW_TIMEOUT_SECONDS=300
+
+# Number of PR review attempts before giving up (default: 4)
+export SECUREVIBES_PR_REVIEW_ATTEMPTS=5
+```
+
 PR review artifacts (written to `.securevibes/`):
 - `DIFF_CONTEXT.json` (parsed diff summary)
 - `PR_VULNERABILITIES.json` (raw findings)

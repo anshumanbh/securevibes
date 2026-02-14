@@ -302,6 +302,73 @@ class TestPreToolHook:
         assert "override_result" not in result
 
     @pytest.mark.asyncio
+    async def test_blocks_out_of_repo_pr_artifact_write_in_pr_code_review(
+        self, tracker, console, tmp_path
+    ):
+        """PR code review should deny PR artifact writes outside repository root."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        guard_observer = {"blocked_out_of_repo_count": 0}
+        hook = create_pre_tool_hook(
+            tracker,
+            console,
+            debug=False,
+            detected_languages=detected_languages,
+            pr_repo_root=repo_root,
+            pr_tool_guard_observer=guard_observer,
+        )
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/tmp/.securevibes/PR_VULNERABILITIES.json",
+                "content": "[]",
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "outside repository root" in result["hookSpecificOutput"]["permissionDecisionReason"]
+        assert guard_observer["blocked_out_of_repo_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_blocks_path_traversal_pr_artifact_write_in_pr_code_review(
+        self, tracker, console, tmp_path
+    ):
+        """PR code review should deny traversal writes that escape the repository root."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        guard_observer = {"blocked_out_of_repo_count": 0}
+        hook = create_pre_tool_hook(
+            tracker,
+            console,
+            debug=False,
+            detected_languages=detected_languages,
+            pr_repo_root=repo_root,
+            pr_tool_guard_observer=guard_observer,
+        )
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "../../tmp/.securevibes/PR_VULNERABILITIES.json",
+                "content": "[]",
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert guard_observer["blocked_out_of_repo_count"] == 1
+
+    @pytest.mark.asyncio
     async def test_blocks_tmp_writes_in_pr_code_review(self, tracker, console):
         """PR code review should not allow /tmp writes."""
         tracker.current_phase = "pr-code-review"

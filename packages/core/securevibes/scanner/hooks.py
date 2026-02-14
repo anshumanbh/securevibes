@@ -278,27 +278,65 @@ def create_pre_tool_hook(
         if tool_name == "Write" and tracker.current_phase == "pr-code-review":
             file_path = tool_input.get("file_path", "")
             if file_path:
+                normalized_file_path = file_path
                 try:
                     p = Path(file_path)
                     wants_pr_artifact = p.name == "PR_VULNERABILITIES.json"
-                    allowed = wants_pr_artifact and p.parent.name == ".securevibes"
+                    if wants_pr_artifact and p.parent.name != ".securevibes":
+                        normalized_file_path = ".securevibes/PR_VULNERABILITIES.json"
+                    normalized_path_obj = Path(normalized_file_path)
+                    allowed = (
+                        wants_pr_artifact and normalized_path_obj.parent.name == ".securevibes"
+                    )
                 except Exception:
                     wants_pr_artifact = False
                     allowed = False
 
+                # Enforce repo boundary for PR review writes.
+                if pr_repo_root and wants_pr_artifact:
+                    root_path = pr_repo_root.resolve(strict=False)
+                    candidate_path = Path(normalized_file_path)
+                    if not candidate_path.is_absolute():
+                        candidate_path = root_path / candidate_path
+                    resolved_candidate = candidate_path.resolve(strict=False)
+                    is_inside_repo = (
+                        resolved_candidate == root_path or root_path in resolved_candidate.parents
+                    )
+                    if not is_inside_repo:
+                        if pr_tool_guard_observer is not None:
+                            blocked_count = int(
+                                pr_tool_guard_observer.get("blocked_out_of_repo_count", 0)
+                            )
+                            pr_tool_guard_observer["blocked_out_of_repo_count"] = blocked_count + 1
+                            blocked_paths = pr_tool_guard_observer.setdefault("blocked_paths", [])
+                            if isinstance(blocked_paths, list):
+                                blocked_paths.append(str(resolved_candidate))
+                        return {
+                            "hookSpecificOutput": {
+                                "hookEventName": "PreToolUse",
+                                "permissionDecision": "deny",
+                                "permissionDecisionReason": (
+                                    "PR review cannot write files outside repository root"
+                                ),
+                                "reason": (
+                                    "PR review guard blocked out-of-repo write: "
+                                    f"{resolved_candidate}"
+                                ),
+                            }
+                        }
+
                 # Normalize legacy/bare artifact path writes (e.g., PR_VULNERABILITIES.json)
                 # to the required .securevibes location so orchestration can find the file.
-                if wants_pr_artifact and not allowed:
-                    normalized_path = ".securevibes/PR_VULNERABILITIES.json"
+                if wants_pr_artifact and normalized_file_path != file_path:
                     if debug:
                         console.print(
-                            f"  🔧 Normalized PR artifact path: {file_path} -> {normalized_path}",
+                            f"  🔧 Normalized PR artifact path: {file_path} -> {normalized_file_path}",
                             style="dim yellow",
                         )
                     return {
                         "hookSpecificOutput": {
                             "hookEventName": "PreToolUse",
-                            "updatedInput": {**tool_input, "file_path": normalized_path},
+                            "updatedInput": {**tool_input, "file_path": normalized_file_path},
                         }
                     }
 

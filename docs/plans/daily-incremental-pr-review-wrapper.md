@@ -1,5 +1,7 @@
 # Daily Incremental SecureVibes Wrapper (Cron-Driven, No SecureVibes Code Changes)
 
+Status: NOT YET IMPLEMENTED
+
 ## Summary
 
 Build an external wrapper script that runs every 30 minutes, tracks `last_seen_sha`, computes new commit windows on `origin/main`, and invokes `securevibes pr-review` with adaptive chunking for reliability. This avoids scanning every PR while preserving vuln-chain detection quality under bursty commit traffic.

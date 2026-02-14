@@ -2,7 +2,7 @@
 
 import pytest
 from click.testing import CliRunner
-from securevibes.cli.main import cli
+from securevibes.cli.main import _is_production_url, cli
 
 
 @pytest.fixture
@@ -88,6 +88,36 @@ class TestCatchupCommand:
 
         assert result.exit_code == 0
         assert called["since_last_scan"] is True
+
+
+class TestProductionUrlDetection:
+    """Tests for production URL safety gate detection."""
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://localhost:3000",
+            "https://127.0.0.1:8443",
+            "http://service.dev",
+            "https://qa.internal.local",
+            "http://my-test-api",
+        ],
+    )
+    def test_is_production_url_detects_safe_urls(self, url):
+        assert _is_production_url(url) is False
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://example.com",
+            "https://api.company.io",
+            "https://www.company.org",
+            "https://my-production-host",
+            "https://prod.internal",
+        ],
+    )
+    def test_is_production_url_detects_production_urls(self, url):
+        assert _is_production_url(url) is True
 
 
 class TestScanCommand:

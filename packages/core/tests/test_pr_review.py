@@ -1809,6 +1809,50 @@ async def test_pr_review_timeout_retries_and_succeeds(tmp_path: Path, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_pr_review_query_timeout_uses_configured_timeout(tmp_path: Path, monkeypatch):
+    """Query timeout should respect SECUREVIBES_PR_REVIEW_TIMEOUT_SECONDS (no hardcoded cap)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+
+    (securevibes_dir / "SECURITY.md").write_text("# Security\n", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+    diff_context = DiffContext(files=[], added_lines=1, removed_lines=0, changed_files=["app.py"])
+
+    monkeypatch.setenv("SECUREVIBES_PR_REVIEW_TIMEOUT_SECONDS", "1")
+    monkeypatch.setenv("SECUREVIBES_PR_REVIEW_ATTEMPTS", "1")
+
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+
+    with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+        mock_instance = MagicMock()
+        mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        async def delayed_query(_prompt: str):
+            await asyncio.sleep(2)
+
+        mock_instance.query = AsyncMock(side_effect=delayed_query)
+
+        async def async_gen():
+            return
+            yield  # pragma: no cover
+
+        mock_instance.receive_messages = async_gen
+
+        result = await scanner.pr_review(
+            str(repo),
+            diff_context,
+            known_vulns_path=None,
+            severity_threshold="low",
+        )
+
+    assert any("timed out" in warning.lower() for warning in result.warnings)
+
+
+@pytest.mark.asyncio
 async def test_pr_review_uses_direct_tools_without_task(tmp_path: Path):
     """PR review should run with direct Read/Write/Grep tools and not require Task."""
     repo = tmp_path / "repo"

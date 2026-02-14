@@ -245,7 +245,7 @@ def scan(
             if not allow_production and not quiet:
                 console.print("\n[bold yellow]⚠️  DAST Validation Enabled[/bold yellow]")
                 console.print(f"Target: {target_url}")
-                console.print("\nDAst will send HTTP requests to validate IDOR vulnerabilities.")
+                console.print("\nDAST will send HTTP requests to validate IDOR vulnerabilities.")
                 console.print("Ensure you have authorization to test this target.\n")
 
                 if not click.confirm("Proceed with DAST validation?", default=False):

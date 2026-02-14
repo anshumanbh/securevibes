@@ -145,15 +145,17 @@ class TestProgressTracker:
 
     def test_on_tool_complete_success(self, progress_tracker):
         """Test tracking successful tool completion"""
+        initial_count = progress_tracker.tool_count
         progress_tracker.on_tool_complete("Read", success=True)
-        # Should not raise any errors
-        assert True
+        assert progress_tracker.tool_count == initial_count
+        assert progress_tracker.console.file.getvalue() == ""
 
     def test_on_tool_complete_failure(self, progress_tracker):
         """Test tracking failed tool completion"""
         progress_tracker.on_tool_complete("Read", success=False, error_msg="File not found")
-        # Should handle error gracefully
-        assert True
+        output = progress_tracker.console.file.getvalue()
+        assert "Tool Read failed" in output
+        assert "File not found" in output
 
     def test_on_subagent_stop(self, progress_tracker):
         """Test tracking sub-agent completion"""
@@ -191,17 +193,17 @@ class TestProgressTracker:
         """Test agent narration in debug mode"""
         text = "I am analyzing the authentication system for security vulnerabilities"
 
-        # Should not raise errors
         debug_progress_tracker.on_assistant_text(text)
-        assert True
+        output = debug_progress_tracker.console.file.getvalue()
+        assert "I am analyzing the authentication system" in output
+        assert "💭" in output
 
     def test_non_debug_mode_skips_narration(self, progress_tracker):
         """Test agent narration is skipped in non-debug mode"""
         text = "Some agent thinking"
 
-        # Should be a no-op in non-debug mode
         progress_tracker.on_assistant_text(text)
-        assert True
+        assert progress_tracker.console.file.getvalue() == ""
 
     def test_smart_truncation_in_debug(self, debug_progress_tracker):
         """Test smart truncation of long prompts in debug mode"""
