@@ -653,7 +653,7 @@ class TestMergePrAttemptFindings:
                 chain_support[key] = 1
 
         stats = {}
-        result = _merge_pr_attempt_findings(
+        _merge_pr_attempt_findings(
             [high_support_finding, low_support_finding],
             merge_stats=stats,
             chain_support_counts=chain_support,
@@ -737,9 +737,7 @@ class TestDedupePrVulns:
 
     def test_non_unknown_finding_type_not_changed(self):
         """If finding_type is already set to something other than 'unknown', it should not be changed."""
-        known_vulns = [
-            {"threat_id": "THREAT-1", "title": "Same title", "file_path": "src/app.py"}
-        ]
+        known_vulns = [{"threat_id": "THREAT-1", "title": "Same title", "file_path": "src/app.py"}]
         pr_vulns = [
             {
                 "threat_id": "PR-1",
@@ -777,9 +775,7 @@ class TestDedupePrVulns:
 
     def test_threat_id_overlap_marks_as_known(self):
         """Overlap by threat_id identity match should mark as known_vuln."""
-        known_vulns = [
-            {"threat_id": "THREAT-1", "title": "Some vuln", "file_path": "src/app.py"}
-        ]
+        known_vulns = [{"threat_id": "THREAT-1", "title": "Some vuln", "file_path": "src/app.py"}]
         pr_vulns = [
             {
                 "threat_id": "THREAT-1",
@@ -792,9 +788,7 @@ class TestDedupePrVulns:
         assert deduped[0]["finding_type"] == "known_vuln"
 
     def test_does_not_mutate_original(self):
-        known_vulns = [
-            {"threat_id": "THREAT-1", "title": "Same title", "file_path": "src/app.py"}
-        ]
+        known_vulns = [{"threat_id": "THREAT-1", "title": "Same title", "file_path": "src/app.py"}]
         pr_vulns = [
             {
                 "threat_id": "PR-1",
@@ -809,11 +803,7 @@ class TestDedupePrVulns:
 
     def test_missing_finding_type_treated_as_unknown(self):
         """If finding_type is missing (empty string after normalization), it should be treated as unknown and changed."""
-        known_vulns = [
-            {"threat_id": "THREAT-1", "title": "Same title", "file_path": "src/app.py"}
-        ]
-        pr_vulns = [
-            {"threat_id": "PR-1", "title": "Same title", "file_path": "src/app.py"}
-        ]
+        known_vulns = [{"threat_id": "THREAT-1", "title": "Same title", "file_path": "src/app.py"}]
+        pr_vulns = [{"threat_id": "PR-1", "title": "Same title", "file_path": "src/app.py"}]
         deduped = dedupe_pr_vulns(pr_vulns, known_vulns)
         assert deduped[0]["finding_type"] == "known_vuln"

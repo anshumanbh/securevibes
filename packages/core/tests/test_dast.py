@@ -3,7 +3,7 @@
 import pytest
 import json
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import AsyncMock, Mock, patch, MagicMock
 from click.testing import CliRunner
 
 from securevibes.cli.main import cli, _is_production_url, _check_target_reachability
@@ -154,7 +154,7 @@ class TestCLIDASTFlags:
 
     def test_dast_with_target_url(self, runner, test_repo):
         """--dast with --target-url should be accepted"""
-        with patch("securevibes.cli.main.asyncio.run") as mock_run:
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = ScanResult(
                 repository_path=str(test_repo), issues=[], files_scanned=1, scan_time_seconds=1.0
             )
@@ -186,7 +186,7 @@ class TestCLIDASTFlags:
 
     def test_production_url_allowed_with_flag(self, runner, test_repo):
         """Production URL should be allowed with --allow-production"""
-        with patch("securevibes.cli.main.asyncio.run") as mock_run:
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = ScanResult(
                 repository_path=str(test_repo), issues=[], files_scanned=1, scan_time_seconds=1.0
             )
@@ -209,7 +209,7 @@ class TestCLIDASTFlags:
 
     def test_dast_timeout_custom(self, runner, test_repo):
         """Custom DAST timeout should be accepted"""
-        with patch("securevibes.cli.main.asyncio.run") as mock_run:
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = ScanResult(
                 repository_path=str(test_repo), issues=[], files_scanned=1, scan_time_seconds=1.0
             )
@@ -238,7 +238,7 @@ class TestCLIDASTFlags:
 
     def test_dast_accounts_file(self, runner, test_repo, test_accounts_file):
         """Test accounts file is accepted"""
-        with patch("securevibes.cli.main.asyncio.run") as mock_run:
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = ScanResult(
                 repository_path=str(test_repo), issues=[], files_scanned=1, scan_time_seconds=1.0
             )
@@ -561,19 +561,15 @@ class TestMarkdownReporterDAST:
 
 def test_subagent_dast_cli_invocation(runner, tmp_path):
     """Test --subagent dast CLI flag"""
-    with patch("securevibes.cli.main._run_scan") as mock_run:
-
-        async def mock_async():
-            return Mock(
-                issues=[],
-                files_scanned=1,
-                critical_count=0,
-                high_count=0,
-                medium_count=0,
-                low_count=0,
-            )
-
-        mock_run.return_value = mock_async()
+    with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
+        mock_run.return_value = Mock(
+            issues=[],
+            files_scanned=1,
+            critical_count=0,
+            high_count=0,
+            medium_count=0,
+            low_count=0,
+        )
 
         result = runner.invoke(
             cli,

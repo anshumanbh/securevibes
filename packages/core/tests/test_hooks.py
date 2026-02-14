@@ -219,6 +219,7 @@ class TestPreToolHook:
 
         assert "override_result" in result
         assert "DAST phase may only write" in result["override_result"]["content"]
+        assert result["override_result"]["is_error"] is True
 
     @pytest.mark.asyncio
     async def test_allows_dast_validation_write(self, tracker, console):

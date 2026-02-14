@@ -270,7 +270,7 @@ def create_pre_tool_hook(
                                 "DAST phase may only write .securevibes/DAST_VALIDATION.json. "
                                 f"Blocked write to: {file_path}"
                             ),
-                            "is_error": False,
+                            "is_error": True,
                         }
                     }
 

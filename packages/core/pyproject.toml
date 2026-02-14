@@ -64,6 +64,9 @@ securevibes = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: marks integration tests",
+]
 
 [tool.black]
 line-length = 100
