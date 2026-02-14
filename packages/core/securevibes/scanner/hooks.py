@@ -9,6 +9,7 @@ Provides hook creator functions that return async closures for:
 - JSON validation/auto-fix for vulnerability output
 """
 
+import json
 from pathlib import Path
 from typing import Any, Optional, Set
 from rich.console import Console
@@ -259,7 +260,7 @@ def create_pre_tool_hook(
                     normalized_path = file_path.replace("\\", "/")
                     allowed_tmp = normalized_path.startswith("/tmp/")
                     allowed = allowed_artifact or allowed_tmp
-                except Exception:
+                except (ValueError, TypeError):
                     allowed = False
                 if not allowed:
                     # Block non-artifact writes during DAST phase
@@ -288,7 +289,7 @@ def create_pre_tool_hook(
                     allowed = (
                         wants_pr_artifact and normalized_path_obj.parent.name == ".securevibes"
                     )
-                except Exception:
+                except (ValueError, TypeError):
                     wants_pr_artifact = False
                     allowed = False
 
@@ -489,9 +490,7 @@ def create_json_validation_hook(
         # Log original content analysis
         if debug:
             try:
-                import json as _json
-
-                original_data = _json.loads(content)
+                original_data = json.loads(content)
                 if isinstance(original_data, list) and original_data:
                     first_item = original_data[0] if isinstance(original_data[0], dict) else {}
                     has_finding_type = "finding_type" in first_item
@@ -504,7 +503,7 @@ def create_json_validation_hook(
                         f"extra_fields={has_extra_fields}, items={len(original_data)}",
                         style="dim",
                     )
-            except Exception:
+            except (json.JSONDecodeError, TypeError):
                 pass
 
         # Attempt to fix common format issues
@@ -515,10 +514,8 @@ def create_json_validation_hook(
 
         parsed_fixed_content: object = None
         try:
-            import json as _json
-
-            parsed_fixed_content = _json.loads(fixed_content)
-        except Exception:
+            parsed_fixed_content = json.loads(fixed_content)
+        except (json.JSONDecodeError, TypeError):
             parsed_fixed_content = None
 
         if is_pr_review:

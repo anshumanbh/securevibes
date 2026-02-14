@@ -57,6 +57,7 @@ from securevibes.scanner.chain_analysis import (
     _collect_chain_flow_ids,
     _count_passes_with_core_chains,
     _detect_weak_chain_consensus,
+    _diff_file_path,
     _diff_has_auth_privilege_signals,
     _diff_has_command_builder_signals,
     _diff_has_path_parser_signals,
@@ -203,9 +204,6 @@ def _summarize_diff_line_anchors(
         return summary
     return f"{summary[: max_chars - 15].rstrip()}...[truncated]"
 
-
-def _diff_file_path(diff_file: DiffFile) -> str:
-    return str(diff_file.new_path or diff_file.old_path or "")
 
 
 def _summarize_diff_hunk_snippets(
@@ -390,7 +388,7 @@ ARCHITECTURE CONTEXT:
                             collected_text.append(block.text)
                 elif isinstance(message, ResultMessage):
                     break
-    except Exception:
+    except (OSError, asyncio.TimeoutError, RuntimeError):
         logger.debug("Hypothesis generation failed", exc_info=True)
         return "- Unable to generate hypotheses."
 
@@ -492,7 +490,7 @@ CANDIDATE FINDINGS JSON:
                             collected_text.append(block.text)
                 elif isinstance(message, ResultMessage):
                     break
-    except Exception:
+    except (OSError, asyncio.TimeoutError, RuntimeError):
         logger.debug("PR finding refinement failed", exc_info=True)
         return None
 
