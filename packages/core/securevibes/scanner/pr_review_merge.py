@@ -812,8 +812,13 @@ def _merge_pr_attempt_findings(
 
         if same_cwe_family and shared_anchor:
             return True
-        if same_cwe_family and shared_locations and (
-            line_gap <= MAX_LINE_GAP_SUBCHAIN or token_similarity >= MIN_TOKEN_SIMILARITY_SUBCHAIN_SHARED_LOC
+        if (
+            same_cwe_family
+            and shared_locations
+            and (
+                line_gap <= MAX_LINE_GAP_SUBCHAIN
+                or token_similarity >= MIN_TOKEN_SIMILARITY_SUBCHAIN_SHARED_LOC
+            )
         ):
             return True
         if same_cwe_family and has_end_to_end_variant and line_gap <= MAX_LINE_GAP_SUBCHAIN_E2E:

@@ -169,13 +169,11 @@ class PRReviewAttemptRunner:
         state.attempt_state.carry_forward_candidate_flow_ids = collect_chain_flow_ids(
             cumulative_candidates
         )
-        state.attempt_state.carry_forward_candidate_summary = (
-            summarize_chain_candidates_for_prompt(
-                cumulative_candidates,
-                state.chain_support_counts,
-                len(state.attempt_chain_ids),
-                flow_support_counts=state.flow_support_counts,
-            )
+        state.attempt_state.carry_forward_candidate_summary = summarize_chain_candidates_for_prompt(
+            cumulative_candidates,
+            state.chain_support_counts,
+            len(state.attempt_chain_ids),
+            flow_support_counts=state.flow_support_counts,
         )
 
     def _record_attempt_revalidation_observability(
