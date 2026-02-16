@@ -98,6 +98,23 @@ def _merge_exclude_patterns(tool_input: dict[str, Any], exclude_patterns: list[s
     tool_input["excludePatterns"] = merged + exclude_patterns
 
 
+def _sanitize_pr_grep_scope(scope_path: object) -> str:
+    """Return a safe repository-relative Grep scope for PR review pathless queries."""
+    normalized = _normalize_hook_path(scope_path)
+    if not normalized:
+        return "src"
+
+    candidate = Path(normalized)
+    if candidate.is_absolute():
+        return "src"
+
+    parts = [part for part in candidate.parts if part and part != "."]
+    if not parts or any(part == ".." for part in parts):
+        return "src"
+
+    return "/".join(parts)
+
+
 def _is_within_tmp_dir(file_path: object) -> bool:
     """Return True when an absolute path resolves under /tmp."""
     normalized = _normalize_hook_path(file_path)
@@ -230,7 +247,7 @@ def create_pre_tool_hook(
     - Blocking reads from infrastructure directories (venv, node_modules, etc.)
     - Injecting exclude patterns for Grep/Glob
     - DAST write restrictions (only DAST_VALIDATION.json and /tmp/*)
-    - Skill invocation logging (debug mode)
+    - PR review path and artifact guardrails
 
     Args:
         tracker: ProgressTracker instance for phase detection and tool tracking
@@ -390,7 +407,45 @@ def create_pre_tool_hook(
                 if not normalized_path:
                     # Prevent expensive repo-wide Grep loops in PR review.
                     # Scope to an injected top-level directory derived from changed files.
-                    scope_path = (pr_grep_default_path or "src").strip() or "src"
+                    scope_path = _sanitize_pr_grep_scope(pr_grep_default_path)
+                    if pr_repo_root:
+                        root_path = pr_repo_root.resolve(strict=False)
+                        try:
+                            resolved_scope = (root_path / scope_path).resolve(strict=False)
+                        except (OSError, RuntimeError, ValueError, TypeError):
+                            resolved_scope = None
+
+                        is_inside_repo = bool(
+                            resolved_scope
+                            and (resolved_scope == root_path or root_path in resolved_scope.parents)
+                        )
+                        if not is_inside_repo:
+                            if pr_tool_guard_observer is not None:
+                                blocked_count = int(
+                                    pr_tool_guard_observer.get("blocked_out_of_repo_count", 0)
+                                )
+                                pr_tool_guard_observer["blocked_out_of_repo_count"] = (
+                                    blocked_count + 1
+                                )
+                                blocked_paths = pr_tool_guard_observer.setdefault(
+                                    "blocked_paths", []
+                                )
+                                if isinstance(blocked_paths, list) and resolved_scope is not None:
+                                    blocked_paths.append(str(resolved_scope))
+                            return {
+                                "hookSpecificOutput": {
+                                    "hookEventName": "PreToolUse",
+                                    "permissionDecision": "deny",
+                                    "permissionDecisionReason": (
+                                        "PR review cannot access files outside repository root"
+                                    ),
+                                    "reason": (
+                                        "PR review guard blocked pathless Grep scope: "
+                                        f"{scope_path}"
+                                    ),
+                                }
+                            }
+
                     updated_input = {**tool_input, "path": scope_path}
                     if debug:
                         console.print(

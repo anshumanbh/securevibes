@@ -985,6 +985,78 @@ class TestPreToolHook:
         assert updated["path"] == "apps"
 
     @pytest.mark.asyncio
+    async def test_scopes_pathless_grep_falls_back_to_src_for_unsafe_default_path(
+        self, tracker, console, tmp_path
+    ):
+        """Traversal-like default Grep paths should be sanitized to src."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        hook = create_pre_tool_hook(
+            tracker,
+            console,
+            debug=False,
+            detected_languages=detected_languages,
+            pr_grep_default_path="../outside",
+            pr_repo_root=repo_root,
+        )
+
+        input_data = {
+            "tool_name": "Grep",
+            "tool_input": {
+                "pattern": "token",
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        updated = result["hookSpecificOutput"]["updatedInput"]
+        assert updated["path"] == "src"
+
+    @pytest.mark.asyncio
+    async def test_blocks_pathless_grep_scope_that_resolves_outside_repo(
+        self, tracker, console, tmp_path
+    ):
+        """Pathless Grep defaults should be denied when they resolve outside the repo root."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+        symlink_scope = repo_root / "outside_link"
+        try:
+            symlink_scope.symlink_to(outside_dir, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("Directory symlink creation is not supported on this platform")
+
+        guard_observer = {"blocked_out_of_repo_count": 0}
+        hook = create_pre_tool_hook(
+            tracker,
+            console,
+            debug=False,
+            detected_languages=detected_languages,
+            pr_grep_default_path="outside_link",
+            pr_repo_root=repo_root,
+            pr_tool_guard_observer=guard_observer,
+        )
+
+        input_data = {
+            "tool_name": "Grep",
+            "tool_input": {
+                "pattern": "token",
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert guard_observer["blocked_out_of_repo_count"] == 1
+
+    @pytest.mark.asyncio
     async def test_blocks_diff_context_reads_in_pr_code_review(self, tracker, console):
         """PR code review should block DIFF_CONTEXT.json reads in favor of prompt anchors."""
         tracker.current_phase = "pr-code-review"

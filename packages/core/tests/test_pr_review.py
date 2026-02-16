@@ -476,6 +476,20 @@ def test_derive_pr_default_grep_scope_prefers_non_src_changed_top_level():
     assert scope == "apps"
 
 
+def test_derive_pr_default_grep_scope_ignores_non_repo_paths():
+    """Traversal/absolute diff paths should not become default PR Grep scopes."""
+    context = DiffContext(
+        files=[],
+        added_lines=2,
+        removed_lines=0,
+        changed_files=["../outside/file.py", "/tmp/evil.py"],
+    )
+
+    scope = _derive_pr_default_grep_scope(context)
+
+    assert scope == "src"
+
+
 def test_dedupe_pr_vulns_tags_known_matches():
     """Baseline overlaps should be retained and tagged as known_vuln."""
     pr_vulns = [

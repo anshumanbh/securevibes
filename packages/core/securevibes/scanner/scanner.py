@@ -273,12 +273,14 @@ def _derive_pr_default_grep_scope(diff_context: DiffContext) -> str:
     dir_counts: dict[str, int] = {}
     for raw_path in diff_context.changed_files:
         normalized = normalize_repo_path(raw_path)
-        if not normalized:
+        if not normalized or normalized.startswith("/"):
             continue
         parts = [part for part in normalized.split("/") if part]
         if len(parts) < 2:
             continue
         top_level = parts[0]
+        if top_level in {".", ".."}:
+            continue
         dir_counts[top_level] = dir_counts.get(top_level, 0) + 1
 
     if not dir_counts:
