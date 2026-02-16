@@ -53,6 +53,56 @@ async def test_non_threat_model_file_passes_through(console):
 
 
 @pytest.mark.asyncio
+async def test_non_canonical_threat_model_filename_passes_through(console):
+    """Non-canonical THREAT_MODEL artifact names should be ignored."""
+    hook = create_threat_model_validation_hook(
+        console, debug=False, require_asi=False, max_retries=1
+    )
+    result = await hook(
+        {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/THREAT_MODEL.json.bak",
+                "content": "{ invalid json ]]",
+            },
+        },
+        "tool-123",
+        {},
+    )
+    assert result == {}
+
+
+@pytest.mark.asyncio
+async def test_non_canonical_threat_model_path_does_not_consume_retry_budget(console):
+    """Ignored non-canonical paths must not affect THREAT_MODEL retry tracking."""
+    hook = create_threat_model_validation_hook(
+        console, debug=False, require_asi=False, max_retries=1
+    )
+
+    ignored_input = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/project/.securevibes/THREAT_MODEL.json.bak",
+            "content": "{ invalid json ]]",
+        },
+    }
+    canonical_input = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/project/.securevibes/THREAT_MODEL.json",
+            "content": "{ invalid json ]]",
+        },
+    }
+
+    ignored_result = await hook(ignored_input, "tool-123", {})
+    assert ignored_result == {}
+
+    canonical_first = await hook(canonical_input, "tool-124", {})
+    assert "override_result" in canonical_first
+    assert canonical_first["override_result"]["is_error"] is True
+
+
+@pytest.mark.asyncio
 async def test_wrapped_threats_get_fixed(console):
     hook = create_threat_model_validation_hook(console, debug=False, require_asi=False)
     content = json.dumps({"threats": [_threat("THREAT-001")]})

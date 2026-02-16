@@ -83,6 +83,21 @@ def _path_contains_excluded(path: object, excluded_dirs: Set[str]) -> bool:
     return False
 
 
+def _merge_exclude_patterns(tool_input: dict[str, Any], exclude_patterns: list[str]) -> None:
+    """Safely merge hook exclude patterns into tool_input."""
+    existing = tool_input.get("excludePatterns")
+    if isinstance(existing, list):
+        merged = existing
+    elif isinstance(existing, tuple):
+        merged = list(existing)
+    elif isinstance(existing, str):
+        merged = [existing]
+    else:
+        merged = []
+
+    tool_input["excludePatterns"] = merged + exclude_patterns
+
+
 def _command_uses_blocked_db_tool(command: object, blocked_tools: list[str]) -> Optional[str]:
     """Return matched blocked DB tool when command invokes one, else None."""
     normalized = str(command or "").lower()
@@ -311,8 +326,7 @@ def create_pre_tool_hook(
                 exclude_patterns = [f"{excluded}/**" for excluded in active_exclude_dirs]
 
                 # Add to existing excludePatterns if any, or create new
-                existing_excludes = tool_input.get("excludePatterns", [])
-                tool_input["excludePatterns"] = existing_excludes + exclude_patterns
+                _merge_exclude_patterns(tool_input, exclude_patterns)
 
                 if debug:
                     console.print(
@@ -322,8 +336,7 @@ def create_pre_tool_hook(
             # For Glob, inject excludePatterns
             if tool_name == "Glob":
                 exclude_patterns = [f"{excluded}/**" for excluded in active_exclude_dirs]
-                existing_excludes = tool_input.get("excludePatterns", [])
-                tool_input["excludePatterns"] = existing_excludes + exclude_patterns
+                _merge_exclude_patterns(tool_input, exclude_patterns)
 
         # Enforce DAST write restrictions: only allow writing DAST_VALIDATION.json or /tmp/*
         if tool_name == "Write" and tracker.current_phase == "dast":
@@ -751,7 +764,7 @@ def create_threat_model_validation_hook(
 
         tool_input = input_data.get("tool_input", {})
         file_path = tool_input.get("file_path", "")
-        if not file_path or "THREAT_MODEL.json" not in file_path:
+        if not _is_securevibes_artifact_path(file_path, "THREAT_MODEL.json"):
             return {}
 
         content = tool_input.get("content", "")

@@ -224,6 +224,28 @@ class TestPreToolHook:
         assert result == {}  # No override
 
     @pytest.mark.asyncio
+    async def test_coerces_non_list_exclude_patterns_for_grep(self, tracker, console):
+        """Non-list Grep excludePatterns should be normalized and merged safely."""
+        tracker.current_phase = "assessment"
+        detected_languages = {"python"}
+        hook = create_pre_tool_hook(
+            tracker, console, debug=False, detected_languages=detected_languages
+        )
+
+        input_data = {
+            "tool_name": "Grep",
+            "tool_input": {"pattern": "token", "excludePatterns": "legacy/**"},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        merged = input_data["tool_input"]["excludePatterns"]
+        assert isinstance(merged, list)
+        assert "legacy/**" in merged
+        assert any("venv" in pattern for pattern in merged)
+        assert result == {}
+
+    @pytest.mark.asyncio
     async def test_injects_exclude_patterns_for_glob(self, tracker, console):
         """Test that Glob gets exclude patterns injected"""
         tracker.current_phase = "assessment"
