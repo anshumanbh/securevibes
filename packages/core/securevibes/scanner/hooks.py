@@ -267,16 +267,54 @@ def create_pre_tool_hook(
                 or ""
             )
 
-            if current_phase == "pr-code-review" and pr_repo_root and path:
+            if current_phase == "pr-code-review" and pr_repo_root:
                 root_path = pr_repo_root.resolve(strict=False)
-                candidate_path = Path(path)
-                if not candidate_path.is_absolute():
-                    candidate_path = root_path / candidate_path
-                resolved_candidate = candidate_path.resolve(strict=False)
-                is_inside_repo = (
-                    resolved_candidate == root_path or root_path in resolved_candidate.parents
-                )
-                if not is_inside_repo:
+
+                def _resolve_candidate(candidate: object) -> Optional[Path]:
+                    normalized_candidate = _normalize_hook_path(candidate)
+                    if not normalized_candidate:
+                        return None
+                    try:
+                        candidate_path = Path(normalized_candidate)
+                        if not candidate_path.is_absolute():
+                            candidate_path = root_path / candidate_path
+                        return candidate_path.resolve(strict=False)
+                    except (OSError, RuntimeError, ValueError, TypeError):
+                        return None
+
+                blocked_candidate: Optional[Path] = None
+                resolved_path = _resolve_candidate(path)
+                if path and resolved_path is not None:
+                    is_inside_repo = (
+                        resolved_path == root_path or root_path in resolved_path.parents
+                    )
+                    if not is_inside_repo:
+                        blocked_candidate = resolved_path
+
+                # Glob uses "patterns" instead of path/file_path; enforce guard for each pattern.
+                if blocked_candidate is None and tool_name == "Glob":
+                    raw_patterns = tool_input.get("patterns", [])
+                    if isinstance(raw_patterns, str):
+                        glob_patterns = [raw_patterns]
+                    elif isinstance(raw_patterns, tuple):
+                        glob_patterns = list(raw_patterns)
+                    elif isinstance(raw_patterns, list):
+                        glob_patterns = raw_patterns
+                    else:
+                        glob_patterns = []
+
+                    for pattern in glob_patterns:
+                        resolved_pattern = _resolve_candidate(pattern)
+                        if resolved_pattern is None:
+                            continue
+                        is_inside_repo = (
+                            resolved_pattern == root_path or root_path in resolved_pattern.parents
+                        )
+                        if not is_inside_repo:
+                            blocked_candidate = resolved_pattern
+                            break
+
+                if blocked_candidate is not None:
                     if pr_tool_guard_observer is not None:
                         blocked_count = int(
                             pr_tool_guard_observer.get("blocked_out_of_repo_count", 0)
@@ -284,10 +322,10 @@ def create_pre_tool_hook(
                         pr_tool_guard_observer["blocked_out_of_repo_count"] = blocked_count + 1
                         blocked_paths = pr_tool_guard_observer.setdefault("blocked_paths", [])
                         if isinstance(blocked_paths, list):
-                            blocked_paths.append(str(resolved_candidate))
+                            blocked_paths.append(str(blocked_candidate))
                     if debug:
                         console.print(
-                            f"  🚫 Blocked out-of-repo {tool_name}: {resolved_candidate}",
+                            f"  🚫 Blocked out-of-repo {tool_name}: {blocked_candidate}",
                             style="dim yellow",
                         )
                     return {
@@ -299,7 +337,7 @@ def create_pre_tool_hook(
                             ),
                             "reason": (
                                 "PR review guard blocked out-of-repo access: "
-                                f"{resolved_candidate}"
+                                f"{blocked_candidate}"
                             ),
                         }
                     }

@@ -789,6 +789,98 @@ class TestPreToolHook:
         assert guard_observer["blocked_out_of_repo_count"] == 1
 
     @pytest.mark.asyncio
+    async def test_blocks_out_of_repo_glob_patterns_in_pr_code_review(
+        self, tracker, console, tmp_path
+    ):
+        """PR code review should deny glob patterns that target paths outside repository root."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+        guard_observer = {"blocked_out_of_repo_count": 0}
+        hook = create_pre_tool_hook(
+            tracker,
+            console,
+            debug=False,
+            detected_languages=detected_languages,
+            pr_repo_root=repo_root,
+            pr_tool_guard_observer=guard_observer,
+        )
+
+        input_data = {
+            "tool_name": "Glob",
+            "tool_input": {"patterns": [str(outside_dir / "**" / "*.py")]},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert guard_observer["blocked_out_of_repo_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_blocks_path_traversal_glob_patterns_in_pr_code_review(
+        self, tracker, console, tmp_path
+    ):
+        """PR code review should deny glob traversal patterns that escape repository root."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        guard_observer = {"blocked_out_of_repo_count": 0}
+        hook = create_pre_tool_hook(
+            tracker,
+            console,
+            debug=False,
+            detected_languages=detected_languages,
+            pr_repo_root=repo_root,
+            pr_tool_guard_observer=guard_observer,
+        )
+
+        input_data = {
+            "tool_name": "Glob",
+            "tool_input": {"patterns": ["../outside/**/*.py"]},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert guard_observer["blocked_out_of_repo_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_allows_in_repo_glob_patterns_with_repo_guard_in_pr_code_review(
+        self, tracker, console, tmp_path
+    ):
+        """PR code review should allow in-repo glob patterns when guard is enabled."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        repo_root = tmp_path / "repo"
+        source_dir = repo_root / "src"
+        source_dir.mkdir(parents=True)
+        guard_observer = {"blocked_out_of_repo_count": 0}
+        hook = create_pre_tool_hook(
+            tracker,
+            console,
+            debug=False,
+            detected_languages=detected_languages,
+            pr_repo_root=repo_root,
+            pr_tool_guard_observer=guard_observer,
+        )
+
+        input_data = {
+            "tool_name": "Glob",
+            "tool_input": {"patterns": [str(source_dir / "**" / "*.py")]},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert result == {}
+        assert guard_observer["blocked_out_of_repo_count"] == 0
+
+    @pytest.mark.asyncio
     async def test_allows_in_repo_read_with_repo_guard_in_pr_code_review(
         self, tracker, console, tmp_path
     ):
