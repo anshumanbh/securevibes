@@ -251,6 +251,25 @@ class PRReviewAttemptRunner:
             if not state.weak_consensus_reason:
                 state.weak_consensus_reason = "revalidation_core_miss"
 
+    async def _run_attempt_messages(
+        self,
+        *,
+        client: Any,
+        attempt_prompt: str,
+        tracker: Any,
+    ) -> None:
+        """Run a single attempt's query + message stream consumption."""
+        await client.query(attempt_prompt)
+        async for message in client.receive_messages():
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        tracker.on_assistant_text(block.text)
+            elif isinstance(message, ResultMessage):
+                if message.total_cost_usd:
+                    self._scanner.total_cost = message.total_cost_usd
+                break
+
     async def run_attempt_loop(
         self,
         ctx: PRReviewContext,
@@ -275,6 +294,12 @@ class PRReviewAttemptRunner:
                 attempt_expected_family_ids or attempt_expected_flow_ids
             )
             attempt_force_revalidation = False
+            # Clear stale artifacts before every attempt so this pass only consumes fresh output.
+            try:
+                ctx.pr_vulns_path.unlink()
+            except OSError:
+                pass
+
             if attempt_num > 1:
                 plan_index = attempt_num - 2
                 if plan_index < len(ctx.retry_focus_plan):
@@ -301,10 +326,6 @@ class PRReviewAttemptRunner:
                         "  🧪 PR pass requires explicit carried-chain revalidation",
                         style="dim",
                     )
-                try:
-                    ctx.pr_vulns_path.unlink()
-                except OSError:
-                    pass
 
             agents = create_agent_definitions(cli_model=self.model)
             attempt_prompt = f"{ctx.contextualized_prompt}{retry_suffix}"
@@ -351,21 +372,13 @@ class PRReviewAttemptRunner:
             try:
                 async with self._claude_client_cls(options=options) as client:
                     await asyncio.wait_for(
-                        client.query(attempt_prompt), timeout=ctx.pr_timeout_seconds
+                        self._run_attempt_messages(
+                            client=client,
+                            attempt_prompt=attempt_prompt,
+                            tracker=tracker,
+                        ),
+                        timeout=ctx.pr_timeout_seconds,
                     )
-
-                    async def consume_messages() -> None:
-                        async for message in client.receive_messages():
-                            if isinstance(message, AssistantMessage):
-                                for block in message.content:
-                                    if isinstance(block, TextBlock):
-                                        tracker.on_assistant_text(block.text)
-                            elif isinstance(message, ResultMessage):
-                                if message.total_cost_usd:
-                                    self._scanner.total_cost = message.total_cost_usd
-                                break
-
-                    await asyncio.wait_for(consume_messages(), timeout=ctx.pr_timeout_seconds)
             except asyncio.TimeoutError:
                 attempt_error = (
                     f"PR code review attempt {attempt_num}/{pr_review_attempts} timed out after "

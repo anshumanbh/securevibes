@@ -1699,11 +1699,6 @@ async def test_pr_review_handles_wrapper_format(tmp_path: Path):
         "cwe": "89",
         "recommendation": "Use parameterized queries",
     }
-    # Write as wrapper dict with variant fields — scanner must unwrap + normalize it
-    (securevibes_dir / "PR_VULNERABILITIES.json").write_text(
-        json.dumps({"vulnerabilities": [variant_vuln]}),
-        encoding="utf-8",
-    )
 
     diff_context = DiffContext(files=[], added_lines=1, removed_lines=0, changed_files=["app.py"])
 
@@ -1714,7 +1709,15 @@ async def test_pr_review_handles_wrapper_format(tmp_path: Path):
         mock_instance = MagicMock()
         mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
-        mock_instance.query = AsyncMock()
+
+        async def write_attempt_artifact(*_args, **_kwargs) -> None:
+            # Emulate the PR agent writing a wrapper-format artifact during this attempt.
+            (securevibes_dir / "PR_VULNERABILITIES.json").write_text(
+                json.dumps({"vulnerabilities": [variant_vuln]}),
+                encoding="utf-8",
+            )
+
+        mock_instance.query = AsyncMock(side_effect=write_attempt_artifact)
 
         async def async_gen():
             return

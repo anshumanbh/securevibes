@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from claude_agent_sdk.types import AssistantMessage, ResultMessage, TextBlock
 
 from securevibes.scanner.pr_review_flow import (
     PRAttemptState,
@@ -569,9 +570,8 @@ class TestRunAttemptLoop:
         state = PRReviewState()
         vulns = [_make_finding()]
 
-        single_attempt_ctx.pr_vulns_path.write_text(json.dumps(vulns), encoding="utf-8")
-
-        await runner.run_attempt_loop(single_attempt_ctx, state)
+        with patch(f"{_MODULE}._load_pr_vulnerabilities_artifact", return_value=(vulns, None)):
+            await runner.run_attempt_loop(single_attempt_ctx, state)
 
         assert state.attempts_run == 1
         assert state.artifact_loaded is True
@@ -636,6 +636,40 @@ class TestRunAttemptLoop:
         assert state.attempts_run == 2
         assert any("timed out" in w for w in state.warnings)
 
+    async def test_timeout_budget_covers_query_and_receive(self, single_attempt_ctx):
+        """A single timeout budget should span query and receive work together."""
+        single_attempt_ctx.pr_timeout_seconds = 0.1
+
+        class _SlowClient:
+            async def query(self, prompt):
+                await asyncio.sleep(0.07)
+
+            async def receive_messages(self):
+                await asyncio.sleep(0.07)
+                if False:  # pragma: no cover
+                    yield None
+
+        class _SlowClientCtx:
+            async def __aenter__(self):
+                return _SlowClient()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        client_cls = MagicMock(return_value=_SlowClientCtx())
+        runner = PRReviewAttemptRunner(
+            _make_scanner(),
+            progress_tracker_cls=_FakeTracker,
+            claude_client_cls=client_cls,
+            hook_matcher_cls=MagicMock,
+        )
+        state = PRReviewState()
+
+        await runner.run_attempt_loop(single_attempt_ctx, state)
+
+        assert any("timed out after 0.1s" in warning for warning in state.warnings)
+        assert state.attempt_finding_counts == [0]
+
     async def test_generic_exception_records_warning_with_type(self, single_attempt_ctx):
         """Non-timeout exceptions should include the exception type in the warning."""
         runner, _ = _make_error_runner(error_cls=RuntimeError, error_msg="connection reset")
@@ -667,9 +701,11 @@ class TestRunAttemptLoop:
         state = PRReviewState()
 
         vulns = [_make_finding()]
-        ctx.pr_vulns_path.write_text(json.dumps(vulns), encoding="utf-8")
-
-        await runner.run_attempt_loop(ctx, state)
+        with patch(
+            f"{_MODULE}._load_pr_vulnerabilities_artifact",
+            side_effect=[(vulns, None), (vulns, None)],
+        ):
+            await runner.run_attempt_loop(ctx, state)
 
         assert state.attempts_run == 2
         assert len(state.attempt_finding_counts) == 2
@@ -683,11 +719,87 @@ class TestRunAttemptLoop:
         state = PRReviewState()
 
         vulns = [_make_finding()]
-        ctx.pr_vulns_path.write_text(json.dumps(vulns), encoding="utf-8")
-
-        await runner.run_attempt_loop(ctx, state)
+        with patch(
+            f"{_MODULE}._load_pr_vulnerabilities_artifact",
+            side_effect=[(vulns, None), (vulns, None)],
+        ):
+            await runner.run_attempt_loop(ctx, state)
 
         assert client_cls.call_count == 2
+
+    async def test_retry_focus_plan_exhaustion_stops_appending_after_plan_end(self, tmp_path):
+        """Only configured retry focus areas should be appended across many attempts."""
+        ctx = _make_context(tmp_path)
+        ctx.pr_review_attempts = 4
+        ctx.retry_focus_plan = ["command_option", "path_exfiltration"]
+        runner, _, _ = _make_loop_runner()
+        state = PRReviewState()
+
+        with patch(
+            f"{_MODULE}._load_pr_vulnerabilities_artifact",
+            side_effect=[
+                ([], "not produced"),
+                ([], "not produced"),
+                ([], "not produced"),
+                ([], "not produced"),
+            ],
+        ):
+            await runner.run_attempt_loop(ctx, state)
+
+        assert state.attempts_run == 4
+        assert state.attempt_focus_areas == ["command_option", "path_exfiltration"]
+
+    async def test_run_attempt_loop_processes_assistant_and_result_messages(self, single_attempt_ctx):
+        """Assistant text should be forwarded and ResultMessage cost should update scanner state."""
+        scanner = _make_scanner()
+        observed_texts: list[str] = []
+
+        class _RecordingTracker:
+            def __init__(self, *args, **kwargs):
+                self.current_phase = None
+
+            def on_assistant_text(self, text):
+                observed_texts.append(text)
+
+        class _MessageClient:
+            async def query(self, prompt):
+                return None
+
+            async def receive_messages(self):
+                yield AssistantMessage(
+                    content=[TextBlock(text="assistant evidence summary")],
+                    model="sonnet",
+                )
+                yield ResultMessage(
+                    subtype="success",
+                    duration_ms=10,
+                    duration_api_ms=10,
+                    is_error=False,
+                    num_turns=1,
+                    session_id="session-1",
+                    total_cost_usd=1.25,
+                )
+
+        class _MessageClientCtx:
+            async def __aenter__(self):
+                return _MessageClient()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        runner = PRReviewAttemptRunner(
+            scanner,
+            progress_tracker_cls=_RecordingTracker,
+            claude_client_cls=MagicMock(return_value=_MessageClientCtx()),
+            hook_matcher_cls=MagicMock,
+        )
+        state = PRReviewState()
+
+        with patch(f"{_MODULE}._load_pr_vulnerabilities_artifact", return_value=([], "not produced")):
+            await runner.run_attempt_loop(single_attempt_ctx, state)
+
+        assert observed_texts == ["assistant evidence summary"]
+        assert scanner.total_cost == 1.25
 
     async def test_attempt_error_skips_load_warning_append(self, single_attempt_ctx):
         """When attempt fails, load warning should not be added as a separate warning."""
@@ -699,3 +811,18 @@ class TestRunAttemptLoop:
         # Should only have the attempt error warning, not also a load warning
         assert len(state.warnings) == 1
         assert "ConnectionError" in state.warnings[0]
+
+    async def test_first_attempt_error_does_not_reuse_stale_artifact(self, single_attempt_ctx):
+        """Stale artifacts from prior runs should not be loaded when attempt 1 fails."""
+        stale_vulns = [_make_finding(title="Stale finding")]
+        single_attempt_ctx.pr_vulns_path.write_text(json.dumps(stale_vulns), encoding="utf-8")
+
+        runner, _ = _make_error_runner(error_cls=ConnectionError, error_msg="network down")
+        state = PRReviewState()
+
+        await runner.run_attempt_loop(single_attempt_ctx, state)
+
+        assert state.artifact_loaded is False
+        assert state.collected_pr_vulns == []
+        assert state.attempt_finding_counts == [0]
+        assert not single_attempt_ctx.pr_vulns_path.exists()
