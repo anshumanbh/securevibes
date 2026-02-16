@@ -293,6 +293,26 @@ class TestGitRefValidation:
             with pytest.raises(ValueError, match="Invalid git ref"):
                 _validate_git_ref(ref)
 
+    @pytest.mark.parametrize(
+        "ref",
+        [
+            "..",
+            "...",
+            "main..",
+            "..HEAD",
+            "main...",
+            "...HEAD",
+            "main....head",
+            "main..head..tail",
+            "main...head...tail",
+            "main...head..tail",
+        ],
+    )
+    def test_invalid_malformed_ranges(self, ref):
+        """Malformed range syntax should be rejected."""
+        with pytest.raises(ValueError, match="malformed range syntax"):
+            _validate_git_ref(ref)
+
     @pytest.mark.parametrize("ref", ["--name-only", "-U0", "--help", "main..--name-only"])
     def test_invalid_option_style_refs(self, ref):
         """Refs that look like CLI options should be rejected."""
@@ -337,3 +357,14 @@ class TestGitRefValidation:
 
         with pytest.raises(ValueError, match="option-style refs are not allowed"):
             get_diff_from_commits(Path("."), "--name-only")
+
+    def test_get_diff_from_commits_rejects_malformed_range(self, monkeypatch):
+        """Malformed ranges should be rejected before running git."""
+
+        def fail_if_called(*_args, **_kwargs):
+            pytest.fail("subprocess.run should not be called for malformed ranges")
+
+        monkeypatch.setattr("securevibes.diff.extractor.subprocess.run", fail_if_called)
+
+        with pytest.raises(ValueError, match="malformed range syntax"):
+            get_diff_from_commits(Path("."), "main....head")

@@ -10,6 +10,14 @@ import subprocess
 GIT_REF_PATTERN = re.compile(r"^[\w./@^~-]+$")
 
 
+def _validate_single_git_ref(ref: str, original_ref: str) -> None:
+    """Validate one git ref token (non-range)."""
+    if ref.startswith("-"):
+        raise ValueError(f"Invalid git ref: {original_ref!r} (option-style refs are not allowed)")
+    if not GIT_REF_PATTERN.match(ref):
+        raise ValueError(f"Invalid git ref: {original_ref!r} (contains invalid characters)")
+
+
 def _validate_git_ref(ref: str) -> None:
     """Validate a git ref to prevent command injection.
 
@@ -21,15 +29,33 @@ def _validate_git_ref(ref: str) -> None:
     """
     if not ref:
         raise ValueError("Git ref cannot be empty")
-    # Handle commit ranges (e.g., abc123~1..def456 or base...head)
-    parts = re.split(r"\.{2,3}", ref)
-    for part in parts:
-        if not part:
-            continue
-        if part.startswith("-"):
-            raise ValueError(f"Invalid git ref: {ref!r} (option-style refs are not allowed)")
-        if not GIT_REF_PATTERN.match(part):
-            raise ValueError(f"Invalid git ref: {ref!r} (contains invalid characters)")
+    # Handle commit ranges (e.g., abc123~1..def456 or base...head).
+    # Require exactly two non-empty endpoints when a range separator is present.
+    if "...." in ref:
+        raise ValueError(f"Invalid git ref: {ref!r} (malformed range syntax)")
+
+    has_three_dot_range = "..." in ref
+    has_two_dot_range = ".." in ref
+
+    if has_three_dot_range:
+        parts = ref.split("...")
+        if len(parts) != 2 or not all(parts):
+            raise ValueError(f"Invalid git ref: {ref!r} (malformed range syntax)")
+        for part in parts:
+            if ".." in part:
+                raise ValueError(f"Invalid git ref: {ref!r} (malformed range syntax)")
+            _validate_single_git_ref(part, ref)
+        return
+
+    if has_two_dot_range:
+        parts = ref.split("..")
+        if len(parts) != 2 or not all(parts):
+            raise ValueError(f"Invalid git ref: {ref!r} (malformed range syntax)")
+        for part in parts:
+            _validate_single_git_ref(part, ref)
+        return
+
+    _validate_single_git_ref(ref, ref)
 
 
 def _run_git_diff(repo: Path, args: list[str]) -> str:
