@@ -40,8 +40,8 @@ class PRAttemptState:
     """Mutable state container for PR review attempt loop."""
 
     carry_forward_candidate_summary: str = ""
-    carry_forward_candidate_family_ids: set = field(default_factory=set)
-    carry_forward_candidate_flow_ids: set = field(default_factory=set)
+    carry_forward_candidate_family_ids: set[str] = field(default_factory=set)
+    carry_forward_candidate_flow_ids: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -53,15 +53,15 @@ class PRReviewContext:
     focused_diff_context: DiffContext
     diff_context: DiffContext
     contextualized_prompt: str
-    baseline_vulns: list
+    baseline_vulns: list[dict]
     pr_review_attempts: int
     pr_timeout_seconds: int
     pr_vulns_path: Path
-    detected_languages: set
+    detected_languages: set[str]
     command_builder_signals: bool
     path_parser_signals: bool
     auth_privilege_signals: bool
-    retry_focus_plan: list
+    retry_focus_plan: list[str]
     diff_line_anchors: str
     diff_hunk_snippets: str
     pr_grep_default_scope: str
@@ -73,36 +73,36 @@ class PRReviewContext:
 class PRReviewState:
     """Mutable state container for the full PR review lifecycle."""
 
-    warnings: list = field(default_factory=list)
-    pr_vulns: list = field(default_factory=list)
-    collected_pr_vulns: list = field(default_factory=list)
-    ephemeral_pr_vulns: list = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    pr_vulns: list[dict] = field(default_factory=list)
+    collected_pr_vulns: list[dict] = field(default_factory=list)
+    ephemeral_pr_vulns: list[dict] = field(default_factory=list)
     artifact_loaded: bool = False
     attempts_run: int = 0
     attempts_with_overwritten_artifact: int = 0
-    attempt_finding_counts: list = field(default_factory=list)
-    attempt_observed_counts: list = field(default_factory=list)
-    attempt_focus_areas: list = field(default_factory=list)
-    attempt_chain_ids: list = field(default_factory=list)
-    attempt_chain_exact_ids: list = field(default_factory=list)
-    attempt_chain_family_ids: list = field(default_factory=list)
-    attempt_chain_flow_ids: list = field(default_factory=list)
-    attempt_revalidation_attempted: list = field(default_factory=list)
-    attempt_core_evidence_present: list = field(default_factory=list)
-    chain_support_counts: dict = field(default_factory=dict)
-    flow_support_counts: dict = field(default_factory=dict)
+    attempt_finding_counts: list[int] = field(default_factory=list)
+    attempt_observed_counts: list[int] = field(default_factory=list)
+    attempt_focus_areas: list[str] = field(default_factory=list)
+    attempt_chain_ids: list[set[str]] = field(default_factory=list)
+    attempt_chain_exact_ids: list[set[str]] = field(default_factory=list)
+    attempt_chain_family_ids: list[set[str]] = field(default_factory=list)
+    attempt_chain_flow_ids: list[set[str]] = field(default_factory=list)
+    attempt_revalidation_attempted: list[bool] = field(default_factory=list)
+    attempt_core_evidence_present: list[bool] = field(default_factory=list)
+    chain_support_counts: dict[str, int] = field(default_factory=dict)
+    flow_support_counts: dict[str, int] = field(default_factory=dict)
     attempt_state: PRAttemptState = field(default_factory=PRAttemptState)
     required_core_chain_pass_support: int = 2
     weak_consensus_reason: str = ""
     weak_consensus_triggered: bool = False
     consensus_mode_used: str = "family"
-    support_counts_snapshot: dict = field(
+    support_counts_snapshot: dict[str, int] = field(
         default_factory=lambda: {"exact": 0, "family": 0, "flow": 0}
     )
-    pr_tool_guard_observer: dict = field(
+    pr_tool_guard_observer: dict[str, Any] = field(
         default_factory=lambda: {"blocked_out_of_repo_count": 0, "blocked_paths": []}
     )
-    merge_stats: dict = field(default_factory=dict)
+    merge_stats: dict[str, int] = field(default_factory=dict)
 
 
 class PRReviewAttemptRunner:
@@ -347,6 +347,7 @@ class PRReviewAttemptRunner:
                 },
             )
 
+            attempt_error: Optional[str] = None
             try:
                 async with self._claude_client_cls(options=options) as client:
                     await asyncio.wait_for(
@@ -366,56 +367,25 @@ class PRReviewAttemptRunner:
 
                     await asyncio.wait_for(consume_messages(), timeout=ctx.pr_timeout_seconds)
             except asyncio.TimeoutError:
-                timeout_warning = (
+                attempt_error = (
                     f"PR code review attempt {attempt_num}/{pr_review_attempts} timed out after "
                     f"{ctx.pr_timeout_seconds}s."
                 )
-                state.warnings.append(timeout_warning)
-                self.console.print(f"\n[bold yellow]WARNING:[/bold yellow] {timeout_warning}\n")
-                loaded_vulns, load_warning = _load_pr_vulnerabilities_artifact(
-                    pr_vulns_path=ctx.pr_vulns_path,
-                    console=self.console,
-                )
-                self._process_attempt_outcome(
-                    ctx,
-                    state,
-                    attempt_num=attempt_num,
-                    attempt_write_observer=attempt_write_observer,
-                    attempt_force_revalidation=attempt_force_revalidation,
-                    attempt_expected_family_ids=attempt_expected_family_ids,
-                    attempt_expected_flow_ids=attempt_expected_flow_ids,
-                    loaded_vulns=loaded_vulns,
-                    load_warning=load_warning,
-                )
-                continue
             except Exception as exc:
-                attempt_warning = (
-                    f"PR code review attempt {attempt_num}/{pr_review_attempts} failed: {exc}"
+                attempt_error = (
+                    f"PR code review attempt {attempt_num}/{pr_review_attempts} failed: "
+                    f"{type(exc).__name__}: {exc}"
                 )
-                state.warnings.append(attempt_warning)
-                self.console.print(f"\n[bold yellow]WARNING:[/bold yellow] {attempt_warning}\n")
-                loaded_vulns, load_warning = _load_pr_vulnerabilities_artifact(
-                    pr_vulns_path=ctx.pr_vulns_path,
-                    console=self.console,
-                )
-                self._process_attempt_outcome(
-                    ctx,
-                    state,
-                    attempt_num=attempt_num,
-                    attempt_write_observer=attempt_write_observer,
-                    attempt_force_revalidation=attempt_force_revalidation,
-                    attempt_expected_family_ids=attempt_expected_family_ids,
-                    attempt_expected_flow_ids=attempt_expected_flow_ids,
-                    loaded_vulns=loaded_vulns,
-                    load_warning=load_warning,
-                )
-                continue
+
+            if attempt_error:
+                state.warnings.append(attempt_error)
+                self.console.print(f"\n[bold yellow]WARNING:[/bold yellow] {attempt_error}\n")
 
             loaded_vulns, load_warning = _load_pr_vulnerabilities_artifact(
                 pr_vulns_path=ctx.pr_vulns_path,
                 console=self.console,
             )
-            if load_warning:
+            if load_warning and not attempt_error:
                 state.warnings.append(
                     f"PR code review attempt {attempt_num}/{pr_review_attempts}: {load_warning}"
                 )
@@ -427,18 +397,6 @@ class PRReviewAttemptRunner:
                         f"{len(observed_vulns)} finding(s).",
                         style="dim",
                     )
-                self._process_attempt_outcome(
-                    ctx,
-                    state,
-                    attempt_num=attempt_num,
-                    attempt_write_observer=attempt_write_observer,
-                    attempt_force_revalidation=attempt_force_revalidation,
-                    attempt_expected_family_ids=attempt_expected_family_ids,
-                    attempt_expected_flow_ids=attempt_expected_flow_ids,
-                    loaded_vulns=loaded_vulns,
-                    load_warning=load_warning,
-                )
-                continue
 
             self._process_attempt_outcome(
                 ctx,
@@ -451,9 +409,12 @@ class PRReviewAttemptRunner:
                 loaded_vulns=loaded_vulns,
                 load_warning=load_warning,
             )
+
+            if attempt_error or load_warning:
+                continue
+
             attempt_finding_count = len(loaded_vulns)
             if attempt_finding_count:
-                self._refresh_carry_forward_candidates(state)
                 if self.debug:
                     self.console.print(
                         f"  PR pass {attempt_num}/{pr_review_attempts}: "
