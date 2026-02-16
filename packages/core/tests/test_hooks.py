@@ -184,6 +184,25 @@ class TestPreToolHook:
         assert "Infrastructure directory" in result["override_result"]["content"]
 
     @pytest.mark.asyncio
+    async def test_excludes_vendor_bundle_for_read(self, tracker, console):
+        """Test that reads from Ruby vendor/bundle are blocked."""
+        tracker.current_phase = "assessment"
+        detected_languages = {"ruby"}
+        hook = create_pre_tool_hook(
+            tracker, console, debug=False, detected_languages=detected_languages
+        )
+
+        input_data = {
+            "tool_name": "Read",
+            "tool_input": {"file_path": "/project/vendor/bundle/gems/rails/lib/railtie.rb"},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "override_result" in result
+        assert "Infrastructure directory" in result["override_result"]["content"]
+
+    @pytest.mark.asyncio
     async def test_injects_exclude_patterns_for_grep(self, tracker, console):
         """Test that Grep gets exclude patterns injected"""
         tracker.current_phase = "assessment"

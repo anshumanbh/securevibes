@@ -51,6 +51,38 @@ def _classify_vulnerability_artifact_path(file_path: object) -> tuple[bool, bool
     return (is_pr or is_vulns, is_pr)
 
 
+def _path_contains_excluded(path: object, excluded_dirs: Set[str]) -> bool:
+    """Return True when a path contains any excluded segment sequence."""
+    normalized_path = _normalize_hook_path(path)
+    if not normalized_path:
+        return False
+
+    path_parts = tuple(part for part in Path(normalized_path).parts if part and part != "/")
+    if not path_parts:
+        return False
+
+    for excluded in excluded_dirs:
+        excluded_norm = _normalize_hook_path(excluded).strip("/")
+        if not excluded_norm:
+            continue
+
+        excluded_parts = tuple(part for part in excluded_norm.split("/") if part)
+        if not excluded_parts:
+            continue
+
+        if len(excluded_parts) == 1:
+            if excluded_parts[0] in path_parts:
+                return True
+            continue
+
+        window = len(excluded_parts)
+        for idx in range(0, len(path_parts) - window + 1):
+            if path_parts[idx : idx + window] == excluded_parts:
+                return True
+
+    return False
+
+
 def _command_uses_blocked_db_tool(command: object, blocked_tools: list[str]) -> Optional[str]:
     """Return matched blocked DB tool when command invokes one, else None."""
     normalized = str(command or "").lower()
@@ -213,8 +245,7 @@ def create_pre_tool_hook(
 
             if path:
                 # Check if path contains any excluded directory
-                path_parts = Path(path).parts if path else []
-                if any(excluded in path_parts for excluded in active_exclude_dirs):
+                if _path_contains_excluded(path, active_exclude_dirs):
                     # Return empty result to skip this tool execution
                     if debug:
                         console.print(
