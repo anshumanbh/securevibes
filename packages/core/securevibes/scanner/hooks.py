@@ -98,6 +98,23 @@ def _merge_exclude_patterns(tool_input: dict[str, Any], exclude_patterns: list[s
     tool_input["excludePatterns"] = merged + exclude_patterns
 
 
+def _is_within_tmp_dir(file_path: object) -> bool:
+    """Return True when an absolute path resolves under /tmp."""
+    normalized = _normalize_hook_path(file_path)
+    if not normalized:
+        return False
+
+    try:
+        candidate = Path(normalized)
+        if not candidate.is_absolute():
+            return False
+        resolved_candidate = candidate.resolve(strict=False)
+        tmp_root = Path("/tmp").resolve(strict=False)
+        return resolved_candidate == tmp_root or tmp_root in resolved_candidate.parents
+    except (OSError, RuntimeError, ValueError, TypeError):
+        return False
+
+
 def _command_uses_blocked_db_tool(command: object, blocked_tools: list[str]) -> Optional[str]:
     """Return matched blocked DB tool when command invokes one, else None."""
     normalized = str(command or "").lower()
@@ -340,111 +357,128 @@ def create_pre_tool_hook(
 
         # Enforce DAST write restrictions: only allow writing DAST_VALIDATION.json or /tmp/*
         if tool_name == "Write" and tracker.current_phase == "dast":
-            file_path = tool_input.get("file_path", "")
-            if file_path:
-                try:
-                    p = Path(file_path)
-                    # Allow primary artifact write
-                    allowed_artifact = (
-                        p.name == "DAST_VALIDATION.json" and p.parent.name == ".securevibes"
-                    )
-                    # Allow ephemeral temp writes under /tmp for helper code/data
-                    normalized_path = file_path.replace("\\", "/")
-                    allowed_tmp = normalized_path.startswith("/tmp/")
-                    allowed = allowed_artifact or allowed_tmp
-                except (ValueError, TypeError):
-                    allowed = False
-                if not allowed:
-                    # Block non-artifact writes during DAST phase
-                    return {
-                        "override_result": {
-                            "content": (
-                                "DAST phase may only write .securevibes/DAST_VALIDATION.json. "
-                                f"Blocked write to: {file_path}"
-                            ),
-                            "is_error": True,
-                        }
+            file_path = _normalize_hook_path(tool_input.get("file_path", ""))
+            if not file_path:
+                return {
+                    "override_result": {
+                        "content": (
+                            "DAST phase write rejected: file_path is required. "
+                            "DAST phase may only write .securevibes/DAST_VALIDATION.json or /tmp/*."
+                        ),
+                        "is_error": True,
                     }
+                }
+
+            try:
+                p = Path(file_path)
+                # Allow primary artifact write
+                allowed_artifact = (
+                    p.name == "DAST_VALIDATION.json" and p.parent.name == ".securevibes"
+                )
+            except (ValueError, TypeError):
+                allowed_artifact = False
+            # Allow ephemeral temp writes under /tmp for helper code/data
+            allowed_tmp = _is_within_tmp_dir(file_path)
+            allowed = allowed_artifact or allowed_tmp
+            if not allowed:
+                # Block non-artifact writes during DAST phase
+                return {
+                    "override_result": {
+                        "content": (
+                            "DAST phase may only write .securevibes/DAST_VALIDATION.json or /tmp/*. "
+                            f"Blocked write to: {file_path}"
+                        ),
+                        "is_error": True,
+                    }
+                }
 
         # Enforce PR review write restrictions:
         # only allow writing .securevibes/PR_VULNERABILITIES.json
         if tool_name == "Write" and tracker.current_phase == "pr-code-review":
-            file_path = tool_input.get("file_path", "")
-            if file_path:
-                normalized_file_path = file_path
-                try:
-                    p = Path(file_path)
-                    wants_pr_artifact = p.name == "PR_VULNERABILITIES.json"
-                    if wants_pr_artifact and p.parent.name != ".securevibes":
-                        normalized_file_path = ".securevibes/PR_VULNERABILITIES.json"
-                    normalized_path_obj = Path(normalized_file_path)
-                    allowed = (
-                        wants_pr_artifact and normalized_path_obj.parent.name == ".securevibes"
-                    )
-                except (ValueError, TypeError):
-                    wants_pr_artifact = False
-                    allowed = False
+            file_path = _normalize_hook_path(tool_input.get("file_path", ""))
+            if not file_path:
+                return {
+                    "override_result": {
+                        "content": (
+                            "Write rejected by SecureVibes PR review guard: file_path is required. "
+                            "PR code review phase may only write .securevibes/PR_VULNERABILITIES.json."
+                        ),
+                        "is_error": True,
+                    }
+                }
 
-                # Enforce repo boundary for PR review writes.
-                if pr_repo_root and wants_pr_artifact:
-                    root_path = pr_repo_root.resolve(strict=False)
-                    candidate_path = Path(normalized_file_path)
-                    if not candidate_path.is_absolute():
-                        candidate_path = root_path / candidate_path
-                    resolved_candidate = candidate_path.resolve(strict=False)
-                    is_inside_repo = (
-                        resolved_candidate == root_path or root_path in resolved_candidate.parents
-                    )
-                    if not is_inside_repo:
-                        if pr_tool_guard_observer is not None:
-                            blocked_count = int(
-                                pr_tool_guard_observer.get("blocked_out_of_repo_count", 0)
-                            )
-                            pr_tool_guard_observer["blocked_out_of_repo_count"] = blocked_count + 1
-                            blocked_paths = pr_tool_guard_observer.setdefault("blocked_paths", [])
-                            if isinstance(blocked_paths, list):
-                                blocked_paths.append(str(resolved_candidate))
-                        return {
-                            "hookSpecificOutput": {
-                                "hookEventName": "PreToolUse",
-                                "permissionDecision": "deny",
-                                "permissionDecisionReason": (
-                                    "PR review cannot write files outside repository root"
-                                ),
-                                "reason": (
-                                    "PR review guard blocked out-of-repo write: "
-                                    f"{resolved_candidate}"
-                                ),
-                            }
-                        }
+            normalized_file_path = file_path
+            try:
+                p = Path(file_path)
+                wants_pr_artifact = p.name == "PR_VULNERABILITIES.json"
+                if wants_pr_artifact and p.parent.name != ".securevibes":
+                    normalized_file_path = ".securevibes/PR_VULNERABILITIES.json"
+                normalized_path_obj = Path(normalized_file_path)
+                allowed = wants_pr_artifact and normalized_path_obj.parent.name == ".securevibes"
+            except (ValueError, TypeError):
+                wants_pr_artifact = False
+                allowed = False
 
-                # Normalize legacy/bare artifact path writes (e.g., PR_VULNERABILITIES.json)
-                # to the required .securevibes location so orchestration can find the file.
-                if wants_pr_artifact and normalized_file_path != file_path:
-                    if debug:
-                        console.print(
-                            f"  🔧 Normalized PR artifact path: {file_path} -> {normalized_file_path}",
-                            style="dim yellow",
+            # Enforce repo boundary for PR review writes.
+            if pr_repo_root and wants_pr_artifact:
+                root_path = pr_repo_root.resolve(strict=False)
+                candidate_path = Path(normalized_file_path)
+                if not candidate_path.is_absolute():
+                    candidate_path = root_path / candidate_path
+                resolved_candidate = candidate_path.resolve(strict=False)
+                is_inside_repo = (
+                    resolved_candidate == root_path or root_path in resolved_candidate.parents
+                )
+                if not is_inside_repo:
+                    if pr_tool_guard_observer is not None:
+                        blocked_count = int(
+                            pr_tool_guard_observer.get("blocked_out_of_repo_count", 0)
                         )
+                        pr_tool_guard_observer["blocked_out_of_repo_count"] = blocked_count + 1
+                        blocked_paths = pr_tool_guard_observer.setdefault("blocked_paths", [])
+                        if isinstance(blocked_paths, list):
+                            blocked_paths.append(str(resolved_candidate))
                     return {
                         "hookSpecificOutput": {
                             "hookEventName": "PreToolUse",
-                            "updatedInput": {**tool_input, "file_path": normalized_file_path},
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": (
+                                "PR review cannot write files outside repository root"
+                            ),
+                            "reason": (
+                                "PR review guard blocked out-of-repo write: "
+                                f"{resolved_candidate}"
+                            ),
                         }
                     }
 
-                if not allowed:
-                    return {
-                        "override_result": {
-                            "content": (
-                                "Write rejected by SecureVibes PR review guard. "
-                                "PR code review phase may only write "
-                                ".securevibes/PR_VULNERABILITIES.json. "
-                                f"Blocked write to: {file_path}"
-                            ),
-                            "is_error": True,
-                        }
+            # Normalize legacy/bare artifact path writes (e.g., PR_VULNERABILITIES.json)
+            # to the required .securevibes location so orchestration can find the file.
+            if wants_pr_artifact and normalized_file_path != file_path:
+                if debug:
+                    console.print(
+                        f"  🔧 Normalized PR artifact path: {file_path} -> {normalized_file_path}",
+                        style="dim yellow",
+                    )
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "updatedInput": {**tool_input, "file_path": normalized_file_path},
                     }
+                }
+
+            if not allowed:
+                return {
+                    "override_result": {
+                        "content": (
+                            "Write rejected by SecureVibes PR review guard. "
+                            "PR code review phase may only write "
+                            ".securevibes/PR_VULNERABILITIES.json. "
+                            f"Blocked write to: {file_path}"
+                        ),
+                        "is_error": True,
+                    }
+                }
 
         # Track tool start
         tracker.on_tool_start(tool_name, tool_input)

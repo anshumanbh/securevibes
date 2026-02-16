@@ -330,6 +330,46 @@ class TestPreToolHook:
         assert "override_result" not in result
 
     @pytest.mark.asyncio
+    async def test_blocks_tmp_traversal_writes_in_dast(self, tracker, console):
+        """DAST should reject /tmp traversal paths that resolve outside /tmp."""
+        tracker.current_phase = "dast"
+        detected_languages = {"python"}
+        hook = create_pre_tool_hook(
+            tracker, console, debug=False, detected_languages=detected_languages
+        )
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/../etc/passwd", "content": "oops"},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "override_result" in result
+        assert result["override_result"]["is_error"] is True
+        assert "Blocked write to: /tmp/../etc/passwd" in result["override_result"]["content"]
+
+    @pytest.mark.asyncio
+    async def test_blocks_empty_file_path_writes_in_dast(self, tracker, console):
+        """DAST should fail closed when file_path is empty."""
+        tracker.current_phase = "dast"
+        detected_languages = {"python"}
+        hook = create_pre_tool_hook(
+            tracker, console, debug=False, detected_languages=detected_languages
+        )
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {"file_path": "", "content": "test data"},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "override_result" in result
+        assert result["override_result"]["is_error"] is True
+        assert "file_path is required" in result["override_result"]["content"]
+
+    @pytest.mark.asyncio
     async def test_blocks_arbitrary_writes_in_pr_code_review(self, tracker, console):
         """PR code review should block arbitrary file writes."""
         tracker.current_phase = "pr-code-review"
@@ -454,6 +494,26 @@ class TestPreToolHook:
 
         assert "override_result" in result
         assert "/tmp/pr-review-helper.py" in result["override_result"]["content"]
+
+    @pytest.mark.asyncio
+    async def test_blocks_empty_file_path_writes_in_pr_code_review(self, tracker, console):
+        """PR code review should fail closed when file_path is empty."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        hook = create_pre_tool_hook(
+            tracker, console, debug=False, detected_languages=detected_languages
+        )
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {"file_path": "", "content": "[]"},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "override_result" in result
+        assert result["override_result"]["is_error"] is True
+        assert "file_path is required" in result["override_result"]["content"]
 
     @pytest.mark.asyncio
     async def test_blocks_other_securevibes_writes_in_pr_code_review(self, tracker, console):
