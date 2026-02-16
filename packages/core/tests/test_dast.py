@@ -83,18 +83,21 @@ class TestProductionURLDetection:
         assert _is_production_url("http://127.0.0.1:8080") is False
         assert _is_production_url("http://0.0.0.0:5000") is False
 
-    def test_staging_safe(self):
-        """Staging/dev URLs should be safe"""
-        assert _is_production_url("http://staging.example.com") is False
-        assert _is_production_url("http://dev.myapp.com") is False
-        assert _is_production_url("http://test.company.io") is False
-        assert _is_production_url("http://qa.service.net") is False
+    def test_environment_token_hosts_are_not_trusted(self):
+        """Fail-closed mode should not trust env-name substrings in hostnames."""
+        assert _is_production_url("http://staging.example.com") is True
+        assert _is_production_url("http://dev.myapp.com") is True
+        assert _is_production_url("http://test.company.io") is True
+        assert _is_production_url("http://qa.service.net") is True
+        assert _is_production_url("http://prod-dev.company.com") is True
+        assert _is_production_url("http://contest.com") is True
 
     def test_local_domains_safe(self):
         """Local domain extensions should be safe"""
         assert _is_production_url("http://myapp.local") is False
         assert _is_production_url("http://service.test") is False
-        assert _is_production_url("http://api.dev") is False
+        assert _is_production_url("http://app.localhost") is False
+        assert _is_production_url("http://api.dev") is True
 
     def test_production_domains_detected(self):
         """Production URLs should be detected"""

@@ -48,30 +48,8 @@ console = Console()
 
 SEVERITY_ORDER = ("info", "low", "medium", "high", "critical")
 SEVERITY_RANK = {name: idx for idx, name in enumerate(SEVERITY_ORDER)}
-SAFE_URL_PATTERNS = (
-    "localhost",
-    "127.0.0.1",
-    "0.0.0.0",
-    "[::1]",
-    "staging",
-    "dev",
-    "test",
-    "qa",
-    ".local",
-    ".test",
-    ".dev",
-)
-PRODUCTION_URL_PATTERNS = (
-    ".com",
-    ".net",
-    ".org",
-    ".io",
-    "production",
-    "prod",
-    "api.",
-    "app.",
-    "www.",
-)
+SAFE_NON_PRODUCTION_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0", "::1")
+SAFE_NON_PRODUCTION_SUFFIXES = (".local", ".test", ".localhost")
 TRANSIENT_PR_ARTIFACTS = (
     "PR_VULNERABILITIES.json",
     "DIFF_CONTEXT.json",
@@ -188,7 +166,6 @@ def cli():
     type=click.Choice(["critical", "high", "medium", "low"]),
     help="Minimum severity to report",
 )
-@click.option("--no-save", is_flag=True, help="Do not save results to .securevibes/")
 @click.option("--quiet", "-q", is_flag=True, help="Minimal output (errors only)")
 @click.option("--debug", is_flag=True, help="Show verbose diagnostic output")
 @click.option("--dast", is_flag=True, help="Enable DAST validation in full scan")
@@ -240,7 +217,6 @@ def scan(
     output: Optional[str],
     output_format: str,
     severity: Optional[str],
-    no_save: bool,
     quiet: bool,
     debug: bool,
     dast: bool,
@@ -329,14 +305,12 @@ def scan(
             console.print("[dim]AI-Powered Vulnerability Detection[/dim]")
             console.print()
 
-        # Ensure output directory exists if saving results
-        if not no_save:
-            output_dir = Path(path) / ".securevibes"
-            try:
-                output_dir.mkdir(parents=True, exist_ok=True)
-            except (IOError, OSError) as e:
-                console.print(f"[bold red]❌ Error:[/bold red] Cannot create output directory: {e}")
-                sys.exit(1)
+        output_dir = Path(path) / ".securevibes"
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except (IOError, OSError) as e:
+            console.print(f"[bold red]❌ Error:[/bold red] Cannot create output directory: {e}")
+            sys.exit(1)
 
         # DAST validation checks
         if dast:
@@ -389,7 +363,7 @@ def scan(
             _run_scan(
                 path,
                 model,
-                not no_save,
+                True,
                 quiet,
                 debug,
                 dast,
@@ -734,23 +708,18 @@ def _is_production_url(url: str) -> bool:
     This is a best-effort heuristic, not strict URL classification.
     """
     parsed = urllib_parse.urlparse(url.lower().strip())
-    hostname = parsed.hostname or url.lower().strip()
-
-    if any(pattern in hostname for pattern in SAFE_URL_PATTERNS):
-        return False
-
-    stripped_host = hostname.strip("[]")
-    try:
-        ip = ipaddress.ip_address(stripped_host)
-        return not ip.is_loopback
-    except ValueError:
-        pass
-
-    if any(pattern in hostname for pattern in PRODUCTION_URL_PATTERNS):
+    hostname = parsed.hostname
+    if not hostname:
         return True
 
-    # Any non-local dotted hostname defaults to production classification.
-    return "." in hostname
+    if hostname in SAFE_NON_PRODUCTION_HOSTS or hostname.endswith(SAFE_NON_PRODUCTION_SUFFIXES):
+        return False
+
+    try:
+        ip = ipaddress.ip_address(hostname)
+        return not ip.is_loopback
+    except ValueError:
+        return True
 
 
 def _clean_pr_artifacts(securevibes_dir: Path) -> list[Path]:

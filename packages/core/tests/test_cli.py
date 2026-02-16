@@ -62,6 +62,7 @@ class TestCLIBasics:
         result = runner.invoke(cli, ["scan", "--help"])
         assert result.exit_code == 0
         assert "scan" in result.output.lower()
+        assert "--no-save" not in result.output
 
     def test_catchup_help(self, runner):
         """Test catchup command help"""
@@ -134,9 +135,8 @@ class TestProductionUrlDetection:
         [
             "http://localhost:3000",
             "https://127.0.0.1:8443",
-            "http://service.dev",
             "https://qa.internal.local",
-            "http://my-test-api",
+            "http://service.test",
         ],
     )
     def test_is_production_url_detects_safe_urls(self, url):
@@ -150,6 +150,8 @@ class TestProductionUrlDetection:
             "https://www.company.org",
             "https://my-production-host",
             "https://prod.internal",
+            "https://contest.com",
+            "https://prod-dev.company.com",
         ],
     )
     def test_is_production_url_detects_production_urls(self, url):
