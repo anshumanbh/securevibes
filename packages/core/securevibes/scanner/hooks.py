@@ -432,17 +432,20 @@ def create_pre_tool_hook(
                     }
                 }
 
+            artifact_name = "PR_VULNERABILITIES.json"
+            required_relative_path = f".securevibes/{artifact_name}"
             normalized_file_path = file_path
+            wants_pr_artifact = False
             try:
                 p = Path(file_path)
-                wants_pr_artifact = p.name == "PR_VULNERABILITIES.json"
-                if wants_pr_artifact and p.parent.name != ".securevibes":
-                    normalized_file_path = ".securevibes/PR_VULNERABILITIES.json"
-                normalized_path_obj = Path(normalized_file_path)
-                allowed = wants_pr_artifact and normalized_path_obj.parent.name == ".securevibes"
+                wants_pr_artifact = p.name == artifact_name
+
+                # Normalize only truly bare artifact writes so orchestration can find the output.
+                # Do not rewrite nested paths like src/.securevibes/PR_VULNERABILITIES.json.
+                if wants_pr_artifact and p.parent == Path("."):
+                    normalized_file_path = required_relative_path
             except (ValueError, TypeError):
                 wants_pr_artifact = False
-                allowed = False
 
             # Enforce repo boundary for PR review writes.
             if pr_repo_root and wants_pr_artifact:
@@ -476,6 +479,12 @@ def create_pre_tool_hook(
                             ),
                         }
                     }
+
+            if pr_repo_root:
+                allowed = _is_repo_artifact_path(normalized_file_path, artifact_name, pr_repo_root)
+            else:
+                # Fail closed when repo root is unavailable: only allow canonical relative path.
+                allowed = normalized_file_path == required_relative_path
 
             # Normalize legacy/bare artifact path writes (e.g., PR_VULNERABILITIES.json)
             # to the required .securevibes location so orchestration can find the file.
