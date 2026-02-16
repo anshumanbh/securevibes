@@ -1,6 +1,8 @@
 """Tests for scanner.chain_analysis helpers."""
 
 import pytest
+from securevibes.diff.parser import DiffContext, DiffFile, DiffHunk, DiffLine
+from securevibes.scanner import chain_analysis as chain_analysis_module
 
 from securevibes.scanner.chain_analysis import (
     CHAIN_STOPWORDS,
@@ -12,9 +14,14 @@ from securevibes.scanner.chain_analysis import (
     canonicalize_finding_path,
     chain_text_tokens,
     coerce_line_number,
+    collect_chain_ids,
     collect_chain_exact_ids,
     collect_chain_family_ids,
     collect_chain_flow_ids,
+    diff_file_path,
+    diff_has_auth_privilege_signals,
+    diff_has_command_builder_signals,
+    diff_has_path_parser_signals,
     count_passes_with_core_chains,
     detect_weak_chain_consensus,
     extract_chain_sink_anchor,
@@ -28,6 +35,33 @@ from securevibes.scanner.chain_analysis import (
     summarize_chain_candidates_for_prompt,
     summarize_revalidation_support,
 )
+
+
+def _build_diff_context(path: str, lines: list[str]) -> DiffContext:
+    hunk = DiffHunk(
+        old_start=1,
+        old_count=1,
+        new_start=1,
+        new_count=1,
+        lines=[
+            DiffLine(type="add", content=line, old_line_num=None, new_line_num=index + 1)
+            for index, line in enumerate(lines)
+        ],
+    )
+    diff_file = DiffFile(
+        old_path=path,
+        new_path=path,
+        hunks=[hunk],
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+    )
+    return DiffContext(
+        files=[diff_file],
+        added_lines=len(lines),
+        removed_lines=0,
+        changed_files=[path],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +337,17 @@ def testextract_chain_sink_anchor_empty_entry():
     assert extract_chain_sink_anchor(entry) == ""
 
 
+def testextract_chain_sink_anchor_falls_back_to_primary_location():
+    entry = {
+        "file_path": "services/api/routes/tasks.py",
+        "title": "",
+        "description": "",
+        "attack_scenario": "",
+        "evidence": "sink in services/api/routes/tasks.py:92",
+    }
+    assert extract_chain_sink_anchor(entry) == "services/api/routes/tasks.py"
+
+
 # ---------------------------------------------------------------------------
 # canonicalize_finding_path
 # ---------------------------------------------------------------------------
@@ -328,6 +373,16 @@ def testcanonicalize_finding_path_relative():
 
 def testcanonicalize_finding_path_non_string():
     assert canonicalize_finding_path(42) == ""
+
+
+def testcanonicalize_finding_path_absolute_without_known_root_uses_tail():
+    path = "/tmp/workspace/random/place/file.txt"
+    assert canonicalize_finding_path(path) == "place/file.txt"
+
+
+def testcanonicalize_finding_path_blank_after_normalization(monkeypatch):
+    monkeypatch.setattr(chain_analysis_module, "normalize_repo_path", lambda _: "   ")
+    assert canonicalize_finding_path("unused") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -832,6 +887,19 @@ def testcollect_chain_flow_ids_single():
     assert len(result) >= 1
 
 
+def test_collect_chain_ids_alias_matches_family_ids():
+    findings = [
+        {
+            "file_path": "services/api/routes/tasks.py",
+            "title": "command injection",
+            "description": "",
+            "attack_scenario": "",
+            "evidence": "",
+        }
+    ]
+    assert collect_chain_ids(findings) == collect_chain_family_ids(findings)
+
+
 # ---------------------------------------------------------------------------
 # count_passes_with_core_chains
 # ---------------------------------------------------------------------------
@@ -1272,3 +1340,97 @@ def test_summarize_chain_candidates_flow_support():
         flow_support_counts=flow_support,
     )
     assert "support=4/5" in result
+
+
+# ---------------------------------------------------------------------------
+# diff_file_path
+# ---------------------------------------------------------------------------
+
+
+def testdiff_file_path_prefers_new_path():
+    diff_file = DiffFile(
+        old_path="old/path.py",
+        new_path="new/path.py",
+        hunks=[],
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+    )
+    assert diff_file_path(diff_file) == "new/path.py"
+
+
+def testdiff_file_path_falls_back_to_old_path():
+    diff_file = DiffFile(
+        old_path="old/path.py",
+        new_path=None,
+        hunks=[],
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+    )
+    assert diff_file_path(diff_file) == "old/path.py"
+
+
+# ---------------------------------------------------------------------------
+# diff signal helpers
+# ---------------------------------------------------------------------------
+
+
+def testdiff_has_command_builder_signals_path_match():
+    ctx = _build_diff_context("src/command_runner.py", ["return ok"])
+    assert diff_has_command_builder_signals(ctx) is True
+
+
+def testdiff_has_command_builder_signals_snippet_match():
+    ctx = _build_diff_context("src/app.py", ["subprocess.run(argv, check=True)"])
+    assert diff_has_command_builder_signals(ctx) is True
+
+
+def testdiff_has_command_builder_signals_no_match():
+    ctx = _build_diff_context("src/models/user.py", ["return profile.name"])
+    assert diff_has_command_builder_signals(ctx) is False
+
+
+def testdiff_has_command_builder_signals_util_path_only_is_not_enough():
+    ctx = _build_diff_context("src/util/helpers.py", ["return cleaned"])
+    assert diff_has_command_builder_signals(ctx) is False
+
+
+def testdiff_has_path_parser_signals_path_match():
+    ctx = _build_diff_context("src/upload/handler.py", ["return ok"])
+    assert diff_has_path_parser_signals(ctx) is True
+
+
+def testdiff_has_path_parser_signals_snippet_match():
+    ctx = _build_diff_context("src/app.py", ["normalized = os.path.realpath(user_path)"])
+    assert diff_has_path_parser_signals(ctx) is True
+
+
+def testdiff_has_path_parser_signals_no_match():
+    ctx = _build_diff_context("src/domain/user.py", ["return compute_total(items)"])
+    assert diff_has_path_parser_signals(ctx) is False
+
+
+def testdiff_has_path_parser_signals_server_path_only_is_not_enough():
+    ctx = _build_diff_context("src/server/bootstrap.py", ["return app"])
+    assert diff_has_path_parser_signals(ctx) is False
+
+
+def testdiff_has_auth_privilege_signals_path_match():
+    ctx = _build_diff_context("src/auth/session.py", ["return token"])
+    assert diff_has_auth_privilege_signals(ctx) is True
+
+
+def testdiff_has_auth_privilege_signals_snippet_match():
+    ctx = _build_diff_context("src/app.py", ["if not has_permission(user): deny()"])
+    assert diff_has_auth_privilege_signals(ctx) is True
+
+
+def testdiff_has_auth_privilege_signals_no_match():
+    ctx = _build_diff_context("src/math/ops.py", ["return a + b"])
+    assert diff_has_auth_privilege_signals(ctx) is False
+
+
+def testdiff_has_auth_privilege_signals_server_path_only_is_not_enough():
+    ctx = _build_diff_context("src/server/router.py", ["return app"])
+    assert diff_has_auth_privilege_signals(ctx) is False

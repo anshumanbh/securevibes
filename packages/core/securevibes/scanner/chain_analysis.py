@@ -559,6 +559,27 @@ def adjudicate_consensus_support(
     )
 
 
+def _diff_has_signals(
+    diff_context: DiffContext,
+    *,
+    signal_paths: tuple[str, ...],
+    signal_snippets: tuple[str, ...],
+) -> bool:
+    """Return True when path or hunk content matches supplied signal terms."""
+    for diff_file in diff_context.files:
+        path = diff_file_path(diff_file).lower()
+        if path and any(token in path for token in signal_paths):
+            return True
+
+        for hunk in diff_file.hunks:
+            for line in hunk.lines:
+                content = str(line.content or "").lower()
+                if any(token in content for token in signal_snippets):
+                    return True
+
+    return False
+
+
 def diff_has_command_builder_signals(diff_context: DiffContext) -> bool:
     """Return True when changed diff hunks look like command/argv construction code."""
     signal_snippets = (
@@ -572,20 +593,12 @@ def diff_has_command_builder_signals(diff_context: DiffContext) -> bool:
         "subprocess",
         "command -v",
     )
-    signal_paths = ("command", "shell", "process", "exec", "ssh", "cli", "util")
-
-    for diff_file in diff_context.files:
-        path = diff_file_path(diff_file).lower()
-        if path and any(token in path for token in signal_paths):
-            return True
-
-        for hunk in diff_file.hunks:
-            for line in hunk.lines:
-                content = str(line.content or "").lower()
-                if any(token in content for token in signal_snippets):
-                    return True
-
-    return False
+    signal_paths = ("command", "shell", "process", "exec", "ssh", "cli")
+    return _diff_has_signals(
+        diff_context,
+        signal_paths=signal_paths,
+        signal_snippets=signal_snippets,
+    )
 
 
 def diff_has_path_parser_signals(diff_context: DiffContext) -> bool:
@@ -606,20 +619,12 @@ def diff_has_path_parser_signals(diff_context: DiffContext) -> bool:
         "upload",
         "download",
     )
-    signal_paths = ("path", "file", "media", "upload", "download", "parse", "store", "server")
-
-    for diff_file in diff_context.files:
-        path = diff_file_path(diff_file).lower()
-        if path and any(token in path for token in signal_paths):
-            return True
-
-        for hunk in diff_file.hunks:
-            for line in hunk.lines:
-                content = str(line.content or "").lower()
-                if any(token in content for token in signal_snippets):
-                    return True
-
-    return False
+    signal_paths = ("path", "file", "media", "upload", "download", "parse", "store")
+    return _diff_has_signals(
+        diff_context,
+        signal_paths=signal_paths,
+        signal_snippets=signal_snippets,
+    )
 
 
 def diff_has_auth_privilege_signals(diff_context: DiffContext) -> bool:
@@ -640,17 +645,9 @@ def diff_has_auth_privilege_signals(diff_context: DiffContext) -> bool:
         "policy",
         "websocket",
     )
-    signal_paths = ("auth", "gateway", "server", "config", "policy", "permission", "session")
-
-    for diff_file in diff_context.files:
-        path = diff_file_path(diff_file).lower()
-        if path and any(token in path for token in signal_paths):
-            return True
-
-        for hunk in diff_file.hunks:
-            for line in hunk.lines:
-                content = str(line.content or "").lower()
-                if any(token in content for token in signal_snippets):
-                    return True
-
-    return False
+    signal_paths = ("auth", "gateway", "config", "policy", "permission", "session")
+    return _diff_has_signals(
+        diff_context,
+        signal_paths=signal_paths,
+        signal_snippets=signal_snippets,
+    )
