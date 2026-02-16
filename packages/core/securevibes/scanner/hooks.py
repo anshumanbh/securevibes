@@ -115,6 +115,35 @@ def _is_within_tmp_dir(file_path: object) -> bool:
         return False
 
 
+def _is_repo_artifact_path(
+    file_path: object, artifact_name: str, repo_root: Optional[Path]
+) -> bool:
+    """Return True when file_path points to the exact artifact under repo .securevibes/."""
+    normalized = _normalize_hook_path(file_path)
+    if not normalized:
+        return False
+
+    if not _is_securevibes_artifact_path(normalized, artifact_name):
+        return False
+
+    try:
+        candidate = Path(normalized)
+        if candidate.name != artifact_name or candidate.parent.name != ".securevibes":
+            return False
+
+        if repo_root is None:
+            return normalized == f".securevibes/{artifact_name}"
+
+        root_path = repo_root.resolve(strict=False)
+        if not candidate.is_absolute():
+            candidate = root_path / candidate
+        resolved_candidate = candidate.resolve(strict=False)
+        expected_path = (root_path / ".securevibes" / artifact_name).resolve(strict=False)
+        return resolved_candidate == expected_path
+    except (OSError, RuntimeError, ValueError, TypeError):
+        return False
+
+
 def _command_uses_blocked_db_tool(command: object, blocked_tools: list[str]) -> Optional[str]:
     """Return matched blocked DB tool when command invokes one, else None."""
     normalized = str(command or "").lower()
@@ -369,14 +398,10 @@ def create_pre_tool_hook(
                     }
                 }
 
-            try:
-                p = Path(file_path)
-                # Allow primary artifact write
-                allowed_artifact = (
-                    p.name == "DAST_VALIDATION.json" and p.parent.name == ".securevibes"
-                )
-            except (ValueError, TypeError):
-                allowed_artifact = False
+            # Allow primary artifact write only under current repository.
+            allowed_artifact = _is_repo_artifact_path(
+                file_path, "DAST_VALIDATION.json", pr_repo_root
+            )
             # Allow ephemeral temp writes under /tmp for helper code/data
             allowed_tmp = _is_within_tmp_dir(file_path)
             allowed = allowed_artifact or allowed_tmp

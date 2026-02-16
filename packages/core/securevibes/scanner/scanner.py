@@ -1914,7 +1914,13 @@ Only report findings at or above: {severity_threshold}
 
         # Create hooks using hook creator functions
         dast_security_hook = create_dast_security_hook(tracker, self.console, self.debug)
-        pre_tool_hook = create_pre_tool_hook(tracker, self.console, self.debug, detected_languages)
+        pre_tool_hook = create_pre_tool_hook(
+            tracker,
+            self.console,
+            self.debug,
+            detected_languages,
+            pr_repo_root=repo,
+        )
         post_tool_hook = create_post_tool_hook(tracker, self.console, self.debug)
         subagent_hook = create_subagent_hook(tracker)
         json_validation_hook = create_json_validation_hook(self.console, self.debug)

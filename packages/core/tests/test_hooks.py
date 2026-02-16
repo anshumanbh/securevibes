@@ -300,7 +300,7 @@ class TestPreToolHook:
         input_data = {
             "tool_name": "Write",
             "tool_input": {
-                "file_path": "/project/.securevibes/DAST_VALIDATION.json",
+                "file_path": ".securevibes/DAST_VALIDATION.json",
                 "content": "{}",
             },
         }
@@ -309,6 +309,67 @@ class TestPreToolHook:
 
         # Should not block (but will call tracker.on_tool_start)
         assert "override_result" not in result
+
+    @pytest.mark.asyncio
+    async def test_allows_in_repo_absolute_dast_validation_write_with_repo_root(
+        self, tracker, console, tmp_path
+    ):
+        """Absolute DAST artifact path should be allowed when anchored to repo root."""
+        tracker.current_phase = "dast"
+        detected_languages = {"python"}
+        repo_root = tmp_path / "repo"
+        securevibes_dir = repo_root / ".securevibes"
+        securevibes_dir.mkdir(parents=True)
+        hook = create_pre_tool_hook(
+            tracker,
+            console,
+            debug=False,
+            detected_languages=detected_languages,
+            pr_repo_root=repo_root,
+        )
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": str(securevibes_dir / "DAST_VALIDATION.json"),
+                "content": "{}",
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "override_result" not in result
+
+    @pytest.mark.asyncio
+    async def test_blocks_out_of_repo_dast_artifact_write_with_repo_root(
+        self, tracker, console, tmp_path
+    ):
+        """DAST artifact writes outside repo root should be blocked."""
+        tracker.current_phase = "dast"
+        detected_languages = {"python"}
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        hook = create_pre_tool_hook(
+            tracker,
+            console,
+            debug=False,
+            detected_languages=detected_languages,
+            pr_repo_root=repo_root,
+        )
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/other/.securevibes/DAST_VALIDATION.json",
+                "content": "{}",
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "override_result" in result
+        assert result["override_result"]["is_error"] is True
+        assert "/other/.securevibes/DAST_VALIDATION.json" in result["override_result"]["content"]
 
     @pytest.mark.asyncio
     async def test_allows_tmp_writes_in_dast(self, tracker, console):
