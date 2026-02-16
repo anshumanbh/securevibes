@@ -2,7 +2,7 @@
 
 import pytest
 from securevibes.reporters.markdown_reporter import MarkdownReporter
-from securevibes.models.issue import SecurityIssue, Severity
+from securevibes.models.issue import SecurityIssue, Severity, ValidationStatus
 from securevibes.models.result import ScanResult
 
 
@@ -429,6 +429,61 @@ class TestMarkdownScanTime:
 
         assert "125.70s" in markdown
         assert "2m" in markdown
+
+
+class TestMarkdownDastRendering:
+    """Test DAST-specific markdown rendering."""
+
+    def test_validation_rate_fraction_is_rendered_as_percentage(self):
+        """DAST validation rate should render as percentage text."""
+        issue = SecurityIssue(
+            id="dast-1",
+            severity=Severity.HIGH,
+            title="SSRF candidate",
+            description="Potential SSRF vector",
+            file_path="api/client.py",
+            line_number=12,
+            code_snippet="requests.get(user_url)",
+            validation_status=ValidationStatus.VALIDATED,
+        )
+        result = ScanResult(
+            repository_path="/tmp/test",
+            issues=[issue],
+            files_scanned=5,
+            dast_enabled=True,
+            dast_validation_rate=0.5,
+        )
+
+        markdown = MarkdownReporter.generate(result)
+
+        assert "**Validation Rate:** 50.0%" in markdown
+        assert "**Validation Rate:** 0.5%" not in markdown
+
+    def test_non_dict_dast_evidence_does_not_crash(self):
+        """String evidence payloads should render without attribute errors."""
+        issue = SecurityIssue(
+            id="dast-2",
+            severity=Severity.MEDIUM,
+            title="XSS candidate",
+            description="Reflected XSS via query parameter",
+            file_path="web/routes.py",
+            line_number=28,
+            code_snippet="return request.args['q']",
+            validation_status=ValidationStatus.UNVALIDATED,
+            dast_evidence="Replay failed: upstream timed out",
+        )
+        result = ScanResult(
+            repository_path="/tmp/test",
+            issues=[issue],
+            files_scanned=3,
+            dast_enabled=True,
+            dast_validation_rate=0.0,
+        )
+
+        markdown = MarkdownReporter.generate(result)
+
+        assert "**DAST Evidence:**" in markdown
+        assert "Replay failed: upstream timed out" in markdown
 
 
 class TestMarkdownRecommendationFormatter:

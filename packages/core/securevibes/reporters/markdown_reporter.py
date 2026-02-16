@@ -59,8 +59,14 @@ class MarkdownReporter:
 
         # DAST metrics if enabled
         if result.dast_enabled:
+            # Internal DAST rates are stored as fractions (0.0-1.0), but older reports may store
+            # percentage values directly.
+            validation_rate_pct = result.dast_validation_rate
+            if 0.0 <= validation_rate_pct <= 1.0:
+                validation_rate_pct *= 100
+
             lines.append("**DAST Enabled:** ✓ Yes  ")
-            lines.append(f"**Validation Rate:** {result.dast_validation_rate:.1f}%  ")
+            lines.append(f"**Validation Rate:** {validation_rate_pct:.1f}%  ")
             if result.dast_scan_time_seconds > 0:
                 lines.append(f"**DAST Time:** {result.dast_scan_time_seconds:.1f}s  ")
 
@@ -308,30 +314,37 @@ class MarkdownReporter:
                     lines.append("**DAST Evidence:**")
                     lines.append("")
 
-                    # Show test steps if available
-                    test_steps = issue.dast_evidence.get("test_steps")
-                    if test_steps:
-                        if isinstance(test_steps, list):
-                            for step in test_steps:
-                                lines.append(f"- {step}")
-                        else:
-                            lines.append(str(test_steps))
-                        lines.append("")
-
-                    # Show HTTP requests if available
-                    http_requests = issue.dast_evidence.get("http_requests")
-                    if http_requests and isinstance(http_requests, list):
-                        for req in http_requests:
-                            lines.append(f"Request: `{req.get('request', 'N/A')}`")
-                            lines.append(f"- Status: {req.get('status', 'N/A')}")
-                            if req.get("authenticated_as"):
-                                lines.append(f"- Auth: {req['authenticated_as']}")
+                    if isinstance(issue.dast_evidence, dict):
+                        # Show test steps if available
+                        test_steps = issue.dast_evidence.get("test_steps")
+                        if test_steps:
+                            if isinstance(test_steps, list):
+                                for step in test_steps:
+                                    lines.append(f"- {step}")
+                            else:
+                                lines.append(str(test_steps))
                             lines.append("")
 
-                    # Show notes or reason if available
-                    notes = issue.dast_evidence.get("notes") or issue.dast_evidence.get("reason")
-                    if notes:
-                        lines.append(f"*{notes}*")
+                        # Show HTTP requests if available
+                        http_requests = issue.dast_evidence.get("http_requests")
+                        if http_requests and isinstance(http_requests, list):
+                            for req in http_requests:
+                                lines.append(f"Request: `{req.get('request', 'N/A')}`")
+                                lines.append(f"- Status: {req.get('status', 'N/A')}")
+                                if req.get("authenticated_as"):
+                                    lines.append(f"- Auth: {req['authenticated_as']}")
+                                lines.append("")
+
+                        # Show notes or reason if available
+                        notes = issue.dast_evidence.get("notes") or issue.dast_evidence.get(
+                            "reason"
+                        )
+                        if notes:
+                            lines.append(f"*{notes}*")
+                            lines.append("")
+                    else:
+                        # Fall back to plain rendering for non-dict payloads.
+                        lines.append(str(issue.dast_evidence))
                         lines.append("")
 
                 # Recommendation
