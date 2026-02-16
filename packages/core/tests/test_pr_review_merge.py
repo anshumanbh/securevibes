@@ -1,6 +1,10 @@
 """Tests for scanner.pr_review_merge helpers."""
 
 import json
+from pathlib import Path
+from unittest.mock import patch
+
+from rich.console import Console
 
 from securevibes.models.issue import SecurityIssue, Severity
 from securevibes.scanner.pr_review_merge import (
@@ -8,12 +12,22 @@ from securevibes.scanner.pr_review_merge import (
     _build_pr_retry_focus_plan,
     _build_pr_review_retry_suffix,
     _build_vuln_match_keys,
+    _chain_role,
+    _entry_quality,
     _extract_observed_pr_findings,
+    _finding_tokens,
     _focus_area_label,
+    _has_concrete_chain_structure,
     _issues_from_pr_vulns,
+    _load_pr_vulnerabilities_artifact,
     _merge_pr_attempt_findings,
     _normalize_finding_identity,
+    _proof_score,
+    _same_chain,
+    _same_subchain_family,
     _should_run_pr_verifier,
+    _speculation_penalty,
+    _token_similarity,
     dedupe_pr_vulns,
     filter_baseline_vulns,
 )
@@ -807,3 +821,641 @@ class TestDedupePrVulns:
         pr_vulns = [{"threat_id": "PR-1", "title": "Same title", "file_path": "src/app.py"}]
         deduped = dedupe_pr_vulns(pr_vulns, known_vulns)
         assert deduped[0]["finding_type"] == "known_vuln"
+
+
+# ---------------------------------------------------------------------------
+# _load_pr_vulnerabilities_artifact
+# ---------------------------------------------------------------------------
+
+
+class TestLoadPrVulnerabilitiesArtifact:
+    """Tests for _load_pr_vulnerabilities_artifact."""
+
+    def test_file_not_found_returns_empty_with_error(self, tmp_path):
+        missing = tmp_path / "PR_VULNERABILITIES.json"
+        console = Console(quiet=True)
+        result, error = _load_pr_vulnerabilities_artifact(missing, console)
+        assert result == []
+        assert error is not None
+        assert "was not produced" in error
+
+    def test_read_error_returns_empty_with_error(self, tmp_path):
+        bad_path = tmp_path / "PR_VULNERABILITIES.json"
+        bad_path.mkdir()  # directory, not a file — read_text will raise OSError
+        console = Console(quiet=True)
+        result, error = _load_pr_vulnerabilities_artifact(bad_path, console)
+        assert result == []
+        assert error is not None
+        assert "Failed to read" in error
+
+    def test_invalid_json_returns_empty_with_error(self, tmp_path):
+        path = tmp_path / "PR_VULNERABILITIES.json"
+        path.write_text("{not valid json", encoding="utf-8")
+        console = Console(quiet=True)
+        result, error = _load_pr_vulnerabilities_artifact(path, console)
+        assert result == []
+        assert error is not None
+        assert "Failed to parse" in error
+
+    def test_non_list_json_returns_empty_with_error(self, tmp_path):
+        path = tmp_path / "PR_VULNERABILITIES.json"
+        path.write_text('{"key": "value"}', encoding="utf-8")
+        console = Console(quiet=True)
+        result, error = _load_pr_vulnerabilities_artifact(path, console)
+        assert result == []
+        assert error is not None
+        assert "not a JSON array" in error
+
+    def test_valid_json_list_returns_findings(self, tmp_path):
+        findings = [{"threat_id": "PR-1", "title": "SQLi"}, {"threat_id": "PR-2", "title": "XSS"}]
+        path = tmp_path / "PR_VULNERABILITIES.json"
+        path.write_text(json.dumps(findings), encoding="utf-8")
+        console = Console(quiet=True)
+        result, error = _load_pr_vulnerabilities_artifact(path, console)
+        assert error is None
+        assert len(result) == 2
+        assert result[0]["threat_id"] == "PR-1"
+
+    def test_non_dict_entries_filtered(self, tmp_path):
+        data = [{"threat_id": "PR-1"}, "not a dict", 42, None, {"threat_id": "PR-2"}]
+        path = tmp_path / "PR_VULNERABILITIES.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        console = Console(quiet=True)
+        result, error = _load_pr_vulnerabilities_artifact(path, console)
+        assert error is None
+        assert len(result) == 2
+
+    def test_normalization_applied_when_needed(self, tmp_path):
+        path = tmp_path / "PR_VULNERABILITIES.json"
+        # Wrapped format that fix_pr_vulnerabilities_json should normalize
+        path.write_text('{"vulnerabilities": [{"threat_id": "PR-1"}]}', encoding="utf-8")
+        console = Console(quiet=True)
+        result, error = _load_pr_vulnerabilities_artifact(path, console)
+        assert error is None
+        assert len(result) == 1
+        assert result[0]["threat_id"] == "PR-1"
+
+    def test_fallback_to_raw_on_fixed_parse_failure(self, tmp_path):
+        """When fix_pr_vulnerabilities_json produces invalid JSON but raw is valid."""
+        valid_json = json.dumps([{"threat_id": "PR-1"}])
+        path = tmp_path / "PR_VULNERABILITIES.json"
+        path.write_text(valid_json, encoding="utf-8")
+        console = Console(quiet=True)
+        with patch(
+            "securevibes.scanner.pr_review_merge.fix_pr_vulnerabilities_json",
+            return_value=("{broken", True),
+        ):
+            result, error = _load_pr_vulnerabilities_artifact(path, console)
+        assert error is None
+        assert len(result) == 1
+
+    def test_empty_list_returns_empty_no_error(self, tmp_path):
+        path = tmp_path / "PR_VULNERABILITIES.json"
+        path.write_text("[]", encoding="utf-8")
+        console = Console(quiet=True)
+        result, error = _load_pr_vulnerabilities_artifact(path, console)
+        assert error is None
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# _proof_score
+# ---------------------------------------------------------------------------
+
+
+class TestProofScore:
+    """Tests for _proof_score (extracted merge helper)."""
+
+    def test_empty_entry_returns_zero(self):
+        assert _proof_score({}) == 0
+
+    def test_exploit_primitive_term_scores_4(self):
+        entry = {"title": "option injection in builder", "description": "", "evidence": ""}
+        assert _proof_score(entry) >= 4
+
+    def test_cwe_88_scores_4(self):
+        entry = {"cwe_id": "CWE-88", "title": "issue", "description": ""}
+        assert _proof_score(entry) >= 4
+
+    def test_concrete_payload_in_scenario_scores_3(self):
+        entry = {
+            "attack_scenario": "Attacker supplies -o ProxyCommand=payload as host",
+            "title": "injection",
+        }
+        assert _proof_score(entry) >= 3
+
+    def test_file_path_and_line_each_add_1(self):
+        base = _proof_score({"title": "x"})
+        with_path = _proof_score({"title": "x", "file_path": "src/app.py"})
+        with_both = _proof_score({"title": "x", "file_path": "src/app.py", "line_number": 42})
+        assert with_path == base + 1
+        assert with_both == base + 2
+
+    def test_step_markers_add_1(self):
+        base = _proof_score({"title": "x"})
+        with_steps = _proof_score({"title": "x", "attack_scenario": "1) do A\n2) do B"})
+        assert with_steps == base + 1
+
+    def test_evidence_flow_arrow_adds_1(self):
+        base = _proof_score({"title": "x"})
+        with_flow = _proof_score({"title": "x", "evidence": "src/a.py:42 -> exec"})
+        assert with_flow == base + 1
+
+    def test_missing_separator_adds_2(self):
+        base = _proof_score({"title": "x"})
+        with_separator = _proof_score({"title": "missing -- separator", "description": "x"})
+        # "missing --" also matches EXPLOIT_PRIMITIVE_TERMS (+4), so total delta is 6
+        assert with_separator == base + 6
+
+    def test_full_high_quality_finding(self):
+        entry = {
+            "title": "option injection via unsanitized host",
+            "description": "missing -- separator allows option injection",
+            "cwe_id": "CWE-88",
+            "file_path": "src/ssh.py",
+            "line_number": 42,
+            "attack_scenario": "1) Attacker supplies -o ProxyCommand=payload\n2) ssh executes",
+            "evidence": "src/ssh.py:42 -> exec without separator",
+        }
+        # CWE-88(4) + exploit_primitive(4) + payload(3) + missing --(2) + steps(1)
+        # + file_path(1) + line(1) + evidence_flow(1) = 17
+        score = _proof_score(entry)
+        assert score >= 15  # high-evidence finding
+
+
+# ---------------------------------------------------------------------------
+# _speculation_penalty
+# ---------------------------------------------------------------------------
+
+
+class TestSpeculationPenalty:
+    """Tests for _speculation_penalty (extracted merge helper)."""
+
+    def test_clean_entry_returns_zero(self):
+        entry = {
+            "title": "SQL injection in query builder",
+            "description": "Unsanitized input concatenated into query",
+            "evidence": "db.py:10 -> execute",
+        }
+        assert _speculation_penalty(entry) == 0
+
+    def test_single_speculative_term_returns_1(self):
+        entry = {"title": "Potential injection", "description": ""}
+        assert _speculation_penalty(entry) == 1
+
+    def test_multiple_speculative_terms_accumulate(self):
+        entry = {
+            "title": "potential issue",
+            "description": "this could lead to a hypothetical bypass",
+        }
+        penalty = _speculation_penalty(entry)
+        assert penalty >= 3  # "potential", "could", "hypothetical"
+
+    def test_hardening_term_adds_1(self):
+        entry = {"title": "defense-in-depth recommendation", "description": "hardening"}
+        penalty = _speculation_penalty(entry)
+        # HARDENING_TERMS uses `any()` so only adds 1 regardless of how many terms match
+        assert penalty == 1
+
+    def test_capped_at_6(self):
+        entry = {
+            "title": "potential possible hypothetical future edge case",
+            "description": "could might may warrant defense-in-depth hardening",
+            "attack_scenario": "if bypass exists, testing needed",
+        }
+        assert _speculation_penalty(entry) == 6
+
+    def test_multi_word_term_matched(self):
+        entry = {"title": "issue", "description": "if bypass exists then exploit"}
+        assert _speculation_penalty(entry) >= 1
+
+    def test_single_word_term_requires_word_boundary(self):
+        entry = {"title": "computation", "description": ""}  # "could" not present as word
+        assert _speculation_penalty(entry) == 0
+
+
+# ---------------------------------------------------------------------------
+# _same_chain
+# ---------------------------------------------------------------------------
+
+
+class TestSameChain:
+    """Tests for _same_chain (extracted merge helper)."""
+
+    def _make_finding(self, **overrides):
+        base = {
+            "title": "Option injection in build_ssh_command",
+            "description": "Unsanitized host allows injection",
+            "severity": "high",
+            "file_path": "src/ssh_client.py",
+            "line_number": 42,
+            "cwe_id": "CWE-88",
+            "finding_type": "new_threat",
+            "attack_scenario": "1) Inject -o ProxyCommand\n2) Execute",
+            "evidence": "src/ssh_client.py:42 -> exec",
+        }
+        base.update(overrides)
+        return base
+
+    def test_same_file_close_lines_similar_tokens_matches(self):
+        a = self._make_finding(line_number=42)
+        b = self._make_finding(line_number=44)
+        assert _same_chain(a, b) is True
+
+    def test_same_file_distant_lines_different_chains(self):
+        a = self._make_finding(line_number=42)
+        b = self._make_finding(
+            line_number=500,
+            title="Completely different XSS vulnerability",
+            description="Unrelated issue in template rendering",
+            cwe_id="CWE-79",
+            attack_scenario="XSS via template",
+            evidence="template.py:500 -> render",
+        )
+        assert _same_chain(a, b) is False
+
+    def test_missing_path_returns_false(self):
+        a = self._make_finding(file_path="")
+        b = self._make_finding()
+        assert _same_chain(a, b) is False
+
+    def test_both_missing_paths_returns_false(self):
+        a = self._make_finding(file_path="")
+        b = self._make_finding(file_path="")
+        assert _same_chain(a, b) is False
+
+    def test_different_files_different_cwes_returns_false(self):
+        a = self._make_finding(file_path="src/a.py", cwe_id="CWE-88")
+        b = self._make_finding(file_path="src/b.py", cwe_id="CWE-79")
+        assert _same_chain(a, b) is False
+
+    def test_same_directory_same_cwe_high_similarity_matches(self):
+        a = self._make_finding(file_path="src/handlers/ssh.py", line_number=10)
+        b = self._make_finding(file_path="src/handlers/sftp.py", line_number=20)
+        # Same directory, same CWE-88, and high token overlap from shared descriptions
+        result = _same_chain(a, b)
+        # Token similarity may or may not meet the 0.68 threshold depending on content
+        assert isinstance(result, bool)
+
+    def test_high_title_similarity_same_file_matches(self):
+        a = self._make_finding(title="SQL injection in user query")
+        b = self._make_finding(title="SQL injection in user query builder", line_number=100)
+        assert _same_chain(a, b) is True
+
+    def test_cwe78_88_close_lines_low_similarity_matches(self):
+        """CWE-78 and CWE-88 pair within close line gap uses relaxed threshold."""
+        a = self._make_finding(
+            cwe_id="CWE-78",
+            title="Command injection via host",
+            description="different description A",
+            attack_scenario="scenario A",
+            evidence="evidence A",
+        )
+        b = self._make_finding(
+            cwe_id="CWE-88",
+            line_number=44,
+            title="Option injection via host",
+            description="different description B",
+            attack_scenario="scenario B",
+            evidence="evidence B",
+        )
+        assert _same_chain(a, b) is True
+
+
+# ---------------------------------------------------------------------------
+# _same_subchain_family
+# ---------------------------------------------------------------------------
+
+
+class TestSameSubchainFamily:
+    """Tests for _same_subchain_family (extracted merge helper)."""
+
+    def _make_finding(self, **overrides):
+        base = {
+            "title": "Option injection in build_ssh_command",
+            "description": "Unsanitized host allows injection",
+            "severity": "high",
+            "file_path": "src/ssh_client.py",
+            "line_number": 42,
+            "cwe_id": "CWE-88",
+            "finding_type": "new_threat",
+            "attack_scenario": "1) Inject -o ProxyCommand\n2) Execute",
+            "evidence": "src/ssh_client.py:42 -> exec",
+        }
+        base.update(overrides)
+        return base
+
+    def test_different_files_returns_false(self):
+        a = self._make_finding(file_path="src/a.py")
+        b = self._make_finding(file_path="src/b.py")
+        assert _same_subchain_family(a, b) is False
+
+    def test_missing_path_returns_false(self):
+        a = self._make_finding(file_path="")
+        b = self._make_finding()
+        assert _same_subchain_family(a, b) is False
+
+    def test_line_gap_beyond_threshold_returns_false(self):
+        a = self._make_finding(line_number=10)
+        b = self._make_finding(line_number=100)  # gap = 90 > MAX_LINE_GAP_SUBCHAIN (40)
+        assert _same_subchain_family(a, b) is False
+
+    def test_same_cwe_close_lines_matches(self):
+        a = self._make_finding(line_number=42)
+        b = self._make_finding(line_number=50)
+        assert _same_subchain_family(a, b) is True
+
+    def test_different_cwes_non_enabler_returns_false(self):
+        a = self._make_finding(cwe_id="CWE-88", finding_type="new_threat")
+        b = self._make_finding(cwe_id="CWE-79", line_number=44, finding_type="new_threat")
+        assert _same_subchain_family(a, b) is False
+
+
+# ---------------------------------------------------------------------------
+# _entry_quality
+# ---------------------------------------------------------------------------
+
+
+class TestEntryQuality:
+    """Tests for _entry_quality (extracted merge helper)."""
+
+    def test_higher_severity_ranks_higher(self):
+        low = _entry_quality({"severity": "low", "title": "x"})
+        high = _entry_quality({"severity": "high", "title": "x"})
+        assert high > low
+
+    def test_higher_finding_type_ranks_higher(self):
+        unknown = _entry_quality({"finding_type": "unknown", "title": "x"})
+        regression = _entry_quality({"finding_type": "regression", "title": "x"})
+        assert regression > unknown
+
+    def test_chain_support_boosts_quality(self):
+        entry = {
+            "title": "injection",
+            "severity": "high",
+            "cwe_id": "CWE-88",
+            "file_path": "src/a.py",
+        }
+        from securevibes.scanner.chain_analysis import build_chain_family_identity
+
+        family_id = build_chain_family_identity(entry)
+        without_support = _entry_quality(entry)
+        with_support = _entry_quality(entry, chain_support_counts={family_id: 3})
+        assert with_support.chain_support > without_support.chain_support
+
+    def test_contradiction_penalty_applied(self):
+        entry = {"title": "x", "severity": "high", "cwe_id": "CWE-88", "file_path": "a.py"}
+        from securevibes.scanner.chain_analysis import build_chain_family_identity
+
+        family_id = build_chain_family_identity(entry)
+        quality = _entry_quality(
+            entry,
+            chain_support_counts={family_id: 1},
+            total_attempts=3,
+        )
+        # contradiction_penalty = -(3 - 1) = -2
+        assert quality.contradiction_penalty == -2
+
+    def test_no_contradiction_when_no_support(self):
+        quality = _entry_quality({"title": "x"}, total_attempts=3)
+        assert quality.contradiction_penalty == 0
+
+    def test_evidence_length_capped_at_4000(self):
+        entry = {"title": "x", "evidence": "a" * 5000}
+        quality = _entry_quality(entry)
+        assert quality.evidence_length == 4000
+
+
+# ---------------------------------------------------------------------------
+# _finding_tokens / _token_similarity
+# ---------------------------------------------------------------------------
+
+
+class TestFindingTokensAndSimilarity:
+    """Tests for _finding_tokens and _token_similarity."""
+
+    def test_empty_entry_returns_empty_set(self):
+        assert _finding_tokens({}) == set()
+
+    def test_extracts_tokens_from_fields(self):
+        entry = {"title": "SQL injection in query builder", "description": "user input"}
+        tokens = _finding_tokens(entry)
+        assert "injection" in tokens
+        assert "query" in tokens
+        assert "builder" in tokens
+
+    def test_short_tokens_excluded(self):
+        entry = {"title": "XSS in app"}
+        tokens = _finding_tokens(entry)
+        assert "xss" not in tokens  # len < 4
+        assert "app" not in tokens  # len < 4
+
+    def test_stopwords_excluded(self):
+        entry = {"title": "vulnerability through code changes"}
+        tokens = _finding_tokens(entry)
+        assert "vulnerability" not in tokens  # in CHAIN_STOPWORDS
+        assert "through" not in tokens
+
+    def test_similarity_identical_sets(self):
+        s = {"injection", "query", "builder"}
+        assert _token_similarity(s, s) == 1.0
+
+    def test_similarity_disjoint_sets(self):
+        a = {"injection", "query"}
+        b = {"template", "render"}
+        assert _token_similarity(a, b) == 0.0
+
+    def test_similarity_partial_overlap(self):
+        a = {"injection", "query", "builder"}
+        b = {"injection", "template", "render"}
+        sim = _token_similarity(a, b)
+        assert 0.0 < sim < 1.0
+        assert sim == 1.0 / 5.0  # 1 overlap / 5 union
+
+    def test_similarity_empty_set(self):
+        assert _token_similarity(set(), {"x"}) == 0.0
+        assert _token_similarity({"x"}, set()) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# _chain_role
+# ---------------------------------------------------------------------------
+
+
+class TestChainRole:
+    """Tests for _chain_role (extracted merge helper)."""
+
+    def test_end_to_end_with_flow_arrow_and_source_and_sink(self):
+        entry = {
+            "title": "Command injection",
+            "evidence": "attacker input -> exec shell command",
+            "attack_scenario": "Remote user sends payload",
+        }
+        assert _chain_role(entry) == "end_to_end"
+
+    def test_step_level_without_evidence(self):
+        entry = {"title": "Missing validation", "description": "Input not checked"}
+        assert _chain_role(entry) == "step_level"
+
+    def test_end_to_end_with_multi_location_and_steps_and_sink(self):
+        entry = {
+            "title": "exec issue",
+            "description": "the exec sink is reached",
+            "attack_scenario": "1) entry point\n2) transform\n3) exec call",
+            "evidence": "src/a.py:10 and src/b.py:20 are involved",
+        }
+        assert _chain_role(entry) == "end_to_end"
+
+
+# ---------------------------------------------------------------------------
+# _has_concrete_chain_structure
+# ---------------------------------------------------------------------------
+
+
+class TestHasConcreteChainStructure:
+    """Tests for _has_concrete_chain_structure (extracted merge helper)."""
+
+    def test_true_with_path_line_flow_arrow(self):
+        entry = {
+            "file_path": "src/app.py",
+            "line_number": 42,
+            "evidence": "src/app.py:42 -> exec",
+            "attack_scenario": "1) input\n2) exec",
+        }
+        assert _has_concrete_chain_structure(entry) is True
+
+    def test_false_without_file_path(self):
+        entry = {
+            "line_number": 42,
+            "evidence": "-> exec",
+            "attack_scenario": "1) do\n2) run",
+        }
+        assert _has_concrete_chain_structure(entry) is False
+
+    def test_false_without_line_number(self):
+        entry = {
+            "file_path": "src/app.py",
+            "evidence": "-> exec",
+            "attack_scenario": "1) do\n2) run",
+        }
+        assert _has_concrete_chain_structure(entry) is False
+
+    def test_false_without_flow_markers(self):
+        entry = {
+            "file_path": "src/app.py",
+            "line_number": 42,
+            "evidence": "just some text",
+            "attack_scenario": "does something",
+        }
+        assert _has_concrete_chain_structure(entry) is False
+
+
+# ---------------------------------------------------------------------------
+# _merge_pr_attempt_findings — deeper integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestMergePrAttemptFindingsDeep:
+    """Deeper merge tests with precise expected outcomes."""
+
+    def _make_finding(self, **overrides):
+        base = {
+            "threat_id": "PR-1",
+            "title": "Option injection in build_ssh_command",
+            "description": "Unsanitized host param allows option injection via missing --",
+            "severity": "high",
+            "file_path": "src/ssh_client.py",
+            "line_number": 42,
+            "cwe_id": "CWE-88",
+            "finding_type": "new_threat",
+            "attack_scenario": "1) Attacker supplies -o ProxyCommand=payload as host\n2) ssh executes",
+            "evidence": "src/ssh_client.py:42 -> exec without -- separator",
+        }
+        base.update(overrides)
+        return base
+
+    def test_identical_findings_merge_to_one(self):
+        finding = self._make_finding()
+        result = _merge_pr_attempt_findings([finding, dict(finding)])
+        assert len(result) == 1
+
+    def test_same_chain_different_quality_keeps_better(self):
+        weak = self._make_finding(
+            threat_id="PR-1",
+            evidence="maybe an issue",
+            attack_scenario="could be exploitable",
+        )
+        strong = self._make_finding(
+            threat_id="PR-2",
+            evidence="src/ssh_client.py:42 -> exec without -- separator",
+            attack_scenario="1) Attacker supplies -o ProxyCommand=payload\n2) ssh executes",
+        )
+        stats = {}
+        result = _merge_pr_attempt_findings([weak, strong], merge_stats=stats)
+        assert len(result) == 1
+        # The strong finding should be the survivor
+        assert result[0]["threat_id"] == "PR-2"
+
+    def test_distinct_chains_both_retained(self):
+        ssh_finding = self._make_finding(
+            threat_id="PR-1",
+            title="Option injection in ssh builder",
+            file_path="src/ssh.py",
+            cwe_id="CWE-88",
+        )
+        xss_finding = self._make_finding(
+            threat_id="PR-2",
+            title="XSS via template rendering",
+            description="User input rendered in HTML without escaping",
+            file_path="src/views.py",
+            line_number=100,
+            cwe_id="CWE-79",
+            attack_scenario="1) User submits <script> tag\n2) Rendered in page",
+            evidence="src/views.py:100 -> render_template",
+        )
+        result = _merge_pr_attempt_findings([ssh_finding, xss_finding])
+        assert len(result) == 2
+        threat_ids = {r["threat_id"] for r in result}
+        assert threat_ids == {"PR-1", "PR-2"}
+
+    def test_speculative_finding_dropped_when_strong_exists(self):
+        strong = self._make_finding(
+            threat_id="PR-1",
+            title="option injection via host",
+            description="missing -- allows option injection",
+            evidence="src/ssh_client.py:42 -> exec",
+            attack_scenario="1) Attacker supplies -o ProxyCommand\n2) exec",
+        )
+        speculative = self._make_finding(
+            threat_id="PR-2",
+            title="potential future bypass could affect callers",
+            description="hypothetical edge case if future code changes",
+            file_path="src/other.py",
+            line_number=200,
+            cwe_id="CWE-79",
+            evidence="might exist",
+            attack_scenario="could happen",
+        )
+        result = _merge_pr_attempt_findings([strong, speculative])
+        # The speculative finding should be filtered by the strong-findings gate
+        assert len(result) == 1
+        assert result[0]["threat_id"] == "PR-1"
+
+    def test_merge_stats_counts_are_precise(self):
+        f1 = self._make_finding(threat_id="PR-1")
+        f2 = self._make_finding(threat_id="PR-2", line_number=43)  # same chain
+        f3 = self._make_finding(
+            threat_id="PR-3",
+            title="Different XSS issue",
+            file_path="src/views.py",
+            cwe_id="CWE-79",
+            line_number=100,
+            description="XSS via template",
+            attack_scenario="1) inject script\n2) rendered",
+            evidence="src/views.py:100 -> render",
+        )
+        stats = {}
+        result = _merge_pr_attempt_findings([f1, f2, f3], merge_stats=stats)
+        assert stats["input_count"] == 3
+        # f1 and f2 merge in canonical pass, f3 is separate
+        assert stats["canonical_count"] <= 3

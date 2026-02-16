@@ -481,6 +481,406 @@ def _load_pr_vulnerabilities_artifact(
     return normalized, None
 
 
+# ---------------------------------------------------------------------------
+# Merge scoring constants and dataclasses (extracted from _merge_pr_attempt_findings)
+# ---------------------------------------------------------------------------
+
+_SEVERITY_RANK = {
+    "low": 1,
+    "medium": 2,
+    "high": 3,
+    "critical": 4,
+}
+_FINDING_TYPE_RANK = {
+    "known_vuln": 6,
+    "regression": 5,
+    "threat_enabler": 5,
+    "mitigation_removal": 4,
+    "new_threat": 3,
+    "unknown": 1,
+}
+
+
+@dataclass(order=True)
+class _EntryQuality:
+    """Composite quality ranking for a PR finding entry.
+
+    Fields are ordered by comparison priority (leftmost = highest priority).
+    Negative values for penalties ensure lower-penalty entries rank higher.
+    """
+
+    severity: int
+    finding_type: int
+    chain_support: int
+    proof_score: int
+    contradiction_penalty: int
+    speculation_penalty: int
+    evidence_length: int
+    description_length: int
+
+
+@dataclass(order=True)
+class _SubchainQuality:
+    """Composite quality ranking for subchain collapse decisions.
+
+    Extends _EntryQuality with chain-structural fields.
+    """
+
+    role_bonus: int
+    anchor_bonus: int
+    location_count: int
+    severity: int
+    finding_type: int
+    chain_support: int
+    proof_score: int
+    contradiction_penalty: int
+    speculation_penalty: int
+    evidence_length: int
+    description_length: int
+
+
+# ---------------------------------------------------------------------------
+# Merge helper functions (extracted from _merge_pr_attempt_findings)
+# ---------------------------------------------------------------------------
+
+
+def _chain_role(entry: dict) -> str:
+    """Classify a finding as end-to-end or step-level based on evidence structure."""
+    evidence_text = finding_text(entry, fields=("evidence",))
+    scenario_text = finding_text(entry, fields=("attack_scenario",))
+    core_text = finding_text(
+        entry, fields=("title", "description", "attack_scenario", "evidence")
+    )
+    locations = extract_finding_locations(entry)
+    has_multi_location = len(locations) >= 2
+    has_flow_arrow = "->" in evidence_text
+    has_step_markers = len(re.findall(r"\b[1-4][\)\.\:]", scenario_text)) >= 2
+    has_source = any(term in core_text for term in CHAIN_SOURCE_TERMS)
+    has_sink = any(term in core_text for term in CHAIN_SINK_TERMS) or bool(
+        extract_chain_sink_anchor(entry)
+    )
+    if (has_multi_location and has_step_markers and has_sink) or (
+        has_flow_arrow and has_source and has_sink
+    ):
+        return "end_to_end"
+    return "step_level"
+
+
+def _proof_score(entry: dict) -> int:
+    """Score the concreteness of a finding's exploit-chain evidence."""
+    score = 0
+    evidence_text = finding_text(entry, fields=("evidence",))
+    scenario_text = finding_text(entry, fields=("attack_scenario",))
+    core_text = finding_text(
+        entry, fields=("title", "description", "evidence", "attack_scenario")
+    )
+    cwe_text = str(entry.get("cwe_id", "")).strip().upper()
+
+    if any(term in core_text for term in EXPLOIT_PRIMITIVE_TERMS):
+        score += 4
+    if "CWE-88" in cwe_text:
+        score += 4
+    if "cwe-78" in cwe_text and any(term in core_text for term in ("argv", "option injection")):
+        score += 2
+    if any(term in scenario_text for term in CONCRETE_PAYLOAD_TERMS):
+        score += 3
+    if "1)" in scenario_text and "2)" in scenario_text:
+        score += 1
+    if canonicalize_finding_path(entry.get("file_path")):
+        score += 1
+    if coerce_line_number(entry.get("line_number")) > 0:
+        score += 1
+    if ":" in evidence_text and ("->" in evidence_text or "flow" in evidence_text):
+        score += 1
+    if "missing `--`" in core_text or "missing --" in core_text:
+        score += 2
+
+    return score
+
+
+def _speculation_penalty(entry: dict) -> int:
+    """Count speculative/hedging language in a finding's text fields."""
+    text = finding_text(entry, fields=("title", "description", "attack_scenario", "evidence"))
+    penalty = 0
+    for term in SPECULATIVE_TERMS:
+        if " " in term:
+            if term in text:
+                penalty += 1
+            continue
+        if re.search(rf"\b{re.escape(term)}\b", text):
+            penalty += 1
+    if any(term in text for term in HARDENING_TERMS):
+        penalty += 1
+    return min(penalty, 6)
+
+
+def _finding_tokens(entry: dict) -> set[str]:
+    """Extract normalized content tokens for similarity comparison."""
+    text = " ".join(
+        str(entry.get(field, ""))
+        for field in ("title", "description", "attack_scenario", "evidence")
+    ).lower()
+    tokens = re.findall(r"[a-z0-9_]+", text)
+    return {
+        token
+        for token in tokens
+        if len(token) >= 4 and token not in CHAIN_STOPWORDS and not token.isdigit()
+    }
+
+
+def _token_similarity(a: set[str], b: set[str]) -> float:
+    """Jaccard similarity between two token sets."""
+    if not a or not b:
+        return 0.0
+    overlap = len(a & b)
+    union = len(a | b)
+    return overlap / union if union else 0.0
+
+
+def _entry_quality(
+    entry: dict,
+    *,
+    chain_support_counts: Optional[Dict[str, int]] = None,
+    total_attempts: int = 0,
+) -> _EntryQuality:
+    """Build composite quality ranking for a finding entry."""
+    severity = _SEVERITY_RANK.get(str(entry.get("severity", "")).strip().lower(), 0)
+    ft = _FINDING_TYPE_RANK.get(str(entry.get("finding_type", "")).strip().lower(), 0)
+    chain_support = 0
+    if chain_support_counts:
+        chain_family_id = build_chain_family_identity(entry)
+        chain_identity = build_chain_identity(entry)
+        chain_support = chain_support_counts.get(
+            chain_family_id, 0
+        ) or chain_support_counts.get(chain_identity, 0)
+    contradiction_penalty = (
+        max(total_attempts - chain_support, 0)
+        if total_attempts > 0 and chain_support > 0
+        else 0
+    )
+    proof = _proof_score(entry)
+    speculation = _speculation_penalty(entry)
+    evidence_chars = len(str(entry.get("evidence", ""))) + len(
+        str(entry.get("attack_scenario", ""))
+    )
+    description_chars = len(str(entry.get("description", "")))
+    return _EntryQuality(
+        severity=severity,
+        finding_type=ft,
+        chain_support=chain_support,
+        proof_score=proof,
+        contradiction_penalty=-contradiction_penalty,
+        speculation_penalty=-speculation,
+        evidence_length=min(evidence_chars, 4000),
+        description_length=min(description_chars, 2000),
+    )
+
+
+def _chain_support(
+    entry: dict,
+    chain_support_counts: Optional[Dict[str, int]],
+) -> int:
+    """Look up cross-attempt support count for a finding's chain identity."""
+    if not chain_support_counts:
+        return 0
+    chain_family_id = build_chain_family_identity(entry)
+    if chain_family_id and chain_family_id in chain_support_counts:
+        return chain_support_counts[chain_family_id]
+    chain_identity = build_chain_identity(entry)
+    if not chain_identity:
+        return 0
+    return chain_support_counts.get(chain_identity, 0)
+
+
+def _has_concrete_chain_structure(entry: dict) -> bool:
+    """Return True when a finding has file path, line number, and evidence flow markers."""
+    normalized_path = canonicalize_finding_path(entry.get("file_path"))
+    line_number = coerce_line_number(entry.get("line_number"))
+    evidence_text = finding_text(entry, fields=("evidence",))
+    scenario_text = finding_text(entry, fields=("attack_scenario",))
+    if not normalized_path or line_number <= 0:
+        return False
+    if not evidence_text or not scenario_text:
+        return False
+
+    has_flow_anchor = "->" in evidence_text or "flow" in evidence_text
+    has_step_markers = len(re.findall(r"\b[1-4][\)\.\:]", scenario_text)) >= 2
+    return has_flow_anchor or has_step_markers
+
+
+def _same_chain(candidate: dict, canonical: dict) -> bool:
+    """Return True when two findings describe the same exploit chain."""
+    candidate_path = canonicalize_finding_path(candidate.get("file_path"))
+    canonical_path = canonicalize_finding_path(canonical.get("file_path"))
+    if not candidate_path or not canonical_path:
+        return False
+
+    candidate_line = coerce_line_number(candidate.get("line_number"))
+    canonical_line = coerce_line_number(canonical.get("line_number"))
+    line_gap = (
+        abs(candidate_line - canonical_line)
+        if candidate_line > 0 and canonical_line > 0
+        else 999
+    )
+
+    candidate_tokens = _finding_tokens(candidate)
+    canonical_tokens = _finding_tokens(canonical)
+    token_sim = _token_similarity(candidate_tokens, canonical_tokens)
+
+    candidate_title = str(candidate.get("title", "")).strip().lower()
+    canonical_title = str(canonical.get("title", "")).strip().lower()
+    title_sim = (
+        SequenceMatcher(None, candidate_title, canonical_title).ratio()
+        if candidate_title and canonical_title
+        else 0.0
+    )
+
+    candidate_cwe_family = extract_cwe_family(candidate.get("cwe_id"))
+    canonical_cwe_family = extract_cwe_family(canonical.get("cwe_id"))
+    same_cwe_family = candidate_cwe_family == canonical_cwe_family
+
+    if candidate_path == canonical_path:
+        if line_gap <= MAX_LINE_GAP_CLOSE and token_sim >= MIN_TOKEN_SIMILARITY_ADJACENT:
+            return True
+        if (
+            line_gap <= MAX_LINE_GAP_CLOSE
+            and candidate_cwe_family in {"78", "88"}
+            and canonical_cwe_family in {"78", "88"}
+            and token_sim >= MIN_TOKEN_SIMILARITY_CWE78_88
+        ):
+            return True
+        if token_sim >= MIN_TOKEN_SIMILARITY_SAME_FILE:
+            return True
+        if title_sim >= MIN_TITLE_SIMILARITY_SAME_FILE:
+            return True
+
+    candidate_dir = candidate_path.rsplit("/", 1)[0] if "/" in candidate_path else ""
+    canonical_dir = canonical_path.rsplit("/", 1)[0] if "/" in canonical_path else ""
+    if (
+        candidate_dir
+        and candidate_dir == canonical_dir
+        and same_cwe_family
+        and token_sim >= MIN_TOKEN_SIMILARITY_SAME_DIR
+    ):
+        return True
+
+    return False
+
+
+def _same_subchain_family(candidate: dict, canonical: dict) -> bool:
+    """Return True when candidate is a subchain variant of canonical."""
+    candidate_path = canonicalize_finding_path(candidate.get("file_path"))
+    canonical_path = canonicalize_finding_path(canonical.get("file_path"))
+    if not candidate_path or candidate_path != canonical_path:
+        return False
+
+    candidate_cwe_family = extract_cwe_family(candidate.get("cwe_id"))
+    canonical_cwe_family = extract_cwe_family(canonical.get("cwe_id"))
+    same_cwe_family = bool(
+        candidate_cwe_family
+        and canonical_cwe_family
+        and candidate_cwe_family == canonical_cwe_family
+    )
+
+    candidate_line = coerce_line_number(candidate.get("line_number"))
+    canonical_line = coerce_line_number(canonical.get("line_number"))
+    line_gap = (
+        abs(candidate_line - canonical_line)
+        if candidate_line > 0 and canonical_line > 0
+        else 999
+    )
+    if line_gap > MAX_LINE_GAP_SUBCHAIN:
+        return False
+
+    candidate_tokens = _finding_tokens(candidate)
+    canonical_tokens = _finding_tokens(canonical)
+    token_sim = _token_similarity(candidate_tokens, canonical_tokens)
+
+    candidate_locations = set(extract_finding_locations(candidate))
+    canonical_locations = set(extract_finding_locations(canonical))
+    shared_locations = {
+        location
+        for location in candidate_locations.intersection(canonical_locations)
+        if location not in {candidate_path, canonical_path}
+    }
+
+    candidate_anchor = extract_chain_sink_anchor(candidate)
+    canonical_anchor = extract_chain_sink_anchor(canonical)
+    shared_anchor = bool(candidate_anchor and candidate_anchor == canonical_anchor)
+
+    candidate_role = _chain_role(candidate)
+    canonical_role = _chain_role(canonical)
+    has_end_to_end_variant = "end_to_end" in {candidate_role, canonical_role}
+    candidate_type = str(candidate.get("finding_type", "")).strip().lower()
+    canonical_type = str(canonical.get("finding_type", "")).strip().lower()
+    enabler_types = {"threat_enabler", "mitigation_removal"}
+    is_enabler_pair = candidate_type in enabler_types or canonical_type in enabler_types
+
+    if same_cwe_family and shared_anchor:
+        return True
+    if (
+        same_cwe_family
+        and shared_locations
+        and (
+            line_gap <= MAX_LINE_GAP_SUBCHAIN
+            or token_sim >= MIN_TOKEN_SIMILARITY_SUBCHAIN_SHARED_LOC
+        )
+    ):
+        return True
+    if same_cwe_family and has_end_to_end_variant and line_gap <= MAX_LINE_GAP_SUBCHAIN_E2E:
+        if token_sim >= MIN_TOKEN_SIMILARITY_SUBCHAIN_E2E:
+            return True
+        candidate_is_self_anchor = candidate_anchor in {candidate_path, canonical_path}
+        canonical_is_self_anchor = canonical_anchor in {candidate_path, canonical_path}
+        if candidate_is_self_anchor != canonical_is_self_anchor:
+            return True
+
+    if not same_cwe_family and is_enabler_pair and line_gap <= MAX_LINE_GAP_SUBCHAIN_ENABLER:
+        if shared_anchor:
+            return True
+        if shared_locations and token_sim >= MIN_TOKEN_SIMILARITY_ENABLER_SHARED_LOC:
+            return True
+        if has_end_to_end_variant and token_sim >= MIN_TOKEN_SIMILARITY_ENABLER_E2E:
+            candidate_is_self_anchor = candidate_anchor in {candidate_path, canonical_path}
+            canonical_is_self_anchor = canonical_anchor in {candidate_path, canonical_path}
+            if candidate_is_self_anchor != canonical_is_self_anchor:
+                return True
+    return False
+
+
+def _subchain_quality(
+    entry: dict,
+    *,
+    chain_support_counts: Optional[Dict[str, int]] = None,
+    total_attempts: int = 0,
+) -> _SubchainQuality:
+    """Build composite quality ranking for subchain collapse decisions."""
+    role_bonus = 1 if _chain_role(entry) == "end_to_end" else 0
+    anchor_bonus = 1 if extract_chain_sink_anchor(entry) else 0
+    location_count = min(len(extract_finding_locations(entry)), 6)
+    quality = _entry_quality(
+        entry, chain_support_counts=chain_support_counts, total_attempts=total_attempts
+    )
+    return _SubchainQuality(
+        role_bonus=role_bonus,
+        anchor_bonus=anchor_bonus,
+        location_count=location_count,
+        severity=quality.severity,
+        finding_type=quality.finding_type,
+        chain_support=quality.chain_support,
+        proof_score=quality.proof_score,
+        contradiction_penalty=quality.contradiction_penalty,
+        speculation_penalty=quality.speculation_penalty,
+        evidence_length=quality.evidence_length,
+        description_length=quality.description_length,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Merge orchestration
+# ---------------------------------------------------------------------------
+
+
 def _merge_pr_attempt_findings(
     vulns: list[dict],
     merge_stats: Optional[Dict[str, int]] = None,
@@ -501,369 +901,18 @@ def _merge_pr_attempt_findings(
             merge_stats["max_chain_support"] = 0
         return []
 
-    severity_rank = {
-        "low": 1,
-        "medium": 2,
-        "high": 3,
-        "critical": 4,
-    }
-    finding_type_rank = {
-        "known_vuln": 6,
-        "regression": 5,
-        "threat_enabler": 5,
-        "mitigation_removal": 4,
-        "new_threat": 3,
-        "unknown": 1,
-    }
-    chain_stopwords = CHAIN_STOPWORDS
-
-    def _entry_text(entry: dict, *, fields: tuple[str, ...]) -> str:
-        return finding_text(entry, fields=fields)
-
-    def _extract_referenced_code_locations(entry: dict) -> tuple[str, ...]:
-        return extract_finding_locations(entry)
-
-    def _extract_route_markers(entry: dict) -> tuple[str, ...]:
-        return extract_finding_routes(entry)
-
-    def _chain_sink_anchor(entry: dict) -> str:
-        return extract_chain_sink_anchor(entry)
-
-    def _chain_role(entry: dict) -> str:
-        evidence_text = _entry_text(entry, fields=("evidence",))
-        scenario_text = _entry_text(entry, fields=("attack_scenario",))
-        core_text = _entry_text(
-            entry, fields=("title", "description", "attack_scenario", "evidence")
-        )
-        locations = _extract_referenced_code_locations(entry)
-        has_multi_location = len(locations) >= 2
-        has_flow_arrow = "->" in evidence_text
-        has_step_markers = len(re.findall(r"\b[1-4][\)\.\:]", scenario_text)) >= 2
-        has_source = any(term in core_text for term in CHAIN_SOURCE_TERMS)
-        has_sink = any(term in core_text for term in CHAIN_SINK_TERMS) or bool(
-            _chain_sink_anchor(entry)
-        )
-        if (has_multi_location and has_step_markers and has_sink) or (
-            has_flow_arrow and has_source and has_sink
-        ):
-            return "end_to_end"
-        return "step_level"
-
-    def _proof_score(entry: dict) -> int:
-        score = 0
-        evidence_text = _entry_text(entry, fields=("evidence",))
-        scenario_text = _entry_text(entry, fields=("attack_scenario",))
-        core_text = _entry_text(
-            entry, fields=("title", "description", "evidence", "attack_scenario")
-        )
-        cwe_text = str(entry.get("cwe_id", "")).strip().upper()
-
-        if any(term in core_text for term in EXPLOIT_PRIMITIVE_TERMS):
-            score += 4
-        if "CWE-88" in cwe_text:
-            score += 4
-        if "cwe-78" in cwe_text and any(term in core_text for term in ("argv", "option injection")):
-            score += 2
-        if any(term in scenario_text for term in CONCRETE_PAYLOAD_TERMS):
-            score += 3
-        if "1)" in scenario_text and "2)" in scenario_text:
-            score += 1
-        if canonicalize_finding_path(entry.get("file_path")):
-            score += 1
-        if coerce_line_number(entry.get("line_number")) > 0:
-            score += 1
-        if ":" in evidence_text and ("->" in evidence_text or "flow" in evidence_text):
-            score += 1
-        if "missing `--`" in core_text or "missing --" in core_text:
-            score += 2
-
-        return score
-
-    def _speculation_penalty(entry: dict) -> int:
-        text = _entry_text(entry, fields=("title", "description", "attack_scenario", "evidence"))
-        penalty = 0
-        for term in SPECULATIVE_TERMS:
-            if " " in term:
-                if term in text:
-                    penalty += 1
-                continue
-            if re.search(rf"\b{re.escape(term)}\b", text):
-                penalty += 1
-        if any(term in text for term in HARDENING_TERMS):
-            penalty += 1
-        return min(penalty, 6)
-
-    def _finding_tokens(entry: dict) -> set[str]:
-        text = " ".join(
-            str(entry.get(field, ""))
-            for field in ("title", "description", "attack_scenario", "evidence")
-        ).lower()
-        tokens = re.findall(r"[a-z0-9_]+", text)
-        return {
-            token
-            for token in tokens
-            if len(token) >= 4 and token not in chain_stopwords and not token.isdigit()
-        }
-
-    def _token_similarity(a: set[str], b: set[str]) -> float:
-        if not a or not b:
-            return 0.0
-        overlap = len(a & b)
-        union = len(a | b)
-        return overlap / union if union else 0.0
-
-    @dataclass(order=True)
-    class _EntryQuality:
-        """Composite quality ranking for a PR finding entry.
-
-        Fields are ordered by comparison priority (leftmost = highest priority).
-        Negative values for penalties ensure lower-penalty entries rank higher.
-        """
-
-        severity: int
-        finding_type: int
-        chain_support: int
-        proof_score: int
-        contradiction_penalty: int
-        speculation_penalty: int
-        evidence_length: int
-        description_length: int
-
-    @dataclass(order=True)
-    class _SubchainQuality:
-        """Composite quality ranking for subchain collapse decisions.
-
-        Extends _EntryQuality with chain-structural fields.
-        """
-
-        role_bonus: int
-        anchor_bonus: int
-        location_count: int
-        severity: int
-        finding_type: int
-        chain_support: int
-        proof_score: int
-        contradiction_penalty: int
-        speculation_penalty: int
-        evidence_length: int
-        description_length: int
-
-    def _entry_quality(entry: dict) -> _EntryQuality:
-        severity = severity_rank.get(str(entry.get("severity", "")).strip().lower(), 0)
-        finding_type = finding_type_rank.get(str(entry.get("finding_type", "")).strip().lower(), 0)
-        chain_support = 0
-        if chain_support_counts:
-            chain_family_id = build_chain_family_identity(entry)
-            chain_identity = build_chain_identity(entry)
-            chain_support = chain_support_counts.get(
-                chain_family_id, 0
-            ) or chain_support_counts.get(chain_identity, 0)
-        contradiction_penalty = (
-            max(total_attempts - chain_support, 0)
-            if total_attempts > 0 and chain_support > 0
-            else 0
-        )
-        proof_score = _proof_score(entry)
-        speculation_penalty = _speculation_penalty(entry)
-        evidence_chars = len(str(entry.get("evidence", ""))) + len(
-            str(entry.get("attack_scenario", ""))
-        )
-        description_chars = len(str(entry.get("description", "")))
-        return _EntryQuality(
-            severity=severity,
-            finding_type=finding_type,
-            chain_support=chain_support,
-            proof_score=proof_score,
-            contradiction_penalty=-contradiction_penalty,
-            speculation_penalty=-speculation_penalty,
-            evidence_length=min(evidence_chars, 4000),
-            description_length=min(description_chars, 2000),
+    def _quality(entry: dict) -> _EntryQuality:
+        return _entry_quality(
+            entry, chain_support_counts=chain_support_counts, total_attempts=total_attempts
         )
 
-    def _chain_support(entry: dict) -> int:
-        if not chain_support_counts:
-            return 0
-        chain_family_id = build_chain_family_identity(entry)
-        if chain_family_id and chain_family_id in chain_support_counts:
-            return chain_support_counts[chain_family_id]
-        chain_identity = build_chain_identity(entry)
-        if not chain_identity:
-            return 0
-        return chain_support_counts.get(chain_identity, 0)
-
-    def _has_concrete_chain_structure(entry: dict) -> bool:
-        normalized_path = canonicalize_finding_path(entry.get("file_path"))
-        line_number = coerce_line_number(entry.get("line_number"))
-        evidence_text = _entry_text(entry, fields=("evidence",))
-        scenario_text = _entry_text(entry, fields=("attack_scenario",))
-        if not normalized_path or line_number <= 0:
-            return False
-        if not evidence_text or not scenario_text:
-            return False
-
-        has_flow_anchor = "->" in evidence_text or "flow" in evidence_text
-        has_step_markers = len(re.findall(r"\b[1-4][\)\.\:]", scenario_text)) >= 2
-        return has_flow_anchor or has_step_markers
-
-    def _same_chain(candidate: dict, canonical: dict) -> bool:
-        candidate_path = canonicalize_finding_path(candidate.get("file_path"))
-        canonical_path = canonicalize_finding_path(canonical.get("file_path"))
-        if not candidate_path or not canonical_path:
-            return False
-
-        candidate_line = coerce_line_number(candidate.get("line_number"))
-        canonical_line = coerce_line_number(canonical.get("line_number"))
-        line_gap = (
-            abs(candidate_line - canonical_line)
-            if candidate_line > 0 and canonical_line > 0
-            else 999
-        )
-
-        candidate_tokens = _finding_tokens(candidate)
-        canonical_tokens = _finding_tokens(canonical)
-        token_similarity = _token_similarity(candidate_tokens, canonical_tokens)
-
-        candidate_title = str(candidate.get("title", "")).strip().lower()
-        canonical_title = str(canonical.get("title", "")).strip().lower()
-        title_similarity = (
-            SequenceMatcher(None, candidate_title, canonical_title).ratio()
-            if candidate_title and canonical_title
-            else 0.0
-        )
-
-        candidate_cwe_family = extract_cwe_family(candidate.get("cwe_id"))
-        canonical_cwe_family = extract_cwe_family(canonical.get("cwe_id"))
-        same_cwe_family = candidate_cwe_family == canonical_cwe_family
-
-        if candidate_path == canonical_path:
-            if line_gap <= MAX_LINE_GAP_CLOSE and token_similarity >= MIN_TOKEN_SIMILARITY_ADJACENT:
-                return True
-            if (
-                line_gap <= MAX_LINE_GAP_CLOSE
-                and candidate_cwe_family in {"78", "88"}
-                and canonical_cwe_family in {"78", "88"}
-                and token_similarity >= MIN_TOKEN_SIMILARITY_CWE78_88
-            ):
-                return True
-            if token_similarity >= MIN_TOKEN_SIMILARITY_SAME_FILE:
-                return True
-            if title_similarity >= MIN_TITLE_SIMILARITY_SAME_FILE:
-                return True
-
-        candidate_dir = candidate_path.rsplit("/", 1)[0] if "/" in candidate_path else ""
-        canonical_dir = canonical_path.rsplit("/", 1)[0] if "/" in canonical_path else ""
-        if (
-            candidate_dir
-            and candidate_dir == canonical_dir
-            and same_cwe_family
-            and token_similarity >= MIN_TOKEN_SIMILARITY_SAME_DIR
-        ):
-            return True
-
-        return False
-
-    def _same_subchain_family(candidate: dict, canonical: dict) -> bool:
-        candidate_path = canonicalize_finding_path(candidate.get("file_path"))
-        canonical_path = canonicalize_finding_path(canonical.get("file_path"))
-        if not candidate_path or candidate_path != canonical_path:
-            return False
-
-        candidate_cwe_family = extract_cwe_family(candidate.get("cwe_id"))
-        canonical_cwe_family = extract_cwe_family(canonical.get("cwe_id"))
-        same_cwe_family = bool(
-            candidate_cwe_family
-            and canonical_cwe_family
-            and candidate_cwe_family == canonical_cwe_family
-        )
-
-        candidate_line = coerce_line_number(candidate.get("line_number"))
-        canonical_line = coerce_line_number(canonical.get("line_number"))
-        line_gap = (
-            abs(candidate_line - canonical_line)
-            if candidate_line > 0 and canonical_line > 0
-            else 999
-        )
-        if line_gap > MAX_LINE_GAP_SUBCHAIN:
-            return False
-
-        candidate_tokens = _finding_tokens(candidate)
-        canonical_tokens = _finding_tokens(canonical)
-        token_similarity = _token_similarity(candidate_tokens, canonical_tokens)
-
-        candidate_locations = set(_extract_referenced_code_locations(candidate))
-        canonical_locations = set(_extract_referenced_code_locations(canonical))
-        shared_locations = {
-            location
-            for location in candidate_locations.intersection(canonical_locations)
-            if location not in {candidate_path, canonical_path}
-        }
-
-        candidate_anchor = _chain_sink_anchor(candidate)
-        canonical_anchor = _chain_sink_anchor(canonical)
-        shared_anchor = bool(candidate_anchor and candidate_anchor == canonical_anchor)
-
-        candidate_role = _chain_role(candidate)
-        canonical_role = _chain_role(canonical)
-        has_end_to_end_variant = "end_to_end" in {candidate_role, canonical_role}
-        candidate_type = str(candidate.get("finding_type", "")).strip().lower()
-        canonical_type = str(canonical.get("finding_type", "")).strip().lower()
-        enabler_types = {"threat_enabler", "mitigation_removal"}
-        is_enabler_pair = candidate_type in enabler_types or canonical_type in enabler_types
-
-        if same_cwe_family and shared_anchor:
-            return True
-        if (
-            same_cwe_family
-            and shared_locations
-            and (
-                line_gap <= MAX_LINE_GAP_SUBCHAIN
-                or token_similarity >= MIN_TOKEN_SIMILARITY_SUBCHAIN_SHARED_LOC
-            )
-        ):
-            return True
-        if same_cwe_family and has_end_to_end_variant and line_gap <= MAX_LINE_GAP_SUBCHAIN_E2E:
-            if token_similarity >= MIN_TOKEN_SIMILARITY_SUBCHAIN_E2E:
-                return True
-            candidate_is_self_anchor = candidate_anchor in {candidate_path, canonical_path}
-            canonical_is_self_anchor = canonical_anchor in {candidate_path, canonical_path}
-            if candidate_is_self_anchor != canonical_is_self_anchor:
-                return True
-
-        if not same_cwe_family and is_enabler_pair and line_gap <= MAX_LINE_GAP_SUBCHAIN_ENABLER:
-            if shared_anchor:
-                return True
-            if shared_locations and token_similarity >= MIN_TOKEN_SIMILARITY_ENABLER_SHARED_LOC:
-                return True
-            if has_end_to_end_variant and token_similarity >= MIN_TOKEN_SIMILARITY_ENABLER_E2E:
-                candidate_is_self_anchor = candidate_anchor in {candidate_path, canonical_path}
-                canonical_is_self_anchor = canonical_anchor in {candidate_path, canonical_path}
-                if candidate_is_self_anchor != canonical_is_self_anchor:
-                    return True
-        return False
-
-    def _subchain_quality(
-        entry: dict,
-    ) -> _SubchainQuality:
-        role_bonus = 1 if _chain_role(entry) == "end_to_end" else 0
-        anchor_bonus = 1 if _chain_sink_anchor(entry) else 0
-        location_count = min(len(_extract_referenced_code_locations(entry)), 6)
-        quality = _entry_quality(entry)
-        return _SubchainQuality(
-            role_bonus=role_bonus,
-            anchor_bonus=anchor_bonus,
-            location_count=location_count,
-            severity=quality.severity,
-            finding_type=quality.finding_type,
-            chain_support=quality.chain_support,
-            proof_score=quality.proof_score,
-            contradiction_penalty=quality.contradiction_penalty,
-            speculation_penalty=quality.speculation_penalty,
-            evidence_length=quality.evidence_length,
-            description_length=quality.description_length,
+    def _sub_quality(entry: dict) -> _SubchainQuality:
+        return _subchain_quality(
+            entry, chain_support_counts=chain_support_counts, total_attempts=total_attempts
         )
 
     normalized_vulns = [dict(v) for v in vulns if isinstance(v, dict)]
-    normalized_vulns.sort(key=_entry_quality, reverse=True)
+    normalized_vulns.sort(key=_quality, reverse=True)
 
     canonical_findings: list[dict] = []
     for candidate in normalized_vulns:
@@ -871,7 +920,7 @@ def _merge_pr_attempt_findings(
         for idx, existing in enumerate(canonical_findings):
             if not _same_chain(candidate, existing):
                 continue
-            if _entry_quality(candidate) > _entry_quality(existing):
+            if _quality(candidate) > _quality(existing):
                 canonical_findings[idx] = candidate
             merged = True
             break
@@ -879,7 +928,7 @@ def _merge_pr_attempt_findings(
             canonical_findings.append(candidate)
 
     # Secondary guard: collapse residual near-duplicates and keep the strongest proof-based variant.
-    canonical_findings.sort(key=_entry_quality, reverse=True)
+    canonical_findings.sort(key=_quality, reverse=True)
     final_findings: list[dict] = []
     for candidate in canonical_findings:
         candidate_path = canonicalize_finding_path(candidate.get("file_path"))
@@ -892,11 +941,11 @@ def _merge_pr_attempt_findings(
         for existing in final_findings:
             existing_path = canonicalize_finding_path(existing.get("file_path"))
             existing_tokens = _finding_tokens(existing)
-            token_similarity = _token_similarity(candidate_tokens, existing_tokens)
+            token_sim = _token_similarity(candidate_tokens, existing_tokens)
             existing_cwe_family = extract_cwe_family(existing.get("cwe_id"))
             candidate_proof = _proof_score(candidate)
             existing_proof = _proof_score(existing)
-            title_similarity = SequenceMatcher(
+            title_sim = SequenceMatcher(
                 None,
                 candidate_title,
                 str(existing.get("title", "")).strip().lower(),
@@ -921,8 +970,8 @@ def _merge_pr_attempt_findings(
                     is_duplicate = True
                     break
                 if (
-                    token_similarity >= MIN_TOKEN_SIMILARITY_SECONDARY_SAME_PATH
-                    or title_similarity >= MIN_TITLE_SIMILARITY_SECONDARY_SAME_PATH
+                    token_sim >= MIN_TOKEN_SIMILARITY_SECONDARY_SAME_PATH
+                    or title_sim >= MIN_TITLE_SIMILARITY_SECONDARY_SAME_PATH
                     or same_cwe_family
                 ):
                     is_duplicate = True
@@ -932,8 +981,8 @@ def _merge_pr_attempt_findings(
             # Cross-file near-duplicate collapse for the same chain across neighboring steps.
             if (
                 same_cwe_family
-                and token_similarity >= MIN_TOKEN_SIMILARITY_CROSS_FILE_NEAR_DUP
-                and title_similarity >= MIN_TITLE_SIMILARITY_CROSS_FILE_NEAR_DUP
+                and token_sim >= MIN_TOKEN_SIMILARITY_CROSS_FILE_NEAR_DUP
+                and title_sim >= MIN_TITLE_SIMILARITY_CROSS_FILE_NEAR_DUP
                 and abs(candidate_proof - existing_proof) <= 3
             ):
                 is_duplicate = True
@@ -949,7 +998,7 @@ def _merge_pr_attempt_findings(
         for idx, existing in enumerate(compacted_findings):
             if not _same_subchain_family(candidate, existing):
                 continue
-            if _subchain_quality(candidate) > _subchain_quality(existing):
+            if _sub_quality(candidate) > _sub_quality(existing):
                 compacted_findings[idx] = candidate
             subchain_collapsed += 1
             merged = True
@@ -957,7 +1006,7 @@ def _merge_pr_attempt_findings(
         if not merged:
             compacted_findings.append(candidate)
 
-    compacted_findings.sort(key=_entry_quality, reverse=True)
+    compacted_findings.sort(key=_quality, reverse=True)
 
     secondary_chain_dropped = 0
     secondary_filtered_findings: list[dict] = []
@@ -1029,12 +1078,14 @@ def _merge_pr_attempt_findings(
 
     low_support_dropped = 0
     if len(filtered_findings) > 1 and total_attempts > 0 and chain_support_counts:
-        supports = [_chain_support(finding) for finding in filtered_findings]
+        supports = [_chain_support(finding, chain_support_counts) for finding in filtered_findings]
         max_support = max(supports, default=0)
         if max_support >= 2:
             retained_findings: list[dict] = []
             for finding, support in zip(filtered_findings, supports):
-                severity = severity_rank.get(str(finding.get("severity", "")).strip().lower(), 0)
+                severity = _SEVERITY_RANK.get(
+                    str(finding.get("severity", "")).strip().lower(), 0
+                )
                 if support >= 2:
                     retained_findings.append(finding)
                     continue
