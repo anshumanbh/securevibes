@@ -10,6 +10,7 @@ Provides hook creator functions that return async closures for:
 """
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Optional, Set
 from rich.console import Console
@@ -23,6 +24,52 @@ from securevibes.models.schemas import (
     validate_pr_vulnerabilities_json,
     validate_vulnerabilities_json,
 )
+
+
+_COMMAND_TOKEN_RE = re.compile(r"[a-z0-9._-]+")
+
+
+def _normalize_hook_path(file_path: object) -> str:
+    """Normalize path-like values for robust hook path comparisons."""
+    return str(file_path or "").strip().replace("\\", "/")
+
+
+def _is_securevibes_artifact_path(file_path: object, artifact_name: str) -> bool:
+    """Return True for exact artifact targets under `.securevibes/`."""
+    normalized = _normalize_hook_path(file_path)
+    if not normalized:
+        return False
+
+    relative_target = f".securevibes/{artifact_name}"
+    return normalized == relative_target or normalized.endswith(f"/{relative_target}")
+
+
+def _classify_vulnerability_artifact_path(file_path: object) -> tuple[bool, bool]:
+    """Return (is_supported_artifact, is_pr_artifact) for vulnerability writes."""
+    is_pr = _is_securevibes_artifact_path(file_path, "PR_VULNERABILITIES.json")
+    is_vulns = _is_securevibes_artifact_path(file_path, "VULNERABILITIES.json")
+    return (is_pr or is_vulns, is_pr)
+
+
+def _command_uses_blocked_db_tool(command: object, blocked_tools: list[str]) -> Optional[str]:
+    """Return matched blocked DB tool when command invokes one, else None."""
+    normalized = str(command or "").lower()
+    if not normalized.strip():
+        return None
+
+    tokens = set(_COMMAND_TOKEN_RE.findall(normalized))
+    for tool in blocked_tools:
+        candidate = str(tool or "").strip().lower()
+        if not candidate:
+            continue
+
+        if candidate in tokens:
+            return candidate
+
+        if re.search(rf"(?<![a-z0-9._-]){re.escape(candidate)}(?![a-z0-9._-])", normalized):
+            return candidate
+
+    return None
 
 
 def create_dast_security_hook(tracker, console: Console, debug: bool):
@@ -56,17 +103,18 @@ def create_dast_security_hook(tracker, console: Console, debug: bool):
         tool_input = input_data.get("tool_input", {})
         command = tool_input.get("command", "")
 
-        # Block database CLI tools (centralized in config)
-        for tool in ScanConfig.BLOCKED_DB_TOOLS:
-            if tool in command:
-                return {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": f"DAST cannot use '{tool}' - HTTP testing only",
-                        "reason": "Database manipulation not allowed - provide test accounts via --dast-accounts",
-                    }
+        matched_tool = _command_uses_blocked_db_tool(command, ScanConfig.BLOCKED_DB_TOOLS)
+        if matched_tool:
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": (
+                        f"DAST cannot use '{matched_tool}' - HTTP testing only"
+                    ),
+                    "reason": "Database manipulation not allowed - provide test accounts via --dast-accounts",
                 }
+            }
 
         return {}  # Allow command
 
@@ -469,8 +517,12 @@ def create_json_validation_hook(
         tool_input = input_data.get("tool_input", {})
         file_path = tool_input.get("file_path", "")
 
-        # Only validate VULNERABILITIES.json writes
-        if not file_path or "VULNERABILITIES.json" not in file_path:
+        # Only validate strict SecureVibes vulnerability artifact writes.
+        if not file_path:
+            return {}
+
+        is_target_artifact, is_pr_review = _classify_vulnerability_artifact_path(file_path)
+        if not is_target_artifact:
             return {}
 
         if debug:
@@ -484,8 +536,6 @@ def create_json_validation_hook(
             if debug:
                 console.print("  🔍 [Hook] Empty content, skipping", style="dim")
             return {}
-
-        is_pr_review = "PR_VULNERABILITIES.json" in file_path
 
         # Log original content analysis
         if debug:

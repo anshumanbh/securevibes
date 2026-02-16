@@ -60,6 +60,32 @@ class TestDASTSecurityHook:
         assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
 
     @pytest.mark.asyncio
+    async def test_blocks_mixed_case_db_tool_in_dast_phase(self, tracker, console):
+        """Mixed-case DB tool invocations should still be blocked."""
+        tracker.current_phase = "dast"
+        hook = create_dast_security_hook(tracker, console, debug=False)
+
+        input_data = {"tool_name": "Bash", "tool_input": {"command": "/usr/bin/PSQL -U admin"}}
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "psql" in result["hookSpecificOutput"]["permissionDecisionReason"]
+
+    @pytest.mark.asyncio
+    async def test_does_not_block_partial_tool_name_tokens(self, tracker, console):
+        """Words that only contain blocked tool names as partial substrings should pass."""
+        tracker.current_phase = "dast"
+        hook = create_dast_security_hook(tracker, console, debug=False)
+
+        input_data = {"tool_name": "Bash", "tool_input": {"command": "echo mysql2-client ready"}}
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert result == {}
+
+    @pytest.mark.asyncio
     async def test_allows_sqlite3_in_other_phases(self, tracker, console):
         """Test that sqlite3 is allowed in non-DAST phases"""
         tracker.current_phase = "code-review"
@@ -840,6 +866,84 @@ class TestJsonValidationHook:
         assert result == {}
 
     @pytest.mark.asyncio
+    async def test_non_securevibes_vulnerabilities_file_passes_through(self, console):
+        """Only .securevibes artifact paths should be intercepted."""
+        import json
+
+        hook = create_json_validation_hook(console, debug=False)
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/tmp/VULNERABILITIES.json",
+                "content": json.dumps({"vulnerabilities": [self._make_valid_vuln()]}),
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_similar_vulnerability_filename_is_not_intercepted(self, console):
+        """Files with similar names should not be treated as canonical artifacts."""
+        import json
+
+        hook = create_json_validation_hook(console, debug=False)
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/MY_VULNERABILITIES.json",
+                "content": json.dumps({"vulnerabilities": [self._make_valid_vuln()]}),
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_backup_vulnerability_filename_is_not_intercepted(self, console):
+        """Backup suffix should not be interpreted as target artifact."""
+        import json
+
+        hook = create_json_validation_hook(console, debug=False)
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/VULNERABILITIES.json.bak",
+                "content": json.dumps({"vulnerabilities": [self._make_valid_vuln()]}),
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_relative_securevibes_vulnerabilities_path_is_intercepted(self, console):
+        """Relative canonical artifact path should still be intercepted."""
+        import json
+
+        hook = create_json_validation_hook(console, debug=False)
+
+        content = json.dumps({"vulnerabilities": [self._make_valid_vuln()]})
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": ".securevibes/VULNERABILITIES.json",
+                "content": content,
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        assert "updatedInput" in result["hookSpecificOutput"]
+
+    @pytest.mark.asyncio
     async def test_valid_flat_array_passes_through(self, console):
         """Valid flat array should pass through without modification."""
         import json
@@ -1111,6 +1215,25 @@ class TestPRJsonValidationHook:
 
         # Should not modify (no updatedInput)
         assert "updatedInput" not in result
+
+    @pytest.mark.asyncio
+    async def test_pr_artifact_backup_filename_is_not_intercepted(self, console):
+        """Only exact PR artifact path should be intercepted."""
+        import json
+
+        hook = create_json_validation_hook(console, debug=False)
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/PR_VULNERABILITIES.json.bak",
+                "content": json.dumps({"findings": [self._make_valid_pr_vuln()]}),
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert result == {}
 
     @pytest.mark.asyncio
     async def test_pr_write_observer_tracks_largest_nonempty_payload(self, console):

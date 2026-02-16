@@ -1391,6 +1391,11 @@ def testdiff_has_command_builder_signals_no_match():
     assert diff_has_command_builder_signals(ctx) is False
 
 
+def testdiff_has_command_builder_signals_empty_diff():
+    ctx = DiffContext(files=[], added_lines=0, removed_lines=0, changed_files=[])
+    assert diff_has_command_builder_signals(ctx) is False
+
+
 def testdiff_has_command_builder_signals_util_path_only_is_not_enough():
     ctx = _build_diff_context("src/util/helpers.py", ["return cleaned"])
     assert diff_has_command_builder_signals(ctx) is False
@@ -1411,6 +1416,11 @@ def testdiff_has_path_parser_signals_no_match():
     assert diff_has_path_parser_signals(ctx) is False
 
 
+def testdiff_has_path_parser_signals_empty_diff():
+    ctx = DiffContext(files=[], added_lines=0, removed_lines=0, changed_files=[])
+    assert diff_has_path_parser_signals(ctx) is False
+
+
 def testdiff_has_path_parser_signals_server_path_only_is_not_enough():
     ctx = _build_diff_context("src/server/bootstrap.py", ["return app"])
     assert diff_has_path_parser_signals(ctx) is False
@@ -1428,6 +1438,11 @@ def testdiff_has_auth_privilege_signals_snippet_match():
 
 def testdiff_has_auth_privilege_signals_no_match():
     ctx = _build_diff_context("src/math/ops.py", ["return a + b"])
+    assert diff_has_auth_privilege_signals(ctx) is False
+
+
+def testdiff_has_auth_privilege_signals_empty_diff():
+    ctx = DiffContext(files=[], added_lines=0, removed_lines=0, changed_files=[])
     assert diff_has_auth_privilege_signals(ctx) is False
 
 
