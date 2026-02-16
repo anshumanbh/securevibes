@@ -3,6 +3,7 @@
 import pytest
 import json
 from pathlib import Path
+from urllib import error as urllib_error
 from unittest.mock import AsyncMock, Mock, patch, MagicMock
 from click.testing import CliRunner
 
@@ -116,30 +117,42 @@ class TestProductionURLDetection:
 class TestTargetReachability:
     """Test target reachability checks"""
 
-    @pytest.mark.skip(reason="Requires requests module - integration test")
-    @patch("requests.get")
-    def test_reachable_target(self, mock_get):
+    @patch("securevibes.cli.main.urllib_request.urlopen")
+    def test_reachable_target(self, mock_urlopen):
         """Test reachable target returns True"""
-        mock_get.return_value = Mock(status_code=200)
+        mock_context = MagicMock()
+        mock_context.__enter__.return_value = Mock()
+        mock_urlopen.return_value = mock_context
+
         assert _check_target_reachability("http://localhost:3000") is True
-        mock_get.assert_called_once()
+        mock_urlopen.assert_called_once()
 
-    @pytest.mark.skip(reason="Requires requests module - integration test")
-    @patch("requests.get")
-    def test_unreachable_target(self, mock_get):
+    @patch("securevibes.cli.main.urllib_request.urlopen")
+    def test_unreachable_target(self, mock_urlopen):
         """Test unreachable target returns False"""
-        import requests
-
-        mock_get.side_effect = requests.RequestException("Connection refused")
+        mock_urlopen.side_effect = urllib_error.URLError("Connection refused")
         assert _check_target_reachability("http://localhost:9999") is False
 
-    @pytest.mark.skip(reason="Requires requests module - integration test")
-    @patch("requests.get")
-    def test_timeout_target(self, mock_get):
-        """Test timeout is respected"""
-        import requests
+    @patch("securevibes.cli.main.urllib_request.urlopen")
+    def test_http_error_still_counts_as_reachable(self, mock_urlopen):
+        """HTTP errors should still be treated as a reachable target."""
+        mock_urlopen.side_effect = urllib_error.HTTPError(
+            url="http://localhost:3000",
+            code=500,
+            msg="Internal Server Error",
+            hdrs=None,
+            fp=None,
+        )
+        assert _check_target_reachability("http://localhost:3000") is True
 
-        mock_get.side_effect = requests.Timeout()
+    def test_invalid_url_is_not_reachable(self):
+        """Malformed URLs should return False."""
+        assert _check_target_reachability("not-a-url", timeout=1) is False
+
+    @patch("securevibes.cli.main.urllib_request.urlopen")
+    def test_timeout_target(self, mock_urlopen):
+        """Timeout-like URLError should return False."""
+        mock_urlopen.side_effect = urllib_error.URLError("timed out")
         assert _check_target_reachability("http://slow-server.com", timeout=1) is False
 
 
@@ -175,6 +188,41 @@ class TestCLIDASTFlags:
 
                 # Should proceed (mock prevents actual scan)
                 assert "target-url is required" not in result.output.lower()
+
+    def test_dast_rejects_invalid_target_url(self, runner, test_repo):
+        """Non-HTTP target URLs should be rejected."""
+        result = runner.invoke(
+            cli, ["scan", str(test_repo), "--dast", "--target-url", "ftp://localhost:3000"]
+        )
+
+        assert result.exit_code == 1
+        assert "must be a valid HTTP/HTTPS URL" in result.output
+
+    def test_dast_confirmation_decline_disables_dast(self, runner, test_repo):
+        """Declining DAST confirmation should run scan with dast=False."""
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = ScanResult(
+                repository_path=str(test_repo), issues=[], files_scanned=1, scan_time_seconds=1.0
+            )
+            with patch("securevibes.cli.main._check_target_reachability", return_value=True):
+                result = runner.invoke(
+                    cli,
+                    [
+                        "scan",
+                        str(test_repo),
+                        "--dast",
+                        "--target-url",
+                        "http://localhost:3000",
+                        "--format",
+                        "table",
+                    ],
+                    input="n\n",
+                )
+
+        assert result.exit_code == 0
+        assert "SAST-only scan" in result.output
+        assert mock_run.call_args is not None
+        assert mock_run.call_args.args[5] is False  # dast arg
 
     def test_production_url_blocked(self, runner, test_repo):
         """Production URL should be blocked without --allow-production"""

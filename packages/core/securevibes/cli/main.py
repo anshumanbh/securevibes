@@ -1,11 +1,16 @@
 """Main CLI entry point for SecureVibes"""
 
 import asyncio
+import ipaddress
+import json
 import subprocess
 import sys
 from datetime import datetime, time
 from pathlib import Path
 from typing import Optional
+from urllib import error as urllib_error
+from urllib import parse as urllib_parse
+from urllib import request as urllib_request
 from zoneinfo import ZoneInfo
 
 import click
@@ -41,6 +46,118 @@ from securevibes.scanner.state import (
 
 console = Console()
 
+SEVERITY_ORDER = ("info", "low", "medium", "high", "critical")
+SEVERITY_RANK = {name: idx for idx, name in enumerate(SEVERITY_ORDER)}
+SAFE_URL_PATTERNS = (
+    "localhost",
+    "127.0.0.1",
+    "0.0.0.0",
+    "[::1]",
+    "staging",
+    "dev",
+    "test",
+    "qa",
+    ".local",
+    ".test",
+    ".dev",
+)
+PRODUCTION_URL_PATTERNS = (
+    ".com",
+    ".net",
+    ".org",
+    ".io",
+    "production",
+    "prod",
+    "api.",
+    "app.",
+    "www.",
+)
+TRANSIENT_PR_ARTIFACTS = (
+    "PR_VULNERABILITIES.json",
+    "DIFF_CONTEXT.json",
+    "pr_review_report.md",
+)
+REQUIRED_REPORT_FIELDS = ("repository_path", "files_scanned", "scan_time_seconds", "issues")
+REQUIRED_REPORT_ISSUE_FIELDS = ("severity", "title", "description", "file_path", "line_number")
+
+
+def _filter_by_severity(result, min_severity: Optional[str]) -> None:
+    """Filter scan issues to only include findings at/above minimum severity."""
+    if not min_severity:
+        return
+
+    threshold = Severity(min_severity)
+    min_rank = SEVERITY_RANK[threshold.value]
+    result.issues = [
+        issue for issue in result.issues if SEVERITY_RANK.get(issue.severity.value, 0) >= min_rank
+    ]
+
+
+def _resolve_markdown_output_path(
+    repo_path: Path, output: Optional[str], default_filename: str
+) -> Path:
+    """Resolve markdown output to absolute path, defaulting to .securevibes."""
+    if output:
+        output_path = Path(output)
+        if output_path.is_absolute():
+            return output_path
+        return repo_path / ".securevibes" / output
+    return repo_path / ".securevibes" / default_filename
+
+
+def _write_output(
+    result,
+    output_format: str,
+    output: Optional[str],
+    repo_path: Path,
+    markdown_default_filename: str,
+    markdown_label: str,
+    quiet: bool = False,
+) -> None:
+    """Render or persist CLI output in the selected format."""
+    if output_format == "markdown":
+        from securevibes.reporters.markdown_reporter import MarkdownReporter
+
+        output_path = _resolve_markdown_output_path(repo_path, output, markdown_default_filename)
+        try:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            MarkdownReporter.save(result, output_path)
+            if output:
+                console.print(f"\n✅ {markdown_label} saved to: {output_path}")
+            else:
+                console.print(f"\n📄 {markdown_label}: [cyan]{output_path}[/cyan]")
+        except (IOError, OSError, PermissionError) as exc:
+            console.print(f"[bold red]❌ Error writing output file:[/bold red] {exc}")
+            sys.exit(1)
+        return
+
+    if output_format == "json":
+        output_data = result.to_dict()
+        if output:
+            try:
+                output_path = Path(output)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(json.dumps(output_data, indent=2), encoding="utf-8")
+                console.print(f"\n✅ Results saved to: {output_path}")
+            except (IOError, OSError, PermissionError) as exc:
+                console.print(f"[bold red]❌ Error writing output file:[/bold red] {exc}")
+                sys.exit(1)
+        else:
+            console.print_json(data=output_data)
+        return
+
+    if output_format == "table":
+        _display_table_results(result, quiet=quiet)
+        return
+
+    _display_text_results(result)
+
+
+def _validate_target_url(target_url: str) -> bool:
+    """Validate target URL format for DAST execution."""
+    parsed = urllib_parse.urlparse(target_url.strip())
+    return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+
 
 @click.group()
 @click.version_option(version=__version__, prog_name="securevibes")
@@ -60,6 +177,7 @@ def cli():
 @click.option(
     "--format",
     "-f",
+    "output_format",
     type=click.Choice(["markdown", "json", "text", "table"]),
     default="markdown",
     help="Output format (default: markdown)",
@@ -120,7 +238,7 @@ def scan(
     path: str,
     model: str,
     output: Optional[str],
-    format: str,
+    output_format: str,
     severity: Optional[str],
     no_save: bool,
     quiet: bool,
@@ -197,11 +315,13 @@ def scan(
                 sys.exit(1)
 
         # Validate target-url requirement for resume-from dast
-        if resume_from == "dast" and not target_url:
-            console.print(
-                "[bold red]❌ Error:[/bold red] --target-url is required when resuming from DAST"
-            )
-            sys.exit(1)
+        if resume_from == "dast":
+            if not target_url:
+                console.print(
+                    "[bold red]❌ Error:[/bold red] --target-url is required when resuming from DAST"
+                )
+                sys.exit(1)
+            dast = True
 
         # Show banner unless quiet
         if not quiet:
@@ -223,6 +343,15 @@ def scan(
             if not target_url:
                 console.print(
                     "[bold red]❌ Error:[/bold red] --target-url is required when --dast is enabled"
+                )
+                console.print(
+                    "[dim]Example: securevibes scan . --dast --target-url http://localhost:3000[/dim]"
+                )
+                sys.exit(1)
+
+            if not _validate_target_url(target_url):
+                console.print(
+                    "[bold red]❌ Error:[/bold red] --target-url must be a valid HTTP/HTTPS URL"
                 )
                 console.print(
                     "[dim]Example: securevibes scan . --dast --target-url http://localhost:3000[/dim]"
@@ -275,67 +404,16 @@ def scan(
             )
         )
 
-        # Filter by severity if specified
-        if severity:
-            min_severity = Severity(severity)
-            severity_order = ["info", "low", "medium", "high", "critical"]
-            min_index = severity_order.index(min_severity.value)
-            result.issues = [
-                issue
-                for issue in result.issues
-                if severity_order.index(issue.severity.value) >= min_index
-            ]
-
-        # Output results
-        if format == "markdown":
-            from securevibes.reporters.markdown_reporter import MarkdownReporter
-
-            if output:
-                # If absolute path, use as-is; otherwise save to .securevibes/
-                output_path = Path(output)
-                if not output_path.is_absolute():
-                    output_path = Path(path) / ".securevibes" / output
-
-                try:
-                    # Ensure parent directory exists
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    MarkdownReporter.save(result, output_path)
-                    console.print(f"\n✅ Markdown report saved to: {output_path}")
-                except (IOError, OSError, PermissionError) as e:
-                    console.print(f"[bold red]❌ Error writing output file:[/bold red] {e}")
-                    sys.exit(1)
-            else:
-                # Save to default location
-                default_path = Path(path) / ".securevibes" / "scan_report.md"
-                try:
-                    MarkdownReporter.save(result, default_path)
-                    console.print(f"\n📄 Markdown report: [cyan]{default_path}[/cyan]")
-                except (IOError, OSError, PermissionError) as e:
-                    console.print(f"[bold red]❌ Error writing report:[/bold red] {e}")
-                    sys.exit(1)
-
-        elif format == "json":
-            import json
-
-            output_data = result.to_dict()
-            if output:
-                try:
-                    output_path = Path(output)
-                    # Ensure parent directory exists
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    output_path.write_text(json.dumps(output_data, indent=2))
-                    console.print(f"\n✅ Results saved to: {output}")
-                except (IOError, OSError, PermissionError) as e:
-                    console.print(f"[bold red]❌ Error writing output file:[/bold red] {e}")
-                    sys.exit(1)
-            else:
-                console.print_json(data=output_data)
-
-        elif format == "table":
-            _display_table_results(result, quiet)
-
-        else:  # text
-            _display_text_results(result)
+        _filter_by_severity(result, severity)
+        _write_output(
+            result=result,
+            output_format=output_format,
+            output=output,
+            repo_path=Path(path),
+            markdown_default_filename="scan_report.md",
+            markdown_label="Markdown report",
+            quiet=quiet,
+        )
 
         # Exit code based on findings
         if result.critical_count > 0:
@@ -378,7 +456,8 @@ def scan(
 @click.option(
     "--format",
     "-f",
-    type=click.Choice(["markdown", "json", "table"]),
+    "output_format",
+    type=click.Choice(["markdown", "json", "text", "table"]),
     default="markdown",
     help="Output format (default: markdown)",
 )
@@ -403,7 +482,7 @@ def pr_review(
     update_artifacts: bool,
     clean_pr_artifacts: bool,
     model: str,
-    format: str,
+    output_format: str,
     output: Optional[str],
     debug: bool,
     severity: str,
@@ -526,58 +605,16 @@ def pr_review(
             )
         )
 
-        # Safety filter by severity threshold (defense in depth)
-        if severity:
-            min_severity = Severity(severity)
-            severity_order = ["info", "low", "medium", "high", "critical"]
-            min_index = severity_order.index(min_severity.value)
-            result.issues = [
-                issue
-                for issue in result.issues
-                if severity_order.index(issue.severity.value) >= min_index
-            ]
-
-        if format == "markdown":
-            from securevibes.reporters.markdown_reporter import MarkdownReporter
-
-            if output:
-                output_path = Path(output)
-                if not output_path.is_absolute():
-                    output_path = repo / ".securevibes" / output
-                try:
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    MarkdownReporter.save(result, output_path)
-                    console.print(f"\n✅ PR review report saved to: {output_path}")
-                except (IOError, OSError, PermissionError) as e:
-                    console.print(f"[bold red]❌ Error writing output file:[/bold red] {e}")
-                    sys.exit(1)
-            else:
-                default_path = repo / ".securevibes" / "pr_review_report.md"
-                try:
-                    MarkdownReporter.save(result, default_path)
-                    console.print(f"\n📄 PR review report: [cyan]{default_path}[/cyan]")
-                except (IOError, OSError, PermissionError) as e:
-                    console.print(f"[bold red]❌ Error writing report:[/bold red] {e}")
-                    sys.exit(1)
-
-        elif format == "json":
-            import json
-
-            output_data = result.to_dict()
-            if output:
-                try:
-                    output_path = Path(output)
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    output_path.write_text(json.dumps(output_data, indent=2))
-                    console.print(f"\n✅ Results saved to: {output}")
-                except (IOError, OSError, PermissionError) as e:
-                    console.print(f"[bold red]❌ Error writing output file:[/bold red] {e}")
-                    sys.exit(1)
-            else:
-                console.print_json(data=output_data)
-
-        else:
-            _display_table_results(result, quiet=False)
+        _filter_by_severity(result, severity)
+        _write_output(
+            result=result,
+            output_format=output_format,
+            output=output,
+            repo_path=repo,
+            markdown_default_filename="pr_review_report.md",
+            markdown_label="PR review report",
+            quiet=False,
+        )
 
         head_commit = get_repo_head_commit(repo)
         if head_commit:
@@ -609,7 +646,8 @@ def pr_review(
 @click.option(
     "--format",
     "-f",
-    type=click.Choice(["markdown", "json", "table"]),
+    "output_format",
+    type=click.Choice(["markdown", "json", "text", "table"]),
     default="markdown",
     help="Output format (default: markdown)",
 )
@@ -631,7 +669,7 @@ def catchup(
     path: str,
     branch: str,
     model: str,
-    format: str,
+    output_format: str,
     output: Optional[str],
     debug: bool,
     severity: str,
@@ -679,7 +717,7 @@ def catchup(
             update_artifacts=update_artifacts,
             clean_pr_artifacts=False,
             model=model,
-            format=format,
+            output_format=output_format,
             output=output,
             debug=debug,
             severity=severity,
@@ -691,53 +729,34 @@ def catchup(
 
 
 def _is_production_url(url: str) -> bool:
-    """Detect if a URL appears to be a production system"""
-    url_lower = url.lower()
+    """Heuristically detect production URLs for DAST safety checks.
 
-    # Safe patterns (local development)
-    safe_patterns = [
-        "localhost",
-        "127.0.0.1",
-        "0.0.0.0",
-        "[::1]",
-        "staging",
-        "dev",
-        "test",
-        "qa",
-        ".local",
-        ".test",
-        ".dev",
-    ]
+    This is a best-effort heuristic, not strict URL classification.
+    """
+    parsed = urllib_parse.urlparse(url.lower().strip())
+    hostname = parsed.hostname or url.lower().strip()
 
-    # Check if URL contains any safe pattern
-    if any(pattern in url_lower for pattern in safe_patterns):
+    if any(pattern in hostname for pattern in SAFE_URL_PATTERNS):
         return False
 
-    # Production indicators
-    production_patterns = [
-        ".com",
-        ".net",
-        ".org",
-        ".io",
-        "production",
-        "prod",
-        "api.",
-        "app.",
-        "www.",
-    ]
+    stripped_host = hostname.strip("[]")
+    try:
+        ip = ipaddress.ip_address(stripped_host)
+        return not ip.is_loopback
+    except ValueError:
+        pass
 
-    return any(pattern in url_lower for pattern in production_patterns)
+    if any(pattern in hostname for pattern in PRODUCTION_URL_PATTERNS):
+        return True
+
+    # Any non-local dotted hostname defaults to production classification.
+    return "." in hostname
 
 
 def _clean_pr_artifacts(securevibes_dir: Path) -> list[Path]:
     """Delete transient PR review artifacts that can taint reruns."""
-    transient_files = (
-        "PR_VULNERABILITIES.json",
-        "DIFF_CONTEXT.json",
-        "pr_review_report.md",
-    )
     removed: list[Path] = []
-    for file_name in transient_files:
+    for file_name in TRANSIENT_PR_ARTIFACTS:
         candidate = securevibes_dir / file_name
         if not candidate.exists() or not candidate.is_file():
             continue
@@ -831,12 +850,14 @@ def _repo_has_local_changes(repo: Path) -> bool:
 
 def _check_target_reachability(target_url: str, timeout: int = 5) -> bool:
     """Check if target URL is reachable"""
-    import requests
-
     try:
-        requests.get(target_url, timeout=timeout, allow_redirects=True)
+        req = urllib_request.Request(target_url, method="HEAD")
+        with urllib_request.urlopen(req, timeout=timeout):
+            return True
+    except urllib_error.HTTPError:
+        # 4xx/5xx still proves the host is reachable.
         return True
-    except requests.RequestException:
+    except (urllib_error.URLError, ValueError):
         return False
 
 
@@ -1013,6 +1034,55 @@ def _display_text_results(result):
             console.print(f"   {issue.description[:150]}...")
 
 
+def _parse_report_issues(raw_issues: list[dict]) -> list:
+    """Parse report issues into SecurityIssue models, skipping malformed entries."""
+    from securevibes.models.issue import SecurityIssue, Severity
+
+    issues = []
+    for idx, item in enumerate(raw_issues):
+        if not isinstance(item, dict):
+            console.print(
+                f"[yellow]⚠️  Warning: Issue #{idx + 1} is not an object - skipping[/yellow]"
+            )
+            continue
+
+        try:
+            issue_id = item.get("threat_id") or item.get("id")
+            if not issue_id:
+                console.print(
+                    f"[yellow]⚠️  Warning: Issue #{idx + 1} missing ID, using index[/yellow]"
+                )
+                issue_id = f"ISSUE-{idx + 1}"
+
+            missing = [field for field in REQUIRED_REPORT_ISSUE_FIELDS if field not in item]
+            if missing:
+                console.print(
+                    f"[yellow]⚠️  Warning: Issue #{idx + 1} missing fields: "
+                    f"{', '.join(missing)} - skipping[/yellow]"
+                )
+                continue
+
+            issues.append(
+                SecurityIssue(
+                    id=issue_id,
+                    severity=Severity(item["severity"]),
+                    title=item["title"],
+                    description=item["description"],
+                    file_path=item["file_path"],
+                    line_number=item["line_number"],
+                    code_snippet=item.get("code_snippet", ""),
+                    recommendation=item.get("recommendation"),
+                    cwe_id=item.get("cwe_id"),
+                )
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            console.print(
+                f"[yellow]⚠️  Warning: Failed to parse issue #{idx + 1}: {exc} - skipping[/yellow]"
+            )
+            continue
+    return issues
+
+
 @cli.command()
 @click.argument(
     "report_path", type=click.Path(exists=True), default=".securevibes/scan_results.json"
@@ -1034,9 +1104,7 @@ def report(report_path: str):
 
         data = JSONReporter.load(report_path)
 
-        # Validate required fields
-        required_fields = ["repository_path", "files_scanned", "scan_time_seconds", "issues"]
-        missing_fields = [field for field in required_fields if field not in data]
+        missing_fields = [field for field in REQUIRED_REPORT_FIELDS if field not in data]
         if missing_fields:
             console.print(
                 f"[bold red]❌ Invalid report format:[/bold red] Missing fields: {', '.join(missing_fields)}"
@@ -1048,52 +1116,14 @@ def report(report_path: str):
 
         # Create a mock result object for display
         from securevibes.models.result import ScanResult
-        from securevibes.models.issue import SecurityIssue, Severity
 
-        issues = []
-        for idx, item in enumerate(data.get("issues", [])):
-            try:
-                # Accept both threat_id and id, but warn if neither exists
-                issue_id = item.get("threat_id") or item.get("id")
-                if not issue_id:
-                    console.print(
-                        f"[yellow]⚠️  Warning: Issue #{idx + 1} missing ID, using index[/yellow]"
-                    )
-                    issue_id = f"ISSUE-{idx + 1}"
-
-                # Validate required fields for each issue
-                required_issue_fields = [
-                    "severity",
-                    "title",
-                    "description",
-                    "file_path",
-                    "line_number",
-                ]
-                missing = [f for f in required_issue_fields if f not in item]
-                if missing:
-                    console.print(
-                        f"[yellow]⚠️  Warning: Issue #{idx + 1} missing fields: {', '.join(missing)} - skipping[/yellow]"
-                    )
-                    continue
-
-                issues.append(
-                    SecurityIssue(
-                        id=issue_id,
-                        severity=Severity(item["severity"]),
-                        title=item["title"],
-                        description=item["description"],
-                        file_path=item["file_path"],
-                        line_number=item["line_number"],
-                        code_snippet=item.get("code_snippet", ""),
-                        recommendation=item.get("recommendation"),
-                        cwe_id=item.get("cwe_id"),
-                    )
-                )
-            except (KeyError, ValueError) as e:
-                console.print(
-                    f"[yellow]⚠️  Warning: Failed to parse issue #{idx + 1}: {e} - skipping[/yellow]"
-                )
-                continue
+        raw_issues = data.get("issues", [])
+        if not isinstance(raw_issues, list):
+            console.print(
+                "[yellow]⚠️  Warning: Report 'issues' field is not a list; treating as empty[/yellow]"
+            )
+            raw_issues = []
+        issues = _parse_report_issues(raw_issues)
 
         try:
             result = ScanResult(

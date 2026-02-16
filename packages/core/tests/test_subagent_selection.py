@@ -70,6 +70,36 @@ def test_subagent_conflicts_with_resume_from(runner, tmp_path):
     assert "--subagent and --resume-from are mutually exclusive" in result.output
 
 
+def test_agentic_conflicts_with_no_agentic(runner, tmp_path):
+    """Test --agentic and --no-agentic are mutually exclusive."""
+    result = runner.invoke(cli, ["scan", str(tmp_path), "--agentic", "--no-agentic"])
+
+    assert result.exit_code == 1
+    assert "--agentic and --no-agentic are mutually exclusive" in result.output
+
+
+@patch("securevibes.cli.main._run_scan", new_callable=AsyncMock)
+def test_quiet_and_debug_prefers_debug(mock_run_scan, runner, tmp_path):
+    """--quiet + --debug should disable quiet and continue."""
+    mock_result = Mock()
+    mock_result.issues = []
+    mock_result.files_scanned = 1
+    mock_result.scan_time_seconds = 1.0
+    mock_result.total_cost_usd = 0.0
+    mock_result.critical_count = 0
+    mock_result.high_count = 0
+    mock_result.medium_count = 0
+    mock_result.low_count = 0
+    mock_run_scan.return_value = mock_result
+
+    result = runner.invoke(cli, ["scan", str(tmp_path), "--quiet", "--debug", "--format", "table"])
+
+    assert result.exit_code == 0
+    assert "contradictory" in result.output
+    assert mock_run_scan.call_args is not None
+    assert mock_run_scan.call_args.args[3] is False  # quiet arg
+
+
 def test_subagent_dast_requires_target_url(runner, tmp_path):
     """Test --subagent dast requires --target-url"""
     result = runner.invoke(cli, ["scan", str(tmp_path), "--subagent", "dast"])
@@ -84,6 +114,42 @@ def test_resume_from_dast_requires_target_url(runner, tmp_path):
 
     assert result.exit_code == 1
     assert "--target-url is required when resuming from DAST" in result.output
+
+
+@patch("securevibes.cli.main._run_scan", new_callable=AsyncMock)
+def test_resume_from_dast_auto_enables_dast(mock_run_scan, runner, tmp_path):
+    """Resume-from DAST should pass dast=True into _run_scan."""
+    mock_result = Mock()
+    mock_result.issues = []
+    mock_result.files_scanned = 1
+    mock_result.scan_time_seconds = 1.0
+    mock_result.total_cost_usd = 0.0
+    mock_result.critical_count = 0
+    mock_result.high_count = 0
+    mock_result.medium_count = 0
+    mock_result.low_count = 0
+    mock_run_scan.return_value = mock_result
+
+    with patch("securevibes.cli.main._check_target_reachability", return_value=True):
+        result = runner.invoke(
+            cli,
+            [
+                "scan",
+                str(tmp_path),
+                "--resume-from",
+                "dast",
+                "--target-url",
+                "http://localhost:3000",
+                "--format",
+                "table",
+                "--quiet",
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert mock_run_scan.call_args is not None
+    assert mock_run_scan.call_args.args[5] is True  # dast arg
+    assert mock_run_scan.call_args.args[10] == "dast"
 
 
 @patch("securevibes.cli.main.Scanner")

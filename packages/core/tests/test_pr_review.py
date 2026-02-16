@@ -6,11 +6,12 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import click
 import pytest
 from click.testing import CliRunner
 from rich.console import Console
 
-from securevibes.cli.main import cli
+from securevibes.cli.main import _clean_pr_artifacts, _parse_since_date_pacific, cli
 from securevibes.diff.context import (
     extract_relevant_architecture,
     filter_relevant_threats,
@@ -1389,6 +1390,73 @@ def test_dedupe_with_baseline_filter_marks_real_baseline_as_known():
     result = dedupe_pr_vulns(pr_vulns, baseline)
     assert len(result) == 1
     assert result[0]["finding_type"] == "known_vuln"
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--base", "main"],
+        ["--head", "feature-branch"],
+    ],
+)
+def test_pr_review_requires_base_and_head_together(tmp_path: Path, args):
+    """Specifying only one of --base/--head should fail."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["pr-review", str(repo), *args])
+
+    assert result.exit_code == 1
+    assert "Must specify both --base and --head" in result.output
+
+
+def test_pr_review_missing_required_artifacts(tmp_path: Path):
+    """Missing SECURITY.md/THREAT_MODEL.json should fail early."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
+
+    diff_file = tmp_path / "changes.patch"
+    diff_file.write_text("diff --git a/a.py b/a.py\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["pr-review", str(repo), "--diff", str(diff_file)])
+
+    assert result.exit_code == 1
+    assert "Missing required artifacts" in result.output
+    assert "THREAT_MODEL.json" in result.output
+
+
+def test_parse_since_date_pacific_parses_midnight():
+    """Date parser should return Pacific midnight ISO string."""
+    parsed = _parse_since_date_pacific("2026-02-01")
+
+    assert parsed == "2026-02-01T00:00:00-0800"
+
+
+def test_parse_since_date_pacific_rejects_invalid_date():
+    """Invalid date strings should raise click.BadParameter."""
+    with pytest.raises(click.BadParameter, match="YYYY-MM-DD"):
+        _parse_since_date_pacific("2026-02-99")
+
+
+def test_clean_pr_artifacts_raises_on_unlink_error(tmp_path: Path, monkeypatch):
+    """cleanup helper should wrap unlink failures in RuntimeError."""
+    securevibes_dir = tmp_path / ".securevibes"
+    securevibes_dir.mkdir()
+    artifact = securevibes_dir / "PR_VULNERABILITIES.json"
+    artifact.write_text("[]", encoding="utf-8")
+
+    def _raise_unlink(*_args, **_kwargs):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(Path, "unlink", _raise_unlink)
+
+    with pytest.raises(RuntimeError, match="Failed to remove transient artifact"):
+        _clean_pr_artifacts(securevibes_dir)
 
 
 def test_pr_review_empty_diff_exits_cleanly(tmp_path: Path):

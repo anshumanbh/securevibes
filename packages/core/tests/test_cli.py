@@ -1,8 +1,22 @@
 """Tests for CLI commands"""
 
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from click.testing import CliRunner
-from securevibes.cli.main import _is_production_url, cli
+
+from securevibes.cli.main import _git_pull, _is_production_url, _repo_has_local_changes, cli
+from securevibes.models.result import ScanResult
+
+
+def _empty_scan_result(repo_path: Path) -> ScanResult:
+    return ScanResult(
+        repository_path=str(repo_path),
+        issues=[],
+        files_scanned=1,
+        scan_time_seconds=1.0,
+    )
 
 
 @pytest.fixture
@@ -141,6 +155,50 @@ class TestProductionUrlDetection:
     def test_is_production_url_detects_production_urls(self, url):
         assert _is_production_url(url) is True
 
+    def test_is_production_url_detects_private_network_as_production(self):
+        assert _is_production_url("http://192.168.1.100:8080") is True
+
+
+class TestGitHelpers:
+    """Tests for git command helper wrappers."""
+
+    def test_git_pull_raises_runtime_error_on_failure(self, monkeypatch):
+        class DummyResult:
+            returncode = 1
+            stderr = "fatal: no such remote"
+
+        monkeypatch.setattr("securevibes.cli.main.subprocess.run", lambda *_a, **_k: DummyResult())
+
+        with pytest.raises(RuntimeError, match="no such remote"):
+            _git_pull(Path("."), "main")
+
+    def test_repo_has_local_changes_returns_true_for_dirty_worktree(self, monkeypatch):
+        class DummyResult:
+            returncode = 0
+            stdout = " M app.py\n"
+
+        monkeypatch.setattr("securevibes.cli.main.subprocess.run", lambda *_a, **_k: DummyResult())
+
+        assert _repo_has_local_changes(Path(".")) is True
+
+    def test_repo_has_local_changes_returns_true_when_git_status_fails(self, monkeypatch):
+        class DummyResult:
+            returncode = 1
+            stdout = ""
+
+        monkeypatch.setattr("securevibes.cli.main.subprocess.run", lambda *_a, **_k: DummyResult())
+
+        assert _repo_has_local_changes(Path(".")) is True
+
+    def test_repo_has_local_changes_returns_false_for_clean_worktree(self, monkeypatch):
+        class DummyResult:
+            returncode = 0
+            stdout = "   \n"
+
+        monkeypatch.setattr("securevibes.cli.main.subprocess.run", lambda *_a, **_k: DummyResult())
+
+        assert _repo_has_local_changes(Path(".")) is False
+
 
 class TestScanCommand:
     """Test scan command"""
@@ -151,62 +209,80 @@ class TestScanCommand:
         assert result.exit_code != 0
         assert "Error" in result.output or "does not exist" in result.output.lower()
 
-    @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Requires Claude API key")
     def test_scan_with_path(self, runner, test_repo):
-        """Test scan with valid path"""
-        result = runner.invoke(
-            cli, ["scan", str(test_repo), "--model", "claude-3-5-haiku-20241022"]
-        )
+        """Test scan with valid path and mocked scanner."""
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _empty_scan_result(test_repo)
+            result = runner.invoke(cli, ["scan", str(test_repo), "--format", "table"])
+
         assert result.exit_code == 0
-        assert "SecureVibes" in result.output
+        assert "Scan Results" in result.output
 
-    @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Requires Claude API key")
     def test_scan_with_options(self, runner, test_repo):
-        """Test scan with various options"""
-        result = runner.invoke(
-            cli,
-            ["scan", str(test_repo), "--model", "claude-3-5-haiku-20241022", "--format", "json"],
-        )
-        # Should complete (may fail if no API key, but command structure is valid)
-        assert "--help" not in result.output  # Didn't fall back to help
+        """Test scan with options and mocked scanner."""
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _empty_scan_result(test_repo)
+            result = runner.invoke(
+                cli,
+                [
+                    "scan",
+                    str(test_repo),
+                    "--model",
+                    "claude-3-5-haiku-20241022",
+                    "--format",
+                    "json",
+                ],
+            )
 
-    @pytest.mark.skip(
-        reason="Requires scanner/API - output path logic tested in test_output_paths.py"
-    )
+        assert result.exit_code == 0
+        assert '"issues": []' in result.output
+
     def test_scan_markdown_format_default(self, runner, test_repo):
-        """Test that markdown is default format"""
-        runner.invoke(cli, ["scan", str(test_repo)])
-        # Should mention .md file or markdown
-        pass
+        """Test default markdown output path."""
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _empty_scan_result(test_repo)
+            result = runner.invoke(cli, ["scan", str(test_repo)])
 
-    @pytest.mark.skip(
-        reason="Requires scanner/API - output path logic tested in test_output_paths.py"
-    )
+        report_path = test_repo / ".securevibes" / "scan_report.md"
+        assert result.exit_code == 0
+        assert report_path.exists()
+        assert "Markdown report" in result.output
+
     def test_scan_markdown_output_relative_path(self, runner, test_repo):
         """Test markdown output with relative filename saves to .securevibes/"""
-        result = runner.invoke(
-            cli, ["scan", str(test_repo), "--format", "markdown", "--output", "custom_report.md"]
-        )
-        assert "custom_report.md" in result.output or result.exit_code == 0
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _empty_scan_result(test_repo)
+            result = runner.invoke(
+                cli,
+                ["scan", str(test_repo), "--format", "markdown", "--output", "custom_report.md"],
+            )
 
-    @pytest.mark.skip(
-        reason="Requires scanner/API - output path logic tested in test_output_paths.py"
-    )
+        report_path = test_repo / ".securevibes" / "custom_report.md"
+        assert result.exit_code == 0
+        assert report_path.exists()
+        assert "custom_report.md" in result.output
+
     def test_scan_markdown_output_absolute_path(self, runner, test_repo, tmp_path):
         """Test markdown output with absolute path preserves the path"""
         output_file = tmp_path / "absolute_report.md"
-        result = runner.invoke(
-            cli, ["scan", str(test_repo), "--format", "markdown", "--output", str(output_file)]
-        )
-        assert str(output_file) in result.output or result.exit_code == 0
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _empty_scan_result(test_repo)
+            result = runner.invoke(
+                cli, ["scan", str(test_repo), "--format", "markdown", "--output", str(output_file)]
+            )
 
-    @pytest.mark.skip(reason="Requires scanner/API")
+        assert result.exit_code == 0
+        assert output_file.exists()
+        assert output_file.name in result.output
+
     def test_scan_table_format_still_works(self, runner, test_repo):
         """Test backward compatibility - table format still works"""
-        runner.invoke(cli, ["scan", str(test_repo), "--format", "table"])
-        pass
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _empty_scan_result(test_repo)
+            result = runner.invoke(cli, ["scan", str(test_repo), "--format", "table"])
+
+        assert result.exit_code == 0
+        assert "Scan Results" in result.output
 
 
 class TestReportCommand:
@@ -254,26 +330,23 @@ class TestReportCommand:
 class TestCLIOutputFormats:
     """Test CLI output formatting"""
 
-    @pytest.mark.skip(reason="Requires valid scan results")
     def test_json_output_format(self, runner, test_repo):
         """Test JSON output format"""
-        result = runner.invoke(cli, ["scan", str(test_repo), "--format", "json"])
-        # Output should be JSON-parseable (if scan succeeds)
-        if result.exit_code == 0:
-            import json
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _empty_scan_result(test_repo)
+            result = runner.invoke(cli, ["scan", str(test_repo), "--format", "json"])
 
-            try:
-                json.loads(result.output)
-            except json.JSONDecodeError:
-                pass  # May include non-JSON progress output
+        assert result.exit_code == 0
+        assert '"repository_path"' in result.output
 
-    @pytest.mark.skip(reason="Requires valid scan results")
     def test_table_output_format(self, runner, test_repo):
-        """Test table output format (default)"""
-        result = runner.invoke(cli, ["scan", str(test_repo)])
-        # Should have table formatting
-        if "Scan Results" in result.output:
-            assert "═" in result.output or "─" in result.output  # Box drawing characters
+        """Test table output format."""
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _empty_scan_result(test_repo)
+            result = runner.invoke(cli, ["scan", str(test_repo), "--format", "table"])
+
+        assert result.exit_code == 0
+        assert "Scan Results" in result.output
 
 
 class TestCLIErrorMessages:
