@@ -44,7 +44,7 @@ from securevibes.scanner.hooks import (
     create_json_validation_hook,
     create_threat_model_validation_hook,
 )
-from securevibes.scanner.artifacts import update_pr_review_artifacts
+from securevibes.scanner.artifacts import ArtifactLoadError, update_pr_review_artifacts
 from securevibes.scanner.chain_analysis import (
     adjudicate_consensus_support,
     attempt_contains_core_chain_evidence,
@@ -1743,7 +1743,13 @@ Only report findings at or above: {severity_threshold}
             )
 
         if update_artifacts and isinstance(pr_vulns, list):
-            update_result = update_pr_review_artifacts(ctx.securevibes_dir, pr_vulns)
+            try:
+                update_result = update_pr_review_artifacts(ctx.securevibes_dir, pr_vulns)
+            except ArtifactLoadError as exc:
+                raise RuntimeError(
+                    "Failed to update PR-review artifacts due to malformed baseline data: "
+                    f"{exc}. Fix or remove the artifact file and rerun."
+                ) from exc
             if update_result.new_components_detected:
                 self.console.print(
                     "⚠️  New components detected. Consider running full scan.",

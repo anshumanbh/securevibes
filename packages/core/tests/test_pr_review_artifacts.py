@@ -1,9 +1,13 @@
 """Tests for PR review artifact updates."""
 
 import json
+from collections import UserDict
 from pathlib import Path
 
-from securevibes.scanner.artifacts import update_pr_review_artifacts
+import pytest
+
+from securevibes.scanner import artifacts as artifacts_module
+from securevibes.scanner.artifacts import ArtifactLoadError, update_pr_review_artifacts
 
 
 def test_update_pr_review_artifacts_appends_entries(tmp_path: Path):
@@ -286,3 +290,167 @@ def test_update_pr_review_artifacts_handles_regression(tmp_path: Path):
     assert len(vulns) == 1
     assert vulns[0]["finding_type"] == "regression"
     assert vulns[0]["source"] == "pr_review"
+
+
+def test_update_pr_review_artifacts_accepts_mapping_inputs(tmp_path: Path):
+    """Mapping-like inputs should be processed (not only plain dicts)."""
+    securevibes_dir = tmp_path / ".securevibes"
+    securevibes_dir.mkdir()
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+    (securevibes_dir / "VULNERABILITIES.json").write_text("[]", encoding="utf-8")
+
+    pr_vulns = [
+        UserDict(
+            {
+                "threat_id": "MAPPING-001",
+                "finding_type": "known_vuln",
+                "title": "Mapping-backed finding",
+                "description": "Uses UserDict input",
+                "severity": "medium",
+                "file_path": "api/client.py",
+                "line_number": 7,
+                "code_snippet": "dangerous()",
+            }
+        )
+    ]
+
+    result = update_pr_review_artifacts(securevibes_dir, pr_vulns)
+
+    assert result.vulnerabilities_added == 1
+    vulns = json.loads((securevibes_dir / "VULNERABILITIES.json").read_text(encoding="utf-8"))
+    assert len(vulns) == 1
+    assert vulns[0]["threat_id"] == "MAPPING-001"
+
+
+def test_update_pr_review_artifacts_ignores_non_mapping_findings(tmp_path: Path):
+    securevibes_dir = tmp_path / ".securevibes"
+    securevibes_dir.mkdir()
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+    (securevibes_dir / "VULNERABILITIES.json").write_text("[]", encoding="utf-8")
+
+    pr_vulns = [
+        "ignore-this",
+        {
+            "threat_id": "VALID-001",
+            "finding_type": "known_vuln",
+            "title": "Valid finding",
+            "description": "Should be retained",
+            "severity": "high",
+            "file_path": "api/app.py",
+            "line_number": 11,
+            "code_snippet": "dangerous()",
+        },
+    ]
+
+    result = update_pr_review_artifacts(securevibes_dir, pr_vulns)
+
+    assert result.vulnerabilities_added == 1
+    vulns = json.loads((securevibes_dir / "VULNERABILITIES.json").read_text(encoding="utf-8"))
+    assert len(vulns) == 1
+    assert vulns[0]["threat_id"] == "VALID-001"
+
+
+def test_update_pr_review_artifacts_raises_on_malformed_threat_model(tmp_path: Path):
+    securevibes_dir = tmp_path / ".securevibes"
+    securevibes_dir.mkdir()
+
+    threat_model_path = securevibes_dir / "THREAT_MODEL.json"
+    vulnerabilities_path = securevibes_dir / "VULNERABILITIES.json"
+    threat_model_path.write_text("{ not-json", encoding="utf-8")
+    baseline_vulns = [{"threat_id": "BASE-001"}]
+    vulnerabilities_path.write_text(json.dumps(baseline_vulns), encoding="utf-8")
+
+    with pytest.raises(ArtifactLoadError, match=r"THREAT_MODEL\.json"):
+        update_pr_review_artifacts(securevibes_dir, [])
+
+    assert threat_model_path.read_text(encoding="utf-8") == "{ not-json"
+    assert json.loads(vulnerabilities_path.read_text(encoding="utf-8")) == baseline_vulns
+
+
+def test_update_pr_review_artifacts_raises_on_malformed_vulnerabilities(tmp_path: Path):
+    securevibes_dir = tmp_path / ".securevibes"
+    securevibes_dir.mkdir()
+
+    threat_model_path = securevibes_dir / "THREAT_MODEL.json"
+    vulnerabilities_path = securevibes_dir / "VULNERABILITIES.json"
+    threat_model_path.write_text("[]", encoding="utf-8")
+    vulnerabilities_path.write_text("{ broken", encoding="utf-8")
+
+    with pytest.raises(ArtifactLoadError, match=r"VULNERABILITIES\.json"):
+        update_pr_review_artifacts(securevibes_dir, [])
+
+    assert json.loads(threat_model_path.read_text(encoding="utf-8")) == []
+    assert vulnerabilities_path.read_text(encoding="utf-8") == "{ broken"
+
+
+def test_update_pr_review_artifacts_raises_when_artifact_is_not_json_array(tmp_path: Path):
+    securevibes_dir = tmp_path / ".securevibes"
+    securevibes_dir.mkdir()
+    (securevibes_dir / "THREAT_MODEL.json").write_text("{}", encoding="utf-8")
+    (securevibes_dir / "VULNERABILITIES.json").write_text("[]", encoding="utf-8")
+
+    with pytest.raises(ArtifactLoadError, match="expected top-level JSON array"):
+        update_pr_review_artifacts(securevibes_dir, [])
+
+
+def test_update_pr_review_artifacts_raises_when_artifact_read_fails(tmp_path: Path, monkeypatch):
+    securevibes_dir = tmp_path / ".securevibes"
+    securevibes_dir.mkdir()
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+    (securevibes_dir / "VULNERABILITIES.json").write_text("[]", encoding="utf-8")
+
+    def fail_read_text(self, encoding="utf-8"):  # noqa: ARG001
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(Path, "read_text", fail_read_text)
+
+    with pytest.raises(ArtifactLoadError, match="unable to read artifact file"):
+        update_pr_review_artifacts(securevibes_dir, [])
+
+
+def test_write_json_list_cleans_temp_file_on_replace_failure(tmp_path: Path, monkeypatch):
+    output_path = tmp_path / "THREAT_MODEL.json"
+
+    def fail_replace(*_args, **_kwargs):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(artifacts_module.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        artifacts_module._write_json_list(output_path, [{"id": "X"}])
+
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_derive_components_from_file_path_covers_edge_cases():
+    assert artifacts_module._derive_components_from_file_path("") == []
+    assert artifacts_module._derive_components_from_file_path("docs/README") == ["docs"]
+    assert artifacts_module._derive_components_from_file_path("main.py") == ["py"]
+    assert artifacts_module._derive_components_from_file_path("README") == []
+
+
+def test_coerce_int_returns_zero_for_non_numeric_values():
+    assert artifacts_module._coerce_int(None) == 0
+    assert artifacts_module._coerce_int("abc") == 0
+    assert artifacts_module._coerce_int(object()) == 0
+
+
+def test_detect_new_components_handles_non_mapping_and_empty_inputs():
+    pr_vulns = ["bad", {"file_path": ""}]
+    threats = ["bad", {"affected_components": [None, 1, "api:py"]}]
+
+    assert artifacts_module._detect_new_components(pr_vulns, threats) is False
+
+
+def test_detect_new_components_true_when_pr_introduces_new_component():
+    pr_vulns = [{"file_path": "web/app.ts"}]
+    threats = [{"affected_components": ["api:py"]}]
+
+    assert artifacts_module._detect_new_components(pr_vulns, threats) is True
+
+
+def test_detect_new_components_false_when_all_components_are_known():
+    pr_vulns = [{"file_path": "api/handler.py"}]
+    threats = [{"affected_components": ["api:py"]}]
+
+    assert artifacts_module._detect_new_components(pr_vulns, threats) is False
