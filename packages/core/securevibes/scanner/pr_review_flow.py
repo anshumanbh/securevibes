@@ -103,6 +103,15 @@ class PRReviewState:
         default_factory=lambda: {"blocked_out_of_repo_count": 0, "blocked_paths": []}
     )
     merge_stats: dict[str, int] = field(default_factory=dict)
+    raw_pr_finding_count: int = 0
+    should_run_verifier: bool = False
+    passes_with_core_chain: int = 0
+    attempt_outcome_counts_snapshot: list[int] = field(default_factory=list)
+    attempt_disagreement: bool = False
+    blocked_out_of_repo_tool_calls: int = 0
+    revalidation_attempts: int = 0
+    revalidation_core_hits: int = 0
+    revalidation_core_misses: int = 0
 
 
 class PRReviewAttemptRunner:

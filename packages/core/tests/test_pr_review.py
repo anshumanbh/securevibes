@@ -2269,6 +2269,13 @@ def test_normalize_hypothesis_output_converts_numbered_lists():
     assert result == "- First item\n- Second item"
 
 
+def test_normalize_hypothesis_output_converts_multi_digit_numbered_lists():
+    """Multi-digit numbered list items should be converted to dash bullets."""
+    raw = "10. Tenth item\n11) Eleventh item"
+    result = _normalize_hypothesis_output(raw)
+    assert result == "- Tenth item\n- Eleventh item"
+
+
 def test_normalize_hypothesis_output_fallback_for_prose():
     """Non-bullet prose should fall back to first line as a single bullet."""
     raw = "This is just a paragraph of text without bullets."
@@ -2369,14 +2376,20 @@ def test_score_diff_file_new_file_bonus():
     """New files should receive a small bonus."""
     regular = _make_diff_file("src/handler.py")
     new = _make_diff_file("src/handler.py", is_new=True)
-    assert _score_diff_file_for_security_review(new) == _score_diff_file_for_security_review(regular) + 8
+    assert (
+        _score_diff_file_for_security_review(new)
+        == _score_diff_file_for_security_review(regular) + 8
+    )
 
 
 def test_score_diff_file_renamed_file_bonus():
     """Renamed files should receive a small bonus."""
     regular = _make_diff_file("src/handler.py")
     renamed = _make_diff_file("src/handler.py", is_renamed=True)
-    assert _score_diff_file_for_security_review(renamed) == _score_diff_file_for_security_review(regular) + 4
+    assert (
+        _score_diff_file_for_security_review(renamed)
+        == _score_diff_file_for_security_review(regular) + 4
+    )
 
 
 def test_score_diff_file_no_path():
@@ -2433,7 +2446,9 @@ def test_summarize_diff_line_anchors_basic():
                 new_count=4,
                 lines=[
                     DiffLine(type="add", content="import os", old_line_num=None, new_line_num=2),
-                    DiffLine(type="remove", content="import sys", old_line_num=1, new_line_num=None),
+                    DiffLine(
+                        type="remove", content="import sys", old_line_num=1, new_line_num=None
+                    ),
                     DiffLine(type="context", content="# header", old_line_num=2, new_line_num=3),
                 ],
             )
@@ -2554,7 +2569,12 @@ def test_summarize_diff_line_anchors_respects_max_files():
                         new_start=1,
                         new_count=1,
                         lines=[
-                            DiffLine(type="add", content=f"added in file {i}", old_line_num=None, new_line_num=1),
+                            DiffLine(
+                                type="add",
+                                content=f"added in file {i}",
+                                old_line_num=None,
+                                new_line_num=1,
+                            ),
                         ],
                     )
                 ],
@@ -2627,7 +2647,9 @@ def test_summarize_diff_hunk_snippets_truncates_long_lines():
                 old_count=0,
                 new_start=1,
                 new_count=1,
-                lines=[DiffLine(type="add", content=long_content, old_line_num=None, new_line_num=1)],
+                lines=[
+                    DiffLine(type="add", content=long_content, old_line_num=None, new_line_num=1)
+                ],
             )
         ],
         is_new=False,
@@ -2653,7 +2675,9 @@ def test_summarize_diff_hunk_snippets_truncates_hunks():
             old_count=1,
             new_start=i * 10,
             new_count=1,
-            lines=[DiffLine(type="add", content=f"line {i}", old_line_num=None, new_line_num=i * 10)],
+            lines=[
+                DiffLine(type="add", content=f"line {i}", old_line_num=None, new_line_num=i * 10)
+            ],
         )
         for i in range(6)
     ]

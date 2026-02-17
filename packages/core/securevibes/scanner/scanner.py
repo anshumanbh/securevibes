@@ -4,6 +4,7 @@ import asyncio
 import os
 import json
 import logging
+import re
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -137,6 +138,7 @@ _NON_CODE_SUFFIXES = {
 _VALID_SUBAGENT_NAMES = frozenset(SUBAGENT_ORDER) | {"pr-code-review"}
 
 logger = logging.getLogger(__name__)
+_NUMBERED_HYPOTHESIS_RE = re.compile(r"^\d+[.)]\s+(?P<body>.+)$")
 
 
 def _summarize_diff_line_anchors(
@@ -280,8 +282,9 @@ def _normalize_hypothesis_output(
         if text.startswith("* "):
             bullets.append(f"- {text[2:].strip()}")
             continue
-        if len(text) > 2 and text[0].isdigit() and text[1] in {".", ")"}:
-            bullets.append(f"- {text[2:].strip()}")
+        numbered_match = _NUMBERED_HYPOTHESIS_RE.match(text)
+        if numbered_match:
+            bullets.append(f"- {numbered_match.group('body').strip()}")
             continue
 
     if not bullets:
@@ -909,6 +912,34 @@ class Scanner:
             "DAST_TIMEOUT": str(self.dast_config["timeout"]),
         }
 
+    def _require_repo_scoped_path(
+        self, repo: Path, candidate: Path, *, operation: str, return_resolved: bool = False
+    ) -> Path:
+        """Ensure a candidate path resolves within repository root."""
+        repo_root = repo.resolve(strict=False)
+        resolved_candidate = candidate.resolve(strict=False)
+        if resolved_candidate == repo_root or repo_root in resolved_candidate.parents:
+            return resolved_candidate if return_resolved else candidate
+
+        raise RuntimeError(
+            f"Refusing unsafe {operation}: {candidate} resolves outside repository root "
+            f"({resolved_candidate})"
+        )
+
+    def _repo_output_path(
+        self, repo: Path, path: Path | str, *, operation: str, return_resolved: bool = False
+    ) -> Path:
+        """Resolve a path relative to repo and enforce repository boundary."""
+        candidate = Path(path)
+        if not candidate.is_absolute():
+            candidate = repo / candidate
+        return self._require_repo_scoped_path(
+            repo,
+            candidate,
+            operation=operation,
+            return_resolved=return_resolved,
+        )
+
     def _sync_dast_accounts_file(self, repo: Path) -> None:
         """Copy optional DAST accounts file into `.securevibes/` for agent access."""
         accounts_path = self.dast_config.get("accounts_path")
@@ -919,9 +950,17 @@ class Scanner:
         if not accounts_file.exists():
             return
 
-        securevibes_dir = repo / SECUREVIBES_DIR
+        securevibes_dir = self._repo_output_path(
+            repo,
+            SECUREVIBES_DIR,
+            operation="DAST accounts output directory",
+        )
         securevibes_dir.mkdir(exist_ok=True)
-        target_accounts = securevibes_dir / "DAST_TEST_ACCOUNTS.json"
+        target_accounts = self._repo_output_path(
+            repo,
+            Path(SECUREVIBES_DIR) / "DAST_TEST_ACCOUNTS.json",
+            operation="DAST accounts output file",
+        )
         target_accounts.write_text(accounts_file.read_text(encoding="utf-8"), encoding="utf-8")
 
     def _setup_dast_skills(self, repo: Path):
@@ -937,8 +976,6 @@ class Scanner:
         """
         import shutil
 
-        target_skills_dir = repo / ".claude" / "skills" / "dast"
-
         # Get skills from package installation
         package_skills_dir = Path(__file__).parent.parent / "skills" / "dast"
 
@@ -950,10 +987,20 @@ class Scanner:
 
         # Count skills in package
         package_skills = [d.name for d in package_skills_dir.iterdir() if d.is_dir()]
+        target_skills_dir = self._repo_output_path(
+            repo,
+            Path(".claude") / "skills" / "dast",
+            operation="DAST skill sync target",
+        )
 
         # Sync skills to target project (always sync to pick up new skills)
         try:
-            target_skills_dir.parent.mkdir(parents=True, exist_ok=True)
+            target_skills_parent = self._repo_output_path(
+                repo,
+                target_skills_dir.parent,
+                operation="DAST skill sync parent directory",
+            )
+            target_skills_parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(package_skills_dir, target_skills_dir, dirs_exist_ok=True)
 
             if self.debug:
@@ -980,8 +1027,6 @@ class Scanner:
         """
         import shutil
 
-        target_skills_dir = repo / ".claude" / "skills" / "threat-modeling"
-
         # Get skills from package installation
         package_skills_dir = Path(__file__).parent.parent / "skills" / "threat-modeling"
 
@@ -998,9 +1043,20 @@ class Scanner:
         if not package_skills:
             return
 
+        target_skills_dir = self._repo_output_path(
+            repo,
+            Path(".claude") / "skills" / "threat-modeling",
+            operation="threat modeling skill sync target",
+        )
+
         # Sync skills to target project (always sync to pick up new skills)
         try:
-            target_skills_dir.parent.mkdir(parents=True, exist_ok=True)
+            target_skills_parent = self._repo_output_path(
+                repo,
+                target_skills_dir.parent,
+                operation="threat modeling skill sync parent directory",
+            )
+            target_skills_parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(package_skills_dir, target_skills_dir, dirs_exist_ok=True)
 
             if self.debug:
@@ -1218,7 +1274,11 @@ class Scanner:
         if not repo.exists():
             raise ValueError(f"Repository path does not exist: {repo_path}")
 
-        securevibes_dir = repo / SECUREVIBES_DIR
+        securevibes_dir = self._repo_output_path(
+            repo,
+            SECUREVIBES_DIR,
+            operation="PR review output directory",
+        )
         try:
             securevibes_dir.mkdir(exist_ok=True)
         except (OSError, PermissionError) as e:
@@ -1265,7 +1325,11 @@ class Scanner:
 
         focused_diff_context = _build_focused_diff_context(diff_context)
         _enforce_focused_diff_coverage(diff_context, focused_diff_context)
-        diff_context_path = securevibes_dir / DIFF_CONTEXT_FILE
+        diff_context_path = self._repo_output_path(
+            repo,
+            Path(SECUREVIBES_DIR) / DIFF_CONTEXT_FILE,
+            operation="PR diff context artifact",
+        )
         diff_context_path.write_text(json.dumps(focused_diff_context.to_json(), indent=2))
 
         architecture_context = extract_relevant_architecture(
@@ -1656,15 +1720,15 @@ Only report findings at or above: {severity_threshold}
 
         # Store final values needed by _build_pr_review_result into state attributes
         # that are used for debug logging.
-        state._raw_pr_finding_count = raw_pr_finding_count
-        state._should_run_verifier = should_run_verifier
-        state._passes_with_core_chain = passes_with_core_chain
-        state._attempt_outcome_counts = attempt_outcome_counts
-        state._attempt_disagreement = attempt_disagreement
-        state._blocked_out_of_repo_tool_calls = blocked_out_of_repo_tool_calls
-        state._revalidation_attempts = revalidation_attempts
-        state._revalidation_core_hits = revalidation_core_hits
-        state._revalidation_core_misses = revalidation_core_misses
+        state.raw_pr_finding_count = raw_pr_finding_count
+        state.should_run_verifier = should_run_verifier
+        state.passes_with_core_chain = passes_with_core_chain
+        state.attempt_outcome_counts_snapshot = attempt_outcome_counts
+        state.attempt_disagreement = attempt_disagreement
+        state.blocked_out_of_repo_tool_calls = blocked_out_of_repo_tool_calls
+        state.revalidation_attempts = revalidation_attempts
+        state.revalidation_core_hits = revalidation_core_hits
+        state.revalidation_core_misses = revalidation_core_misses
 
     def _build_pr_review_result(
         self,
@@ -1680,7 +1744,12 @@ Only report findings at or above: {severity_threshold}
         if ctx.baseline_vulns and pr_vulns:
             pr_vulns = dedupe_pr_vulns(pr_vulns, ctx.baseline_vulns)
             try:
-                ctx.pr_vulns_path.write_text(json.dumps(pr_vulns, indent=2), encoding="utf-8")
+                safe_pr_vulns_path = self._repo_output_path(
+                    ctx.repo,
+                    ctx.pr_vulns_path,
+                    operation="deduped PR findings artifact",
+                )
+                safe_pr_vulns_path.write_text(json.dumps(pr_vulns, indent=2), encoding="utf-8")
             except OSError as e:
                 state.warnings.append(
                     f"Unable to persist deduped PR findings to {ctx.pr_vulns_path}: {e}"
@@ -1696,13 +1765,13 @@ Only report findings at or above: {severity_threshold}
             canonical_chain_count = merge_stats.get(
                 "canonical_chain_count", merged_pr_finding_count
             )
-            should_run_verifier = state._should_run_verifier
+            should_run_verifier = state.should_run_verifier
             verifier_outcome = (
                 "confirmed"
                 if should_run_verifier and final_pr_finding_count > 0
                 else "rejected" if should_run_verifier else "not_run"
             )
-            passes_with_core_chain = state._passes_with_core_chain
+            passes_with_core_chain = state.passes_with_core_chain
             passes_with_core_chain_exact = state.support_counts_snapshot.get("exact", 0)
             passes_with_core_chain_family = state.support_counts_snapshot.get("family", 0)
             passes_with_core_chain_flow = state.support_counts_snapshot.get("flow", 0)
@@ -1711,23 +1780,23 @@ Only report findings at or above: {severity_threshold}
                 if state.attempt_chain_ids
                 else 0.0
             )
-            attempt_outcome_counts = state._attempt_outcome_counts
+            attempt_outcome_counts = state.attempt_outcome_counts_snapshot
             self.console.print(
                 "  PR review attempt summary: "
                 f"attempts={state.attempts_run}/{ctx.pr_review_attempts}, "
-                f"raw_findings={state._raw_pr_finding_count}, "
+                f"raw_findings={state.raw_pr_finding_count}, "
                 f"canonical_pre_filter={canonical_chain_count}, "
                 f"post_quality_filter_before_baseline={merged_pr_finding_count}, "
                 f"final_post_filter={final_pr_finding_count}, "
                 f"attempt_counts={attempt_outcome_counts}, "
-                f"attempt_disagreement={state._attempt_disagreement}, "
+                f"attempt_disagreement={state.attempt_disagreement}, "
                 f"overwritten_attempts={state.attempts_with_overwritten_artifact}, "
-                f"blocked_out_of_repo_tool_calls={state._blocked_out_of_repo_tool_calls}, "
+                f"blocked_out_of_repo_tool_calls={state.blocked_out_of_repo_tool_calls}, "
                 f"revalidation_flags={state.attempt_revalidation_attempted}, "
                 f"core_evidence_flags={state.attempt_core_evidence_present}, "
-                f"revalidation_attempts={state._revalidation_attempts}, "
-                f"revalidation_core_hits={state._revalidation_core_hits}, "
-                f"revalidation_core_misses={state._revalidation_core_misses}, "
+                f"revalidation_attempts={state.revalidation_attempts}, "
+                f"revalidation_core_hits={state.revalidation_core_hits}, "
+                f"revalidation_core_misses={state.revalidation_core_misses}, "
                 f"speculative_dropped={speculative_dropped}, "
                 f"subchain_collapsed={subchain_collapsed}, "
                 f"low_support_dropped={low_support_dropped}, "
@@ -1782,7 +1851,11 @@ Only report findings at or above: {severity_threshold}
             ScanResult with findings
         """
         # Ensure .securevibes directory exists
-        securevibes_dir = repo / SECUREVIBES_DIR
+        securevibes_dir = self._repo_output_path(
+            repo,
+            Path(SECUREVIBES_DIR),
+            operation="scan output directory",
+        )
         try:
             securevibes_dir.mkdir(exist_ok=True)
         except (OSError, PermissionError) as e:
@@ -2038,17 +2111,32 @@ Only report findings at or above: {severity_threshold}
             securevibes_dir: Path to .securevibes directory
         """
         try:
+            repo = Path(scan_result.repository_path).resolve(strict=False)
+            securevibes_dir = self._repo_output_path(
+                repo,
+                securevibes_dir,
+                operation="regenerated artifacts directory",
+            )
+
             # Regenerate JSON report
             from securevibes.reporters.json_reporter import JSONReporter
 
-            json_file = securevibes_dir / SCAN_RESULTS_FILE
+            json_file = self._repo_output_path(
+                repo,
+                securevibes_dir / SCAN_RESULTS_FILE,
+                operation="regenerated JSON report",
+            )
             JSONReporter.save(scan_result, json_file)
 
             # Regenerate Markdown report
             from securevibes.reporters.markdown_reporter import MarkdownReporter
 
             md_output = MarkdownReporter.generate(scan_result)
-            md_file = securevibes_dir / "scan_report.md"
+            md_file = self._repo_output_path(
+                repo,
+                securevibes_dir / "scan_report.md",
+                operation="regenerated markdown report",
+            )
             with open(md_file, "w", encoding="utf-8") as f:
                 f.write(md_output)
 
@@ -2219,7 +2307,13 @@ Only report findings at or above: {severity_threshold}
         # For subagents that produce JSON with vulnerabilities, load them
         if subagent in ("code-review", "report-generator"):
             # These produce files we can parse for issues
-            return self._load_scan_results(securevibes_dir, repo, files_scanned, scan_start_time)
+            return self._load_scan_results(
+                securevibes_dir,
+                repo,
+                files_scanned,
+                scan_start_time,
+                single_subagent=subagent,
+            )
 
         # For assessment and threat-modeling, return partial result
         if subagent == "assessment":
@@ -2391,8 +2485,13 @@ Only report findings at or above: {severity_threshold}
             commit = get_repo_head_commit(repo)
             branch = get_repo_branch(repo)
             if commit and branch:
-                update_scan_state(
+                scan_state_path = self._repo_output_path(
+                    repo,
                     securevibes_dir / SCAN_STATE_FILE,
+                    operation="scan state artifact",
+                )
+                update_scan_state(
+                    scan_state_path,
                     full_scan=build_full_scan_entry(
                         commit=commit,
                         branch=branch,

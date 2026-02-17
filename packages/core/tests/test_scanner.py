@@ -544,6 +544,64 @@ class TestScannerResultLoading:
         assert isinstance(result, ScanResult)
         mock_update_state.assert_not_called()
 
+    @pytest.mark.asyncio
+    @patch("securevibes.scanner.scanner.update_scan_state")
+    @patch("securevibes.scanner.scanner.get_repo_branch")
+    @patch("securevibes.scanner.scanner.get_repo_head_commit")
+    async def test_load_subagent_code_review_skips_scan_state_update(
+        self, mock_commit, mock_branch, mock_update_state, scanner, test_repo
+    ):
+        """Subagent code-review should not update full-scan state."""
+        securevibes_dir = test_repo / ".securevibes"
+        securevibes_dir.mkdir()
+
+        mock_commit.return_value = "abc123"
+        mock_branch.return_value = "main"
+
+        import json
+
+        (securevibes_dir / "VULNERABILITIES.json").write_text(json.dumps([]))
+
+        result = scanner._load_subagent_results(
+            securevibes_dir,
+            test_repo,
+            files_scanned=10,
+            scan_start_time=0,
+            subagent="code-review",
+        )
+
+        assert isinstance(result, ScanResult)
+        mock_update_state.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("securevibes.scanner.scanner.update_scan_state")
+    @patch("securevibes.scanner.scanner.get_repo_branch")
+    @patch("securevibes.scanner.scanner.get_repo_head_commit")
+    async def test_load_subagent_report_generator_skips_scan_state_update(
+        self, mock_commit, mock_branch, mock_update_state, scanner, test_repo
+    ):
+        """Subagent report-generator should not update full-scan state."""
+        securevibes_dir = test_repo / ".securevibes"
+        securevibes_dir.mkdir()
+
+        mock_commit.return_value = "abc123"
+        mock_branch.return_value = "main"
+
+        import json
+
+        (securevibes_dir / "scan_results.json").write_text(json.dumps({"issues": []}))
+
+        result = scanner._load_subagent_results(
+            securevibes_dir,
+            test_repo,
+            files_scanned=10,
+            scan_start_time=0,
+            subagent="report-generator",
+        )
+
+        assert isinstance(result, ScanResult)
+        mock_update_state.assert_not_called()
+
 
 class TestProgressTrackerEdgeCases:
     """Test edge cases in progress tracking"""
@@ -768,3 +826,60 @@ class TestScannerDastAccountsSync:
         synced_file = securevibes_dir / "DAST_TEST_ACCOUNTS.json"
         assert synced_file.exists()
         assert synced_file.read_text(encoding="utf-8") == '{"users":[]}'
+
+
+class TestScannerPathGuards:
+    """Test repo boundary protections for scanner-owned writes."""
+
+    def _create_symlink(self, link_path, target_path):
+        """Create a directory symlink, skipping test if unsupported."""
+        try:
+            link_path.symlink_to(target_path, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("Symlinks are not supported in this environment")
+
+    def test_sync_dast_accounts_rejects_securevibes_symlink_escape(self, scanner, tmp_path):
+        """DAST accounts sync should fail when .securevibes escapes repo via symlink."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+
+        self._create_symlink(repo / ".securevibes", outside)
+
+        accounts_file = tmp_path / "accounts.json"
+        accounts_file.write_text('{"users":[]}', encoding="utf-8")
+        scanner.configure_dast(
+            target_url="http://localhost:3000",
+            timeout=120,
+            accounts_path=str(accounts_file),
+        )
+
+        with pytest.raises(RuntimeError, match="outside repository root"):
+            scanner._sync_dast_accounts_file(repo)
+
+    def test_setup_dast_skills_rejects_symlink_escape(self, scanner, tmp_path):
+        """DAST skill sync should fail when .claude/skills escapes repo via symlink."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+
+        (repo / ".claude").mkdir()
+        self._create_symlink(repo / ".claude" / "skills", outside)
+
+        with pytest.raises(RuntimeError, match="outside repository root"):
+            scanner._setup_dast_skills(repo)
+
+    def test_setup_threat_modeling_skills_rejects_symlink_escape(self, scanner, tmp_path):
+        """Threat-modeling skill sync should fail when .claude/skills escapes repo via symlink."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+
+        (repo / ".claude").mkdir()
+        self._create_symlink(repo / ".claude" / "skills", outside)
+
+        with pytest.raises(RuntimeError, match="outside repository root"):
+            scanner._setup_threat_modeling_skills(repo)
