@@ -6,9 +6,15 @@ import json
 import os
 import subprocess
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Mapping, Optional
+from typing import Dict, Iterator, Mapping, Optional
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None
 
 
 def load_scan_state(state_path: Path) -> Optional[Dict[str, object]]:
@@ -50,15 +56,17 @@ def update_scan_state(
     Returns:
         Updated state dict.
     """
-    state = load_scan_state(state_path) or {}
-
-    if full_scan is not None:
-        state["last_full_scan"] = dict(full_scan)
-    if pr_review is not None:
-        state["last_pr_review"] = dict(pr_review)
-
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_json_atomic(state_path, state)
+    lock_path = state_path.with_name(f".{state_path.name}.lock")
+    with _file_lock(lock_path):
+        state = load_scan_state(state_path) or {}
+
+        if full_scan is not None:
+            state["last_full_scan"] = dict(full_scan)
+        if pr_review is not None:
+            state["last_pr_review"] = dict(pr_review)
+
+        _write_json_atomic(state_path, state)
 
     return state
 
@@ -180,3 +188,19 @@ def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
     finally:
         if fd != -1:
             os.close(fd)
+
+
+@contextmanager
+def _file_lock(lock_path: Path) -> Iterator[None]:
+    """Acquire an exclusive file lock for cross-process state updates."""
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    locked = False
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            locked = True
+        yield
+    finally:
+        if locked:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
