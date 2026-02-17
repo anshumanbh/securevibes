@@ -161,6 +161,26 @@ def _is_repo_artifact_path(
         return False
 
 
+def _resolve_repo_candidate(repo_root: Path, candidate: object) -> Optional[Path]:
+    """Resolve a candidate path against repo_root."""
+    normalized_candidate = _normalize_hook_path(candidate)
+    if not normalized_candidate:
+        return None
+
+    try:
+        candidate_path = Path(normalized_candidate)
+        if not candidate_path.is_absolute():
+            candidate_path = repo_root / candidate_path
+        return candidate_path.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError, TypeError):
+        return None
+
+
+def _is_inside_repo(repo_root: Path, candidate: Optional[Path]) -> bool:
+    """Return True when candidate resolves inside repository root."""
+    return bool(candidate and (candidate == repo_root or repo_root in candidate.parents))
+
+
 def _command_uses_blocked_db_tool(command: object, blocked_tools: list[str]) -> Optional[str]:
     """Return matched blocked DB tool when command invokes one, else None."""
     normalized = str(command or "").lower()
@@ -247,7 +267,8 @@ def create_pre_tool_hook(
     - Blocking reads from infrastructure directories (venv, node_modules, etc.)
     - Injecting exclude patterns for Grep/Glob
     - DAST write restrictions (only DAST_VALIDATION.json and /tmp/*)
-    - PR review path and artifact guardrails
+    - Repository-boundary guardrails for file tools
+    - PR review artifact guardrails
 
     Args:
         tracker: ProgressTracker instance for phase detection and tool tracking
@@ -255,7 +276,7 @@ def create_pre_tool_hook(
         debug: Whether to show debug messages
         detected_languages: Set of detected languages for exclusion rules
         pr_grep_default_path: Default path used for pathless Grep calls in PR review
-        pr_repo_root: Repository root path for PR review repo-boundary enforcement
+        pr_repo_root: Repository root path for repo-boundary enforcement
         pr_tool_guard_observer: Optional mutable observer for PR review guard telemetry
 
     Returns:
@@ -265,6 +286,7 @@ def create_pre_tool_hook(
     async def pre_tool_hook(input_data: dict, tool_use_id: str, ctx: dict) -> dict:
         tool_name = input_data.get("tool_name")
         tool_input = input_data.get("tool_input", {})
+        root_path = pr_repo_root.resolve(strict=False) if pr_repo_root else None
 
         # Note: Skill tool logging removed - SDK auto-loads skills from .claude/skills/
         # without explicit Skill tool calls. Skill sync is logged in Scanner._setup_*_skills().
@@ -284,28 +306,11 @@ def create_pre_tool_hook(
                 or ""
             )
 
-            if current_phase == "pr-code-review" and pr_repo_root:
-                root_path = pr_repo_root.resolve(strict=False)
-
-                def _resolve_candidate(candidate: object) -> Optional[Path]:
-                    normalized_candidate = _normalize_hook_path(candidate)
-                    if not normalized_candidate:
-                        return None
-                    try:
-                        candidate_path = Path(normalized_candidate)
-                        if not candidate_path.is_absolute():
-                            candidate_path = root_path / candidate_path
-                        return candidate_path.resolve(strict=False)
-                    except (OSError, RuntimeError, ValueError, TypeError):
-                        return None
-
+            if root_path:
                 blocked_candidate: Optional[Path] = None
-                resolved_path = _resolve_candidate(path)
+                resolved_path = _resolve_repo_candidate(root_path, path)
                 if path and resolved_path is not None:
-                    is_inside_repo = (
-                        resolved_path == root_path or root_path in resolved_path.parents
-                    )
-                    if not is_inside_repo:
+                    if not _is_inside_repo(root_path, resolved_path):
                         blocked_candidate = resolved_path
 
                 # Glob uses "patterns" instead of path/file_path; enforce guard for each pattern.
@@ -321,13 +326,10 @@ def create_pre_tool_hook(
                         glob_patterns = []
 
                     for pattern in glob_patterns:
-                        resolved_pattern = _resolve_candidate(pattern)
+                        resolved_pattern = _resolve_repo_candidate(root_path, pattern)
                         if resolved_pattern is None:
                             continue
-                        is_inside_repo = (
-                            resolved_pattern == root_path or root_path in resolved_pattern.parents
-                        )
-                        if not is_inside_repo:
+                        if not _is_inside_repo(root_path, resolved_pattern):
                             blocked_candidate = resolved_pattern
                             break
 
@@ -345,17 +347,23 @@ def create_pre_tool_hook(
                             f"  🚫 Blocked out-of-repo {tool_name}: {blocked_candidate}",
                             style="dim yellow",
                         )
+                    is_pr_review = current_phase == "pr-code-review"
+                    decision_reason = (
+                        "PR review cannot access files outside repository root"
+                        if is_pr_review
+                        else "SecureVibes scan cannot access files outside repository root"
+                    )
+                    denied_reason = (
+                        "PR review guard blocked out-of-repo access"
+                        if is_pr_review
+                        else "SecureVibes guard blocked out-of-repo access"
+                    )
                     return {
                         "hookSpecificOutput": {
                             "hookEventName": "PreToolUse",
                             "permissionDecision": "deny",
-                            "permissionDecisionReason": (
-                                "PR review cannot access files outside repository root"
-                            ),
-                            "reason": (
-                                "PR review guard blocked out-of-repo access: "
-                                f"{blocked_candidate}"
-                            ),
+                            "permissionDecisionReason": decision_reason,
+                            "reason": f"{denied_reason}: {blocked_candidate}",
                         }
                     }
 
@@ -476,6 +484,38 @@ def create_pre_tool_hook(
             if tool_name == "Glob":
                 exclude_patterns = [f"{excluded}/**" for excluded in active_exclude_dirs]
                 _merge_exclude_patterns(tool_input, exclude_patterns)
+
+        # Enforce repo boundary for generic write/edit activity in non-DAST/non-PR phases.
+        if (
+            tool_name in {"Write", "Edit"}
+            and root_path
+            and tracker.current_phase not in {"dast", "pr-code-review"}
+        ):
+            file_path = _normalize_hook_path(tool_input.get("file_path", ""))
+            if file_path:
+                resolved_candidate = _resolve_repo_candidate(root_path, file_path)
+                if resolved_candidate and not _is_inside_repo(root_path, resolved_candidate):
+                    if pr_tool_guard_observer is not None:
+                        blocked_count = int(
+                            pr_tool_guard_observer.get("blocked_out_of_repo_count", 0)
+                        )
+                        pr_tool_guard_observer["blocked_out_of_repo_count"] = blocked_count + 1
+                        blocked_paths = pr_tool_guard_observer.setdefault("blocked_paths", [])
+                        if isinstance(blocked_paths, list):
+                            blocked_paths.append(str(resolved_candidate))
+                    return {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": (
+                                "SecureVibes scan cannot write files outside repository root"
+                            ),
+                            "reason": (
+                                "SecureVibes guard blocked out-of-repo write: "
+                                f"{resolved_candidate}"
+                            ),
+                        }
+                    }
 
         # Enforce DAST write restrictions: only allow writing DAST_VALIDATION.json or /tmp/*
         if tool_name == "Write" and tracker.current_phase == "dast":

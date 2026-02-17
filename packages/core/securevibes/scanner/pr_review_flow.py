@@ -365,7 +365,7 @@ class PRReviewAttemptRunner:
                 setting_sources=["project"],
                 allowed_tools=["Read", "Write", "Grep", "Glob", "LS"],
                 max_turns=config.get_max_turns(),
-                permission_mode="bypassPermissions",
+                permission_mode="default",
                 model=self.model,
                 hooks={
                     "PreToolUse": [

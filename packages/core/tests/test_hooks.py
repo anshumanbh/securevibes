@@ -746,6 +746,71 @@ class TestPreToolHook:
         assert result == {}
 
     @pytest.mark.asyncio
+    async def test_blocks_out_of_repo_read_outside_pr_phase(self, tracker, console, tmp_path):
+        """Non-PR phases should also deny out-of-repo read attempts."""
+        tracker.current_phase = "assessment"
+        detected_languages = {"python"}
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        outside_file = tmp_path / "outside.txt"
+        outside_file.write_text("x", encoding="utf-8")
+        hook = create_pre_tool_hook(
+            tracker,
+            console,
+            debug=False,
+            detected_languages=detected_languages,
+            pr_repo_root=repo_root,
+        )
+
+        input_data = {
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(outside_file)},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        payload = result["hookSpecificOutput"]
+        assert payload["permissionDecision"] == "deny"
+        assert (
+            "SecureVibes scan cannot access files outside repository root"
+            in payload["permissionDecisionReason"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_blocks_out_of_repo_write_outside_pr_and_dast(self, tracker, console, tmp_path):
+        """Non-PR/non-DAST phases should deny out-of-repo write attempts."""
+        tracker.current_phase = "assessment"
+        detected_languages = {"python"}
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        guard_observer = {"blocked_out_of_repo_count": 0}
+        hook = create_pre_tool_hook(
+            tracker,
+            console,
+            debug=False,
+            detected_languages=detected_languages,
+            pr_repo_root=repo_root,
+            pr_tool_guard_observer=guard_observer,
+        )
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {"file_path": str(tmp_path / "outside.json"), "content": "{}"},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        payload = result["hookSpecificOutput"]
+        assert payload["permissionDecision"] == "deny"
+        assert (
+            "SecureVibes scan cannot write files outside repository root"
+            in payload["permissionDecisionReason"]
+        )
+        assert guard_observer["blocked_out_of_repo_count"] == 1
+
+    @pytest.mark.asyncio
     async def test_blocks_out_of_repo_read_in_pr_code_review(self, tracker, console, tmp_path):
         """PR code review should deny reads outside repository root."""
         tracker.current_phase = "pr-code-review"

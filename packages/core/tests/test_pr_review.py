@@ -2153,8 +2153,8 @@ async def test_pr_review_uses_direct_tools_without_task(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_generate_pr_hypotheses_uses_no_tools_and_bypass_permissions(tmp_path: Path):
-    """Hypothesis generation helper should run LLM-only with bypass policy."""
+async def test_generate_pr_hypotheses_uses_no_tools_and_default_permissions(tmp_path: Path):
+    """Hypothesis generation helper should run LLM-only with safe default permissions."""
     repo = tmp_path / "repo"
     repo.mkdir()
 
@@ -2183,12 +2183,12 @@ async def test_generate_pr_hypotheses_uses_no_tools_and_bypass_permissions(tmp_p
 
     options = mock_client.call_args[1]["options"]
     assert options.allowed_tools == []
-    assert options.permission_mode == "bypassPermissions"
+    assert options.permission_mode == "default"
 
 
 @pytest.mark.asyncio
-async def test_refine_pr_findings_uses_no_tools_and_bypass_permissions(tmp_path: Path):
-    """PR refinement helper should run LLM-only with bypass policy."""
+async def test_refine_pr_findings_uses_no_tools_and_default_permissions(tmp_path: Path):
+    """PR refinement helper should run LLM-only with safe default permissions."""
     repo = tmp_path / "repo"
     repo.mkdir()
 
@@ -2223,7 +2223,7 @@ async def test_refine_pr_findings_uses_no_tools_and_bypass_permissions(tmp_path:
 
     options = mock_client.call_args[1]["options"]
     assert options.allowed_tools == []
-    assert options.permission_mode == "bypassPermissions"
+    assert options.permission_mode == "default"
 
 
 @pytest.mark.asyncio
@@ -2802,9 +2802,7 @@ class TestGeneratePrHypotheses:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-        ):
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
             result = await _generate_pr_hypotheses(**self._DEFAULT_KWARGS)
 
         assert result == "- Unable to generate hypotheses."
@@ -2817,9 +2815,7 @@ class TestGeneratePrHypotheses:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-        ):
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
             result = await _generate_pr_hypotheses(**self._DEFAULT_KWARGS)
 
         assert result == "- Unable to generate hypotheses."
@@ -2832,9 +2828,7 @@ class TestGeneratePrHypotheses:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-        ):
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
             result = await _generate_pr_hypotheses(**self._DEFAULT_KWARGS)
 
         assert result == "- Unable to generate hypotheses."
@@ -2867,9 +2861,7 @@ class TestGeneratePrHypotheses:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-        ):
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
             result = await _generate_pr_hypotheses(**self._DEFAULT_KWARGS)
 
         assert "Auth bypass via token reuse" in result
@@ -2899,9 +2891,7 @@ class TestGeneratePrHypotheses:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-        ):
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
             result = await _generate_pr_hypotheses(**self._DEFAULT_KWARGS)
 
         # Empty input -> _normalize_hypothesis_output returns "- None generated."
@@ -2938,9 +2928,7 @@ class TestRefinePrFindingsWithLlm:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-        ):
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
             result = await _refine_pr_findings_with_llm(
                 findings=[{"title": "test"}], **self._DEFAULT_KWARGS
             )
@@ -2955,9 +2943,7 @@ class TestRefinePrFindingsWithLlm:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-        ):
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
             result = await _refine_pr_findings_with_llm(
                 findings=[{"title": "test"}], **self._DEFAULT_KWARGS
             )
@@ -2988,9 +2974,7 @@ class TestRefinePrFindingsWithLlm:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-        ):
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
             result = await _refine_pr_findings_with_llm(
                 findings=[{"title": "test"}], **self._DEFAULT_KWARGS
             )
@@ -3025,9 +3009,7 @@ class TestRefinePrFindingsWithLlm:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-        ):
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
             result = await _refine_pr_findings_with_llm(
                 findings=[{"title": "test"}], **self._DEFAULT_KWARGS
             )
@@ -3062,9 +3044,7 @@ class TestRefinePrFindingsWithLlm:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-        ):
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
             result = await _refine_pr_findings_with_llm(
                 findings=[{"title": "test"}], **self._DEFAULT_KWARGS
             )
@@ -3076,10 +3056,12 @@ class TestRefinePrFindingsWithLlm:
         """Successful LLM response with valid JSON array should return parsed findings."""
         from claude_agent_sdk.types import AssistantMessage, TextBlock, ResultMessage
 
-        findings_json = json.dumps([
-            {"title": "Auth bypass", "severity": "high"},
-            {"title": "SSRF", "severity": "medium"},
-        ])
+        findings_json = json.dumps(
+            [
+                {"title": "Auth bypass", "severity": "high"},
+                {"title": "SSRF", "severity": "medium"},
+            ]
+        )
         text_block = TextBlock(text=findings_json)
         assistant_msg = AssistantMessage(content=[text_block], model="sonnet")
         result_msg = ResultMessage(
@@ -3103,9 +3085,7 @@ class TestRefinePrFindingsWithLlm:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-        ):
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
             result = await _refine_pr_findings_with_llm(
                 findings=[{"title": "test"}], **self._DEFAULT_KWARGS
             )
@@ -3144,9 +3124,7 @@ class TestRefinePrFindingsWithLlm:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-        ):
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
             result = await _refine_pr_findings_with_llm(
                 findings=[{"title": "test"}], **self._DEFAULT_KWARGS
             )

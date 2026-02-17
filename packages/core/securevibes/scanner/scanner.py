@@ -1,14 +1,12 @@
 """Security scanner with real-time progress tracking using ClaudeSDKClient"""
 
 import asyncio
-import os
 import json
 import logging
 import re
 import time
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional, Dict, Any, Iterator
+from typing import Optional, Dict, Any
 from rich.console import Console
 
 from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
@@ -113,6 +111,8 @@ _FOCUSED_DIFF_MAX_HUNK_LINES = 200
 _PROMPT_HUNK_MAX_FILES = 12
 _PROMPT_HUNK_MAX_HUNKS_PER_FILE = 4
 _PROMPT_HUNK_MAX_LINES_PER_HUNK = 80
+_SAFE_PERMISSION_MODE = "default"
+_BASE_ALLOWED_TOOLS = ("Task", "Skill", "Read", "Write", "Grep", "Glob", "LS")
 _SECURITY_PATH_HINTS = (
     "auth",
     "permission",
@@ -356,7 +356,7 @@ ARCHITECTURE CONTEXT:
         setting_sources=["project"],
         allowed_tools=[],
         max_turns=8,
-        permission_mode="bypassPermissions",
+        permission_mode=_SAFE_PERMISSION_MODE,
         model=model,
     )
 
@@ -462,7 +462,7 @@ CANDIDATE FINDINGS JSON:
         setting_sources=["project"],
         allowed_tools=[],
         max_turns=10,
-        permission_mode="bypassPermissions",
+        permission_mode=_SAFE_PERMISSION_MODE,
         model=model,
     )
 
@@ -692,38 +692,41 @@ class Scanner:
 
         self.agentic_override = override
 
-    @contextmanager
-    def _temporary_env(self, updates: Dict[str, Optional[str]]) -> Iterator[None]:
-        """Apply environment updates for a single scan invocation and restore afterward."""
-        previous_values = {key: os.environ.get(key) for key in updates}
-        try:
-            for key, value in updates.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-            yield
-        finally:
-            for key, previous_value in previous_values.items():
-                if previous_value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = previous_value
+    def _reset_scan_runtime_state(self) -> None:
+        """Reset runtime state that should be isolated per scan invocation."""
+        self.total_cost = 0.0
 
-    def _build_dast_env(self, enabled: bool) -> Dict[str, Optional[str]]:
-        """Build DAST-related environment variables for the current scan mode."""
-        if not enabled:
-            return {
-                "DAST_ENABLED": None,
-                "DAST_TARGET_URL": None,
-                "DAST_TIMEOUT": None,
-            }
+    def _build_scan_execution_mode_context(
+        self,
+        *,
+        single_subagent: Optional[str],
+        resume_from: Optional[str],
+        skip_subagents: list[str],
+        dast_enabled_for_run: bool,
+    ) -> str:
+        """Build authoritative scan-mode context injected into the orchestration prompt."""
+        run_only_value = single_subagent or "none"
+        resume_value = resume_from or "none"
+        skip_value = ",".join(skip_subagents) if skip_subagents else "none"
+        dast_url = self.dast_config.get("target_url") if dast_enabled_for_run else "none"
+        dast_timeout = str(self.dast_config.get("timeout", 120)) if dast_enabled_for_run else "none"
+        dast_accounts = (
+            str(self.dast_config.get("accounts_path") or "none") if dast_enabled_for_run else "none"
+        )
 
-        return {
-            "DAST_ENABLED": "true",
-            "DAST_TARGET_URL": self.dast_config["target_url"],
-            "DAST_TIMEOUT": str(self.dast_config["timeout"]),
-        }
+        return (
+            "<scan_execution_mode>\n"
+            "These values are authoritative for this run.\n"
+            "Ignore conflicting OS environment variables.\n"
+            f"run_only_subagent={run_only_value}\n"
+            f"resume_from_subagent={resume_value}\n"
+            f"skip_subagents={skip_value}\n"
+            f"dast_enabled={'true' if dast_enabled_for_run else 'false'}\n"
+            f"dast_target_url={dast_url}\n"
+            f"dast_timeout_seconds={dast_timeout}\n"
+            f"dast_accounts_path={dast_accounts}\n"
+            "</scan_execution_mode>"
+        )
 
     def _require_repo_scoped_path(
         self, repo: Path, candidate: Path, *, operation: str, return_resolved: bool = False
@@ -898,6 +901,7 @@ class Scanner:
         Returns:
             ScanResult with findings
         """
+        self._reset_scan_runtime_state()
         repo = Path(repo_path).resolve()
         manager = SubAgentManager(repo, quiet=False)
 
@@ -951,24 +955,16 @@ class Scanner:
                         return await self.scan(repo_path)
                     # else: ScanMode.USE_EXISTING - continue with single sub-agent
 
-        # Validate and set environment variable to run only this sub-agent
+        # Validate subagent before executing.
         if subagent not in _VALID_SUBAGENT_NAMES:
             raise ValueError(
                 f"Invalid subagent name: {subagent!r}. "
                 f"Must be one of: {sorted(_VALID_SUBAGENT_NAMES)}"
             )
-        env_updates: Dict[str, Optional[str]] = {
-            "RUN_ONLY_SUBAGENT": subagent,
-            "RESUME_FROM_SUBAGENT": None,
-            "SKIP_SUBAGENTS": None,
-        }
-        env_updates.update(self._build_dast_env(subagent == "dast" and self.dast_enabled))
 
-        # Run scan with single sub-agent
-        with self._temporary_env(env_updates):
-            if subagent == "dast" and self.dast_enabled:
-                self._sync_dast_accounts_file(repo)
-            return await self._execute_scan(repo, single_subagent=subagent)
+        if subagent == "dast" and self.dast_enabled:
+            self._sync_dast_accounts_file(repo)
+        return await self._execute_scan(repo, single_subagent=subagent)
 
     async def scan_resume(
         self, repo_path: str, from_subagent: str, force: bool = False, skip_checks: bool = False
@@ -985,6 +981,7 @@ class Scanner:
         Returns:
             ScanResult with findings
         """
+        self._reset_scan_runtime_state()
         repo = Path(repo_path).resolve()
         manager = SubAgentManager(repo, quiet=False)
 
@@ -1020,22 +1017,10 @@ class Scanner:
                 if not click.confirm("\nProceed?", default=True):
                     raise RuntimeError("Scan cancelled by user")
 
-        # Calculate which sub-agents to skip
-        skip_index = SUBAGENT_ORDER.index(from_subagent)
-        skip_subagents = SUBAGENT_ORDER[:skip_index]
-        env_updates: Dict[str, Optional[str]] = {
-            "RUN_ONLY_SUBAGENT": None,
-            "RESUME_FROM_SUBAGENT": from_subagent,
-            "SKIP_SUBAGENTS": ",".join(skip_subagents) if skip_subagents else None,
-        }
         enable_dast_for_resume = "dast" in subagents_to_run and self.dast_enabled
-        env_updates.update(self._build_dast_env(enable_dast_for_resume))
-
-        # Run scan from this sub-agent onwards
-        with self._temporary_env(env_updates):
-            if enable_dast_for_resume:
-                self._sync_dast_accounts_file(repo)
-            return await self._execute_scan(repo, resume_from=from_subagent)
+        if enable_dast_for_resume:
+            self._sync_dast_accounts_file(repo)
+        return await self._execute_scan(repo, resume_from=from_subagent)
 
     async def scan(self, repo_path: str) -> ScanResult:
         """
@@ -1047,21 +1032,14 @@ class Scanner:
         Returns:
             ScanResult with all findings
         """
+        self._reset_scan_runtime_state()
         repo = Path(repo_path).resolve()
         if not repo.exists():
             raise ValueError(f"Repository path does not exist: {repo_path}")
 
-        env_updates: Dict[str, Optional[str]] = {
-            "RUN_ONLY_SUBAGENT": None,
-            "RESUME_FROM_SUBAGENT": None,
-            "SKIP_SUBAGENTS": None,
-        }
-        env_updates.update(self._build_dast_env(self.dast_enabled))
-
-        with self._temporary_env(env_updates):
-            if self.dast_enabled:
-                self._sync_dast_accounts_file(repo)
-            return await self._execute_scan(repo)
+        if self.dast_enabled:
+            self._sync_dast_accounts_file(repo)
+        return await self._execute_scan(repo)
 
     async def pr_review(
         self,
@@ -1080,6 +1058,7 @@ class Scanner:
             known_vulns_path: Optional path to VULNERABILITIES.json for dedupe
             severity_threshold: Minimum severity to report
         """
+        self._reset_scan_runtime_state()
         repo = Path(repo_path).resolve()
         if not repo.exists():
             raise ValueError(f"Repository path does not exist: {repo_path}")
@@ -1744,13 +1723,14 @@ Only report findings at or above: {severity_threshold}
         # Setup DAST / threat-modeling skills if those subagents will be executed.
         # Create SubAgentManager once for resume_from lookups to avoid duplicate
         # instantiation.
+        resume_subagents: list[str] = []
         if single_subagent:
-            needs_dast = single_subagent == "dast"
+            needs_dast = single_subagent == "dast" and self.dast_enabled
             needs_threat_modeling = single_subagent == "threat-modeling"
         elif resume_from:
             manager = SubAgentManager(repo, quiet=False)
             resume_subagents = manager.get_resume_subagents(resume_from)
-            needs_dast = "dast" in resume_subagents
+            needs_dast = "dast" in resume_subagents and self.dast_enabled
             needs_threat_modeling = "threat-modeling" in resume_subagents
         else:
             needs_dast = self.dast_enabled
@@ -1811,12 +1791,34 @@ Only report findings at or above: {severity_threshold}
         # Create agent definitions with CLI model override and DAST target URL
         # This allows --model flag to cascade to all agents while respecting env vars
         # The DAST target URL is passed to substitute {target_url} placeholders in the prompt
-        dast_url = self.dast_config.get("target_url") if self.dast_enabled else None
+        dast_url = (
+            self.dast_config.get("target_url") if (needs_dast and self.dast_enabled) else None
+        )
         agents = create_agent_definitions(
             cli_model=self.model,
             dast_target_url=dast_url,
             threat_modeling_context=threat_modeling_context,
         )
+
+        if single_subagent:
+            skip_subagents = [
+                subagent for subagent in SUBAGENT_ORDER if subagent != single_subagent
+            ]
+        elif resume_from:
+            resume_index = SUBAGENT_ORDER.index(resume_from)
+            skip_subagents = list(SUBAGENT_ORDER[:resume_index])
+        else:
+            skip_subagents = []
+        dast_enabled_for_run = needs_dast
+        scan_mode_context = self._build_scan_execution_mode_context(
+            single_subagent=single_subagent,
+            resume_from=resume_from,
+            skip_subagents=skip_subagents,
+            dast_enabled_for_run=dast_enabled_for_run,
+        )
+        allowed_tools = list(_BASE_ALLOWED_TOOLS)
+        if dast_enabled_for_run:
+            allowed_tools.append("Bash")
 
         # Skills configuration:
         # - Skills must be explicitly enabled via setting_sources=["project"]
@@ -1831,9 +1833,9 @@ Only report findings at or above: {severity_threshold}
             # Explicit global tools (recommended for clarity)
             # Individual agents may have more restrictive tool lists
             # Task is required for the orchestrator to dispatch to subagents defined via --agents
-            allowed_tools=["Task", "Skill", "Read", "Write", "Edit", "Bash", "Grep", "Glob", "LS"],
+            allowed_tools=allowed_tools,
             max_turns=config.get_max_turns(),
-            permission_mode="bypassPermissions",
+            permission_mode=_SAFE_PERMISSION_MODE,
             model=self.model,
             hooks={
                 "PreToolUse": [
@@ -1854,7 +1856,9 @@ Only report findings at or above: {severity_threshold}
         )
 
         # Load orchestration prompt
-        orchestration_prompt = load_prompt("main", category="orchestration")
+        orchestration_prompt = (
+            f"{load_prompt('main', category='orchestration')}\n\n{scan_mode_context}"
+        )
 
         # Execute scan with streaming progress
         try:
