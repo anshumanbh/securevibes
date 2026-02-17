@@ -2773,3 +2773,384 @@ def test_summarize_diff_hunk_snippets_truncates_hunks():
     )
     result = _summarize_diff_hunk_snippets(context, max_hunks_per_file=2)
     assert "truncated 4 hunks" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests for _generate_pr_hypotheses (P3.7)
+# ---------------------------------------------------------------------------
+
+
+class TestGeneratePrHypotheses:
+    """Tests for _generate_pr_hypotheses with mocked ClaudeSDKClient."""
+
+    _DEFAULT_KWARGS = dict(
+        repo=Path("/tmp/repo"),
+        model="sonnet",
+        changed_files=["src/auth.py"],
+        diff_line_anchors="src/auth.py:42",
+        diff_hunk_snippets="+ if user.is_admin:",
+        threat_context_summary="- Auth bypass",
+        vuln_context_summary="- None",
+        architecture_context="Flask app",
+    )
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_fallback(self):
+        """When the LLM exchange times out, the function should return the fallback string."""
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(side_effect=asyncio.TimeoutError)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
+        ):
+            result = await _generate_pr_hypotheses(**self._DEFAULT_KWARGS)
+
+        assert result == "- Unable to generate hypotheses."
+
+    @pytest.mark.asyncio
+    async def test_os_error_returns_fallback(self):
+        """OSError during LLM call should gracefully fall back."""
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(side_effect=OSError("connection refused"))
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
+        ):
+            result = await _generate_pr_hypotheses(**self._DEFAULT_KWARGS)
+
+        assert result == "- Unable to generate hypotheses."
+
+    @pytest.mark.asyncio
+    async def test_runtime_error_returns_fallback(self):
+        """RuntimeError during LLM call should gracefully fall back."""
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(side_effect=RuntimeError("SDK error"))
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
+        ):
+            result = await _generate_pr_hypotheses(**self._DEFAULT_KWARGS)
+
+        assert result == "- Unable to generate hypotheses."
+
+    @pytest.mark.asyncio
+    async def test_successful_generation(self):
+        """Successful LLM response should be normalized via _normalize_hypothesis_output."""
+        from claude_agent_sdk.types import AssistantMessage, TextBlock, ResultMessage
+
+        text_block = TextBlock(text="- Auth bypass via token reuse\n- SSRF in proxy")
+        assistant_msg = AssistantMessage(content=[text_block], model="sonnet")
+        result_msg = ResultMessage(
+            subtype="success",
+            total_cost_usd=0.01,
+            duration_ms=1000,
+            duration_api_ms=800,
+            is_error=False,
+            num_turns=1,
+            session_id="test-session",
+        )
+
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=None)
+
+        async def mock_receive():
+            yield assistant_msg
+            yield result_msg
+
+        mock_client.receive_messages = mock_receive
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
+        ):
+            result = await _generate_pr_hypotheses(**self._DEFAULT_KWARGS)
+
+        assert "Auth bypass via token reuse" in result
+        assert "SSRF in proxy" in result
+
+    @pytest.mark.asyncio
+    async def test_empty_response_normalizes(self):
+        """Empty LLM response should be normalized (empty string from normalizer)."""
+        from claude_agent_sdk.types import ResultMessage
+
+        result_msg = ResultMessage(
+            subtype="success",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=False,
+            num_turns=1,
+            session_id="test-session",
+        )
+
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=None)
+
+        async def mock_receive():
+            yield result_msg
+
+        mock_client.receive_messages = mock_receive
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
+        ):
+            result = await _generate_pr_hypotheses(**self._DEFAULT_KWARGS)
+
+        # Empty input -> _normalize_hypothesis_output returns "- None generated."
+        assert result == "- None generated."
+
+
+# ---------------------------------------------------------------------------
+# Tests for _refine_pr_findings_with_llm (P3.7)
+# ---------------------------------------------------------------------------
+
+
+class TestRefinePrFindingsWithLlm:
+    """Tests for _refine_pr_findings_with_llm with mocked ClaudeSDKClient."""
+
+    _DEFAULT_KWARGS = dict(
+        repo=Path("/tmp/repo"),
+        model="sonnet",
+        diff_line_anchors="src/auth.py:42",
+        diff_hunk_snippets="+ if user.is_admin:",
+        severity_threshold="medium",
+    )
+
+    @pytest.mark.asyncio
+    async def test_empty_findings_returns_none(self):
+        """Passing an empty findings list should immediately return None."""
+        result = await _refine_pr_findings_with_llm(findings=[], **self._DEFAULT_KWARGS)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_none(self):
+        """When the LLM exchange times out, the function should return None."""
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(side_effect=asyncio.TimeoutError)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
+        ):
+            result = await _refine_pr_findings_with_llm(
+                findings=[{"title": "test"}], **self._DEFAULT_KWARGS
+            )
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_os_error_returns_none(self):
+        """OSError during LLM call should return None."""
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(side_effect=OSError("fail"))
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
+        ):
+            result = await _refine_pr_findings_with_llm(
+                findings=[{"title": "test"}], **self._DEFAULT_KWARGS
+            )
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_empty_llm_output_returns_none(self):
+        """When the LLM produces no text, the function should return None."""
+        from claude_agent_sdk.types import ResultMessage
+
+        result_msg = ResultMessage(
+            subtype="success",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=False,
+            num_turns=1,
+            session_id="test-session",
+        )
+
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=None)
+
+        async def mock_receive():
+            yield result_msg
+
+        mock_client.receive_messages = mock_receive
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
+        ):
+            result = await _refine_pr_findings_with_llm(
+                findings=[{"title": "test"}], **self._DEFAULT_KWARGS
+            )
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_invalid_json_returns_none(self):
+        """When the LLM returns non-JSON text, the function should return None."""
+        from claude_agent_sdk.types import AssistantMessage, TextBlock, ResultMessage
+
+        text_block = TextBlock(text="This is not valid JSON at all")
+        assistant_msg = AssistantMessage(content=[text_block], model="sonnet")
+        result_msg = ResultMessage(
+            subtype="success",
+            total_cost_usd=0.01,
+            duration_ms=1000,
+            duration_api_ms=800,
+            is_error=False,
+            num_turns=1,
+            session_id="test-session",
+        )
+
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=None)
+
+        async def mock_receive():
+            yield assistant_msg
+            yield result_msg
+
+        mock_client.receive_messages = mock_receive
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
+        ):
+            result = await _refine_pr_findings_with_llm(
+                findings=[{"title": "test"}], **self._DEFAULT_KWARGS
+            )
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_non_list_json_returns_none(self):
+        """When the LLM returns a JSON object (not array), the function should return None."""
+        from claude_agent_sdk.types import AssistantMessage, TextBlock, ResultMessage
+
+        text_block = TextBlock(text='{"not": "a list"}')
+        assistant_msg = AssistantMessage(content=[text_block], model="sonnet")
+        result_msg = ResultMessage(
+            subtype="success",
+            total_cost_usd=0.01,
+            duration_ms=1000,
+            duration_api_ms=800,
+            is_error=False,
+            num_turns=1,
+            session_id="test-session",
+        )
+
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=None)
+
+        async def mock_receive():
+            yield assistant_msg
+            yield result_msg
+
+        mock_client.receive_messages = mock_receive
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
+        ):
+            result = await _refine_pr_findings_with_llm(
+                findings=[{"title": "test"}], **self._DEFAULT_KWARGS
+            )
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_successful_refinement(self):
+        """Successful LLM response with valid JSON array should return parsed findings."""
+        from claude_agent_sdk.types import AssistantMessage, TextBlock, ResultMessage
+
+        findings_json = json.dumps([
+            {"title": "Auth bypass", "severity": "high"},
+            {"title": "SSRF", "severity": "medium"},
+        ])
+        text_block = TextBlock(text=findings_json)
+        assistant_msg = AssistantMessage(content=[text_block], model="sonnet")
+        result_msg = ResultMessage(
+            subtype="success",
+            total_cost_usd=0.01,
+            duration_ms=1000,
+            duration_api_ms=800,
+            is_error=False,
+            num_turns=1,
+            session_id="test-session",
+        )
+
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=None)
+
+        async def mock_receive():
+            yield assistant_msg
+            yield result_msg
+
+        mock_client.receive_messages = mock_receive
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
+        ):
+            result = await _refine_pr_findings_with_llm(
+                findings=[{"title": "test"}], **self._DEFAULT_KWARGS
+            )
+
+        assert result is not None
+        assert len(result) == 2
+        assert result[0]["title"] == "Auth bypass"
+        assert result[1]["title"] == "SSRF"
+
+    @pytest.mark.asyncio
+    async def test_filters_non_dict_entries(self):
+        """Non-dict entries in the JSON array should be filtered out."""
+        from claude_agent_sdk.types import AssistantMessage, TextBlock, ResultMessage
+
+        mixed_json = json.dumps([{"title": "valid"}, "invalid_string", 42, None])
+        text_block = TextBlock(text=mixed_json)
+        assistant_msg = AssistantMessage(content=[text_block], model="sonnet")
+        result_msg = ResultMessage(
+            subtype="success",
+            total_cost_usd=0.01,
+            duration_ms=1000,
+            duration_api_ms=800,
+            is_error=False,
+            num_turns=1,
+            session_id="test-session",
+        )
+
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=None)
+
+        async def mock_receive():
+            yield assistant_msg
+            yield result_msg
+
+        mock_client.receive_messages = mock_receive
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
+        ):
+            result = await _refine_pr_findings_with_llm(
+                findings=[{"title": "test"}], **self._DEFAULT_KWARGS
+            )
+
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["title"] == "valid"

@@ -3,7 +3,8 @@
 import os
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
-from securevibes.scanner.scanner import Scanner, ProgressTracker
+from securevibes.scanner.scanner import Scanner
+from securevibes.scanner.progress import ProgressTracker
 from securevibes.models.result import ScanResult
 from securevibes.models.issue import Severity
 from rich.console import Console
@@ -920,3 +921,221 @@ class TestScannerPathGuards:
 
         with pytest.raises(RuntimeError, match="outside repository root"):
             scanner._setup_threat_modeling_skills(repo)
+
+
+# ---------------------------------------------------------------------------
+# Tests for _merge_dast_results (P3.8)
+# ---------------------------------------------------------------------------
+
+
+class TestMergeDastResults:
+    """Tests for Scanner._merge_dast_results."""
+
+    def _make_issue(self, issue_id: str, severity: str = "high") -> "SecurityIssue":
+        from securevibes.models.issue import SecurityIssue, Severity
+
+        return SecurityIssue(
+            id=issue_id,
+            severity=Severity(severity),
+            title=f"Issue {issue_id}",
+            description="Test issue",
+            file_path="app.py",
+            line_number=1,
+            code_snippet="x = 1",
+        )
+
+    def _make_scan_result(self, issues=None) -> ScanResult:
+        return ScanResult(
+            repository_path="/tmp/repo",
+            issues=issues or [],
+        )
+
+    def test_no_dast_file_returns_unchanged(self, scanner, tmp_path):
+        """When no DAST_VALIDATION.json exists, scan result is returned unchanged."""
+        result = self._make_scan_result([self._make_issue("V001")])
+        merged = scanner._merge_dast_results(result, tmp_path)
+
+        assert merged is result
+        assert not merged.dast_enabled
+
+    def test_empty_validations_returns_unchanged(self, scanner, tmp_path):
+        """When DAST file has no validations array, result is returned unchanged."""
+        import json
+
+        dast_file = tmp_path / "DAST_VALIDATION.json"
+        dast_file.write_text(json.dumps({
+            "dast_scan_metadata": {},
+            "validations": [],
+        }))
+
+        result = self._make_scan_result([self._make_issue("V001")])
+        merged = scanner._merge_dast_results(result, tmp_path)
+
+        assert merged is result
+
+    def test_validated_status_merges_correctly(self, scanner, tmp_path):
+        """VALIDATED status should be mapped and metrics updated."""
+        import json
+        from securevibes.models.issue import ValidationStatus
+
+        dast_file = tmp_path / "DAST_VALIDATION.json"
+        dast_file.write_text(json.dumps({
+            "dast_scan_metadata": {
+                "total_vulnerabilities_tested": 1,
+                "scan_duration_seconds": 42.0,
+            },
+            "validations": [{
+                "vulnerability_id": "V001",
+                "validation_status": "VALIDATED",
+                "tested_at": "2026-01-01T00:00:00Z",
+                "exploitability_score": 8.5,
+                "evidence": {"request": "GET /admin", "response": "200 OK"},
+            }],
+        }))
+
+        result = self._make_scan_result([self._make_issue("V001")])
+        merged = scanner._merge_dast_results(result, tmp_path)
+
+        assert merged.dast_enabled is True
+        assert merged.dast_validation_rate == 1.0
+        assert merged.dast_false_positive_rate == 0.0
+        assert merged.dast_scan_time_seconds == 42.0
+
+        issue = merged.issues[0]
+        assert issue.validation_status == ValidationStatus.VALIDATED
+        assert issue.validated_at == "2026-01-01T00:00:00Z"
+        assert issue.exploitability_score == 8.5
+        assert issue.dast_evidence == {"request": "GET /admin", "response": "200 OK"}
+
+    def test_false_positive_status(self, scanner, tmp_path):
+        """FALSE_POSITIVE status should be counted correctly."""
+        import json
+        from securevibes.models.issue import ValidationStatus
+
+        dast_file = tmp_path / "DAST_VALIDATION.json"
+        dast_file.write_text(json.dumps({
+            "dast_scan_metadata": {"total_vulnerabilities_tested": 1},
+            "validations": [{
+                "vulnerability_id": "V001",
+                "validation_status": "FALSE_POSITIVE",
+                "reason": "Endpoint not reachable",
+            }],
+        }))
+
+        result = self._make_scan_result([self._make_issue("V001")])
+        merged = scanner._merge_dast_results(result, tmp_path)
+
+        assert merged.dast_enabled is True
+        assert merged.dast_false_positive_rate == 1.0
+        assert merged.dast_validation_rate == 0.0
+
+        issue = merged.issues[0]
+        assert issue.validation_status == ValidationStatus.FALSE_POSITIVE
+        assert issue.dast_evidence == {"reason": "Endpoint not reachable"}
+
+    def test_unknown_status_maps_to_unvalidated(self, scanner, tmp_path):
+        """Unknown validation_status string should map to UNVALIDATED."""
+        import json
+        from securevibes.models.issue import ValidationStatus
+
+        dast_file = tmp_path / "DAST_VALIDATION.json"
+        dast_file.write_text(json.dumps({
+            "dast_scan_metadata": {"total_vulnerabilities_tested": 1},
+            "validations": [{
+                "vulnerability_id": "V001",
+                "validation_status": "BOGUS_STATUS",
+            }],
+        }))
+
+        result = self._make_scan_result([self._make_issue("V001")])
+        merged = scanner._merge_dast_results(result, tmp_path)
+
+        issue = merged.issues[0]
+        assert issue.validation_status == ValidationStatus.UNVALIDATED
+
+    def test_evidence_from_test_steps_and_notes(self, scanner, tmp_path):
+        """Evidence should be built from test_steps/reason/notes when evidence field missing."""
+        import json
+
+        dast_file = tmp_path / "DAST_VALIDATION.json"
+        dast_file.write_text(json.dumps({
+            "dast_scan_metadata": {"total_vulnerabilities_tested": 1},
+            "validations": [{
+                "vulnerability_id": "V001",
+                "validation_status": "VALIDATED",
+                "test_steps": ["step1", "step2"],
+                "notes": "Manual verification",
+            }],
+        }))
+
+        result = self._make_scan_result([self._make_issue("V001")])
+        merged = scanner._merge_dast_results(result, tmp_path)
+
+        issue = merged.issues[0]
+        assert issue.dast_evidence["test_steps"] == ["step1", "step2"]
+        assert issue.dast_evidence["notes"] == "Manual verification"
+        assert "reason" not in issue.dast_evidence
+
+    def test_unmatched_issues_preserved(self, scanner, tmp_path):
+        """Issues without matching validation entries should be preserved as-is."""
+        import json
+
+        dast_file = tmp_path / "DAST_VALIDATION.json"
+        dast_file.write_text(json.dumps({
+            "dast_scan_metadata": {"total_vulnerabilities_tested": 1},
+            "validations": [{
+                "vulnerability_id": "V999",
+                "validation_status": "VALIDATED",
+            }],
+        }))
+
+        result = self._make_scan_result([self._make_issue("V001")])
+        merged = scanner._merge_dast_results(result, tmp_path)
+
+        assert len(merged.issues) == 1
+        assert merged.issues[0].validation_status is None
+
+    def test_mixed_statuses_metrics(self, scanner, tmp_path):
+        """Multiple issues with mixed statuses should produce correct metrics."""
+        import json
+
+        dast_file = tmp_path / "DAST_VALIDATION.json"
+        dast_file.write_text(json.dumps({
+            "dast_scan_metadata": {"total_vulnerabilities_tested": 3},
+            "validations": [
+                {"vulnerability_id": "V001", "validation_status": "VALIDATED"},
+                {"vulnerability_id": "V002", "validation_status": "FALSE_POSITIVE"},
+                {"vulnerability_id": "V003", "validation_status": "UNVALIDATED"},
+            ],
+        }))
+
+        issues = [self._make_issue("V001"), self._make_issue("V002"), self._make_issue("V003")]
+        result = self._make_scan_result(issues)
+        merged = scanner._merge_dast_results(result, tmp_path)
+
+        assert merged.dast_enabled is True
+        assert abs(merged.dast_validation_rate - 1 / 3) < 0.01
+        assert abs(merged.dast_false_positive_rate - 1 / 3) < 0.01
+
+    def test_json_decode_error_returns_unchanged(self, scanner, tmp_path):
+        """Corrupt DAST file should be handled gracefully."""
+        dast_file = tmp_path / "DAST_VALIDATION.json"
+        dast_file.write_text("not valid json {{{")
+
+        result = self._make_scan_result([self._make_issue("V001")])
+        merged = scanner._merge_dast_results(result, tmp_path)
+
+        assert merged is result
+        assert not merged.dast_enabled
+
+    def test_os_error_reading_file_returns_unchanged(self, scanner, tmp_path):
+        """OSError reading DAST file should be handled gracefully."""
+        dast_file = tmp_path / "DAST_VALIDATION.json"
+        dast_file.write_text("{}")
+
+        result = self._make_scan_result([self._make_issue("V001")])
+
+        with patch("builtins.open", side_effect=OSError("permission denied")):
+            merged = scanner._merge_dast_results(result, tmp_path)
+
+        assert merged is result

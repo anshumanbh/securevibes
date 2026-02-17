@@ -8,7 +8,6 @@ import re
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from datetime import datetime
 from typing import Optional, Dict, Any, Iterator
 from rich.console import Console
 
@@ -47,6 +46,14 @@ from securevibes.scanner.hooks import (
     create_threat_model_validation_hook,
 )
 from securevibes.scanner.artifacts import ArtifactLoadError, update_pr_review_artifacts
+from securevibes.scanner.progress import (
+    ProgressTracker,
+    SECURITY_FILE,
+    THREAT_MODEL_FILE,
+    VULNERABILITIES_FILE,
+    PR_VULNERABILITIES_FILE,
+    SCAN_RESULTS_FILE,
+)
 from securevibes.scanner.chain_analysis import (
     adjudicate_consensus_support,
     collect_chain_exact_ids,
@@ -94,14 +101,11 @@ __all__ = [
     "_summarize_diff_line_anchors",
 ]
 
-# Constants for artifact paths
+# Constants for artifact paths (SECURITY_FILE, THREAT_MODEL_FILE,
+# VULNERABILITIES_FILE, PR_VULNERABILITIES_FILE, SCAN_RESULTS_FILE are
+# imported from securevibes.scanner.progress)
 SECUREVIBES_DIR = ".securevibes"
-SECURITY_FILE = "SECURITY.md"
-THREAT_MODEL_FILE = "THREAT_MODEL.json"
-VULNERABILITIES_FILE = "VULNERABILITIES.json"
-PR_VULNERABILITIES_FILE = "PR_VULNERABILITIES.json"
 DIFF_CONTEXT_FILE = "DIFF_CONTEXT.json"
-SCAN_RESULTS_FILE = "scan_results.json"
 SCAN_STATE_FILE = "scan_state.json"
 
 _FOCUSED_DIFF_MAX_FILES = 16
@@ -359,6 +363,10 @@ ARCHITECTURE CONTEXT:
     collected_text: list[str] = []
     try:
         async with ClaudeSDKClient(options=options) as client:
+            # NOTE: 30s timeout covers the entire LLM exchange (max_turns=8).
+            # If the model is slow, this silently falls back to the default
+            # "Unable to generate hypotheses" string — acceptable degradation
+            # but may cause missed context for downstream review passes.
             await asyncio.wait_for(client.query(hypothesis_prompt), timeout=30)
             async for message in client.receive_messages():
                 if isinstance(message, AssistantMessage):
@@ -461,6 +469,10 @@ CANDIDATE FINDINGS JSON:
     collected_text: list[str] = []
     try:
         async with ClaudeSDKClient(options=options) as client:
+            # NOTE: 30s timeout covers the entire LLM exchange (max_turns=10).
+            # If the model is slow, this returns None — the caller treats it as
+            # a no-op refinement and retains the unrefined findings. Acceptable
+            # but may leave speculative findings unfiltered.
             await asyncio.wait_for(client.query(refinement_prompt), timeout=30)
             async for message in client.receive_messages():
                 if isinstance(message, AssistantMessage):
@@ -622,205 +634,6 @@ def _enforce_focused_diff_coverage(
         f"{detail_text}. "
         "Split the review into smaller ranges using --range/--last/--since and rerun."
     )
-
-
-class ProgressTracker:
-    """
-    Real-time progress tracking for scan operations.
-
-    Tracks tool usage, file operations, and sub-agent lifecycle events
-    to provide detailed progress feedback during long-running scans.
-    """
-
-    def __init__(
-        self, console: Console, debug: bool = False, single_subagent: Optional[str] = None
-    ):
-        self.console = console
-        self.debug = debug
-        self.current_phase = None
-        self.tool_count = 0
-        self.files_read = set()
-        self.files_written = set()
-        self.subagent_stack = []  # Track nested subagents
-        self.last_update = datetime.now()
-        self.phase_start_time = None
-        self.single_subagent = single_subagent
-
-        # Phase display names (DAST is optional, added dynamically)
-        self.phase_display = {
-            "assessment": "1/4: Architecture Assessment",
-            "threat-modeling": "2/4: Threat Modeling (STRIDE Analysis)",
-            "code-review": "3/4: Code Review (Security Analysis)",
-            "pr-code-review": "PR Review: Code Review",
-            "report-generator": "4/4: Report Generation",
-            "dast": "5/5: DAST Validation",
-        }
-
-        # Override display for single sub-agent mode
-        if single_subagent:
-            self.phase_display[single_subagent] = (
-                f"Sub-Agent 1/1: {self._get_subagent_title(single_subagent)}"
-            )
-
-    def _get_subagent_title(self, subagent: str) -> str:
-        """Get human-readable title for sub-agent"""
-        titles = {
-            "assessment": "Architecture Assessment",
-            "threat-modeling": "Threat Modeling (STRIDE Analysis)",
-            "code-review": "Code Review (Security Analysis)",
-            "pr-code-review": "PR Review (Security Analysis)",
-            "report-generator": "Report Generation",
-            "dast": "DAST Validation",
-        }
-        return titles.get(subagent, subagent)
-
-    def announce_phase(self, phase_name: str):
-        """Announce the start of a new phase"""
-        self.current_phase = phase_name
-        self.phase_start_time = time.time()
-        self.tool_count = 0
-        self.files_read.clear()
-        self.files_written.clear()
-
-        display_name = self.phase_display.get(phase_name, phase_name)
-        self.console.print(f"\n━━━ Phase {display_name} ━━━\n", style="bold cyan")
-
-    def on_tool_start(self, tool_name: str, tool_input: dict):
-        """Called when a tool execution begins"""
-        self.tool_count += 1
-        self.last_update = datetime.now()
-
-        # Show meaningful progress based on tool type
-        if tool_name == "Read":
-            file_path = tool_input.get("file_path") or tool_input.get("path") or ""
-            if file_path:
-                self.files_read.add(file_path)
-
-        elif tool_name == "Grep":
-            pattern = tool_input.get("pattern", "")
-            if pattern:
-                self.console.print(f"  🔍 Searching: {pattern[:60]}", style="dim")
-
-        elif tool_name == "Glob":
-            patterns = tool_input.get("patterns", [])
-            if patterns:
-                self.console.print(f"  🗂️  Finding files: {', '.join(patterns[:3])}", style="dim")
-
-        elif tool_name == "Write":
-            file_path = tool_input.get("file_path", "")
-            if file_path:
-                self.files_written.add(file_path)
-
-        elif tool_name == "Task":
-            # Sub-agent orchestration
-            agent = tool_input.get("agent_name") or tool_input.get("subagent_type")
-            goal = tool_input.get("prompt", "")
-
-            # Show more detail in debug mode, truncate intelligently
-            max_length = 200 if self.debug else 100
-            if len(goal) > max_length:
-                # Truncate at word boundary
-                truncated = goal[:max_length].rsplit(" ", 1)[0]
-                goal_display = f"{truncated}..."
-            else:
-                goal_display = goal
-
-            if agent:
-                self.console.print(f"  🤖 Starting {agent}: {goal_display}", style="bold yellow")
-                self.subagent_stack.append(agent)
-                self.announce_phase(agent)
-
-        elif tool_name == "LS":
-            path = tool_input.get("directory_path", "")
-            if path:
-                self.console.print("  📂 Listing directory", style="dim")
-
-        # Note: Skill tool logging removed - SDK auto-loads skills from .claude/skills/
-        # without explicit Skill tool calls. Skill sync is logged in _setup_*_skills().
-
-        # Show progress every 20 tools for activity indicator
-        if self.tool_count % 20 == 0 and not self.debug:
-            self.console.print(
-                f"  ⏳ Processing... ({self.tool_count} tools, "
-                f"{len(self.files_read)} files read)",
-                style="dim",
-            )
-
-    def on_tool_complete(self, tool_name: str, success: bool, error_msg: Optional[str] = None):
-        """Called when a tool execution completes"""
-        if not success:
-            if error_msg:
-                self.console.print(
-                    f"  ⚠️  Tool {tool_name} failed: {error_msg[:80]}", style="yellow"
-                )
-            else:
-                self.console.print(f"  ⚠️  Tool {tool_name} failed", style="yellow")
-
-    def on_subagent_stop(self, agent_name: str, duration_ms: int):
-        """
-        Called when a sub-agent completes - DETERMINISTIC phase completion marker.
-
-        This provides reliable phase boundary detection without file polling.
-        """
-        if self.subagent_stack and self.subagent_stack[-1] == agent_name:
-            self.subagent_stack.pop()
-
-        duration_sec = duration_ms / 1000
-        display_name = self.phase_display.get(agent_name, agent_name)
-
-        # Show completion summary
-        self.console.print(f"\n✅ Phase {display_name} Complete", style="bold green")
-        self.console.print(
-            f"   Duration: {duration_sec:.1f}s | "
-            f"Tools: {self.tool_count} | "
-            f"Files: {len(self.files_read)} read, {len(self.files_written)} written",
-            style="green",
-        )
-
-        # Show what was created
-        if agent_name == "assessment" and SECURITY_FILE in [
-            Path(f).name for f in self.files_written
-        ]:
-            self.console.print(f"   Created: {SECURITY_FILE}", style="green")
-        elif agent_name == "threat-modeling" and THREAT_MODEL_FILE in [
-            Path(f).name for f in self.files_written
-        ]:
-            self.console.print(f"   Created: {THREAT_MODEL_FILE}", style="green")
-        elif agent_name == "code-review" and VULNERABILITIES_FILE in [
-            Path(f).name for f in self.files_written
-        ]:
-            self.console.print(f"   Created: {VULNERABILITIES_FILE}", style="green")
-        elif agent_name == "report-generator" and SCAN_RESULTS_FILE in [
-            Path(f).name for f in self.files_written
-        ]:
-            self.console.print(f"   Created: {SCAN_RESULTS_FILE}", style="green")
-        elif agent_name == "pr-code-review" and PR_VULNERABILITIES_FILE in [
-            Path(f).name for f in self.files_written
-        ]:
-            self.console.print(f"   Created: {PR_VULNERABILITIES_FILE}", style="green")
-        elif agent_name == "dast" and "DAST_VALIDATION.json" in [
-            Path(f).name for f in self.files_written
-        ]:
-            self.console.print("   Created: DAST_VALIDATION.json", style="green")
-
-    def on_assistant_text(self, text: str):
-        """Called when the assistant produces text output"""
-        if self.debug and text.strip():
-            # Show agent narration in debug mode
-            text_preview = text[:120].replace("\n", " ")
-            if len(text) > 120:
-                text_preview += "..."
-            self.console.print(f"  💭 {text_preview}", style="dim italic")
-
-    def get_summary(self) -> Dict[str, Any]:
-        """Get current progress summary"""
-        return {
-            "current_phase": self.current_phase,
-            "tool_count": self.tool_count,
-            "files_read": len(self.files_read),
-            "files_written": len(self.files_written),
-            "subagent_depth": len(self.subagent_stack),
-        }
 
 
 class Scanner:
@@ -1931,26 +1744,23 @@ Only report findings at or above: {severity_threshold}
             else:
                 self.console.print("  📦 Non-agentic application detected", style="dim")
 
-        # Setup DAST skills if DAST will be executed
+        # Setup DAST / threat-modeling skills if those subagents will be executed.
+        # Create SubAgentManager once for resume_from lookups to avoid duplicate
+        # instantiation.
         if single_subagent:
             needs_dast = single_subagent == "dast"
-        elif resume_from:
-            manager = SubAgentManager(repo, quiet=False)
-            needs_dast = "dast" in manager.get_resume_subagents(resume_from)
-        else:
-            needs_dast = self.dast_enabled
-
-        if needs_dast:
-            self._setup_dast_skills(repo)
-
-        # Setup threat modeling skills if threat-modeling will be executed
-        if single_subagent:
             needs_threat_modeling = single_subagent == "threat-modeling"
         elif resume_from:
             manager = SubAgentManager(repo, quiet=False)
-            needs_threat_modeling = "threat-modeling" in manager.get_resume_subagents(resume_from)
+            resume_subagents = manager.get_resume_subagents(resume_from)
+            needs_dast = "dast" in resume_subagents
+            needs_threat_modeling = "threat-modeling" in resume_subagents
         else:
+            needs_dast = self.dast_enabled
             needs_threat_modeling = True  # Always needed for full scans
+
+        if needs_dast:
+            self._setup_dast_skills(repo)
 
         if needs_threat_modeling:
             self._setup_threat_modeling_skills(repo)
@@ -2421,7 +2231,7 @@ Only report findings at or above: {severity_threshold}
 
             scan_output = ScanOutput.validate_input(data)
 
-            for idx, vuln in enumerate(scan_output.vulnerabilities):
+            for vuln in scan_output.vulnerabilities:
                 # Map Pydantic model to domain model
 
                 # Determine primary file info

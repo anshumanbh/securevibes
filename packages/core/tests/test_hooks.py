@@ -12,7 +12,7 @@ from securevibes.scanner.hooks import (
     create_subagent_hook,
     create_json_validation_hook,
 )
-from securevibes.scanner.scanner import ProgressTracker
+from securevibes.scanner.progress import ProgressTracker
 
 
 class TestDASTSecurityHook:
