@@ -708,6 +708,43 @@ class TestFullScanAllowedTools:
         assert "SubagentStop" in options.hooks, "SubagentStop hook must be configured"
         assert len(options.hooks["SubagentStop"]) > 0
 
+    @pytest.mark.asyncio
+    async def test_full_scan_uses_current_bypass_permission_and_tool_surface(self, test_repo):
+        """Full scan runtime policy should stay explicit and test-locked."""
+        scanner = Scanner(model="sonnet", debug=False)
+        scanner.console = Console(file=StringIO())
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+            mock_instance = MagicMock()
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_instance.query = AsyncMock()
+
+            async def async_gen():
+                return
+                yield  # pragma: no cover
+
+            mock_instance.receive_messages = async_gen
+
+            try:
+                await scanner.scan(str(test_repo))
+            except RuntimeError:
+                pass  # Expected — no results file
+
+        options = mock_client.call_args[1]["options"]
+        assert options.permission_mode == "bypassPermissions"
+        assert set(options.allowed_tools) == {
+            "Task",
+            "Skill",
+            "Read",
+            "Write",
+            "Edit",
+            "Bash",
+            "Grep",
+            "Glob",
+            "LS",
+        }
+
 
 class TestScannerEnvIsolation:
     """Test scanner environment variable lifecycle across scan modes."""

@@ -309,6 +309,24 @@ For every PR/commit:
 
 ---
 
+### 6A. **Security Policy Review Gate**
+
+Before merging any change to scanner runtime permissions/tooling, require explicit security sign-off.
+
+Trigger conditions:
+- Any change to `permission_mode` in scanner execution paths
+- Any change to scanner `allowed_tools` surfaces
+- Any change to hook deny logic for out-of-repo access or restricted write paths
+
+Required checks before merge:
+- [ ] Security maintainer reviewed and approved the policy change
+- [ ] Policy-lock tests pass:
+  - `pytest packages/core/tests/test_scanner.py -k "full_scan_uses_current_bypass_permission_and_tool_surface"`
+  - `pytest packages/core/tests/test_pr_review.py -k "generate_pr_hypotheses_uses_no_tools_and_bypass_permissions or refine_pr_findings_uses_no_tools_and_bypass_permissions"`
+  - `pytest packages/core/tests/test_hooks.py -k "dast_db_block_denial_payload_has_expected_fields or out_of_repo_read_denial_payload_has_expected_fields"`
+
+---
+
 ### 7. **Automated CI/CD Checks**
 
 Create `.github/workflows/maintenance.yml`:

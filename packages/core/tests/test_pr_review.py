@@ -50,7 +50,9 @@ from securevibes.scanner.scanner import (
     _build_focused_diff_context,
     _derive_pr_default_grep_scope,
     _enforce_focused_diff_coverage,
+    _generate_pr_hypotheses,
     _normalize_hypothesis_output,
+    _refine_pr_findings_with_llm,
     _score_diff_file_for_security_review,
     _summarize_diff_hunk_snippets,
     _summarize_diff_line_anchors,
@@ -2148,6 +2150,80 @@ async def test_pr_review_uses_direct_tools_without_task(tmp_path: Path):
     assert "Write" in options.allowed_tools
     assert "Grep" in options.allowed_tools
     assert "Task" not in options.allowed_tools
+
+
+@pytest.mark.asyncio
+async def test_generate_pr_hypotheses_uses_no_tools_and_bypass_permissions(tmp_path: Path):
+    """Hypothesis generation helper should run LLM-only with bypass policy."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+        mock_instance = MagicMock()
+        mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.query = AsyncMock()
+
+        async def async_gen():
+            return
+            yield  # pragma: no cover
+
+        mock_instance.receive_messages = async_gen
+
+        await _generate_pr_hypotheses(
+            repo=repo,
+            model="sonnet",
+            changed_files=["app.py"],
+            diff_line_anchors="- app.py",
+            diff_hunk_snippets="--- app.py",
+            threat_context_summary="- none",
+            vuln_context_summary="- none",
+            architecture_context="- none",
+        )
+
+    options = mock_client.call_args[1]["options"]
+    assert options.allowed_tools == []
+    assert options.permission_mode == "bypassPermissions"
+
+
+@pytest.mark.asyncio
+async def test_refine_pr_findings_uses_no_tools_and_bypass_permissions(tmp_path: Path):
+    """PR refinement helper should run LLM-only with bypass policy."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+        mock_instance = MagicMock()
+        mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.query = AsyncMock()
+
+        async def async_gen():
+            return
+            yield  # pragma: no cover
+
+        mock_instance.receive_messages = async_gen
+
+        await _refine_pr_findings_with_llm(
+            repo=repo,
+            model="sonnet",
+            diff_line_anchors="- app.py",
+            diff_hunk_snippets="--- app.py",
+            findings=[
+                {
+                    "title": "Test finding",
+                    "description": "test",
+                    "severity": "high",
+                    "file_path": "app.py",
+                    "line_number": 1,
+                }
+            ],
+            severity_threshold="low",
+        )
+
+    options = mock_client.call_args[1]["options"]
+    assert options.allowed_tools == []
+    assert options.permission_mode == "bypassPermissions"
 
 
 @pytest.mark.asyncio

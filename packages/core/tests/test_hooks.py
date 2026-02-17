@@ -60,6 +60,24 @@ class TestDASTSecurityHook:
         assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
 
     @pytest.mark.asyncio
+    async def test_dast_db_block_denial_payload_has_expected_fields(self, tracker, console):
+        """DAST denial payload should include structured PreToolUse decision fields."""
+        tracker.current_phase = "dast"
+        hook = create_dast_security_hook(tracker, console, debug=False)
+
+        input_data = {"tool_name": "Bash", "tool_input": {"command": "mysql -u root -p"}}
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        payload = result["hookSpecificOutput"]
+        assert payload["hookEventName"] == "PreToolUse"
+        assert payload["permissionDecision"] == "deny"
+        assert "mysql" in payload["permissionDecisionReason"]
+        assert "HTTP testing only" in payload["permissionDecisionReason"]
+        assert "Database manipulation not allowed" in payload["reason"]
+
+    @pytest.mark.asyncio
     async def test_blocks_mixed_case_db_tool_in_dast_phase(self, tracker, console):
         """Mixed-case DB tool invocations should still be blocked."""
         tracker.current_phase = "dast"
@@ -757,6 +775,40 @@ class TestPreToolHook:
         assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
         assert "outside repository root" in result["hookSpecificOutput"]["permissionDecisionReason"]
         assert guard_observer["blocked_out_of_repo_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_out_of_repo_read_denial_payload_has_expected_fields(
+        self, tracker, console, tmp_path
+    ):
+        """PR out-of-repo read denial should include structured PreToolUse payload."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        outside_file = tmp_path / "outside.txt"
+        outside_file.write_text("x", encoding="utf-8")
+        hook = create_pre_tool_hook(
+            tracker,
+            console,
+            debug=False,
+            detected_languages=detected_languages,
+            pr_repo_root=repo_root,
+            pr_tool_guard_observer={"blocked_out_of_repo_count": 0},
+        )
+
+        input_data = {
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(outside_file)},
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        payload = result["hookSpecificOutput"]
+        assert payload["hookEventName"] == "PreToolUse"
+        assert payload["permissionDecision"] == "deny"
+        assert "outside repository root" in payload["permissionDecisionReason"]
+        assert "blocked out-of-repo access" in payload["reason"]
 
     @pytest.mark.asyncio
     async def test_blocks_out_of_repo_grep_in_pr_code_review(self, tracker, console, tmp_path):

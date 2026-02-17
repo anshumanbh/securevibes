@@ -102,6 +102,20 @@ securevibes scan /path/to/code --debug
 
 ---
 
+## 🔐 Runtime Safety Model
+
+SecureVibes currently runs scan orchestration with Claude SDK `permission_mode="bypassPermissions"`.
+Runtime safety depends on explicit tool surfaces and scanner hooks (for example, PR review repo-boundary guardrails and DAST database CLI blocking).
+
+Operational guidance:
+- Run scans only on trusted repositories.
+- Prefer isolated CI runners/containers for scans.
+- Avoid running scans with access to production credentials or sensitive networks.
+
+For package-level details, see `packages/core/README.md`.
+
+---
+
 ## 🎯 Usage
 
 ### Basic Commands
