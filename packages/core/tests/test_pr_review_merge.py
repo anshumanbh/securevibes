@@ -86,6 +86,21 @@ class TestFilterBaselineVulns:
         vulns = [{"threat_id": "NEW-42", "title": "New threat"}]
         assert filter_baseline_vulns(vulns) == []
 
+    def test_prefix_excluded_case_insensitive(self):
+        vulns = [
+            {"threat_id": "pr-42", "title": "Lowercase PR"},
+            {"threat_id": "new-99", "title": "Lowercase NEW"},
+            {"threat_id": "THREAT-1", "title": "Baseline"},
+        ]
+        assert filter_baseline_vulns(vulns) == [{"threat_id": "THREAT-1", "title": "Baseline"}]
+
+    def test_source_filtered_case_insensitive(self):
+        vulns = [
+            {"threat_id": "THREAT-1", "source": " PR_REVIEW ", "title": "Generated"},
+            {"threat_id": "THREAT-2", "title": "Baseline"},
+        ]
+        assert filter_baseline_vulns(vulns) == [{"threat_id": "THREAT-2", "title": "Baseline"}]
+
     def test_finding_type_case_insensitive(self):
         vulns = [
             {"threat_id": "THREAT-1", "finding_type": "REGRESSION", "title": "Upper case"},
@@ -821,6 +836,26 @@ class TestDedupePrVulns:
         pr_vulns = [{"threat_id": "PR-1", "title": "Same title", "file_path": "src/app.py"}]
         deduped = dedupe_pr_vulns(pr_vulns, known_vulns)
         assert deduped[0]["finding_type"] == "known_vuln"
+
+    def test_basename_collision_different_directories_not_marked_known(self):
+        """Shared basename should not dedupe across different directories."""
+        known_vulns = [
+            {
+                "threat_id": "THREAT-1",
+                "title": "Command injection in handler",
+                "file_path": "services/api/handler.py",
+            }
+        ]
+        pr_vulns = [
+            {
+                "threat_id": "PR-1",
+                "title": "Command injection in handler",
+                "file_path": "services/web/handler.py",
+                "finding_type": "unknown",
+            }
+        ]
+        deduped = dedupe_pr_vulns(pr_vulns, known_vulns)
+        assert deduped[0]["finding_type"] == "unknown"
 
 
 # ---------------------------------------------------------------------------

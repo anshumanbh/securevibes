@@ -933,6 +933,18 @@ def test_filter_baseline_vulns_excludes_pr_and_new_prefixes():
     assert baseline[0]["threat_id"] == "THREAT-002"
 
 
+def test_filter_baseline_vulns_excludes_pr_and_new_prefixes_case_insensitive():
+    """Lowercase pr-/new- prefixes should also be filtered as PR-derived."""
+    known_vulns = [
+        {"file_path": "a.ts", "threat_id": "pr-abc123", "title": "A"},
+        {"file_path": "b.ts", "threat_id": "new-001", "title": "B"},
+        {"file_path": "c.ts", "threat_id": "THREAT-002", "title": "C"},
+    ]
+    baseline = filter_baseline_vulns(known_vulns)
+    assert len(baseline) == 1
+    assert baseline[0]["threat_id"] == "THREAT-002"
+
+
 def test_filter_baseline_vulns_excludes_source_pr_review():
     """source='pr_review' entries should be filtered."""
     known_vulns = [
@@ -940,6 +952,28 @@ def test_filter_baseline_vulns_excludes_source_pr_review():
     ]
     baseline = filter_baseline_vulns(known_vulns)
     assert len(baseline) == 0
+
+
+def test_dedupe_pr_vulns_ignores_basename_only_collisions():
+    """Same title + basename in different directories should not be deduped."""
+    pr_vulns = [
+        {
+            "file_path": "services/web/handler.py",
+            "threat_id": "PR-001",
+            "title": "Command injection in handler",
+            "finding_type": "unknown",
+        }
+    ]
+    known_vulns = [
+        {
+            "file_path": "services/api/handler.py",
+            "threat_id": "THREAT-001",
+            "title": "Command injection in handler",
+        }
+    ]
+    result = dedupe_pr_vulns(pr_vulns, known_vulns)
+    assert len(result) == 1
+    assert result[0]["finding_type"] == "unknown"
 
 
 def test_dedupe_with_baseline_filter_preserves_pr_findings():

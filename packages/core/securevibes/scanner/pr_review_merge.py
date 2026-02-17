@@ -148,22 +148,23 @@ def filter_baseline_vulns(known_vulns: list[dict]) -> list[dict]:
     """Return only baseline vulnerability entries, excluding PR-derived ones.
 
     PR-derived entries are identified by:
-    - source == "pr_review" (explicit tag added by update_pr_review_artifacts)
+    - source == "pr_review" (case-insensitive; explicit tag added by update_pr_review_artifacts)
     - finding_type in _PR_FINDING_TYPES (normalized; matches PR_VULNERABILITY_SCHEMA enum)
-    - threat_id starting with PR- or NEW- (auto-generated or LLM-assigned PR IDs)
+    - threat_id starting with PR- or NEW- (case-insensitive; auto-generated or LLM-assigned IDs)
     """
     _PR_PREFIXES = ("PR-", "NEW-")
     baseline: list[dict] = []
     for vuln in known_vulns:
         if not isinstance(vuln, dict):
             continue
-        if vuln.get("source") == "pr_review":
+        source = vuln.get("source")
+        if isinstance(source, str) and source.strip().lower() == "pr_review":
             continue
         raw_ft = vuln.get("finding_type")
         if raw_ft is not None and str(raw_ft).strip().lower() in _PR_FINDING_TYPES:
             continue
         threat_id = vuln.get("threat_id", "")
-        if isinstance(threat_id, str) and threat_id.startswith(_PR_PREFIXES):
+        if isinstance(threat_id, str) and threat_id.strip().upper().startswith(_PR_PREFIXES):
             continue
         baseline.append(vuln)
     return baseline
@@ -175,7 +176,11 @@ def _normalize_finding_identity(value: object) -> str:
     return value.strip().lower()
 
 
-def _build_vuln_match_keys(vuln: dict) -> set[tuple[str, str]]:
+def _build_vuln_match_keys(
+    vuln: dict,
+    *,
+    include_basename: bool = True,
+) -> set[tuple[str, str]]:
     identities = {
         identity
         for identity in (
@@ -191,7 +196,8 @@ def _build_vuln_match_keys(vuln: dict) -> set[tuple[str, str]]:
     path_keys = {raw_path} if raw_path else {""}
     if raw_path:
         basename = raw_path.rsplit("/", 1)[-1]
-        path_keys.add(basename)
+        if include_basename:
+            path_keys.add(basename)
 
     return {(path_key, identity) for path_key in path_keys for identity in identities}
 
@@ -548,9 +554,7 @@ def _chain_role(entry: dict) -> str:
     """Classify a finding as end-to-end or step-level based on evidence structure."""
     evidence_text = finding_text(entry, fields=("evidence",))
     scenario_text = finding_text(entry, fields=("attack_scenario",))
-    core_text = finding_text(
-        entry, fields=("title", "description", "attack_scenario", "evidence")
-    )
+    core_text = finding_text(entry, fields=("title", "description", "attack_scenario", "evidence"))
     locations = extract_finding_locations(entry)
     has_multi_location = len(locations) >= 2
     has_flow_arrow = "->" in evidence_text
@@ -571,9 +575,7 @@ def _proof_score(entry: dict) -> int:
     score = 0
     evidence_text = finding_text(entry, fields=("evidence",))
     scenario_text = finding_text(entry, fields=("attack_scenario",))
-    core_text = finding_text(
-        entry, fields=("title", "description", "evidence", "attack_scenario")
-    )
+    core_text = finding_text(entry, fields=("title", "description", "evidence", "attack_scenario"))
     cwe_text = str(entry.get("cwe_id", "")).strip().upper()
 
     if any(term in core_text for term in EXPLOIT_PRIMITIVE_TERMS):
@@ -650,13 +652,11 @@ def _entry_quality(
     if chain_support_counts:
         chain_family_id = build_chain_family_identity(entry)
         chain_identity = build_chain_identity(entry)
-        chain_support = chain_support_counts.get(
-            chain_family_id, 0
-        ) or chain_support_counts.get(chain_identity, 0)
+        chain_support = chain_support_counts.get(chain_family_id, 0) or chain_support_counts.get(
+            chain_identity, 0
+        )
     contradiction_penalty = (
-        max(total_attempts - chain_support, 0)
-        if total_attempts > 0 and chain_support > 0
-        else 0
+        max(total_attempts - chain_support, 0) if total_attempts > 0 and chain_support > 0 else 0
     )
     proof = _proof_score(entry)
     speculation = _speculation_penalty(entry)
@@ -718,9 +718,7 @@ def _same_chain(candidate: dict, canonical: dict) -> bool:
     candidate_line = coerce_line_number(candidate.get("line_number"))
     canonical_line = coerce_line_number(canonical.get("line_number"))
     line_gap = (
-        abs(candidate_line - canonical_line)
-        if candidate_line > 0 and canonical_line > 0
-        else 999
+        abs(candidate_line - canonical_line) if candidate_line > 0 and canonical_line > 0 else 999
     )
 
     candidate_tokens = _finding_tokens(candidate)
@@ -786,9 +784,7 @@ def _same_subchain_family(candidate: dict, canonical: dict) -> bool:
     candidate_line = coerce_line_number(candidate.get("line_number"))
     canonical_line = coerce_line_number(canonical.get("line_number"))
     line_gap = (
-        abs(candidate_line - canonical_line)
-        if candidate_line > 0 and canonical_line > 0
-        else 999
+        abs(candidate_line - canonical_line) if candidate_line > 0 and canonical_line > 0 else 999
     )
     if line_gap > MAX_LINE_GAP_SUBCHAIN:
         return False
@@ -979,15 +975,12 @@ def _merge_pr_attempt_findings(
                     and title_sim >= MIN_TITLE_SIMILARITY_SECONDARY_SAME_PATH
                 )
                 if (
-                    (
-                        same_cwe_family
-                        and (
-                            token_sim >= MIN_TOKEN_SIMILARITY_SECONDARY_SAME_PATH
-                            or title_sim >= MIN_TITLE_SIMILARITY_SECONDARY_SAME_PATH
-                        )
+                    same_cwe_family
+                    and (
+                        token_sim >= MIN_TOKEN_SIMILARITY_SECONDARY_SAME_PATH
+                        or title_sim >= MIN_TITLE_SIMILARITY_SECONDARY_SAME_PATH
                     )
-                    or high_similarity
-                ):
+                ) or high_similarity:
                     is_duplicate = True
                     break
                 continue
@@ -1097,9 +1090,7 @@ def _merge_pr_attempt_findings(
         if max_support >= 2:
             retained_findings: list[dict] = []
             for finding, support in zip(filtered_findings, supports):
-                severity = _SEVERITY_RANK.get(
-                    str(finding.get("severity", "")).strip().lower(), 0
-                )
+                severity = _SEVERITY_RANK.get(str(finding.get("severity", "")).strip().lower(), 0)
                 if support >= 2:
                     retained_findings.append(finding)
                     continue
@@ -1133,19 +1124,23 @@ def _merge_pr_attempt_findings(
 
 
 def dedupe_pr_vulns(pr_vulns: list[dict], known_vulns: list[dict]) -> list[dict]:
-    """Tag PR findings as known_vuln when they overlap baseline issues."""
+    """Tag PR findings as known_vuln when they overlap baseline issues.
+
+    Dedupe uses exact normalized file paths (not basename-only matches) to reduce
+    cross-directory false positives.
+    """
     known_keys: set[tuple[str, str]] = set()
     for vuln in known_vulns:
         if not isinstance(vuln, dict):
             continue
-        known_keys.update(_build_vuln_match_keys(vuln))
+        known_keys.update(_build_vuln_match_keys(vuln, include_basename=False))
 
     normalized: list[dict] = []
     for vuln in pr_vulns:
         if not isinstance(vuln, dict):
             continue
         entry = dict(vuln)
-        candidate_keys = _build_vuln_match_keys(entry)
+        candidate_keys = _build_vuln_match_keys(entry, include_basename=False)
         if candidate_keys and known_keys.intersection(candidate_keys):
             finding_type = str(entry.get("finding_type", "")).strip().lower()
             if not finding_type or finding_type == "unknown":
