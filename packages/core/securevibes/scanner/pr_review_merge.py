@@ -22,7 +22,6 @@ from securevibes.scanner.chain_analysis import (
     extract_chain_sink_anchor,
     extract_cwe_family,
     extract_finding_locations,
-    extract_finding_routes,
     finding_text,
     infer_chain_family_class,
     infer_chain_sink_family,
@@ -128,6 +127,7 @@ MIN_TOKEN_SIMILARITY_ADJACENT = 0.24
 MIN_TOKEN_SIMILARITY_CWE78_88 = 0.16
 MIN_TOKEN_SIMILARITY_SAME_FILE = 0.52
 MIN_TITLE_SIMILARITY_SAME_FILE = 0.82
+MAX_LINE_GAP_SAME_FILE_SIM = 120
 MIN_TOKEN_SIMILARITY_SAME_DIR = 0.68
 MAX_LINE_GAP_SUBCHAIN = 40
 MIN_TOKEN_SIMILARITY_SUBCHAIN_SHARED_LOC = 0.20
@@ -580,7 +580,7 @@ def _proof_score(entry: dict) -> int:
         score += 4
     if "CWE-88" in cwe_text:
         score += 4
-    if "cwe-78" in cwe_text and any(term in core_text for term in ("argv", "option injection")):
+    if "CWE-78" in cwe_text and any(term in core_text for term in ("argv", "option injection")):
         score += 2
     if any(term in scenario_text for term in CONCRETE_PAYLOAD_TERMS):
         score += 3
@@ -749,15 +749,16 @@ def _same_chain(candidate: dict, canonical: dict) -> bool:
             and token_sim >= MIN_TOKEN_SIMILARITY_CWE78_88
         ):
             return True
-        if token_sim >= MIN_TOKEN_SIMILARITY_SAME_FILE:
+        if line_gap <= MAX_LINE_GAP_SAME_FILE_SIM and token_sim >= MIN_TOKEN_SIMILARITY_SAME_FILE:
             return True
-        if title_sim >= MIN_TITLE_SIMILARITY_SAME_FILE:
+        if line_gap <= MAX_LINE_GAP_SAME_FILE_SIM and title_sim >= MIN_TITLE_SIMILARITY_SAME_FILE:
             return True
 
     candidate_dir = candidate_path.rsplit("/", 1)[0] if "/" in candidate_path else ""
     canonical_dir = canonical_path.rsplit("/", 1)[0] if "/" in canonical_path else ""
     if (
-        candidate_dir
+        candidate_path != canonical_path
+        and candidate_dir
         and candidate_dir == canonical_dir
         and same_cwe_family
         and token_sim >= MIN_TOKEN_SIMILARITY_SAME_DIR
@@ -966,13 +967,26 @@ def _merge_pr_attempt_findings(
                     and candidate_cwe_family in {"78", "88"}
                     and existing_cwe_family in {"78", "88"}
                     and abs(candidate_proof - existing_proof) >= 2
+                    and (
+                        token_sim >= MIN_TOKEN_SIMILARITY_SECONDARY_SAME_PATH
+                        or title_sim >= MIN_TITLE_SIMILARITY_SECONDARY_SAME_PATH
+                    )
                 ):
                     is_duplicate = True
                     break
-                if (
+                high_similarity = (
                     token_sim >= MIN_TOKEN_SIMILARITY_SECONDARY_SAME_PATH
-                    or title_sim >= MIN_TITLE_SIMILARITY_SECONDARY_SAME_PATH
-                    or same_cwe_family
+                    and title_sim >= MIN_TITLE_SIMILARITY_SECONDARY_SAME_PATH
+                )
+                if (
+                    (
+                        same_cwe_family
+                        and (
+                            token_sim >= MIN_TOKEN_SIMILARITY_SECONDARY_SAME_PATH
+                            or title_sim >= MIN_TITLE_SIMILARITY_SECONDARY_SAME_PATH
+                        )
+                    )
+                    or high_similarity
                 ):
                     is_duplicate = True
                     break

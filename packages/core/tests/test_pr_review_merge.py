@@ -1,7 +1,6 @@
 """Tests for scanner.pr_review_merge helpers."""
 
 import json
-from pathlib import Path
 from unittest.mock import patch
 
 from rich.console import Console
@@ -602,7 +601,8 @@ class TestMergePrAttemptFindings:
         result = _merge_pr_attempt_findings([finding_1, finding_2], merge_stats=stats)
         # Should merge into one since they are about the same chain
         assert stats["input_count"] == 2
-        assert len(result) <= 2  # merged or collapsed
+        assert len(result) == 1
+        assert result[0]["cwe_id"] == "CWE-88"
 
     def test_merge_stats_populated(self):
         finding = {
@@ -937,6 +937,17 @@ class TestProofScore:
         entry = {"cwe_id": "CWE-88", "title": "issue", "description": ""}
         assert _proof_score(entry) >= 4
 
+    def test_cwe_78_option_injection_bonus_scores_2(self):
+        base_entry = {
+            "title": "argv option injection issue",
+            "description": "command builder accepts untrusted argv",
+            "attack_scenario": "1) attacker controls argv\n2) command executes",
+            "evidence": "src/runner.py:42 -> exec",
+            "cwe_id": "CWE-79",
+        }
+        cwe_78_entry = dict(base_entry, cwe_id="CWE-78")
+        assert _proof_score(cwe_78_entry) == _proof_score(base_entry) + 2
+
     def test_concrete_payload_in_scenario_scores_3(self):
         entry = {
             "attack_scenario": "Attacker supplies -o ProxyCommand=payload as host",
@@ -1090,12 +1101,32 @@ class TestSameChain:
         assert _same_chain(a, b) is False
 
     def test_same_directory_same_cwe_high_similarity_matches(self):
-        a = self._make_finding(file_path="src/handlers/ssh.py", line_number=10)
-        b = self._make_finding(file_path="src/handlers/sftp.py", line_number=20)
-        # Same directory, same CWE-88, and high token overlap from shared descriptions
-        result = _same_chain(a, b)
-        # Token similarity may or may not meet the 0.68 threshold depending on content
-        assert isinstance(result, bool)
+        a = self._make_finding(
+            file_path="src/handlers/ssh.py",
+            line_number=10,
+            title="Option injection in transport helper",
+            description="Unsanitized host reaches argv in transport helper",
+        )
+        b = self._make_finding(
+            file_path="src/handlers/sftp.py",
+            line_number=20,
+            title="Option injection in transport helper",
+            description="Unsanitized host reaches argv in transport helper",
+        )
+        assert _same_chain(a, b) is True
+
+    def test_same_file_far_apart_similar_text_does_not_match(self):
+        a = self._make_finding(
+            line_number=20,
+            title="Option injection in transport helper",
+            description="Unsanitized host reaches argv in transport helper",
+        )
+        b = self._make_finding(
+            line_number=300,
+            title="Option injection in transport helper",
+            description="Unsanitized host reaches argv in transport helper",
+        )
+        assert _same_chain(a, b) is False
 
     def test_high_title_similarity_same_file_matches(self):
         a = self._make_finding(title="SQL injection in user query")
@@ -1456,6 +1487,33 @@ class TestMergePrAttemptFindingsDeep:
         )
         stats = {}
         result = _merge_pr_attempt_findings([f1, f2, f3], merge_stats=stats)
+        assert len(result) == 2
         assert stats["input_count"] == 3
         # f1 and f2 merge in canonical pass, f3 is separate
         assert stats["canonical_count"] <= 3
+
+    def test_secondary_guard_does_not_collapse_same_cwe_without_similarity(self):
+        close_a = self._make_finding(
+            threat_id="PR-A",
+            title="Template context bleed enables script execution",
+            description="raw html fragment appended into response body",
+            file_path="src/views.py",
+            line_number=50,
+            cwe_id="CWE-79",
+            attack_scenario="1) client submits crafted svg\n2) browser executes script",
+            evidence="",
+        )
+        close_b = self._make_finding(
+            threat_id="PR-B",
+            title="JSONP callback override leaks profile data",
+            description="callback parameter controls envelope function name",
+            file_path="src/views.py",
+            line_number=56,  # inside secondary guard proximity window
+            cwe_id="CWE-79",
+            attack_scenario="1) callback value supplied in query\n2) response leaks profile",
+            evidence="",
+        )
+
+        result = _merge_pr_attempt_findings([close_a, close_b])
+        assert len(result) == 2
+        assert {entry["threat_id"] for entry in result} == {"PR-A", "PR-B"}
