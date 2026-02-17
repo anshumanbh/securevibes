@@ -428,6 +428,52 @@ class TestScannerResultLoading:
         assert result.issues[0].severity == Severity.HIGH
 
     @pytest.mark.asyncio
+    async def test_load_scan_results_surfaces_artifact_regen_warning(
+        self, scanner, test_repo, monkeypatch
+    ):
+        """DAST artifact regeneration warnings should be included in ScanResult.warnings."""
+        securevibes_dir = test_repo / ".securevibes"
+        securevibes_dir.mkdir()
+
+        import json
+
+        (securevibes_dir / "scan_results.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "threat_id": "THREAT-1",
+                        "title": "XSS Vulnerability",
+                        "description": "Cross-site scripting",
+                        "severity": "high",
+                        "file_path": "views.py",
+                        "line_number": 20,
+                        "code_snippet": "return render(user_input)",
+                        "cwe_id": "CWE-79",
+                        "recommendation": "Sanitize input",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        def fake_merge(scan_result, _securevibes_dir):
+            scan_result.dast_enabled = True
+            return scan_result
+
+        monkeypatch.setattr(scanner, "_merge_dast_results", fake_merge)
+        monkeypatch.setattr(
+            scanner,
+            "_regenerate_artifacts",
+            lambda *_args, **_kwargs: "regeneration warning",
+        )
+
+        result = scanner._load_scan_results(
+            securevibes_dir, test_repo, files_scanned=10, scan_start_time=0
+        )
+
+        assert "regeneration warning" in result.warnings
+
+    @pytest.mark.asyncio
     async def test_load_handles_missing_files(self, scanner, test_repo):
         """Test error handling when no results files exist"""
         securevibes_dir = test_repo / ".securevibes"
@@ -922,6 +968,15 @@ class TestScannerPathGuards:
         with pytest.raises(RuntimeError, match="outside repository root"):
             scanner._setup_threat_modeling_skills(repo)
 
+    def test_setup_threat_modeling_skills_raises_on_copy_failure(self, scanner, tmp_path):
+        """Threat-modeling skill sync should fail closed when copy fails."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        with patch("shutil.copytree", side_effect=OSError("disk full")):
+            with pytest.raises(RuntimeError, match="Failed to sync threat modeling skills"):
+                scanner._setup_threat_modeling_skills(repo)
+
 
 # ---------------------------------------------------------------------------
 # Tests for _merge_dast_results (P3.8)
@@ -931,7 +986,7 @@ class TestScannerPathGuards:
 class TestMergeDastResults:
     """Tests for Scanner._merge_dast_results."""
 
-    def _make_issue(self, issue_id: str, severity: str = "high") -> "SecurityIssue":
+    def _make_issue(self, issue_id: str, severity: str = "high"):
         from securevibes.models.issue import SecurityIssue, Severity
 
         return SecurityIssue(
@@ -963,10 +1018,14 @@ class TestMergeDastResults:
         import json
 
         dast_file = tmp_path / "DAST_VALIDATION.json"
-        dast_file.write_text(json.dumps({
-            "dast_scan_metadata": {},
-            "validations": [],
-        }))
+        dast_file.write_text(
+            json.dumps(
+                {
+                    "dast_scan_metadata": {},
+                    "validations": [],
+                }
+            )
+        )
 
         result = self._make_scan_result([self._make_issue("V001")])
         merged = scanner._merge_dast_results(result, tmp_path)
@@ -979,19 +1038,25 @@ class TestMergeDastResults:
         from securevibes.models.issue import ValidationStatus
 
         dast_file = tmp_path / "DAST_VALIDATION.json"
-        dast_file.write_text(json.dumps({
-            "dast_scan_metadata": {
-                "total_vulnerabilities_tested": 1,
-                "scan_duration_seconds": 42.0,
-            },
-            "validations": [{
-                "vulnerability_id": "V001",
-                "validation_status": "VALIDATED",
-                "tested_at": "2026-01-01T00:00:00Z",
-                "exploitability_score": 8.5,
-                "evidence": {"request": "GET /admin", "response": "200 OK"},
-            }],
-        }))
+        dast_file.write_text(
+            json.dumps(
+                {
+                    "dast_scan_metadata": {
+                        "total_vulnerabilities_tested": 1,
+                        "scan_duration_seconds": 42.0,
+                    },
+                    "validations": [
+                        {
+                            "vulnerability_id": "V001",
+                            "validation_status": "VALIDATED",
+                            "tested_at": "2026-01-01T00:00:00Z",
+                            "exploitability_score": 8.5,
+                            "evidence": {"request": "GET /admin", "response": "200 OK"},
+                        }
+                    ],
+                }
+            )
+        )
 
         result = self._make_scan_result([self._make_issue("V001")])
         merged = scanner._merge_dast_results(result, tmp_path)
@@ -1007,20 +1072,87 @@ class TestMergeDastResults:
         assert issue.exploitability_score == 8.5
         assert issue.dast_evidence == {"request": "GET /admin", "response": "200 OK"}
 
+    def test_legacy_top_level_array_format_merges(self, scanner, tmp_path):
+        """Legacy top-level JSON array format should be accepted."""
+        import json
+        from securevibes.models.issue import ValidationStatus
+
+        dast_file = tmp_path / "DAST_VALIDATION.json"
+        dast_file.write_text(
+            json.dumps(
+                [
+                    {
+                        "vulnerability_id": "V001",
+                        "validation_status": "VALIDATED",
+                        "tested_at": "2026-01-01T00:00:00Z",
+                    }
+                ]
+            )
+        )
+
+        result = self._make_scan_result([self._make_issue("V001")])
+        merged = scanner._merge_dast_results(result, tmp_path)
+
+        assert merged.dast_enabled is True
+        assert merged.dast_validation_rate == 1.0
+        assert merged.issues[0].validation_status == ValidationStatus.VALIDATED
+
+    def test_unexpected_top_level_type_returns_unchanged(self, scanner, tmp_path):
+        """Unexpected top-level JSON type should be treated as malformed and ignored."""
+        dast_file = tmp_path / "DAST_VALIDATION.json"
+        dast_file.write_text('"malformed"', encoding="utf-8")
+
+        result = self._make_scan_result([self._make_issue("V001")])
+        merged = scanner._merge_dast_results(result, tmp_path)
+
+        assert merged is result
+        assert not merged.dast_enabled
+
+    def test_non_mapping_validations_are_ignored(self, scanner, tmp_path):
+        """Non-object entries in validations should be ignored rather than crashing."""
+        import json
+        from securevibes.models.issue import ValidationStatus
+
+        dast_file = tmp_path / "DAST_VALIDATION.json"
+        dast_file.write_text(
+            json.dumps(
+                {
+                    "dast_scan_metadata": {"total_vulnerabilities_tested": 1},
+                    "validations": [
+                        "not-an-object",
+                        123,
+                        {"vulnerability_id": "V001", "validation_status": "FALSE_POSITIVE"},
+                    ],
+                }
+            )
+        )
+
+        result = self._make_scan_result([self._make_issue("V001")])
+        merged = scanner._merge_dast_results(result, tmp_path)
+
+        assert merged.issues[0].validation_status == ValidationStatus.FALSE_POSITIVE
+        assert merged.dast_false_positive_rate == 1.0
+
     def test_false_positive_status(self, scanner, tmp_path):
         """FALSE_POSITIVE status should be counted correctly."""
         import json
         from securevibes.models.issue import ValidationStatus
 
         dast_file = tmp_path / "DAST_VALIDATION.json"
-        dast_file.write_text(json.dumps({
-            "dast_scan_metadata": {"total_vulnerabilities_tested": 1},
-            "validations": [{
-                "vulnerability_id": "V001",
-                "validation_status": "FALSE_POSITIVE",
-                "reason": "Endpoint not reachable",
-            }],
-        }))
+        dast_file.write_text(
+            json.dumps(
+                {
+                    "dast_scan_metadata": {"total_vulnerabilities_tested": 1},
+                    "validations": [
+                        {
+                            "vulnerability_id": "V001",
+                            "validation_status": "FALSE_POSITIVE",
+                            "reason": "Endpoint not reachable",
+                        }
+                    ],
+                }
+            )
+        )
 
         result = self._make_scan_result([self._make_issue("V001")])
         merged = scanner._merge_dast_results(result, tmp_path)
@@ -1039,13 +1171,19 @@ class TestMergeDastResults:
         from securevibes.models.issue import ValidationStatus
 
         dast_file = tmp_path / "DAST_VALIDATION.json"
-        dast_file.write_text(json.dumps({
-            "dast_scan_metadata": {"total_vulnerabilities_tested": 1},
-            "validations": [{
-                "vulnerability_id": "V001",
-                "validation_status": "BOGUS_STATUS",
-            }],
-        }))
+        dast_file.write_text(
+            json.dumps(
+                {
+                    "dast_scan_metadata": {"total_vulnerabilities_tested": 1},
+                    "validations": [
+                        {
+                            "vulnerability_id": "V001",
+                            "validation_status": "BOGUS_STATUS",
+                        }
+                    ],
+                }
+            )
+        )
 
         result = self._make_scan_result([self._make_issue("V001")])
         merged = scanner._merge_dast_results(result, tmp_path)
@@ -1058,15 +1196,21 @@ class TestMergeDastResults:
         import json
 
         dast_file = tmp_path / "DAST_VALIDATION.json"
-        dast_file.write_text(json.dumps({
-            "dast_scan_metadata": {"total_vulnerabilities_tested": 1},
-            "validations": [{
-                "vulnerability_id": "V001",
-                "validation_status": "VALIDATED",
-                "test_steps": ["step1", "step2"],
-                "notes": "Manual verification",
-            }],
-        }))
+        dast_file.write_text(
+            json.dumps(
+                {
+                    "dast_scan_metadata": {"total_vulnerabilities_tested": 1},
+                    "validations": [
+                        {
+                            "vulnerability_id": "V001",
+                            "validation_status": "VALIDATED",
+                            "test_steps": ["step1", "step2"],
+                            "notes": "Manual verification",
+                        }
+                    ],
+                }
+            )
+        )
 
         result = self._make_scan_result([self._make_issue("V001")])
         merged = scanner._merge_dast_results(result, tmp_path)
@@ -1081,13 +1225,19 @@ class TestMergeDastResults:
         import json
 
         dast_file = tmp_path / "DAST_VALIDATION.json"
-        dast_file.write_text(json.dumps({
-            "dast_scan_metadata": {"total_vulnerabilities_tested": 1},
-            "validations": [{
-                "vulnerability_id": "V999",
-                "validation_status": "VALIDATED",
-            }],
-        }))
+        dast_file.write_text(
+            json.dumps(
+                {
+                    "dast_scan_metadata": {"total_vulnerabilities_tested": 1},
+                    "validations": [
+                        {
+                            "vulnerability_id": "V999",
+                            "validation_status": "VALIDATED",
+                        }
+                    ],
+                }
+            )
+        )
 
         result = self._make_scan_result([self._make_issue("V001")])
         merged = scanner._merge_dast_results(result, tmp_path)
@@ -1100,14 +1250,18 @@ class TestMergeDastResults:
         import json
 
         dast_file = tmp_path / "DAST_VALIDATION.json"
-        dast_file.write_text(json.dumps({
-            "dast_scan_metadata": {"total_vulnerabilities_tested": 3},
-            "validations": [
-                {"vulnerability_id": "V001", "validation_status": "VALIDATED"},
-                {"vulnerability_id": "V002", "validation_status": "FALSE_POSITIVE"},
-                {"vulnerability_id": "V003", "validation_status": "UNVALIDATED"},
-            ],
-        }))
+        dast_file.write_text(
+            json.dumps(
+                {
+                    "dast_scan_metadata": {"total_vulnerabilities_tested": 3},
+                    "validations": [
+                        {"vulnerability_id": "V001", "validation_status": "VALIDATED"},
+                        {"vulnerability_id": "V002", "validation_status": "FALSE_POSITIVE"},
+                        {"vulnerability_id": "V003", "validation_status": "UNVALIDATED"},
+                    ],
+                }
+            )
+        )
 
         issues = [self._make_issue("V001"), self._make_issue("V002"), self._make_issue("V003")]
         result = self._make_scan_result(issues)

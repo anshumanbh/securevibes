@@ -881,10 +881,7 @@ class Scanner:
                     self.console.print(f"      - {skill}", style="dim")
 
         except (OSError, PermissionError) as e:
-            if self.debug:
-                self.console.print(
-                    f"  ⚠️  Warning: Failed to sync threat modeling skills: {e}", style="yellow"
-                )
+            raise RuntimeError(f"Failed to sync threat modeling skills: {e}") from e
 
     async def scan_subagent(
         self, repo_path: str, subagent: str, force: bool = False, skip_checks: bool = False
@@ -1912,13 +1909,18 @@ Only report findings at or above: {severity_threshold}
             self.console.print(f"❌ Error loading scan results: {e}", style="bold red")
             raise
 
-    def _regenerate_artifacts(self, scan_result: ScanResult, securevibes_dir: Path):
+    def _regenerate_artifacts(
+        self, scan_result: ScanResult, securevibes_dir: Path
+    ) -> Optional[str]:
         """
         Regenerate JSON and Markdown reports with merged DAST validation data.
 
         Args:
             scan_result: Scan result with merged DAST data
             securevibes_dir: Path to .securevibes directory
+
+        Returns:
+            Warning message when regeneration fails; otherwise None.
         """
         try:
             repo = Path(scan_result.repository_path).resolve(strict=False)
@@ -1954,12 +1956,13 @@ Only report findings at or above: {severity_threshold}
                 self.console.print(
                     "✅ Regenerated reports with DAST validation data", style="green"
                 )
+            return None
 
         except Exception as e:
+            warning_msg = f"Failed to regenerate scan artifacts with DAST validation data: {e}"
             if self.debug:
-                self.console.print(
-                    f"⚠️  Warning: Failed to regenerate artifacts: {e}", style="yellow"
-                )
+                self.console.print(f"⚠️  Warning: {warning_msg}", style="yellow")
+            return warning_msg
 
     def _merge_dast_results(self, scan_result: ScanResult, securevibes_dir: Path) -> ScanResult:
         """
@@ -1980,9 +1983,32 @@ Only report findings at or above: {severity_threshold}
             with open(dast_file, encoding="utf-8") as f:
                 dast_data = json.load(f)
 
-            # Extract DAST metadata
-            metadata = dast_data.get("dast_scan_metadata", {})
-            validations = dast_data.get("validations", [])
+            # Accept both wrapped object and legacy top-level array formats.
+            metadata: dict[str, Any] = {}
+            validations_raw: Any = []
+            if isinstance(dast_data, dict):
+                raw_metadata = dast_data.get("dast_scan_metadata", {})
+                metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+                validations_raw = dast_data.get("validations", [])
+            elif isinstance(dast_data, list):
+                validations_raw = dast_data
+            else:
+                if self.debug:
+                    self.console.print(
+                        "⚠️  Warning: Unexpected DAST_VALIDATION.json format (expected object or array)",
+                        style="yellow",
+                    )
+                return scan_result
+
+            if not isinstance(validations_raw, list):
+                if self.debug:
+                    self.console.print(
+                        "⚠️  Warning: DAST validations payload is not a JSON array",
+                        style="yellow",
+                    )
+                return scan_result
+
+            validations = [entry for entry in validations_raw if isinstance(entry, dict)]
 
             if not validations:
                 return scan_result
@@ -2288,7 +2314,9 @@ Only report findings at or above: {severity_threshold}
 
         # Regenerate artifacts with merged validation data
         if scan_result.dast_enabled:
-            self._regenerate_artifacts(scan_result, securevibes_dir)
+            warning_msg = self._regenerate_artifacts(scan_result, securevibes_dir)
+            if warning_msg:
+                scan_result.warnings.append(warning_msg)
 
         # Update scan state only for full scans (not subagent/resume)
         if single_subagent is None and resume_from is None:
