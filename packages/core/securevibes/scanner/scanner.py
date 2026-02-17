@@ -5,9 +5,10 @@ import os
 import json
 import logging
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Iterator
 from rich.console import Console
 
 from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
@@ -47,16 +48,9 @@ from securevibes.scanner.hooks import (
 from securevibes.scanner.artifacts import ArtifactLoadError, update_pr_review_artifacts
 from securevibes.scanner.chain_analysis import (
     adjudicate_consensus_support,
-    attempt_contains_core_chain_evidence,
-    build_chain_family_identity,
-    build_chain_flow_identity,
-    build_chain_identity,
-    canonicalize_finding_path,
     collect_chain_exact_ids,
     collect_chain_family_ids,
     collect_chain_flow_ids,
-    count_passes_with_core_chains,
-    detect_weak_chain_consensus,
     diff_file_path,
     diff_has_auth_privilege_signals,
     diff_has_command_builder_signals,
@@ -73,12 +67,9 @@ from securevibes.scanner.state import (
 )
 from securevibes.scanner.pr_review_merge import (
     _attempts_show_pr_disagreement,
-    _build_pr_review_retry_suffix,
     _build_pr_retry_focus_plan,
-    _extract_observed_pr_findings,
     _focus_area_label,
     _issues_from_pr_vulns,
-    _load_pr_vulnerabilities_artifact,
     _merge_pr_attempt_findings,
     _should_run_pr_verifier,
     dedupe_pr_vulns,
@@ -885,6 +876,54 @@ class Scanner:
 
         self.agentic_override = override
 
+    @contextmanager
+    def _temporary_env(self, updates: Dict[str, Optional[str]]) -> Iterator[None]:
+        """Apply environment updates for a single scan invocation and restore afterward."""
+        previous_values = {key: os.environ.get(key) for key in updates}
+        try:
+            for key, value in updates.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            yield
+        finally:
+            for key, previous_value in previous_values.items():
+                if previous_value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = previous_value
+
+    def _build_dast_env(self, enabled: bool) -> Dict[str, Optional[str]]:
+        """Build DAST-related environment variables for the current scan mode."""
+        if not enabled:
+            return {
+                "DAST_ENABLED": None,
+                "DAST_TARGET_URL": None,
+                "DAST_TIMEOUT": None,
+            }
+
+        return {
+            "DAST_ENABLED": "true",
+            "DAST_TARGET_URL": self.dast_config["target_url"],
+            "DAST_TIMEOUT": str(self.dast_config["timeout"]),
+        }
+
+    def _sync_dast_accounts_file(self, repo: Path) -> None:
+        """Copy optional DAST accounts file into `.securevibes/` for agent access."""
+        accounts_path = self.dast_config.get("accounts_path")
+        if not accounts_path:
+            return
+
+        accounts_file = Path(accounts_path)
+        if not accounts_file.exists():
+            return
+
+        securevibes_dir = repo / SECUREVIBES_DIR
+        securevibes_dir.mkdir(exist_ok=True)
+        target_accounts = securevibes_dir / "DAST_TEST_ACCOUNTS.json"
+        target_accounts.write_text(accounts_file.read_text(encoding="utf-8"), encoding="utf-8")
+
     def _setup_dast_skills(self, repo: Path):
         """
         Sync DAST skills to target project for SDK discovery.
@@ -1052,23 +1091,18 @@ class Scanner:
                 f"Invalid subagent name: {subagent!r}. "
                 f"Must be one of: {sorted(_VALID_SUBAGENT_NAMES)}"
             )
-        os.environ["RUN_ONLY_SUBAGENT"] = subagent
-
-        # Auto-enable DAST if running dast sub-agent
-        if subagent == "dast" and self.dast_enabled:
-            os.environ["DAST_ENABLED"] = "true"
-            os.environ["DAST_TARGET_URL"] = self.dast_config["target_url"]
-            os.environ["DAST_TIMEOUT"] = str(self.dast_config["timeout"])
-            if self.dast_config.get("accounts_path"):
-                accounts_file = Path(self.dast_config["accounts_path"])
-                if accounts_file.exists():
-                    # Copy to .securevibes/ where agent can read it
-                    securevibes_dir = repo / ".securevibes"
-                    target_accounts = securevibes_dir / "DAST_TEST_ACCOUNTS.json"
-                    target_accounts.write_text(accounts_file.read_text())
+        env_updates: Dict[str, Optional[str]] = {
+            "RUN_ONLY_SUBAGENT": subagent,
+            "RESUME_FROM_SUBAGENT": None,
+            "SKIP_SUBAGENTS": None,
+        }
+        env_updates.update(self._build_dast_env(subagent == "dast" and self.dast_enabled))
 
         # Run scan with single sub-agent
-        return await self._execute_scan(repo, single_subagent=subagent)
+        with self._temporary_env(env_updates):
+            if subagent == "dast" and self.dast_enabled:
+                self._sync_dast_accounts_file(repo)
+            return await self._execute_scan(repo, single_subagent=subagent)
 
     async def scan_resume(
         self, repo_path: str, from_subagent: str, force: bool = False, skip_checks: bool = False
@@ -1120,30 +1154,22 @@ class Scanner:
                 if not click.confirm("\nProceed?", default=True):
                     raise RuntimeError("Scan cancelled by user")
 
-        # Set environment variables for resume mode
-        os.environ["RESUME_FROM_SUBAGENT"] = from_subagent
-
         # Calculate which sub-agents to skip
         skip_index = SUBAGENT_ORDER.index(from_subagent)
         skip_subagents = SUBAGENT_ORDER[:skip_index]
-        if skip_subagents:
-            os.environ["SKIP_SUBAGENTS"] = ",".join(skip_subagents)
-
-        # Configure DAST if enabled and in resume list
-        if "dast" in subagents_to_run and self.dast_enabled:
-            os.environ["DAST_ENABLED"] = "true"
-            os.environ["DAST_TARGET_URL"] = self.dast_config["target_url"]
-            os.environ["DAST_TIMEOUT"] = str(self.dast_config["timeout"])
-            if self.dast_config.get("accounts_path"):
-                accounts_file = Path(self.dast_config["accounts_path"])
-                if accounts_file.exists():
-                    # Copy to .securevibes/ where agent can read it
-                    securevibes_dir = repo / ".securevibes"
-                    target_accounts = securevibes_dir / "DAST_TEST_ACCOUNTS.json"
-                    target_accounts.write_text(accounts_file.read_text())
+        env_updates: Dict[str, Optional[str]] = {
+            "RUN_ONLY_SUBAGENT": None,
+            "RESUME_FROM_SUBAGENT": from_subagent,
+            "SKIP_SUBAGENTS": ",".join(skip_subagents) if skip_subagents else None,
+        }
+        enable_dast_for_resume = "dast" in subagents_to_run and self.dast_enabled
+        env_updates.update(self._build_dast_env(enable_dast_for_resume))
 
         # Run scan from this sub-agent onwards
-        return await self._execute_scan(repo, resume_from=from_subagent)
+        with self._temporary_env(env_updates):
+            if enable_dast_for_resume:
+                self._sync_dast_accounts_file(repo)
+            return await self._execute_scan(repo, resume_from=from_subagent)
 
     async def scan(self, repo_path: str) -> ScanResult:
         """
@@ -1159,21 +1185,17 @@ class Scanner:
         if not repo.exists():
             raise ValueError(f"Repository path does not exist: {repo_path}")
 
-        # Configure DAST environment variables if enabled
-        if self.dast_enabled:
-            os.environ["DAST_ENABLED"] = "true"
-            os.environ["DAST_TARGET_URL"] = self.dast_config["target_url"]
-            os.environ["DAST_TIMEOUT"] = str(self.dast_config["timeout"])
+        env_updates: Dict[str, Optional[str]] = {
+            "RUN_ONLY_SUBAGENT": None,
+            "RESUME_FROM_SUBAGENT": None,
+            "SKIP_SUBAGENTS": None,
+        }
+        env_updates.update(self._build_dast_env(self.dast_enabled))
 
-            if self.dast_config.get("accounts_path"):
-                accounts_file = Path(self.dast_config["accounts_path"])
-                if accounts_file.exists():
-                    # Copy to .securevibes/ where agent can read it
-                    securevibes_dir = repo / ".securevibes"
-                    target_accounts = securevibes_dir / "DAST_TEST_ACCOUNTS.json"
-                    target_accounts.write_text(accounts_file.read_text())
-
-        return await self._execute_scan(repo)
+        with self._temporary_env(env_updates):
+            if self.dast_enabled:
+                self._sync_dast_accounts_file(repo)
+            return await self._execute_scan(repo)
 
     async def pr_review(
         self,
@@ -2057,7 +2079,7 @@ Only report findings at or above: {severity_threshold}
             return scan_result
 
         try:
-            with open(dast_file) as f:
+            with open(dast_file, encoding="utf-8") as f:
                 dast_data = json.load(f)
 
             # Extract DAST metadata
@@ -2211,7 +2233,7 @@ Only report findings at or above: {severity_threshold}
             # Count threats from THREAT_MODEL.json
             threat_count = 0
             try:
-                with open(artifact_path, "r") as f:
+                with open(artifact_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     # Handle both flat array and wrapped object formats
                     if isinstance(data, list):
@@ -2232,7 +2254,7 @@ Only report findings at or above: {severity_threshold}
             # Count validations from DAST_VALIDATION.json
             validation_count = 0
             try:
-                with open(artifact_path, "r") as f:
+                with open(artifact_path, "r", encoding="utf-8") as f:
                     validations = json.load(f)
                     if isinstance(validations, list):
                         validation_count = len(validations)

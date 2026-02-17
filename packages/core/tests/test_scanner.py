@@ -1,5 +1,6 @@
 """Tests for scanner with real-time progress tracking"""
 
+import os
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 from securevibes.scanner.scanner import Scanner, ProgressTracker
@@ -648,3 +649,122 @@ class TestFullScanAllowedTools:
         options = mock_client.call_args[1]["options"]
         assert "SubagentStop" in options.hooks, "SubagentStop hook must be configured"
         assert len(options.hooks["SubagentStop"]) > 0
+
+
+class TestScannerEnvIsolation:
+    """Test scanner environment variable lifecycle across scan modes."""
+
+    @pytest.mark.asyncio
+    async def test_scan_clears_stale_subagent_env_during_execution(
+        self, scanner, test_repo, monkeypatch
+    ):
+        """Full scan should not inherit stale sub-agent env vars."""
+        monkeypatch.setenv("RUN_ONLY_SUBAGENT", "assessment")
+        monkeypatch.setenv("RESUME_FROM_SUBAGENT", "code-review")
+        monkeypatch.setenv("SKIP_SUBAGENTS", "assessment")
+
+        captured = {}
+
+        async def fake_execute(*args, **kwargs):
+            captured["run_only"] = os.environ.get("RUN_ONLY_SUBAGENT")
+            captured["resume"] = os.environ.get("RESUME_FROM_SUBAGENT")
+            captured["skip"] = os.environ.get("SKIP_SUBAGENTS")
+            return ScanResult(repository_path=str(test_repo), issues=[])
+
+        with patch.object(scanner, "_execute_scan", new=AsyncMock(side_effect=fake_execute)):
+            await scanner.scan(str(test_repo))
+
+        assert captured == {"run_only": None, "resume": None, "skip": None}
+        assert os.environ.get("RUN_ONLY_SUBAGENT") == "assessment"
+        assert os.environ.get("RESUME_FROM_SUBAGENT") == "code-review"
+        assert os.environ.get("SKIP_SUBAGENTS") == "assessment"
+
+    @pytest.mark.asyncio
+    async def test_scan_subagent_restores_environment_after_execution(
+        self, scanner, test_repo, monkeypatch
+    ):
+        """Sub-agent scan should restore caller environment."""
+        monkeypatch.setenv("RUN_ONLY_SUBAGENT", "legacy-value")
+        monkeypatch.delenv("RESUME_FROM_SUBAGENT", raising=False)
+        monkeypatch.delenv("SKIP_SUBAGENTS", raising=False)
+        monkeypatch.setenv("DAST_ENABLED", "legacy-dast")
+
+        captured = {}
+
+        async def fake_execute(*args, **kwargs):
+            captured["run_only"] = os.environ.get("RUN_ONLY_SUBAGENT")
+            captured["resume"] = os.environ.get("RESUME_FROM_SUBAGENT")
+            captured["skip"] = os.environ.get("SKIP_SUBAGENTS")
+            captured["dast_enabled"] = os.environ.get("DAST_ENABLED")
+            return ScanResult(repository_path=str(test_repo), issues=[])
+
+        with patch.object(scanner, "_execute_scan", new=AsyncMock(side_effect=fake_execute)):
+            await scanner.scan_subagent(str(test_repo), "assessment", skip_checks=True)
+
+        assert captured == {
+            "run_only": "assessment",
+            "resume": None,
+            "skip": None,
+            "dast_enabled": None,
+        }
+        assert os.environ.get("RUN_ONLY_SUBAGENT") == "legacy-value"
+        assert os.environ.get("DAST_ENABLED") == "legacy-dast"
+        assert "RESUME_FROM_SUBAGENT" not in os.environ
+        assert "SKIP_SUBAGENTS" not in os.environ
+
+    @pytest.mark.asyncio
+    async def test_scan_resume_sets_resume_env_temporarily(self, scanner, test_repo, monkeypatch):
+        """Resume scan should expose resume env vars only for the active call."""
+        monkeypatch.setenv("RUN_ONLY_SUBAGENT", "legacy-value")
+        monkeypatch.setenv("RESUME_FROM_SUBAGENT", "legacy-resume")
+        monkeypatch.setenv("SKIP_SUBAGENTS", "legacy-skip")
+
+        captured = {}
+
+        async def fake_execute(*args, **kwargs):
+            captured["run_only"] = os.environ.get("RUN_ONLY_SUBAGENT")
+            captured["resume"] = os.environ.get("RESUME_FROM_SUBAGENT")
+            captured["skip"] = os.environ.get("SKIP_SUBAGENTS")
+            return ScanResult(repository_path=str(test_repo), issues=[])
+
+        with patch.object(scanner, "_execute_scan", new=AsyncMock(side_effect=fake_execute)):
+            await scanner.scan_resume(str(test_repo), "code-review", skip_checks=True)
+
+        assert captured == {
+            "run_only": None,
+            "resume": "code-review",
+            "skip": "assessment,threat-modeling",
+        }
+        assert os.environ.get("RUN_ONLY_SUBAGENT") == "legacy-value"
+        assert os.environ.get("RESUME_FROM_SUBAGENT") == "legacy-resume"
+        assert os.environ.get("SKIP_SUBAGENTS") == "legacy-skip"
+
+
+class TestScannerDastAccountsSync:
+    """Test DAST accounts-file sync behavior."""
+
+    @pytest.mark.asyncio
+    async def test_scan_syncs_dast_accounts_before_execute_scan(self, scanner, test_repo):
+        """DAST accounts sync should create .securevibes even if execute scan is mocked."""
+        accounts_file = test_repo / "accounts.json"
+        accounts_file.write_text('{"users":[]}', encoding="utf-8")
+        scanner.configure_dast(
+            target_url="http://localhost:3000",
+            timeout=120,
+            accounts_path=str(accounts_file),
+        )
+
+        securevibes_dir = test_repo / ".securevibes"
+        if securevibes_dir.exists():
+            pytest.fail(".securevibes should not exist before test setup")
+
+        with patch.object(
+            scanner,
+            "_execute_scan",
+            new=AsyncMock(return_value=ScanResult(repository_path=str(test_repo), issues=[])),
+        ):
+            await scanner.scan(str(test_repo))
+
+        synced_file = securevibes_dir / "DAST_TEST_ACCOUNTS.json"
+        assert synced_file.exists()
+        assert synced_file.read_text(encoding="utf-8") == '{"users":[]}'
