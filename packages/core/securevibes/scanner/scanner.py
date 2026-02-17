@@ -93,35 +93,13 @@ from securevibes.scanner.pr_review_flow import (
 __all__ = [
     "Scanner",
     "ProgressTracker",
-    "adjudicate_consensus_support",
-    "attempt_contains_core_chain_evidence",
-    "_attempts_show_pr_disagreement",
-    "build_chain_family_identity",
-    "build_chain_flow_identity",
-    "build_chain_identity",
     "_build_focused_diff_context",
-    "_enforce_focused_diff_coverage",
-    "_build_pr_retry_focus_plan",
-    "_build_pr_review_retry_suffix",
-    "canonicalize_finding_path",
-    "collect_chain_exact_ids",
-    "collect_chain_family_ids",
-    "collect_chain_flow_ids",
-    "count_passes_with_core_chains",
     "_derive_pr_default_grep_scope",
-    "detect_weak_chain_consensus",
-    "diff_has_auth_privilege_signals",
-    "diff_has_command_builder_signals",
-    "diff_has_path_parser_signals",
-    "_extract_observed_pr_findings",
-    "_load_pr_vulnerabilities_artifact",
-    "_merge_pr_attempt_findings",
-    "_should_run_pr_verifier",
-    "summarize_chain_candidates_for_prompt",
+    "_enforce_focused_diff_coverage",
+    "_normalize_hypothesis_output",
+    "_score_diff_file_for_security_review",
     "_summarize_diff_hunk_snippets",
-    "summarize_revalidation_support",
-    "dedupe_pr_vulns",
-    "filter_baseline_vulns",
+    "_summarize_diff_line_anchors",
 ]
 
 # Constants for artifact paths
@@ -1862,8 +1840,6 @@ Only report findings at or above: {severity_threshold}
         if single_subagent:
             needs_dast = single_subagent == "dast"
         elif resume_from:
-            from securevibes.scanner.subagent_manager import SubAgentManager
-
             manager = SubAgentManager(repo, quiet=False)
             needs_dast = "dast" in manager.get_resume_subagents(resume_from)
         else:
@@ -1876,8 +1852,6 @@ Only report findings at or above: {severity_threshold}
         if single_subagent:
             needs_threat_modeling = single_subagent == "threat-modeling"
         elif resume_from:
-            from securevibes.scanner.subagent_manager import SubAgentManager
-
             manager = SubAgentManager(repo, quiet=False)
             needs_threat_modeling = "threat-modeling" in manager.get_resume_subagents(resume_from)
         else:
@@ -1911,8 +1885,7 @@ Only report findings at or above: {severity_threshold}
         # Initialize progress tracker
         tracker = ProgressTracker(self.console, debug=self.debug, single_subagent=single_subagent)
 
-        # Store detected languages for phase-specific exclusions
-        detected_languages = LanguageConfig.detect_languages(repo) if repo else set()
+        # Reuse detected_languages from earlier in this method
 
         # Create hooks using hook creator functions
         dast_security_hook = create_dast_security_hook(tracker, self.console, self.debug)

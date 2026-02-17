@@ -21,32 +21,39 @@ from securevibes.diff.context import (
     summarize_vulnerabilities_for_prompt,
 )
 from securevibes.diff.parser import DiffContext, DiffFile, DiffHunk, DiffLine
-from securevibes.scanner.scanner import (
-    Scanner,
+from securevibes.scanner.chain_analysis import (
     adjudicate_consensus_support,
     attempt_contains_core_chain_evidence,
-    _attempts_show_pr_disagreement,
-    build_chain_flow_identity,
     build_chain_family_identity,
+    build_chain_flow_identity,
     build_chain_identity,
-    _build_pr_review_retry_suffix,
-    _build_pr_retry_focus_plan,
     canonicalize_finding_path,
     count_passes_with_core_chains,
     detect_weak_chain_consensus,
     diff_has_auth_privilege_signals,
     diff_has_path_parser_signals,
-    _derive_pr_default_grep_scope,
-    _enforce_focused_diff_coverage,
-    _build_focused_diff_context,
+    summarize_chain_candidates_for_prompt,
+    summarize_revalidation_support,
+)
+from securevibes.scanner.pr_review_merge import (
+    _attempts_show_pr_disagreement,
+    _build_pr_retry_focus_plan,
+    _build_pr_review_retry_suffix,
     _extract_observed_pr_findings,
     _merge_pr_attempt_findings,
     _should_run_pr_verifier,
-    summarize_revalidation_support,
-    summarize_chain_candidates_for_prompt,
-    _summarize_diff_hunk_snippets,
     dedupe_pr_vulns,
     filter_baseline_vulns,
+)
+from securevibes.scanner.scanner import (
+    Scanner,
+    _build_focused_diff_context,
+    _derive_pr_default_grep_scope,
+    _enforce_focused_diff_coverage,
+    _normalize_hypothesis_output,
+    _score_diff_file_for_security_review,
+    _summarize_diff_hunk_snippets,
+    _summarize_diff_line_anchors,
 )
 from securevibes.config import config
 
@@ -2228,3 +2235,441 @@ def test_pr_code_review_prompt_disables_diff_context_file_reads():
     prompt = prompt_path.read_text(encoding="utf-8")
 
     assert "Do not read or grep DIFF_CONTEXT.json" in prompt
+
+
+# ---------------------------------------------------------------------------
+# _normalize_hypothesis_output tests
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_hypothesis_output_empty_input():
+    """Empty or whitespace-only input should return fallback."""
+    assert _normalize_hypothesis_output("") == "- None generated."
+    assert _normalize_hypothesis_output("   \n  ") == "- None generated."
+
+
+def test_normalize_hypothesis_output_preserves_dash_bullets():
+    """Lines starting with '- ' should be kept as-is."""
+    raw = "- First hypothesis\n- Second hypothesis"
+    result = _normalize_hypothesis_output(raw)
+    assert result == "- First hypothesis\n- Second hypothesis"
+
+
+def test_normalize_hypothesis_output_converts_asterisk_bullets():
+    """Lines starting with '* ' should be converted to dash bullets."""
+    raw = "* Asterisk item one\n* Asterisk item two"
+    result = _normalize_hypothesis_output(raw)
+    assert result == "- Asterisk item one\n- Asterisk item two"
+
+
+def test_normalize_hypothesis_output_converts_numbered_lists():
+    """Numbered list items (1. or 1)) should be converted to dash bullets."""
+    raw = "1. First item\n2) Second item"
+    result = _normalize_hypothesis_output(raw)
+    assert result == "- First item\n- Second item"
+
+
+def test_normalize_hypothesis_output_fallback_for_prose():
+    """Non-bullet prose should fall back to first line as a single bullet."""
+    raw = "This is just a paragraph of text without bullets."
+    result = _normalize_hypothesis_output(raw)
+    assert result == "- This is just a paragraph of text without bullets."
+
+
+def test_normalize_hypothesis_output_truncates_long_fallback():
+    """Fallback first line longer than 280 chars should be truncated."""
+    long_line = "A" * 300
+    result = _normalize_hypothesis_output(long_line)
+    assert result.startswith("- " + "A" * 277)
+    assert result.endswith("...")
+
+
+def test_normalize_hypothesis_output_respects_max_items():
+    """Only up to max_items bullets should be kept."""
+    raw = "\n".join(f"- Item {i}" for i in range(20))
+    result = _normalize_hypothesis_output(raw, max_items=3)
+    assert result.count("- Item") == 3
+    assert "- Item 0" in result
+    assert "- Item 2" in result
+    assert "- Item 3" not in result
+
+
+def test_normalize_hypothesis_output_respects_max_chars():
+    """Output exceeding max_chars should be truncated with marker."""
+    raw = "\n".join(f"- {'X' * 100} hypothesis {i}" for i in range(10))
+    result = _normalize_hypothesis_output(raw, max_chars=200)
+    assert len(result) <= 200
+    assert result.endswith("...[truncated]")
+
+
+def test_normalize_hypothesis_output_skips_blank_lines():
+    """Blank lines in input should be ignored."""
+    raw = "- First\n\n\n- Second\n\n- Third"
+    result = _normalize_hypothesis_output(raw)
+    assert result == "- First\n- Second\n- Third"
+
+
+def test_normalize_hypothesis_output_mixed_formats():
+    """Mixed bullet formats should all be normalized to dash bullets."""
+    raw = "- Dash bullet\n* Asterisk bullet\n1. Numbered bullet"
+    result = _normalize_hypothesis_output(raw)
+    assert result == "- Dash bullet\n- Asterisk bullet\n- Numbered bullet"
+
+
+# ---------------------------------------------------------------------------
+# _score_diff_file_for_security_review tests
+# ---------------------------------------------------------------------------
+
+
+def _make_diff_file(new_path, is_new=False, is_deleted=False, is_renamed=False):
+    """Helper to create a minimal DiffFile."""
+    return DiffFile(
+        old_path=new_path,
+        new_path=new_path,
+        hunks=[],
+        is_new=is_new,
+        is_deleted=is_deleted,
+        is_renamed=is_renamed,
+    )
+
+
+def test_score_diff_file_code_file_base_score():
+    """A regular source code file should get the base code score."""
+    diff_file = _make_diff_file("src/app.py")
+    score = _score_diff_file_for_security_review(diff_file)
+    # 60 (code) + 20 (src/) = 80
+    assert score == 80
+
+
+def test_score_diff_file_non_code_suffix():
+    """Non-code files (markdown, images, etc.) should not get the code bonus."""
+    diff_file = _make_diff_file("docs/README.md")
+    score = _score_diff_file_for_security_review(diff_file)
+    # No 60 (non-code suffix .md), -35 (docs/), = -35
+    assert score == -35
+
+
+def test_score_diff_file_security_path_hints():
+    """Files with security-related path segments should score higher."""
+    diff_file = _make_diff_file("src/auth/token_guard.py")
+    score = _score_diff_file_for_security_review(diff_file)
+    # 60 (code) + 20 (src/) + 12 (auth) + 12 (token) + 12 (guard) = 116
+    assert score == 116
+
+
+def test_score_diff_file_test_file_penalty():
+    """Test files should receive a score penalty."""
+    diff_file = _make_diff_file("src/tests/test_auth.py")
+    score = _score_diff_file_for_security_review(diff_file)
+    # 60 (code) + 20 (src/) - 20 (/tests/) + 12 (auth) = 72
+    assert score == 72
+
+
+def test_score_diff_file_new_file_bonus():
+    """New files should receive a small bonus."""
+    regular = _make_diff_file("src/handler.py")
+    new = _make_diff_file("src/handler.py", is_new=True)
+    assert _score_diff_file_for_security_review(new) == _score_diff_file_for_security_review(regular) + 8
+
+
+def test_score_diff_file_renamed_file_bonus():
+    """Renamed files should receive a small bonus."""
+    regular = _make_diff_file("src/handler.py")
+    renamed = _make_diff_file("src/handler.py", is_renamed=True)
+    assert _score_diff_file_for_security_review(renamed) == _score_diff_file_for_security_review(regular) + 4
+
+
+def test_score_diff_file_no_path():
+    """A file with no path should score 0."""
+    diff_file = DiffFile(
+        old_path=None,
+        new_path=None,
+        hunks=[],
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+    )
+    assert _score_diff_file_for_security_review(diff_file) == 0
+
+
+def test_score_diff_file_docs_path():
+    """Files in docs/ path should receive the docs penalty."""
+    diff_file = _make_diff_file("docs/api-guide.rst")
+    score = _score_diff_file_for_security_review(diff_file)
+    # No 60 (.rst is non-code), -35 (docs/) = -35
+    assert score == -35
+
+
+def test_score_diff_file_lock_file():
+    """Lock files are non-code and should not get the code bonus."""
+    diff_file = _make_diff_file("package-lock.lock")
+    score = _score_diff_file_for_security_review(diff_file)
+    # No 60 (.lock is non-code) = 0
+    assert score == 0
+
+
+# ---------------------------------------------------------------------------
+# _summarize_diff_line_anchors tests
+# ---------------------------------------------------------------------------
+
+
+def test_summarize_diff_line_anchors_empty_files():
+    """Empty diff context should return a no-change message."""
+    context = DiffContext(files=[], added_lines=0, removed_lines=0, changed_files=[])
+    result = _summarize_diff_line_anchors(context)
+    assert result == "- No changed files."
+
+
+def test_summarize_diff_line_anchors_basic():
+    """Added and removed lines should appear in the summary."""
+    diff_file = DiffFile(
+        old_path="src/auth.py",
+        new_path="src/auth.py",
+        hunks=[
+            DiffHunk(
+                old_start=1,
+                old_count=3,
+                new_start=1,
+                new_count=4,
+                lines=[
+                    DiffLine(type="add", content="import os", old_line_num=None, new_line_num=2),
+                    DiffLine(type="remove", content="import sys", old_line_num=1, new_line_num=None),
+                    DiffLine(type="context", content="# header", old_line_num=2, new_line_num=3),
+                ],
+            )
+        ],
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+    )
+    context = DiffContext(
+        files=[diff_file],
+        added_lines=1,
+        removed_lines=1,
+        changed_files=["src/auth.py"],
+    )
+    result = _summarize_diff_line_anchors(context)
+    assert "- src/auth.py" in result
+    assert "+ L2: import os" in result
+    assert "removed lines: 1" in result
+
+
+def test_summarize_diff_line_anchors_truncates_long_snippets():
+    """Line content longer than 180 chars should be truncated."""
+    long_content = "x" * 200
+    diff_file = DiffFile(
+        old_path="src/big.py",
+        new_path="src/big.py",
+        hunks=[
+            DiffHunk(
+                old_start=1,
+                old_count=0,
+                new_start=1,
+                new_count=1,
+                lines=[
+                    DiffLine(type="add", content=long_content, old_line_num=None, new_line_num=1),
+                ],
+            )
+        ],
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+    )
+    context = DiffContext(
+        files=[diff_file],
+        added_lines=1,
+        removed_lines=0,
+        changed_files=["src/big.py"],
+    )
+    result = _summarize_diff_line_anchors(context)
+    # The truncated snippet should end with ...
+    assert "..." in result
+    # Should not contain the full 200-char content
+    assert long_content not in result
+
+
+def test_summarize_diff_line_anchors_respects_max_lines_per_file():
+    """Only max_lines_per_file added lines should be shown per file."""
+    lines = [
+        DiffLine(type="add", content=f"line {i}", old_line_num=None, new_line_num=i)
+        for i in range(1, 11)
+    ]
+    diff_file = DiffFile(
+        old_path="src/many.py",
+        new_path="src/many.py",
+        hunks=[DiffHunk(old_start=0, old_count=0, new_start=1, new_count=10, lines=lines)],
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+    )
+    context = DiffContext(
+        files=[diff_file],
+        added_lines=10,
+        removed_lines=0,
+        changed_files=["src/many.py"],
+    )
+    result = _summarize_diff_line_anchors(context, max_lines_per_file=3)
+    assert "L1:" in result
+    assert "L3:" in result
+    assert "7 more added lines" in result
+
+
+def test_summarize_diff_line_anchors_respects_max_chars():
+    """Output exceeding max_chars should be truncated."""
+    lines = [
+        DiffLine(type="add", content=f"content_{i}" * 10, old_line_num=None, new_line_num=i)
+        for i in range(1, 20)
+    ]
+    diff_file = DiffFile(
+        old_path="src/large.py",
+        new_path="src/large.py",
+        hunks=[DiffHunk(old_start=0, old_count=0, new_start=1, new_count=19, lines=lines)],
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+    )
+    context = DiffContext(
+        files=[diff_file],
+        added_lines=19,
+        removed_lines=0,
+        changed_files=["src/large.py"],
+    )
+    result = _summarize_diff_line_anchors(context, max_chars=200)
+    assert len(result) <= 200
+    assert result.endswith("...[truncated]")
+
+
+def test_summarize_diff_line_anchors_respects_max_files():
+    """Only max_files files should be included in the summary."""
+    files = []
+    for i in range(5):
+        files.append(
+            DiffFile(
+                old_path=f"src/file_{i}.py",
+                new_path=f"src/file_{i}.py",
+                hunks=[
+                    DiffHunk(
+                        old_start=0,
+                        old_count=0,
+                        new_start=1,
+                        new_count=1,
+                        lines=[
+                            DiffLine(type="add", content=f"added in file {i}", old_line_num=None, new_line_num=1),
+                        ],
+                    )
+                ],
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+            )
+        )
+    context = DiffContext(
+        files=files,
+        added_lines=5,
+        removed_lines=0,
+        changed_files=[f"src/file_{i}.py" for i in range(5)],
+    )
+    result = _summarize_diff_line_anchors(context, max_files=2)
+    assert "file_0" in result
+    assert "file_1" in result
+    assert "file_2" not in result
+
+
+# ---------------------------------------------------------------------------
+# _summarize_diff_hunk_snippets additional tests
+# ---------------------------------------------------------------------------
+
+
+def test_summarize_diff_hunk_snippets_empty_context():
+    """Empty diff context should return a no-change message."""
+    context = DiffContext(files=[], added_lines=0, removed_lines=0, changed_files=[])
+    result = _summarize_diff_hunk_snippets(context)
+    assert result == "- No changed hunks."
+
+
+def test_summarize_diff_hunk_snippets_metadata_flags():
+    """Deleted and renamed files should show metadata in the summary."""
+    diff_file = DiffFile(
+        old_path="src/old.py",
+        new_path="src/new.py",
+        hunks=[
+            DiffHunk(
+                old_start=1,
+                old_count=1,
+                new_start=1,
+                new_count=1,
+                lines=[DiffLine(type="context", content="pass", old_line_num=1, new_line_num=1)],
+            )
+        ],
+        is_new=False,
+        is_deleted=False,
+        is_renamed=True,
+    )
+    context = DiffContext(
+        files=[diff_file],
+        added_lines=0,
+        removed_lines=0,
+        changed_files=["src/new.py"],
+    )
+    result = _summarize_diff_hunk_snippets(context)
+    assert "(renamed)" in result
+
+
+def test_summarize_diff_hunk_snippets_truncates_long_lines():
+    """Lines longer than 220 chars should be truncated."""
+    long_content = "Z" * 250
+    diff_file = DiffFile(
+        old_path="src/long.py",
+        new_path="src/long.py",
+        hunks=[
+            DiffHunk(
+                old_start=1,
+                old_count=0,
+                new_start=1,
+                new_count=1,
+                lines=[DiffLine(type="add", content=long_content, old_line_num=None, new_line_num=1)],
+            )
+        ],
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+    )
+    context = DiffContext(
+        files=[diff_file],
+        added_lines=1,
+        removed_lines=0,
+        changed_files=["src/long.py"],
+    )
+    result = _summarize_diff_hunk_snippets(context)
+    assert "..." in result
+    assert long_content not in result
+
+
+def test_summarize_diff_hunk_snippets_truncates_hunks():
+    """Files with more hunks than max_hunks_per_file should show truncation message."""
+    hunks = [
+        DiffHunk(
+            old_start=i * 10,
+            old_count=1,
+            new_start=i * 10,
+            new_count=1,
+            lines=[DiffLine(type="add", content=f"line {i}", old_line_num=None, new_line_num=i * 10)],
+        )
+        for i in range(6)
+    ]
+    diff_file = DiffFile(
+        old_path="src/many_hunks.py",
+        new_path="src/many_hunks.py",
+        hunks=hunks,
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+    )
+    context = DiffContext(
+        files=[diff_file],
+        added_lines=6,
+        removed_lines=0,
+        changed_files=["src/many_hunks.py"],
+    )
+    result = _summarize_diff_hunk_snippets(context, max_hunks_per_file=2)
+    assert "truncated 4 hunks" in result
