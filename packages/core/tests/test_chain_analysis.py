@@ -36,6 +36,7 @@ from securevibes.scanner.chain_analysis import (
     summarize_revalidation_support,
 )
 
+
 def _build_diff_context(path: str, lines: list[str]) -> DiffContext:
     hunk = DiffHunk(
         old_start=1,
@@ -62,10 +63,12 @@ def _build_diff_context(path: str, lines: list[str]) -> DiffContext:
         changed_files=[path],
     )
 
+
 def test_chain_stopwords_contains_extended_terms():
     """Shared stopwords should include terms used by merge-token dedupe."""
     for token in ("through", "command", "configuration", "path", "line", "file"):
         assert token in CHAIN_STOPWORDS
+
 
 @pytest.mark.parametrize(
     "input_val, expected",
@@ -83,14 +86,18 @@ def test_chain_stopwords_contains_extended_terms():
 def test_coerce_line_number(input_val, expected):
     assert coerce_line_number(input_val) == expected
 
+
 def test_extract_cwe_family_two_digit_cwe():
     assert extract_cwe_family("CWE-78") == "78"
+
 
 def test_extract_cwe_family_three_digit_cwe():
     assert extract_cwe_family("CWE-123") == "123"
 
+
 def test_extract_cwe_family_four_digit_cwe():
     assert extract_cwe_family("CWE-1234") == "1234"
+
 
 def test_extract_cwe_family_no_collision_between_79_and_798():
     """CWE-79 and CWE-798 must produce different family prefixes."""
@@ -98,28 +105,35 @@ def test_extract_cwe_family_no_collision_between_79_and_798():
     family_798 = extract_cwe_family("CWE-798")
     assert family_79 != family_798
 
+
 def test_extract_cwe_family_not_a_cwe():
     assert extract_cwe_family("not-a-cwe") == ""
+
 
 def test_extract_cwe_family_empty_string():
     assert extract_cwe_family("") == ""
 
+
 def test_extract_cwe_family_none():
     assert extract_cwe_family(None) == ""
+
 
 def test_extract_cwe_family_lowercase():
     """CWE matching should be case-insensitive."""
     assert extract_cwe_family("cwe-78") == "78"
 
+
 def test_extract_cwe_family_single_digit():
     """Single-digit CWE should return its single digit."""
     assert extract_cwe_family("CWE-5") == "5"
+
 
 def test_chain_text_tokens_normal_text():
     tokens = chain_text_tokens("SQL Injection via user_input parameter")
     assert "injection" in tokens
     assert "user_input" in tokens
     assert "parameter" in tokens
+
 
 def test_chain_text_tokens_stopwords_filtered():
     """Stopwords from CHAIN_STOPWORDS should be excluded."""
@@ -131,6 +145,7 @@ def test_chain_text_tokens_stopwords_filtered():
     assert "path" not in tokens
     assert "injection" in tokens
 
+
 def test_chain_text_tokens_short_tokens_filtered():
     """Tokens shorter than 4 characters should be excluded."""
     tokens = chain_text_tokens("the api foo bar baz longer_token")
@@ -140,6 +155,7 @@ def test_chain_text_tokens_short_tokens_filtered():
     assert "baz" not in tokens
     assert "longer_token" in tokens
 
+
 def test_chain_text_tokens_max_tokens_limit():
     tokens = chain_text_tokens(
         "first_tok second_tok third_tok fourth_tok fifth_tok sixth_tok seventh_tok",
@@ -147,17 +163,21 @@ def test_chain_text_tokens_max_tokens_limit():
     )
     assert len(tokens) <= 3
 
+
 def test_chain_text_tokens_default_max_is_five():
     tokens = chain_text_tokens(
         "alpha_tok beta_tok gamma_tok delta_tok epsilon_tok zeta_tok eta_tok"
     )
     assert len(tokens) <= 5
 
+
 def test_chain_text_tokens_none_input():
     assert chain_text_tokens(None) == ()
 
+
 def test_chain_text_tokens_empty_string():
     assert chain_text_tokens("") == ()
+
 
 def test_chain_text_tokens_digits_only_excluded():
     """Pure digit tokens should be excluded."""
@@ -165,15 +185,18 @@ def test_chain_text_tokens_digits_only_excluded():
     assert "1234" not in tokens
     assert "token_here" in tokens
 
+
 def test_finding_text_dict_with_fields():
     entry = {"title": "SQL Injection", "description": "A vuln", "extra": "ignored"}
     result = finding_text(entry, fields=("title", "description"))
     assert result == "sql injection a vuln"
 
+
 def test_finding_text_non_dict():
     assert finding_text("not a dict", fields=("title",)) == ""
     assert finding_text(42, fields=("title",)) == ""
     assert finding_text(None, fields=("title",)) == ""
+
 
 def test_finding_text_missing_fields():
     entry = {"title": "Hello"}
@@ -181,9 +204,11 @@ def test_finding_text_missing_fields():
     assert "hello" in result
     # missing field contributes empty string, not KeyError
 
+
 def test_finding_text_empty_dict():
     result = finding_text({}, fields=("title",))
     assert result == ""
+
 
 def test_extract_finding_locations_with_file_path():
     entry = {
@@ -196,9 +221,11 @@ def test_extract_finding_locations_with_file_path():
     # Should contain a canonicalized version of the file path
     assert any("tasks.py" in loc for loc in locations)
 
+
 def test_extract_finding_locations_empty_entry():
     entry = {"evidence": "", "attack_scenario": "", "description": ""}
     assert extract_finding_locations(entry) == ()
+
 
 def test_extract_finding_locations_deduplicates():
     entry = {
@@ -211,6 +238,7 @@ def test_extract_finding_locations_deduplicates():
     paths_matching = [loc for loc in locations if "tasks.py" in loc]
     assert len(paths_matching) <= 1
 
+
 def test_extract_finding_routes_with_route():
     entry = {
         "title": "auth bypass on /api/v1/admin",
@@ -222,9 +250,11 @@ def test_extract_finding_routes_with_route():
     assert len(routes) >= 1
     assert any("/api/v1/admin" in r for r in routes)
 
+
 def test_extract_finding_routes_empty():
     entry = {"title": "", "description": "", "attack_scenario": "", "evidence": ""}
     assert extract_finding_routes(entry) == ()
+
 
 def test_extract_finding_routes_deduplicates():
     entry = {
@@ -236,6 +266,7 @@ def test_extract_finding_routes_deduplicates():
     routes = extract_finding_routes(entry)
     route_matches = [r for r in routes if "/api/tasks" in r]
     assert len(route_matches) == 1
+
 
 def test_extract_chain_sink_anchor_prefers_non_primary_location():
     entry = {
@@ -249,6 +280,7 @@ def test_extract_chain_sink_anchor_prefers_non_primary_location():
     # Should prefer non-primary location
     assert anchor != ""
 
+
 def test_extract_chain_sink_anchor_falls_back_to_routes():
     entry = {
         "file_path": "",
@@ -260,6 +292,7 @@ def test_extract_chain_sink_anchor_falls_back_to_routes():
     anchor = extract_chain_sink_anchor(entry)
     assert "/api/upload" in anchor or anchor != ""
 
+
 def test_extract_chain_sink_anchor_empty_entry():
     entry = {
         "file_path": "",
@@ -269,6 +302,7 @@ def test_extract_chain_sink_anchor_empty_entry():
         "evidence": "",
     }
     assert extract_chain_sink_anchor(entry) == ""
+
 
 def test_extract_chain_sink_anchor_falls_back_to_primary_location():
     entry = {
@@ -280,30 +314,38 @@ def test_extract_chain_sink_anchor_falls_back_to_primary_location():
     }
     assert extract_chain_sink_anchor(entry) == "services/api/routes/tasks.py"
 
+
 def test_canonicalize_finding_path_prefers_repo_suffix():
     path = "/tmp/workspace/services/api/routes/tasks.py"
     assert canonicalize_finding_path(path) == "services/api/routes/tasks.py"
 
+
 def test_canonicalize_finding_path_empty():
     assert canonicalize_finding_path("") == ""
 
+
 def test_canonicalize_finding_path_none():
     assert canonicalize_finding_path(None) == ""
+
 
 def test_canonicalize_finding_path_relative():
     result = canonicalize_finding_path("src/lib/utils.py")
     assert "utils.py" in result
 
+
 def test_canonicalize_finding_path_non_string():
     assert canonicalize_finding_path(42) == ""
+
 
 def test_canonicalize_finding_path_absolute_without_known_root_uses_tail():
     path = "/tmp/workspace/random/place/file.txt"
     assert canonicalize_finding_path(path) == "place/file.txt"
 
+
 def test_canonicalize_finding_path_blank_after_normalization(monkeypatch):
     monkeypatch.setattr(chain_analysis_module, "normalize_repo_path", lambda _: "   ")
     assert canonicalize_finding_path("unused") == ""
+
 
 def test_infer_chain_family_class_command_injection_keyword():
     entry = {
@@ -314,6 +356,7 @@ def test_infer_chain_family_class_command_injection_keyword():
     }
     assert infer_chain_family_class(entry) == "command_chain"
 
+
 def test_infer_chain_family_class_option_injection():
     entry = {
         "title": "option injection in ssh args",
@@ -322,6 +365,7 @@ def test_infer_chain_family_class_option_injection():
         "evidence": "",
     }
     assert infer_chain_family_class(entry) == "command_chain"
+
 
 def test_infer_chain_family_class_path_traversal_keyword():
     entry = {
@@ -332,6 +376,7 @@ def test_infer_chain_family_class_path_traversal_keyword():
     }
     assert infer_chain_family_class(entry) == "path_file_chain"
 
+
 def test_infer_chain_family_class_auth_bypass_keyword():
     entry = {
         "title": "auth bypass allows admin",
@@ -340,6 +385,7 @@ def test_infer_chain_family_class_auth_bypass_keyword():
         "evidence": "",
     }
     assert infer_chain_family_class(entry) == "auth_priv_chain"
+
 
 def test_infer_chain_family_class_cwe_based_path():
     """CWE-22 (path traversal) should map to path_file_chain."""
@@ -352,6 +398,7 @@ def test_infer_chain_family_class_cwe_based_path():
     }
     assert infer_chain_family_class(entry) == "path_file_chain"
 
+
 def test_infer_chain_family_class_cwe_based_command():
     """CWE-78 (OS command injection) should map to command_chain."""
     entry = {
@@ -362,6 +409,7 @@ def test_infer_chain_family_class_cwe_based_command():
         "cwe_id": "CWE-78",
     }
     assert infer_chain_family_class(entry) == "command_chain"
+
 
 def test_infer_chain_family_class_cwe_based_auth():
     """CWE-86 should map to auth_priv_chain."""
@@ -374,6 +422,7 @@ def test_infer_chain_family_class_cwe_based_auth():
     }
     assert infer_chain_family_class(entry) == "auth_priv_chain"
 
+
 def test_infer_chain_family_class_generic_fallback():
     entry = {
         "title": "some generic finding",
@@ -382,6 +431,7 @@ def test_infer_chain_family_class_generic_fallback():
         "evidence": "",
     }
     assert infer_chain_family_class(entry) == "generic_chain"
+
 
 def test_infer_chain_family_class_cwe_fallback_with_unknown_cwe():
     """Unknown CWE should produce cwe_XX format."""
@@ -395,6 +445,7 @@ def test_infer_chain_family_class_cwe_fallback_with_unknown_cwe():
     result = infer_chain_family_class(entry)
     assert result == "cwe_999"
 
+
 def test_infer_chain_family_class_keyword_priority_over_cwe():
     """Text-based keyword detection should take priority over CWE-based."""
     entry = {
@@ -406,6 +457,7 @@ def test_infer_chain_family_class_keyword_priority_over_cwe():
     }
     assert infer_chain_family_class(entry) == "command_chain"
 
+
 def test_infer_chain_sink_family_file_operations():
     entry = {
         "title": "file upload vulnerability",
@@ -414,6 +466,7 @@ def test_infer_chain_sink_family_file_operations():
         "evidence": "",
     }
     assert infer_chain_sink_family(entry) == "file_host_sink"
+
 
 def test_infer_chain_sink_family_command_operations():
     entry = {
@@ -424,6 +477,7 @@ def test_infer_chain_sink_family_command_operations():
     }
     assert infer_chain_sink_family(entry) == "command_exec_sink"
 
+
 def test_infer_chain_sink_family_auth_operations():
     entry = {
         "title": "authentication issue",
@@ -432,6 +486,7 @@ def test_infer_chain_sink_family_auth_operations():
         "evidence": "",
     }
     assert infer_chain_sink_family(entry) == "authz_sink"
+
 
 def test_infer_chain_sink_family_generic():
     entry = {
@@ -442,29 +497,37 @@ def test_infer_chain_sink_family_generic():
     }
     assert infer_chain_sink_family(entry) == "generic_sink"
 
+
 def test_normalize_chain_class_already_specific():
     assert normalize_chain_class_for_sink("command_chain", "generic_sink") == "command_chain"
     assert normalize_chain_class_for_sink("path_file_chain", "generic_sink") == "path_file_chain"
     assert normalize_chain_class_for_sink("auth_priv_chain", "generic_sink") == "auth_priv_chain"
 
+
 def test_normalize_chain_class_generic_with_file_sink():
     assert normalize_chain_class_for_sink("generic_chain", "file_host_sink") == "path_file_chain"
+
 
 def test_normalize_chain_class_generic_with_command_sink():
     assert normalize_chain_class_for_sink("generic_chain", "command_exec_sink") == "command_chain"
 
+
 def test_normalize_chain_class_generic_with_authz_sink():
     assert normalize_chain_class_for_sink("generic_chain", "authz_sink") == "auth_priv_chain"
+
 
 def test_normalize_chain_class_generic_with_generic_sink():
     assert normalize_chain_class_for_sink("generic_chain", "generic_sink") == "generic_chain"
 
+
 def test_normalize_chain_class_empty_with_generic_sink():
     assert normalize_chain_class_for_sink("", "generic_sink") == "generic_chain"
+
 
 def test_normalize_chain_class_cwe_class_with_file_sink():
     """Non-standard chain class should be normalized based on sink."""
     assert normalize_chain_class_for_sink("cwe_22", "file_host_sink") == "path_file_chain"
+
 
 def test_build_chain_identity_full_entry():
     entry = {
@@ -483,6 +546,7 @@ def test_build_chain_identity_full_entry():
     assert parts[2] == "2"  # 42 // 20 = 2
     assert parts[3] != "unknown"
 
+
 def test_build_chain_identity_missing_path_with_title():
     entry = {
         "title": "SQL injection vulnerability found",
@@ -494,6 +558,7 @@ def test_build_chain_identity_missing_path_with_title():
     parts = identity.split("|")
     assert parts[0] == "unknown"
 
+
 def test_build_chain_identity_missing_tokens_and_path():
     """When both path and title tokens are empty, should return empty string."""
     entry = {
@@ -503,10 +568,12 @@ def test_build_chain_identity_missing_tokens_and_path():
     }
     assert build_chain_identity(entry) == ""
 
+
 def test_build_chain_identity_non_dict():
     assert build_chain_identity("not a dict") == ""
     assert build_chain_identity(None) == ""
     assert build_chain_identity(42) == ""
+
 
 def test_build_chain_identity_line_bucketing():
     """Line 42 should map to bucket '2' (42 // 20 = 2)."""
@@ -520,6 +587,7 @@ def test_build_chain_identity_line_bucketing():
     parts = identity.split("|")
     assert parts[2] == "2"
 
+
 def test_build_chain_identity_line_zero_bucket():
     """Line 0 should produce 'x' bucket."""
     entry = {
@@ -532,6 +600,7 @@ def test_build_chain_identity_line_zero_bucket():
     parts = identity.split("|")
     assert parts[2] == "x"
 
+
 def test_build_chain_identity_no_cwe():
     """Missing CWE should produce 'xx' placeholder."""
     entry = {
@@ -542,6 +611,7 @@ def test_build_chain_identity_no_cwe():
     identity = build_chain_identity(entry)
     parts = identity.split("|")
     assert parts[1] == "xx"
+
 
 def test_build_chain_family_identity_with_path():
     entry = {
@@ -558,6 +628,7 @@ def test_build_chain_family_identity_with_path():
     assert "tasks.py" in parts[0]
     assert parts[1] == "command_chain"
 
+
 def test_build_chain_family_identity_no_path_with_sink_anchor():
     entry = {
         "file_path": "",
@@ -570,6 +641,7 @@ def test_build_chain_family_identity_no_path_with_sink_anchor():
     assert identity != ""
     parts = identity.split("|")
     assert parts[0] == "unknown"
+
 
 def test_build_chain_family_identity_no_path_with_title_tokens():
     entry = {
@@ -585,6 +657,7 @@ def test_build_chain_family_identity_no_path_with_title_tokens():
     parts = identity.split("|")
     assert parts[0] == "unknown"
 
+
 def test_build_chain_family_identity_empty():
     """Completely empty entry should return empty string."""
     entry = {
@@ -596,8 +669,10 @@ def test_build_chain_family_identity_empty():
     }
     assert build_chain_family_identity(entry) == ""
 
+
 def test_build_chain_family_identity_non_dict():
     assert build_chain_family_identity("not a dict") == ""
+
 
 def test_build_chain_flow_identity_with_path_and_cwe():
     entry = {
@@ -615,6 +690,7 @@ def test_build_chain_flow_identity_with_path_and_cwe():
     assert "tasks.py" in parts[0]
     # sink_family and chain_class
 
+
 def test_build_chain_flow_identity_without_path_but_with_locations():
     entry = {
         "file_path": "",
@@ -629,6 +705,7 @@ def test_build_chain_flow_identity_without_path_but_with_locations():
         parts = identity.split("|")
         assert len(parts) == 3
 
+
 def test_build_chain_flow_identity_no_path_returns_empty():
     entry = {
         "file_path": "",
@@ -639,12 +716,15 @@ def test_build_chain_flow_identity_no_path_returns_empty():
     }
     assert build_chain_flow_identity(entry) == ""
 
+
 def test_build_chain_flow_identity_non_dict():
     assert build_chain_flow_identity("not a dict") == ""
     assert build_chain_flow_identity(None) == ""
 
+
 def test_collect_chain_exact_ids_empty():
     assert collect_chain_exact_ids([]) == set()
+
 
 def test_collect_chain_exact_ids_single_finding():
     findings = [
@@ -657,6 +737,7 @@ def test_collect_chain_exact_ids_single_finding():
     ]
     result = collect_chain_exact_ids(findings)
     assert len(result) >= 1
+
 
 def test_collect_chain_exact_ids_multiple_findings():
     findings = [
@@ -676,6 +757,7 @@ def test_collect_chain_exact_ids_multiple_findings():
     result = collect_chain_exact_ids(findings)
     assert len(result) == 2
 
+
 def test_collect_chain_exact_ids_skips_empty_identities():
     """Findings with empty identity should not appear in the set."""
     findings = [
@@ -684,8 +766,10 @@ def test_collect_chain_exact_ids_skips_empty_identities():
     result = collect_chain_exact_ids(findings)
     assert len(result) == 0
 
+
 def test_collect_chain_family_ids_empty():
     assert collect_chain_family_ids([]) == set()
+
 
 def test_collect_chain_family_ids_single():
     findings = [
@@ -700,8 +784,10 @@ def test_collect_chain_family_ids_single():
     result = collect_chain_family_ids(findings)
     assert len(result) >= 1
 
+
 def test_collect_chain_flow_ids_empty():
     assert collect_chain_flow_ids([]) == set()
+
 
 def test_collect_chain_flow_ids_single():
     findings = [
@@ -717,6 +803,7 @@ def test_collect_chain_flow_ids_single():
     result = collect_chain_flow_ids(findings)
     assert len(result) >= 1
 
+
 def test_collect_chain_ids_alias_matches_family_ids():
     findings = [
         {
@@ -729,20 +816,26 @@ def test_collect_chain_ids_alias_matches_family_ids():
     ]
     assert collect_chain_ids(findings) == collect_chain_family_ids(findings)
 
+
 def test_count_passes_empty_core():
     assert count_passes_with_core_chains(set(), [{"a"}, {"b"}]) == 0
+
 
 def test_count_passes_empty_pass_ids():
     assert count_passes_with_core_chains({"a"}, []) == 0
 
+
 def test_count_passes_no_overlap():
     assert count_passes_with_core_chains({"a"}, [{"b"}, {"c"}]) == 0
+
 
 def test_count_passes_partial_overlap():
     assert count_passes_with_core_chains({"a", "b"}, [{"a"}, {"c"}, {"b"}]) == 2
 
+
 def test_count_passes_full_overlap():
     assert count_passes_with_core_chains({"a"}, [{"a"}, {"a", "b"}]) == 2
+
 
 def test_attempt_contains_core_chain_evidence_empty_findings():
     assert (
@@ -753,6 +846,7 @@ def test_attempt_contains_core_chain_evidence_empty_findings():
         )
         is False
     )
+
 
 def test_attempt_contains_core_chain_evidence_no_expectations():
     """No expected ids means any non-empty attempt is considered evidence."""
@@ -772,6 +866,7 @@ def test_attempt_contains_core_chain_evidence_no_expectations():
         is True
     )
 
+
 def test_attempt_contains_core_chain_evidence_matching_family():
     finding = {
         "file_path": "services/api/routes/tasks.py",
@@ -789,6 +884,7 @@ def test_attempt_contains_core_chain_evidence_matching_family():
         )
         is True
     )
+
 
 def test_attempt_contains_core_chain_evidence_matching_flow():
     finding = {
@@ -810,6 +906,7 @@ def test_attempt_contains_core_chain_evidence_matching_flow():
         is True
     )
 
+
 def test_attempt_contains_core_chain_evidence_no_match():
     finding = {
         "file_path": "services/api/routes/tasks.py",
@@ -827,6 +924,7 @@ def test_attempt_contains_core_chain_evidence_no_match():
         is False
     )
 
+
 def test_summarize_revalidation_support_all_hits():
     attempts, hits, misses = summarize_revalidation_support(
         [True, True, True],
@@ -835,6 +933,7 @@ def test_summarize_revalidation_support_all_hits():
     assert attempts == 3
     assert hits == 3
     assert misses == 0
+
 
 def test_summarize_revalidation_support_mixed():
     attempts, hits, misses = summarize_revalidation_support(
@@ -845,6 +944,7 @@ def test_summarize_revalidation_support_mixed():
     assert hits == 2
     assert misses == 1
 
+
 def test_summarize_revalidation_support_none_attempted():
     attempts, hits, misses = summarize_revalidation_support(
         [False, False, False],
@@ -854,11 +954,13 @@ def test_summarize_revalidation_support_none_attempted():
     assert hits == 0
     assert misses == 0
 
+
 def test_summarize_revalidation_support_empty():
     attempts, hits, misses = summarize_revalidation_support([], [])
     assert attempts == 0
     assert hits == 0
     assert misses == 0
+
 
 def test_detect_weak_consensus_stable():
     weak, reason, support = detect_weak_chain_consensus(
@@ -870,6 +972,7 @@ def test_detect_weak_consensus_stable():
     assert reason == "stable"
     assert support == 2
 
+
 def test_detect_weak_consensus_no_core_chains():
     weak, reason, support = detect_weak_chain_consensus(
         core_chain_ids=set(),
@@ -878,6 +981,7 @@ def test_detect_weak_consensus_no_core_chains():
     )
     assert weak is False
     assert reason == "no_core_chains"
+
 
 def test_detect_weak_consensus_low_support():
     weak, reason, support = detect_weak_chain_consensus(
@@ -889,6 +993,7 @@ def test_detect_weak_consensus_low_support():
     assert "core_support=" in reason
     assert support == 1
 
+
 def test_detect_weak_consensus_trailing_empty():
     weak, reason, support = detect_weak_chain_consensus(
         core_chain_ids={"chain-1"},
@@ -897,6 +1002,7 @@ def test_detect_weak_consensus_trailing_empty():
     )
     assert weak is True
     assert "trailing_empty_passes" in reason
+
 
 def test_adjudicate_consensus_support_exact_stable():
     weak, reason, support, mode, metrics = adjudicate_consensus_support(
@@ -913,6 +1019,7 @@ def test_adjudicate_consensus_support_exact_stable():
     assert mode == "exact"
     assert support == 2
 
+
 def test_adjudicate_consensus_support_flow_stable_when_exact_weak():
     weak, reason, support, mode, metrics = adjudicate_consensus_support(
         required_support=2,
@@ -928,6 +1035,7 @@ def test_adjudicate_consensus_support_flow_stable_when_exact_weak():
     assert mode == "flow"
     assert metrics["flow"] == 2
 
+
 def test_adjudicate_consensus_support_all_weak():
     weak, reason, support, mode, metrics = adjudicate_consensus_support(
         required_support=3,
@@ -940,6 +1048,7 @@ def test_adjudicate_consensus_support_all_weak():
     )
     assert weak is True
     assert ":" in reason  # format is "mode:reason"
+
 
 def test_adjudicate_consensus_support_family_stable():
     """Family mode is selected when exact and flow are both weak but family is stable.
@@ -957,6 +1066,7 @@ def test_adjudicate_consensus_support_family_stable():
     assert weak is False
     assert mode == "family"
 
+
 def test_adjudicate_consensus_support_no_core_ids():
     """When no core ids exist in any mode, should not be weak."""
     weak, reason, support, mode, metrics = adjudicate_consensus_support(
@@ -970,6 +1080,7 @@ def test_adjudicate_consensus_support_no_core_ids():
     )
     assert weak is False
     assert reason == "no_core_chains"
+
 
 def test_adjudicate_consensus_trailing_empty_with_enough_support():
     """Trailing empty passes should be treated as stable if support is sufficient."""
@@ -986,8 +1097,10 @@ def test_adjudicate_consensus_trailing_empty_with_enough_support():
     assert reason == "stable"
     assert mode == "exact"
 
+
 def test_summarize_chain_candidates_empty():
     assert summarize_chain_candidates_for_prompt([], {}, 1) == "- None"
+
 
 def test_summarize_chain_candidates_single_finding():
     finding = {
@@ -1003,6 +1116,7 @@ def test_summarize_chain_candidates_single_finding():
     assert "Command injection via exec" in result
     assert "CWE-78" in result
     assert "tasks.py" in result
+
 
 def test_summarize_chain_candidates_truncation():
     findings = [
@@ -1021,6 +1135,7 @@ def test_summarize_chain_candidates_truncation():
     # Should only include max_items findings
     assert result.count("- ") <= 3
 
+
 def test_summarize_chain_candidates_with_support_counts():
     finding = {
         "file_path": "services/api/routes/tasks.py",
@@ -1035,6 +1150,7 @@ def test_summarize_chain_candidates_with_support_counts():
     result = summarize_chain_candidates_for_prompt([finding], support_counts, 5)
     assert "support=3/5" in result
 
+
 def test_summarize_chain_candidates_title_truncation():
     """Very long titles should be truncated to 120 chars."""
     finding = {
@@ -1048,6 +1164,7 @@ def test_summarize_chain_candidates_title_truncation():
     }
     result = summarize_chain_candidates_for_prompt([finding], {}, 1)
     assert "..." in result
+
 
 def test_summarize_chain_candidates_max_chars_truncation():
     """Output should be truncated at max_chars."""
@@ -1073,6 +1190,7 @@ def test_summarize_chain_candidates_max_chars_truncation():
     assert len(result) <= 200
     assert result.endswith("...[truncated]")
 
+
 def test_summarize_chain_candidates_no_line_number():
     """When line_number is 0, location should just be the path."""
     finding = {
@@ -1086,6 +1204,7 @@ def test_summarize_chain_candidates_no_line_number():
     }
     result = summarize_chain_candidates_for_prompt([finding], {}, 1)
     assert "N/A" in result  # empty cwe_id -> "N/A"
+
 
 def test_summarize_chain_candidates_flow_support():
     """flow_support_counts should take precedence when higher."""
@@ -1109,6 +1228,7 @@ def test_summarize_chain_candidates_flow_support():
     )
     assert "support=4/5" in result
 
+
 def test_diff_file_path_prefers_new_path():
     diff_file = DiffFile(
         old_path="old/path.py",
@@ -1119,6 +1239,7 @@ def test_diff_file_path_prefers_new_path():
         is_renamed=False,
     )
     assert diff_file_path(diff_file) == "new/path.py"
+
 
 def test_diff_file_path_falls_back_to_old_path():
     diff_file = DiffFile(
@@ -1131,61 +1252,76 @@ def test_diff_file_path_falls_back_to_old_path():
     )
     assert diff_file_path(diff_file) == "old/path.py"
 
+
 def test_diff_has_command_builder_signals_path_match():
     ctx = _build_diff_context("src/command_runner.py", ["return ok"])
     assert diff_has_command_builder_signals(ctx) is True
+
 
 def test_diff_has_command_builder_signals_snippet_match():
     ctx = _build_diff_context("src/app.py", ["subprocess.run(argv, check=True)"])
     assert diff_has_command_builder_signals(ctx) is True
 
+
 def test_diff_has_command_builder_signals_no_match():
     ctx = _build_diff_context("src/models/user.py", ["return profile.name"])
     assert diff_has_command_builder_signals(ctx) is False
+
 
 def test_diff_has_command_builder_signals_empty_diff():
     ctx = DiffContext(files=[], added_lines=0, removed_lines=0, changed_files=[])
     assert diff_has_command_builder_signals(ctx) is False
 
+
 def test_diff_has_command_builder_signals_util_path_only_is_not_enough():
     ctx = _build_diff_context("src/util/helpers.py", ["return cleaned"])
     assert diff_has_command_builder_signals(ctx) is False
+
 
 def test_diff_has_path_parser_signals_path_match():
     ctx = _build_diff_context("src/upload/handler.py", ["return ok"])
     assert diff_has_path_parser_signals(ctx) is True
 
+
 def test_diff_has_path_parser_signals_snippet_match():
     ctx = _build_diff_context("src/app.py", ["normalized = os.path.realpath(user_path)"])
     assert diff_has_path_parser_signals(ctx) is True
+
 
 def test_diff_has_path_parser_signals_no_match():
     ctx = _build_diff_context("src/domain/user.py", ["return compute_total(items)"])
     assert diff_has_path_parser_signals(ctx) is False
 
+
 def test_diff_has_path_parser_signals_empty_diff():
     ctx = DiffContext(files=[], added_lines=0, removed_lines=0, changed_files=[])
     assert diff_has_path_parser_signals(ctx) is False
+
 
 def test_diff_has_path_parser_signals_server_path_only_is_not_enough():
     ctx = _build_diff_context("src/server/bootstrap.py", ["return app"])
     assert diff_has_path_parser_signals(ctx) is False
 
+
 def test_diff_has_auth_privilege_signals_path_match():
     ctx = _build_diff_context("src/auth/session.py", ["return token"])
     assert diff_has_auth_privilege_signals(ctx) is True
+
 
 def test_diff_has_auth_privilege_signals_snippet_match():
     ctx = _build_diff_context("src/app.py", ["if not has_permission(user): deny()"])
     assert diff_has_auth_privilege_signals(ctx) is True
 
+
 def test_diff_has_auth_privilege_signals_no_match():
     ctx = _build_diff_context("src/math/ops.py", ["return a + b"])
     assert diff_has_auth_privilege_signals(ctx) is False
 
+
 def test_diff_has_auth_privilege_signals_empty_diff():
     ctx = DiffContext(files=[], added_lines=0, removed_lines=0, changed_files=[])
     assert diff_has_auth_privilege_signals(ctx) is False
+
 
 def test_diff_has_auth_privilege_signals_server_path_only_is_not_enough():
     ctx = _build_diff_context("src/server/router.py", ["return app"])

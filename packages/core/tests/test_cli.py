@@ -288,7 +288,9 @@ class TestScanCommand:
         assert output_file.exists()
         assert output_file.name in result.output
 
-    def test_scan_markdown_output_rejects_absolute_path_outside_repo(self, runner, test_repo, tmp_path):
+    def test_scan_markdown_output_rejects_absolute_path_outside_repo(
+        self, runner, test_repo, tmp_path
+    ):
         """Absolute markdown output path must not escape repository boundaries."""
         output_file = (test_repo.parent / "outside_report.md").resolve()
         with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
