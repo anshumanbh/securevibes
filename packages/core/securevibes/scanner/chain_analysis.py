@@ -95,12 +95,12 @@ def coerce_line_number(value: object) -> int:
 
 
 def extract_cwe_family(value: object) -> str:
-    """Extract coarse CWE family prefix used for chain grouping."""
+    """Extract CWE number used for chain grouping."""
     text = str(value or "").strip().upper()
     match = re.search(r"CWE-(\d+)", text)
     if not match:
         return ""
-    return match.group(1)[:2]
+    return match.group(1)
 
 
 def chain_text_tokens(value: object, *, max_tokens: int = 5) -> tuple[str, ...]:

@@ -2546,6 +2546,22 @@ class TestGeneratePrHypotheses:
         # Empty input -> _normalize_hypothesis_output returns "- None generated."
         assert result == "- None generated."
 
+    @pytest.mark.asyncio
+    async def test_timeout_logs_at_warning_level(self):
+        """Timeout during hypothesis generation should log at WARNING, not DEBUG."""
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(side_effect=asyncio.TimeoutError())
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client), \
+             patch("securevibes.scanner.scanner.logger") as mock_logger:
+            result = await _generate_pr_hypotheses(**self._DEFAULT_KWARGS)
+
+        assert result == "- Unable to generate hypotheses."
+        mock_logger.warning.assert_called_once()
+        mock_logger.debug.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Tests for _refine_pr_findings_with_llm (P3.7)
@@ -2583,6 +2599,24 @@ class TestRefinePrFindingsWithLlm:
             )
 
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_timeout_logs_at_warning_level(self):
+        """Timeout during finding refinement should log at WARNING, not DEBUG."""
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(side_effect=asyncio.TimeoutError())
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client), \
+             patch("securevibes.scanner.scanner.logger") as mock_logger:
+            result = await _refine_pr_findings_with_llm(
+                findings=[{"title": "test"}], **self._DEFAULT_KWARGS
+            )
+
+        assert result is None
+        mock_logger.warning.assert_called_once()
+        mock_logger.debug.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_os_error_returns_none(self):

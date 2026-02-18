@@ -369,7 +369,7 @@ ARCHITECTURE CONTEXT:
                 elif isinstance(message, ResultMessage):
                     break
     except (OSError, asyncio.TimeoutError, RuntimeError):
-        logger.debug("Hypothesis generation failed", exc_info=True)
+        logger.warning("Hypothesis generation timed out or failed — downstream review passes may lack context", exc_info=True)
         return "- Unable to generate hypotheses."
 
     return _normalize_hypothesis_output("\n".join(collected_text))
@@ -475,7 +475,7 @@ CANDIDATE FINDINGS JSON:
                 elif isinstance(message, ResultMessage):
                     break
     except (OSError, asyncio.TimeoutError, RuntimeError):
-        logger.debug("PR finding refinement failed", exc_info=True)
+        logger.warning("PR finding refinement timed out or failed — unrefined findings will be retained", exc_info=True)
         return None
 
     raw_output = "\n".join(collected_text).strip()

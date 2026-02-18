@@ -87,10 +87,16 @@ def test_extract_cwe_family_two_digit_cwe():
     assert extract_cwe_family("CWE-78") == "78"
 
 def test_extract_cwe_family_three_digit_cwe():
-    assert extract_cwe_family("CWE-123") == "12"
+    assert extract_cwe_family("CWE-123") == "123"
 
 def test_extract_cwe_family_four_digit_cwe():
-    assert extract_cwe_family("CWE-1234") == "12"
+    assert extract_cwe_family("CWE-1234") == "1234"
+
+def test_extract_cwe_family_no_collision_between_79_and_798():
+    """CWE-79 and CWE-798 must produce different family prefixes."""
+    family_79 = extract_cwe_family("CWE-79")
+    family_798 = extract_cwe_family("CWE-798")
+    assert family_79 != family_798
 
 def test_extract_cwe_family_not_a_cwe():
     assert extract_cwe_family("not-a-cwe") == ""
@@ -387,7 +393,7 @@ def test_infer_chain_family_class_cwe_fallback_with_unknown_cwe():
         "cwe_id": "CWE-999",
     }
     result = infer_chain_family_class(entry)
-    assert result == "cwe_99"
+    assert result == "cwe_999"
 
 def test_infer_chain_family_class_keyword_priority_over_cwe():
     """Text-based keyword detection should take priority over CWE-based."""

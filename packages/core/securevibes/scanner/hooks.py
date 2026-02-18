@@ -182,6 +182,20 @@ def _is_inside_repo(repo_root: Path, candidate: Optional[Path]) -> bool:
     return bool(candidate and (candidate == repo_root or repo_root in candidate.parents))
 
 
+_MAX_BLOCKED_PATHS = 100
+
+
+def _record_blocked_path(observer: Optional[dict[str, Any]], blocked_path: object) -> None:
+    """Increment blocked count and append path to the observer, capped at _MAX_BLOCKED_PATHS."""
+    if observer is None or blocked_path is None:
+        return
+    blocked_count = int(observer.get("blocked_out_of_repo_count", 0))
+    observer["blocked_out_of_repo_count"] = blocked_count + 1
+    blocked_paths = observer.setdefault("blocked_paths", [])
+    if isinstance(blocked_paths, list) and len(blocked_paths) < _MAX_BLOCKED_PATHS:
+        blocked_paths.append(str(blocked_path))
+
+
 def _command_uses_blocked_db_tool(command: object, blocked_tools: list[str]) -> Optional[str]:
     """Return matched blocked DB tool when command invokes one, else None."""
     normalized = str(command or "").lower()
@@ -335,14 +349,7 @@ def create_pre_tool_hook(
                             break
 
                 if blocked_candidate is not None:
-                    if pr_tool_guard_observer is not None:
-                        blocked_count = int(
-                            pr_tool_guard_observer.get("blocked_out_of_repo_count", 0)
-                        )
-                        pr_tool_guard_observer["blocked_out_of_repo_count"] = blocked_count + 1
-                        blocked_paths = pr_tool_guard_observer.setdefault("blocked_paths", [])
-                        if isinstance(blocked_paths, list):
-                            blocked_paths.append(str(blocked_candidate))
+                    _record_blocked_path(pr_tool_guard_observer, blocked_candidate)
                     if debug:
                         console.print(
                             f"  🚫 Blocked out-of-repo {tool_name}: {blocked_candidate}",
@@ -429,18 +436,7 @@ def create_pre_tool_hook(
                             and (resolved_scope == root_path or root_path in resolved_scope.parents)
                         )
                         if not is_inside_repo:
-                            if pr_tool_guard_observer is not None:
-                                blocked_count = int(
-                                    pr_tool_guard_observer.get("blocked_out_of_repo_count", 0)
-                                )
-                                pr_tool_guard_observer["blocked_out_of_repo_count"] = (
-                                    blocked_count + 1
-                                )
-                                blocked_paths = pr_tool_guard_observer.setdefault(
-                                    "blocked_paths", []
-                                )
-                                if isinstance(blocked_paths, list) and resolved_scope is not None:
-                                    blocked_paths.append(str(resolved_scope))
+                            _record_blocked_path(pr_tool_guard_observer, resolved_scope)
                             return {
                                 "hookSpecificOutput": {
                                     "hookEventName": "PreToolUse",
@@ -496,14 +492,7 @@ def create_pre_tool_hook(
             if file_path:
                 resolved_candidate = _resolve_repo_candidate(root_path, file_path)
                 if resolved_candidate and not _is_inside_repo(root_path, resolved_candidate):
-                    if pr_tool_guard_observer is not None:
-                        blocked_count = int(
-                            pr_tool_guard_observer.get("blocked_out_of_repo_count", 0)
-                        )
-                        pr_tool_guard_observer["blocked_out_of_repo_count"] = blocked_count + 1
-                        blocked_paths = pr_tool_guard_observer.setdefault("blocked_paths", [])
-                        if isinstance(blocked_paths, list):
-                            blocked_paths.append(str(resolved_candidate))
+                    _record_blocked_path(pr_tool_guard_observer, resolved_candidate)
                     return {
                         "hookSpecificOutput": {
                             "hookEventName": "PreToolUse",
@@ -598,14 +587,7 @@ def create_pre_tool_hook(
                     resolved_candidate == root_path or root_path in resolved_candidate.parents
                 )
                 if not is_inside_repo:
-                    if pr_tool_guard_observer is not None:
-                        blocked_count = int(
-                            pr_tool_guard_observer.get("blocked_out_of_repo_count", 0)
-                        )
-                        pr_tool_guard_observer["blocked_out_of_repo_count"] = blocked_count + 1
-                        blocked_paths = pr_tool_guard_observer.setdefault("blocked_paths", [])
-                        if isinstance(blocked_paths, list):
-                            blocked_paths.append(str(resolved_candidate))
+                    _record_blocked_path(pr_tool_guard_observer, resolved_candidate)
                     return {
                         "hookSpecificOutput": {
                             "hookEventName": "PreToolUse",
@@ -909,11 +891,21 @@ def create_json_validation_hook(
                     }
                 }
             else:
+                reason = error_msg or "Unknown validation error"
                 console.print(
-                    f"  ❌ VULNERABILITIES.json validation failed: {error_msg}",
+                    f"  ❌ VULNERABILITIES.json validation failed: {reason}",
                     style="bold red",
                 )
-                # Non-PR code review remains warn-only for compatibility.
+                return {
+                    "override_result": {
+                        "content": (
+                            f"Write rejected by SecureVibes validation.\n"
+                            f"Reason: {reason}\n\n"
+                            "VULNERABILITIES.json must be a valid JSON array of vulnerability objects."
+                        ),
+                        "is_error": True,
+                    }
+                }
         elif debug:
             console.print(
                 (

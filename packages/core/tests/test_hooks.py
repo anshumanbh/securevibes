@@ -7,6 +7,8 @@ from rich.console import Console
 
 from securevibes.scanner.hooks import (
     _normalize_hook_path,
+    _record_blocked_path,
+    _MAX_BLOCKED_PATHS,
     _sanitize_pr_grep_scope,
     create_dast_security_hook,
     create_pre_tool_hook,
@@ -15,6 +17,30 @@ from securevibes.scanner.hooks import (
     create_json_validation_hook,
 )
 from securevibes.scanner.progress import ProgressTracker
+
+
+def test_record_blocked_path_increments_count():
+    """_record_blocked_path should increment counter and append path."""
+    observer = {"blocked_out_of_repo_count": 0}
+    _record_blocked_path(observer, "/some/path")
+    assert observer["blocked_out_of_repo_count"] == 1
+    assert observer["blocked_paths"] == ["/some/path"]
+
+
+def test_record_blocked_path_caps_at_max():
+    """blocked_paths list should not exceed _MAX_BLOCKED_PATHS entries."""
+    observer = {
+        "blocked_out_of_repo_count": 0,
+        "blocked_paths": [f"/path/{i}" for i in range(_MAX_BLOCKED_PATHS)],
+    }
+    _record_blocked_path(observer, "/one/more")
+    assert observer["blocked_out_of_repo_count"] == 1
+    assert len(observer["blocked_paths"]) == _MAX_BLOCKED_PATHS  # not grown
+
+
+def test_record_blocked_path_none_observer_is_noop():
+    """None observer should be silently ignored."""
+    _record_blocked_path(None, "/path")  # should not raise
 
 
 def test_normalize_hook_path_strips_null_bytes():
@@ -1687,8 +1713,8 @@ class TestJsonValidationHook:
         assert updated_input["encoding"] == "utf-8"
 
     @pytest.mark.asyncio
-    async def test_malformed_json_passes_through(self, console):
-        """Malformed JSON passes through (validation warns but doesn't block)."""
+    async def test_malformed_json_rejected(self, console):
+        """Malformed JSON should be rejected (fail-closed)."""
         hook = create_json_validation_hook(console, debug=False)
 
         input_data = {
@@ -1701,8 +1727,33 @@ class TestJsonValidationHook:
 
         result = await hook(input_data, "tool-123", {})
 
-        # Should not block - passes through
-        assert result == {}
+        assert "override_result" in result
+        assert result["override_result"]["is_error"] is True
+        assert "Write rejected by SecureVibes validation" in result["override_result"]["content"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_vulnerabilities_json_rejected_fail_closed(self, console):
+        """VULNERABILITIES.json with invalid entries should be rejected like PR path."""
+        import json
+
+        hook = create_json_validation_hook(console, debug=False)
+
+        vuln = self._make_valid_vuln()
+        del vuln["file_path"]  # missing required field makes it invalid
+        content = json.dumps([vuln])
+
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/VULNERABILITIES.json",
+                "content": content,
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "override_result" in result
+        assert result["override_result"]["is_error"] is True
 
     @pytest.mark.asyncio
     async def test_empty_array_passes_through(self, console):
@@ -1723,13 +1774,12 @@ class TestJsonValidationHook:
         assert "updatedInput" not in result
 
     @pytest.mark.asyncio
-    async def test_array_with_non_dict_items_handled(self, console):
-        """Array containing non-dict items passes validation to downstream."""
+    async def test_array_with_non_dict_items_rejected(self, console):
+        """Array containing non-dict items should be rejected (fail-closed)."""
         import json
 
         hook = create_json_validation_hook(console, debug=False)
 
-        # Array with a non-dict item - validation will warn but hook passes through
         content = json.dumps(["not a dict", {"threat_id": "T1"}])
 
         input_data = {
@@ -1742,8 +1792,8 @@ class TestJsonValidationHook:
 
         result = await hook(input_data, "tool-123", {})
 
-        # Should not block - validation happens downstream
-        assert "override_result" not in result
+        assert "override_result" in result
+        assert result["override_result"]["is_error"] is True
 
 
 class TestPRJsonValidationHook:

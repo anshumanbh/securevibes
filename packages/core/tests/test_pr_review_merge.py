@@ -1134,6 +1134,102 @@ class TestSameSubchainFamily:
         b = self._make_finding(cwe_id="CWE-79", line_number=44, finding_type="new_threat")
         assert _same_subchain_family(a, b) is False
 
+    def test_same_cwe_shared_anchor_matches(self):
+        """Shared sink anchor with same CWE family should match (line 776-777)."""
+        a = self._make_finding(
+            evidence="src/ssh_client.py:42 -> lib/exec.py:10",
+        )
+        b = self._make_finding(
+            line_number=45,
+            evidence="src/ssh_client.py:45 -> lib/exec.py:10",
+        )
+        assert _same_subchain_family(a, b) is True
+
+    def test_same_cwe_shared_locations_matches(self):
+        """Same CWE + shared referenced locations should match (line 778-785)."""
+        a = self._make_finding(
+            evidence="src/ssh_client.py:42 -> lib/sanitizer.py:20 -> lib/exec.py:10",
+        )
+        b = self._make_finding(
+            line_number=45,
+            evidence="src/ssh_client.py:45 -> lib/sanitizer.py:20 -> lib/runner.py:5",
+        )
+        assert _same_subchain_family(a, b) is True
+
+    def test_end_to_end_variant_self_anchor_asymmetry_matches(self):
+        """End-to-end variant with asymmetric self-anchoring should match (line 787-793)."""
+        a = self._make_finding(
+            title="Command injection exec sink",
+            description="attacker input reaches exec call",
+            evidence="src/ssh_client.py:42 -> exec shell command",
+            attack_scenario="1) inject payload\n2) reach exec\n3) execute",
+            finding_type="new_threat",
+        )
+        b = self._make_finding(
+            line_number=45,
+            title="Option injection build_ssh_command",
+            description="unsanitized host",
+            evidence="src/ssh_client.py:45",
+            attack_scenario="inject option",
+            finding_type="new_threat",
+        )
+        assert _same_subchain_family(a, b) is True
+
+    def test_enabler_pair_shared_anchor_matches(self):
+        """Enabler pair with shared anchor across CWE families should match (line 795-797)."""
+        a = self._make_finding(
+            cwe_id="CWE-88",
+            finding_type="threat_enabler",
+            evidence="src/ssh_client.py:42 -> lib/exec.py:10",
+        )
+        b = self._make_finding(
+            cwe_id="CWE-79",
+            line_number=44,
+            finding_type="new_threat",
+            evidence="src/ssh_client.py:44 -> lib/exec.py:10",
+        )
+        assert _same_subchain_family(a, b) is True
+
+    def test_enabler_pair_shared_locations_matches(self):
+        """Enabler pair with shared locations and sufficient token similarity (line 798-799)."""
+        a = self._make_finding(
+            cwe_id="CWE-88",
+            finding_type="threat_enabler",
+            title="Option injection in build_ssh_command allows bypass",
+            description="Unsanitized host allows option injection",
+            evidence="src/ssh_client.py:42 -> lib/sanitizer.py:20",
+        )
+        b = self._make_finding(
+            cwe_id="CWE-79",
+            line_number=44,
+            finding_type="mitigation_removal",
+            title="Option injection in build_ssh_command enables script injection",
+            description="Unsanitized host allows option injection",
+            evidence="src/ssh_client.py:44 -> lib/sanitizer.py:20",
+        )
+        assert _same_subchain_family(a, b) is True
+
+    def test_enabler_e2e_self_anchor_asymmetry_matches(self):
+        """Enabler pair with end-to-end variant and self-anchor asymmetry (line 800-804)."""
+        a = self._make_finding(
+            cwe_id="CWE-88",
+            finding_type="threat_enabler",
+            title="Option injection in build_ssh_command exec sink",
+            description="attacker input reaches exec call through ssh command builder",
+            evidence="src/ssh_client.py:42 -> exec shell command",
+            attack_scenario="1) inject payload\n2) reach exec\n3) execute",
+        )
+        b = self._make_finding(
+            cwe_id="CWE-79",
+            line_number=44,
+            finding_type="mitigation_removal",
+            title="Option injection in build_ssh_command exec sink",
+            description="attacker input reaches exec call through ssh command builder",
+            evidence="src/ssh_client.py:44",
+            attack_scenario="inject option",
+        )
+        assert _same_subchain_family(a, b) is True
+
 class TestEntryQuality:
     """Tests for _entry_quality (extracted merge helper)."""
 
