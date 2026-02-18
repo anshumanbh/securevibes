@@ -122,6 +122,9 @@ CHAIN_SINK_TERMS = (
 # ---------------------------------------------------------------------------
 # Numeric thresholds for chain deduplication and quality scoring
 # ---------------------------------------------------------------------------
+# NOTE: these thresholds were tuned against existing SecureVibes PR-review fixtures
+# to reduce duplicate chain reports while retaining cross-file exploit-chain recall.
+# Keep changes conservative and update tests when adjusting these constants.
 MAX_LINE_GAP_CLOSE = 4
 MIN_TOKEN_SIMILARITY_ADJACENT = 0.24
 MIN_TOKEN_SIMILARITY_CWE78_88 = 0.16

@@ -22,6 +22,7 @@ from securevibes import __version__
 from securevibes.models.issue import Severity
 from securevibes.scanner.scanner import Scanner
 from securevibes.diff.extractor import (
+    validate_git_ref,
     get_commits_after,
     get_commits_between,
     get_commits_for_range,
@@ -675,7 +676,7 @@ def catchup(
 
         try:
             _git_pull(repo, branch)
-        except RuntimeError as e:
+        except (RuntimeError, ValueError) as e:
             console.print(f"[bold red]❌ git pull failed:[/bold red] {e}")
             sys.exit(1)
 
@@ -791,8 +792,9 @@ def _ensure_baseline_scan(repo: Path, model: str, debug: bool) -> None:
 
 
 def _git_pull(repo: Path, branch: str) -> None:
+    validate_git_ref(branch)
     result = subprocess.run(
-        ["git", "pull", "origin", branch],
+        ["git", "pull", "origin", "--", branch],
         cwd=repo,
         capture_output=True,
         text=True,

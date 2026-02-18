@@ -6,6 +6,8 @@ from io import StringIO
 from rich.console import Console
 
 from securevibes.scanner.hooks import (
+    _normalize_hook_path,
+    _sanitize_pr_grep_scope,
     create_dast_security_hook,
     create_pre_tool_hook,
     create_post_tool_hook,
@@ -13,6 +15,28 @@ from securevibes.scanner.hooks import (
     create_json_validation_hook,
 )
 from securevibes.scanner.progress import ProgressTracker
+
+
+def test_normalize_hook_path_strips_null_bytes():
+    """Null bytes should be stripped from hook path normalization."""
+    normalized = _normalize_hook_path("src/app.py\x00trailing")
+    assert normalized == "src/app.pytrailing"
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("src", "src"),
+        ("apps/service", "apps/service"),
+        ("../outside", "src"),
+        ("/abs/path", "src"),
+        ("", "src"),
+        (None, "src"),
+    ],
+)
+def test_sanitize_pr_grep_scope_enforces_repo_relative_defaults(raw, expected):
+    """Pathless PR grep scope should stay repo-relative and safe."""
+    assert _sanitize_pr_grep_scope(raw) == expected
 
 
 class TestDASTSecurityHook:
@@ -661,6 +685,29 @@ class TestPreToolHook:
 
         assert "override_result" in result
         assert "/tmp/pr-review-helper.py" in result["override_result"]["content"]
+
+    @pytest.mark.asyncio
+    async def test_blocks_edit_writes_in_pr_code_review(self, tracker, console):
+        """PR code review should enforce same artifact guard for Edit as Write."""
+        tracker.current_phase = "pr-code-review"
+        detected_languages = {"python"}
+        hook = create_pre_tool_hook(
+            tracker, console, debug=False, detected_languages=detected_languages
+        )
+
+        input_data = {
+            "tool_name": "Edit",
+            "tool_input": {
+                "file_path": "/tmp/pr-review-helper.py",
+                "old_string": "",
+                "new_string": "",
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "override_result" in result
+        assert "PR code review phase may only write" in result["override_result"]["content"]
 
     @pytest.mark.asyncio
     async def test_blocks_empty_file_path_writes_in_pr_code_review(self, tracker, console):

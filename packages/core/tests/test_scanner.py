@@ -945,6 +945,46 @@ class TestScannerExecutionMode:
         assert os.environ.get("RESUME_FROM_SUBAGENT") == "legacy-resume"
         assert os.environ.get("SKIP_SUBAGENTS") == "legacy-skip"
 
+    def test_build_scan_execution_mode_context_encodes_authoritative_values(self, scanner):
+        """Execution mode context should include explicit run/resume/skip fields."""
+        scanner.configure_dast("http://localhost:3000", timeout=90, accounts_path="accounts.json")
+        context = scanner._build_scan_execution_mode_context(
+            single_subagent="code-review",
+            resume_from="assessment",
+            skip_subagents=["assessment", "threat-modeling"],
+            dast_enabled_for_run=True,
+        )
+        assert "<scan_execution_mode>" in context
+        assert "run_only_subagent=code-review" in context
+        assert "resume_from_subagent=assessment" in context
+        assert "skip_subagents=assessment,threat-modeling" in context
+        assert "dast_enabled=true" in context
+        assert "dast_timeout_seconds=90" in context
+
+    def test_require_repo_scoped_path_returns_candidate_inside_repo(self, scanner, tmp_path):
+        """Repo-scoped path helper should allow paths under repository root."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        safe_path = repo / ".securevibes" / "scan_results.json"
+        selected = scanner._require_repo_scoped_path(
+            repo,
+            safe_path,
+            operation="test artifact write",
+        )
+        assert selected == safe_path
+
+    def test_require_repo_scoped_path_rejects_outside_repo(self, scanner, tmp_path):
+        """Repo-scoped path helper should block paths outside repository root."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        outside = tmp_path / "outside.json"
+        with pytest.raises(RuntimeError, match="outside repository root"):
+            scanner._require_repo_scoped_path(
+                repo,
+                outside,
+                operation="test artifact write",
+            )
+
 
 class TestScannerCostIsolation:
     """Test per-invocation cost isolation on reused Scanner instances."""

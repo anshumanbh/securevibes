@@ -18,14 +18,7 @@ except ImportError:  # pragma: no cover
 
 
 def load_scan_state(state_path: Path) -> Optional[Dict[str, object]]:
-    """Load scan state from disk.
-
-    Args:
-        state_path: Path to scan_state.json.
-
-    Returns:
-        Parsed state dict or None if missing/invalid.
-    """
+    """Load scan state from disk, returning None when missing or invalid."""
     if not state_path.exists():
         return None
 
@@ -46,16 +39,7 @@ def update_scan_state(
     full_scan: Optional[Mapping[str, object]] = None,
     pr_review: Optional[Mapping[str, object]] = None,
 ) -> Dict[str, object]:
-    """Update scan state on disk with new entries.
-
-    Args:
-        state_path: Path to scan_state.json.
-        full_scan: Optional last_full_scan entry.
-        pr_review: Optional last_pr_review entry.
-
-    Returns:
-        Updated state dict.
-    """
+    """Atomically update scan state with optional full-scan/PR-review entries."""
     state_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = state_path.with_name(f".{state_path.name}.lock")
     with _file_lock(lock_path):
@@ -72,32 +56,14 @@ def update_scan_state(
 
 
 def build_full_scan_entry(*, commit: str, branch: str, timestamp: str) -> Dict[str, object]:
-    """Build a last_full_scan entry.
-
-    Args:
-        commit: Commit hash of the full scan.
-        branch: Branch name used for the scan.
-        timestamp: ISO timestamp.
-
-    Returns:
-        Dict with full scan metadata.
-    """
+    """Build metadata for a completed full scan."""
     return {"commit": commit, "timestamp": timestamp, "branch": branch}
 
 
 def build_pr_review_entry(
     *, commit: str, commits_reviewed: list[str], timestamp: str
 ) -> Dict[str, object]:
-    """Build a last_pr_review entry.
-
-    Args:
-        commit: Commit hash of the PR review (HEAD).
-        commits_reviewed: List of commits reviewed.
-        timestamp: ISO timestamp.
-
-    Returns:
-        Dict with PR review metadata.
-    """
+    """Build metadata for a completed PR review."""
     return {
         "commit": commit,
         "timestamp": timestamp,

@@ -165,14 +165,25 @@ class TestGitHelpers:
     """Tests for git command helper wrappers."""
 
     def test_git_pull_raises_runtime_error_on_failure(self, monkeypatch):
+        observed = {}
+
         class DummyResult:
             returncode = 1
             stderr = "fatal: no such remote"
 
-        monkeypatch.setattr("securevibes.cli.main.subprocess.run", lambda *_a, **_k: DummyResult())
+        def fake_run(cmd, **_kwargs):
+            observed["cmd"] = cmd
+            return DummyResult()
+
+        monkeypatch.setattr("securevibes.cli.main.subprocess.run", fake_run)
 
         with pytest.raises(RuntimeError, match="no such remote"):
             _git_pull(Path("."), "main")
+        assert observed["cmd"] == ["git", "pull", "origin", "--", "main"]
+
+    def test_git_pull_rejects_option_style_branch_name(self):
+        with pytest.raises(ValueError, match="option-style refs are not allowed"):
+            _git_pull(Path("."), "--upload-pack=malicious")
 
     def test_repo_has_local_changes_returns_true_for_dirty_worktree(self, monkeypatch):
         class DummyResult:

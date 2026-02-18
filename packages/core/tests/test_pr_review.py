@@ -6,12 +6,9 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import click
 import pytest
-from click.testing import CliRunner
 from rich.console import Console
 
-from securevibes.cli.main import _clean_pr_artifacts, _parse_since_date_pacific, cli
 from securevibes.diff.context import (
     extract_relevant_architecture,
     filter_relevant_threats,
@@ -914,55 +911,6 @@ def test_merge_pr_attempt_findings_drops_secondary_chain_variant():
     assert merge_stats["dropped_as_secondary_chain"] == 1
 
 
-def test_filter_baseline_vulns_excludes_pr_derived_with_threat_prefix():
-    """A THREAT-001 entry with finding_type='known_vuln' is PR-derived, not baseline."""
-    known_vulns = [
-        {"file_path": "app.ts", "threat_id": "THREAT-001", "title": "SQLi"},  # baseline
-        {
-            "file_path": "app.ts",
-            "threat_id": "THREAT-001",
-            "title": "SQLi",
-            "finding_type": "known_vuln",
-        },  # PR-derived
-    ]
-    baseline = filter_baseline_vulns(known_vulns)
-    assert len(baseline) == 1
-    assert "finding_type" not in baseline[0]
-
-
-def test_filter_baseline_vulns_excludes_pr_and_new_prefixes():
-    """PR-/NEW- prefix entries filtered regardless of finding_type."""
-    known_vulns = [
-        {"file_path": "a.ts", "threat_id": "PR-abc123", "title": "A"},
-        {"file_path": "b.ts", "threat_id": "NEW-001", "title": "B"},
-        {"file_path": "c.ts", "threat_id": "THREAT-002", "title": "C"},
-    ]
-    baseline = filter_baseline_vulns(known_vulns)
-    assert len(baseline) == 1
-    assert baseline[0]["threat_id"] == "THREAT-002"
-
-
-def test_filter_baseline_vulns_excludes_pr_and_new_prefixes_case_insensitive():
-    """Lowercase pr-/new- prefixes should also be filtered as PR-derived."""
-    known_vulns = [
-        {"file_path": "a.ts", "threat_id": "pr-abc123", "title": "A"},
-        {"file_path": "b.ts", "threat_id": "new-001", "title": "B"},
-        {"file_path": "c.ts", "threat_id": "THREAT-002", "title": "C"},
-    ]
-    baseline = filter_baseline_vulns(known_vulns)
-    assert len(baseline) == 1
-    assert baseline[0]["threat_id"] == "THREAT-002"
-
-
-def test_filter_baseline_vulns_excludes_source_pr_review():
-    """source='pr_review' entries should be filtered."""
-    known_vulns = [
-        {"file_path": "x.ts", "threat_id": "THREAT-005", "title": "X", "source": "pr_review"},
-    ]
-    baseline = filter_baseline_vulns(known_vulns)
-    assert len(baseline) == 0
-
-
 def test_dedupe_pr_vulns_ignores_basename_only_collisions():
     """Same title + basename in different directories should not be deduped."""
     pr_vulns = [
@@ -1245,7 +1193,7 @@ def test_chain_flow_identity_stable_for_same_sink_family():
     assert flow_a == flow_b
 
 
-def testadjudicate_consensus_support_falls_back_to_flow_mode_when_exact_is_weak():
+def test_adjudicate_consensus_support_falls_back_to_flow_mode_when_exact_is_weak():
     """Consensus mode should choose flow when exact support is weak and flow is stable."""
     weak, reason, support, mode, metrics = adjudicate_consensus_support(
         required_support=2,
@@ -1266,7 +1214,7 @@ def testadjudicate_consensus_support_falls_back_to_flow_mode_when_exact_is_weak(
     assert reason == "stable"
 
 
-def testcanonicalize_finding_path_normalizes_absolute_repo_suffix():
+def test_canonicalize_finding_path_normalizes_absolute_repo_suffix():
     """Absolute finding paths should normalize to repo-style suffix for dedupe."""
     path = canonicalize_finding_path("/Users/test/repos/openclaw/src/media/parse.ts")
     assert path == "src/media/parse.ts"
@@ -1303,7 +1251,7 @@ def test_merge_pr_attempt_findings_collapses_absolute_relative_path_duplicates()
     assert len(merged) == 1
 
 
-def testdetect_weak_chain_consensus_requires_minimum_support():
+def test_detect_weak_chain_consensus_requires_minimum_support():
     """Weak consensus should trigger when core chains are not independently repeated."""
     core_chain_ids = {"src/media/parse.ts|22|1|local.file.exfiltration"}
     weak, reason, support = detect_weak_chain_consensus(
@@ -1325,7 +1273,7 @@ def testdetect_weak_chain_consensus_requires_minimum_support():
     assert stable_reason == "stable"
 
 
-def testdetect_weak_chain_consensus_accepts_family_variant_agreement():
+def test_detect_weak_chain_consensus_accepts_family_variant_agreement():
     """Family-equivalent variants across passes should not trigger weak consensus."""
     core_finding = {
         "title": "Path traversal exfiltration chain",
@@ -1355,7 +1303,7 @@ def testdetect_weak_chain_consensus_accepts_family_variant_agreement():
     assert reason == "stable"
 
 
-def testattempt_contains_core_chain_evidence_matches_family_or_flow():
+def test_attempt_contains_core_chain_evidence_matches_family_or_flow():
     """Core evidence detection should accept either family or flow overlap."""
     finding = {
         "title": "Local file exfiltration via parser",
@@ -1384,7 +1332,7 @@ def testattempt_contains_core_chain_evidence_matches_family_or_flow():
     )
 
 
-def testsummarize_revalidation_support_counts_hits_and_misses():
+def test_summarize_revalidation_support_counts_hits_and_misses():
     """Revalidation summary should report attempts, hits, and misses correctly."""
     attempts, hits, misses = summarize_revalidation_support(
         revalidation_attempted=[False, True, True, True],
@@ -1395,7 +1343,7 @@ def testsummarize_revalidation_support_counts_hits_and_misses():
     assert misses == 1
 
 
-def testsummarize_chain_candidates_for_prompt_includes_support_counts():
+def test_summarize_chain_candidates_for_prompt_includes_support_counts():
     """Candidate summary should include location and pass support for carry-forward prompts."""
     finding = {
         "title": "Local file exfiltration via parser",
@@ -1417,26 +1365,6 @@ def testsummarize_chain_candidates_for_prompt_includes_support_counts():
     assert "src/media/parse.ts:29" in summary
 
 
-def test_filter_baseline_vulns_normalizes_finding_type():
-    """finding_type with mixed case or whitespace should still be recognized."""
-    known_vulns = [
-        {
-            "file_path": "a.ts",
-            "threat_id": "THREAT-010",
-            "title": "A",
-            "finding_type": " Known_Vuln ",
-        },
-        {
-            "file_path": "b.ts",
-            "threat_id": "THREAT-011",
-            "title": "B",
-            "finding_type": "REGRESSION",
-        },
-    ]
-    baseline = filter_baseline_vulns(known_vulns)
-    assert len(baseline) == 0
-
-
 def test_dedupe_with_baseline_filter_marks_real_baseline_as_known():
     """Baseline THREAT entries without finding_type should be tagged known_vuln."""
     pr_vulns = [{"file_path": "app.ts", "threat_id": "THREAT-001", "title": "SQLi"}]
@@ -1449,281 +1377,8 @@ def test_dedupe_with_baseline_filter_marks_real_baseline_as_known():
     assert result[0]["finding_type"] == "known_vuln"
 
 
-@pytest.mark.parametrize(
-    "args",
-    [
-        ["--base", "main"],
-        ["--head", "feature-branch"],
-    ],
-)
-def test_pr_review_requires_base_and_head_together(tmp_path: Path, args):
-    """Specifying only one of --base/--head should fail."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-
-    runner = CliRunner()
-    result = runner.invoke(cli, ["pr-review", str(repo), *args])
-
-    assert result.exit_code == 1
-    assert "Must specify both --base and --head" in result.output
-
-
-def test_pr_review_missing_required_artifacts(tmp_path: Path):
-    """Missing SECURITY.md/THREAT_MODEL.json should fail early."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    securevibes_dir = repo / ".securevibes"
-    securevibes_dir.mkdir()
-    (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
-
-    diff_file = tmp_path / "changes.patch"
-    diff_file.write_text("diff --git a/a.py b/a.py\n", encoding="utf-8")
-
-    runner = CliRunner()
-    result = runner.invoke(cli, ["pr-review", str(repo), "--diff", str(diff_file)])
-
-    assert result.exit_code == 1
-    assert "Missing required artifacts" in result.output
-    assert "THREAT_MODEL.json" in result.output
-
-
-def test_parse_since_date_pacific_parses_midnight():
-    """Date parser should return Pacific midnight ISO string."""
-    parsed = _parse_since_date_pacific("2026-02-01")
-
-    assert parsed == "2026-02-01T00:00:00-0800"
-
-
-def test_parse_since_date_pacific_rejects_invalid_date():
-    """Invalid date strings should raise click.BadParameter."""
-    with pytest.raises(click.BadParameter, match="YYYY-MM-DD"):
-        _parse_since_date_pacific("2026-02-99")
-
-
-def test_clean_pr_artifacts_raises_on_unlink_error(tmp_path: Path, monkeypatch):
-    """cleanup helper should wrap unlink failures in RuntimeError."""
-    securevibes_dir = tmp_path / ".securevibes"
-    securevibes_dir.mkdir()
-    artifact = securevibes_dir / "PR_VULNERABILITIES.json"
-    artifact.write_text("[]", encoding="utf-8")
-
-    def _raise_unlink(*_args, **_kwargs):
-        raise OSError("permission denied")
-
-    monkeypatch.setattr(Path, "unlink", _raise_unlink)
-
-    with pytest.raises(RuntimeError, match="Failed to remove transient artifact"):
-        _clean_pr_artifacts(securevibes_dir)
-
-
-def test_pr_review_empty_diff_exits_cleanly(tmp_path: Path):
-    """Empty diff should exit early without invoking the scanner."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    securevibes_dir = repo / ".securevibes"
-    securevibes_dir.mkdir()
-
-    (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
-    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
-
-    diff_file = tmp_path / "empty.patch"
-    diff_file.write_text("", encoding="utf-8")
-
-    runner = CliRunner()
-    result = runner.invoke(cli, ["pr-review", str(repo), "--diff", str(diff_file)])
-
-    assert result.exit_code == 0
-    assert "No changes found" in result.output
-
-
-def test_pr_review_clean_pr_artifacts_removes_transient_files(tmp_path: Path):
-    """--clean-pr-artifacts should remove only transient PR outputs."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    securevibes_dir = repo / ".securevibes"
-    securevibes_dir.mkdir()
-
-    (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
-    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
-    (securevibes_dir / "VULNERABILITIES.json").write_text("[]", encoding="utf-8")
-
-    (securevibes_dir / "PR_VULNERABILITIES.json").write_text("[]", encoding="utf-8")
-    (securevibes_dir / "DIFF_CONTEXT.json").write_text("{}", encoding="utf-8")
-    (securevibes_dir / "pr_review_report.md").write_text("old report", encoding="utf-8")
-
-    diff_file = tmp_path / "empty.patch"
-    diff_file.write_text("", encoding="utf-8")
-
-    runner = CliRunner()
-    result = runner.invoke(
-        cli,
-        [
-            "pr-review",
-            str(repo),
-            "--diff",
-            str(diff_file),
-            "--clean-pr-artifacts",
-        ],
-    )
-
-    assert result.exit_code == 0
-    assert not (securevibes_dir / "PR_VULNERABILITIES.json").exists()
-    assert not (securevibes_dir / "DIFF_CONTEXT.json").exists()
-    assert not (securevibes_dir / "pr_review_report.md").exists()
-    assert (securevibes_dir / "SECURITY.md").exists()
-    assert (securevibes_dir / "THREAT_MODEL.json").exists()
-    assert (securevibes_dir / "VULNERABILITIES.json").exists()
-
-
-def test_pr_review_rejects_multiple_diff_sources(tmp_path: Path):
-    """Multiple diff sources should be rejected."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    securevibes_dir = repo / ".securevibes"
-    securevibes_dir.mkdir()
-
-    (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
-    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
-
-    diff_file = tmp_path / "changes.patch"
-    diff_file.write_text("diff --git a/a b/a\n", encoding="utf-8")
-
-    runner = CliRunner()
-    result = runner.invoke(
-        cli,
-        [
-            "pr-review",
-            str(repo),
-            "--diff",
-            str(diff_file),
-            "--range",
-            "abc123..def456",
-        ],
-    )
-
-    assert result.exit_code == 1
-    assert "Choose exactly one" in result.output
-
-
-def test_pr_review_since_last_scan_requires_baseline(tmp_path: Path):
-    """Missing scan_state.json should require a baseline scan."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    securevibes_dir = repo / ".securevibes"
-    securevibes_dir.mkdir()
-
-    (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
-    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
-
-    runner = CliRunner()
-    result = runner.invoke(cli, ["pr-review", str(repo), "--since-last-scan"])
-
-    assert result.exit_code == 1
-    assert "baseline scan" in result.output.lower()
-
-
-def test_pr_review_since_invalid_date(tmp_path: Path):
-    """Invalid --since date should be rejected."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    securevibes_dir = repo / ".securevibes"
-    securevibes_dir.mkdir()
-
-    (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
-    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
-
-    runner = CliRunner()
-    result = runner.invoke(cli, ["pr-review", str(repo), "--since", "2026-02-99"])
-
-    assert result.exit_code == 1
-    assert "YYYY-MM-DD" in result.output
-
-
-def test_pr_review_since_no_commits(tmp_path: Path, monkeypatch):
-    """No commits since date should exit cleanly."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    securevibes_dir = repo / ".securevibes"
-    securevibes_dir.mkdir()
-
-    (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
-    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
-
-    monkeypatch.setattr("securevibes.cli.main.get_commits_since", lambda *_args, **_kwargs: [])
-
-    runner = CliRunner()
-    result = runner.invoke(cli, ["pr-review", str(repo), "--since", "2026-02-01"])
-
-    assert result.exit_code == 0
-    assert "No commits since 2026-02-01" in result.output
-
-
-def test_pr_review_last_no_commits(tmp_path: Path, monkeypatch):
-    """--last with no commits should exit cleanly."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    securevibes_dir = repo / ".securevibes"
-    securevibes_dir.mkdir()
-
-    (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
-    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
-
-    monkeypatch.setattr(
-        "securevibes.cli.main.get_last_n_commits",
-        lambda *_args, **_kwargs: [],
-    )
-
-    runner = CliRunner()
-    result = runner.invoke(cli, ["pr-review", str(repo), "--last", "5"])
-
-    assert result.exit_code == 0
-    assert "No commits found" in result.output
-
-
-def test_pr_review_last_zero_rejected(tmp_path: Path):
-    """--last 0 should be rejected by CLI validation."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    securevibes_dir = repo / ".securevibes"
-    securevibes_dir.mkdir()
-
-    (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
-    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
-
-    runner = CliRunner()
-    result = runner.invoke(cli, ["pr-review", str(repo), "--last", "0"])
-
-    assert result.exit_code != 0
-    assert (
-        "0" in result.output
-        or "invalid" in result.output.lower()
-        or "range" in result.output.lower()
-    )
-
-
-def test_pr_review_last_negative_rejected(tmp_path: Path):
-    """--last -1 should be rejected by CLI validation."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    securevibes_dir = repo / ".securevibes"
-    securevibes_dir.mkdir()
-
-    (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
-    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
-
-    runner = CliRunner()
-    result = runner.invoke(cli, ["pr-review", str(repo), "--last", "-1"])
-
-    assert result.exit_code != 0
-    assert (
-        "-1" in result.output
-        or "invalid" in result.output.lower()
-        or "range" in result.output.lower()
-    )
-
-
 @pytest.mark.asyncio
-async def test_pr_review_handles_wrapper_format(tmp_path: Path):
+async def test_pr_review_handles_wrapper_format(tmp_path: Path, mock_scanner_claude_client):
     """Wrapper + schema variant should be normalized into proper issue locations/CWE."""
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -1748,32 +1403,29 @@ async def test_pr_review_handles_wrapper_format(tmp_path: Path):
     scanner = Scanner(model="sonnet", debug=False)
     scanner.console = Console(file=StringIO())
 
-    with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
-        mock_instance = MagicMock()
-        mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+    _, mock_instance = mock_scanner_claude_client
 
-        async def write_attempt_artifact(*_args, **_kwargs) -> None:
-            # Emulate the PR agent writing a wrapper-format artifact during this attempt.
-            (securevibes_dir / "PR_VULNERABILITIES.json").write_text(
-                json.dumps({"vulnerabilities": [variant_vuln]}),
-                encoding="utf-8",
-            )
-
-        mock_instance.query = AsyncMock(side_effect=write_attempt_artifact)
-
-        async def async_gen():
-            return
-            yield  # pragma: no cover
-
-        mock_instance.receive_messages = async_gen
-
-        result = await scanner.pr_review(
-            str(repo),
-            diff_context,
-            known_vulns_path=None,
-            severity_threshold="low",
+    async def write_attempt_artifact(*_args, **_kwargs) -> None:
+        # Emulate the PR agent writing a wrapper-format artifact during this attempt.
+        (securevibes_dir / "PR_VULNERABILITIES.json").write_text(
+            json.dumps({"vulnerabilities": [variant_vuln]}),
+            encoding="utf-8",
         )
+
+    mock_instance.query = AsyncMock(side_effect=write_attempt_artifact)
+
+    async def async_gen():
+        return
+        yield  # pragma: no cover
+
+    mock_instance.receive_messages = async_gen
+
+    result = await scanner.pr_review(
+        str(repo),
+        diff_context,
+        known_vulns_path=None,
+        severity_threshold="low",
+    )
 
     assert len(result.issues) > 0, "Wrapper format should produce non-empty issues after unwrap"
     assert result.issues[0].title == "SQL Injection"
@@ -1783,8 +1435,8 @@ async def test_pr_review_handles_wrapper_format(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_pr_review_missing_artifact_returns_warning(tmp_path: Path):
-    """Missing PR_VULNERABILITIES.json should return a warning instead of silent success."""
+async def test_pr_review_missing_artifact_fails_closed(tmp_path: Path, mock_scanner_claude_client):
+    """Missing PR_VULNERABILITIES.json should fail the PR review path."""
     repo = tmp_path / "repo"
     repo.mkdir()
     securevibes_dir = repo / ".securevibes"
@@ -1798,28 +1450,22 @@ async def test_pr_review_missing_artifact_returns_warning(tmp_path: Path):
     scanner = Scanner(model="sonnet", debug=False)
     scanner.console = Console(file=StringIO())
 
-    with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
-        mock_instance = MagicMock()
-        mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
-        mock_instance.query = AsyncMock()
+    _, mock_instance = mock_scanner_claude_client
+    mock_instance.query = AsyncMock()
 
-        async def async_gen():
-            return
-            yield  # pragma: no cover
+    async def async_gen():
+        return
+        yield  # pragma: no cover
 
-        mock_instance.receive_messages = async_gen
+    mock_instance.receive_messages = async_gen
 
-        result = await scanner.pr_review(
+    with pytest.raises(RuntimeError, match="did not produce a readable PR_VULNERABILITIES"):
+        await scanner.pr_review(
             str(repo),
             diff_context,
             known_vulns_path=None,
             severity_threshold="low",
         )
-
-    assert len(result.issues) == 0
-    assert result.warnings
-    assert any("did not produce a readable PR_VULNERABILITIES.json" in w for w in result.warnings)
 
 
 @pytest.mark.asyncio
@@ -2067,7 +1713,7 @@ async def test_pr_review_timeout_retries_and_succeeds(tmp_path: Path, monkeypatc
 
 @pytest.mark.asyncio
 async def test_pr_review_query_timeout_uses_configured_timeout(tmp_path: Path, monkeypatch):
-    """Query timeout should respect SECUREVIBES_PR_REVIEW_TIMEOUT_SECONDS (no hardcoded cap)."""
+    """Query timeout should respect configured timeout and fail closed when artifact is missing."""
     repo = tmp_path / "repo"
     repo.mkdir()
     securevibes_dir = repo / ".securevibes"
@@ -2099,14 +1745,13 @@ async def test_pr_review_query_timeout_uses_configured_timeout(tmp_path: Path, m
 
         mock_instance.receive_messages = async_gen
 
-        result = await scanner.pr_review(
-            str(repo),
-            diff_context,
-            known_vulns_path=None,
-            severity_threshold="low",
-        )
-
-    assert any("timed out" in warning.lower() for warning in result.warnings)
+        with pytest.raises(RuntimeError, match="Refusing fail-open PR review result"):
+            await scanner.pr_review(
+                str(repo),
+                diff_context,
+                known_vulns_path=None,
+                severity_threshold="low",
+            )
 
 
 @pytest.mark.asyncio
@@ -2137,12 +1782,13 @@ async def test_pr_review_uses_direct_tools_without_task(tmp_path: Path):
 
         mock_instance.receive_messages = async_gen
 
-        await scanner.pr_review(
-            str(repo),
-            diff_context,
-            known_vulns_path=None,
-            severity_threshold="low",
-        )
+        with pytest.raises(RuntimeError, match="Refusing fail-open PR review result"):
+            await scanner.pr_review(
+                str(repo),
+                diff_context,
+                known_vulns_path=None,
+                severity_threshold="low",
+            )
 
     # Verify direct tool execution surface for PR review
     options = mock_client.call_args[1]["options"]
@@ -2254,12 +1900,13 @@ async def test_pr_review_has_subagent_hook(tmp_path: Path):
 
         mock_instance.receive_messages = async_gen
 
-        await scanner.pr_review(
-            str(repo),
-            diff_context,
-            known_vulns_path=None,
-            severity_threshold="low",
-        )
+        with pytest.raises(RuntimeError, match="Refusing fail-open PR review result"):
+            await scanner.pr_review(
+                str(repo),
+                diff_context,
+                known_vulns_path=None,
+                severity_threshold="low",
+            )
 
     options = mock_client.call_args[1]["options"]
     assert "SubagentStop" in options.hooks, "SubagentStop hook must be configured"

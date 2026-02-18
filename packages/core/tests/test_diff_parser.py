@@ -7,6 +7,7 @@ import pytest
 from securevibes.diff.extractor import (
     get_diff_from_commits,
     get_diff_from_git_range,
+    validate_git_ref,
     _validate_git_ref,
     get_commits_after,
     get_commits_between,
@@ -121,6 +122,18 @@ def test_get_commits_since_parses_output(monkeypatch):
     assert commits == ["def456", "ghi789"]
 
 
+def test_get_commits_since_rejects_control_chars():
+    """since argument should reject newline/control char payloads."""
+    with pytest.raises(ValueError, match="control characters"):
+        get_commits_since(Path("."), "2026-02-01T00:00:00-0800\n--all")
+
+
+def test_get_commits_since_rejects_invalid_characters():
+    """since argument should reject unexpected characters."""
+    with pytest.raises(ValueError, match="invalid characters"):
+        get_commits_since(Path("."), "yesterday")
+
+
 def test_get_commits_after_parses_output(monkeypatch):
     """get_commits_after should parse git output into commit list."""
 
@@ -187,7 +200,7 @@ def test_get_diff_from_commit_list_empty_returns_empty():
 
 
 def test_get_diff_from_commit_list_with_commits(monkeypatch):
-    """Non-empty commit list should diff from parent of oldest to HEAD."""
+    """Non-empty commit list should diff from parent(oldest) to newest commit."""
     calls = []
 
     class ParentResult:
@@ -213,12 +226,12 @@ def test_get_diff_from_commit_list_with_commits(monkeypatch):
     assert "diff --git" in result
     # Should have called rev-parse for parent of oldest commit
     assert any("oldest_sha^" in str(c) for c in calls)
-    # Should have called diff with parent..HEAD
-    assert any("parent_sha..HEAD" in str(c) for c in calls)
+    # Should have called diff with parent..newest
+    assert any("parent_sha..newest_sha" in str(c) for c in calls)
 
 
 def test_get_diff_from_commit_list_root_commit(monkeypatch):
-    """Root commit (no parent) should use --root HEAD."""
+    """Root commit (no parent) should use --root with newest commit."""
     calls = []
 
     class NoParentResult:
@@ -242,9 +255,10 @@ def test_get_diff_from_commit_list_root_commit(monkeypatch):
     result = get_diff_from_commit_list(Path("/repo"), ["root_sha"])
 
     assert "diff --git" in result
-    # Should have called diff with --root HEAD
+    # Should have called diff with --root newest
     diff_calls = [c for c in calls if "diff" in c and "rev-parse" not in str(c)]
     assert any("--root" in c for c in diff_calls)
+    assert any("root_sha" in c for c in diff_calls)
 
 
 class TestGitRefValidation:
@@ -265,6 +279,7 @@ class TestGitRefValidation:
         ]
         for ref in valid_refs:
             _validate_git_ref(ref)  # Should not raise
+            validate_git_ref(ref)  # Public helper should also validate
 
     def test_valid_commit_ranges(self):
         """Valid commit ranges should pass validation."""

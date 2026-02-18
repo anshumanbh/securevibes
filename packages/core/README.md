@@ -172,6 +172,7 @@ export SECUREVIBES_PR_REVIEW_ATTEMPTS=5
 
 PR review fails closed if diff context would be truncated
 (more than 16 prioritized files or any hunk over 200 lines).
+PR review also fails closed when `PR_VULNERABILITIES.json` is not produced after retry attempts.
 Split large reviews with smaller `--range`, `--last`, or `--since` windows.
 
 PR review artifacts (written to `.securevibes/`):

@@ -23,6 +23,7 @@ from securevibes.scanner.pr_review_flow import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_finding(
     *,
     title: str = "SQL Injection in handler",
@@ -749,7 +750,9 @@ class TestRunAttemptLoop:
         assert state.attempts_run == 4
         assert state.attempt_focus_areas == ["command_option", "path_exfiltration"]
 
-    async def test_run_attempt_loop_processes_assistant_and_result_messages(self, single_attempt_ctx):
+    async def test_run_attempt_loop_processes_assistant_and_result_messages(
+        self, single_attempt_ctx
+    ):
         """Assistant text should be forwarded and ResultMessage cost should update scanner state."""
         scanner = _make_scanner()
         observed_texts: list[str] = []
@@ -795,7 +798,9 @@ class TestRunAttemptLoop:
         )
         state = PRReviewState()
 
-        with patch(f"{_MODULE}._load_pr_vulnerabilities_artifact", return_value=([], "not produced")):
+        with patch(
+            f"{_MODULE}._load_pr_vulnerabilities_artifact", return_value=([], "not produced")
+        ):
             await runner.run_attempt_loop(single_attempt_ctx, state)
 
         assert observed_texts == ["assistant evidence summary"]

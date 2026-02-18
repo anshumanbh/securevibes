@@ -31,7 +31,8 @@ _COMMAND_TOKEN_RE = re.compile(r"[a-z0-9._-]+")
 
 def _normalize_hook_path(file_path: object) -> str:
     """Normalize path-like values for robust hook path comparisons."""
-    return str(file_path or "").strip().replace("\\", "/")
+    normalized = str(file_path or "").strip().replace("\\", "/")
+    return normalized.replace("\x00", "")
 
 
 def _is_securevibes_artifact_path(file_path: object, artifact_name: str) -> bool:
@@ -517,14 +518,17 @@ def create_pre_tool_hook(
                         }
                     }
 
-        # Enforce DAST write restrictions: only allow writing DAST_VALIDATION.json or /tmp/*
-        if tool_name == "Write" and tracker.current_phase == "dast":
-            file_path = _normalize_hook_path(tool_input.get("file_path", ""))
+        # Enforce DAST artifact restrictions:
+        # only allow writing/editing DAST_VALIDATION.json or /tmp/*
+        if tool_name in {"Write", "Edit"} and tracker.current_phase == "dast":
+            file_path = _normalize_hook_path(
+                tool_input.get("file_path", "") or tool_input.get("path", "")
+            )
             if not file_path:
                 return {
                     "override_result": {
                         "content": (
-                            "DAST phase write rejected: file_path is required. "
+                            "DAST phase write/edit rejected: file_path is required. "
                             "DAST phase may only write .securevibes/DAST_VALIDATION.json or /tmp/*."
                         ),
                         "is_error": True,
@@ -544,22 +548,25 @@ def create_pre_tool_hook(
                     "override_result": {
                         "content": (
                             "DAST phase may only write .securevibes/DAST_VALIDATION.json or /tmp/*. "
-                            f"Blocked write to: {file_path}"
+                            f"Blocked {tool_name.lower()} to: {file_path}"
                         ),
                         "is_error": True,
                     }
                 }
 
-        # Enforce PR review write restrictions:
-        # only allow writing .securevibes/PR_VULNERABILITIES.json
-        if tool_name == "Write" and tracker.current_phase == "pr-code-review":
-            file_path = _normalize_hook_path(tool_input.get("file_path", ""))
+        # Enforce PR review artifact restrictions:
+        # only allow writing/editing .securevibes/PR_VULNERABILITIES.json
+        if tool_name in {"Write", "Edit"} and tracker.current_phase == "pr-code-review":
+            file_path = _normalize_hook_path(
+                tool_input.get("file_path", "") or tool_input.get("path", "")
+            )
             if not file_path:
                 return {
                     "override_result": {
                         "content": (
-                            "Write rejected by SecureVibes PR review guard: file_path is required. "
-                            "PR code review phase may only write .securevibes/PR_VULNERABILITIES.json."
+                            "Write/Edit rejected by SecureVibes PR review guard: "
+                            "file_path is required. PR code review phase may only write "
+                            ".securevibes/PR_VULNERABILITIES.json."
                         ),
                         "is_error": True,
                     }
@@ -638,10 +645,10 @@ def create_pre_tool_hook(
                 return {
                     "override_result": {
                         "content": (
-                            "Write rejected by SecureVibes PR review guard. "
+                            "Write/Edit rejected by SecureVibes PR review guard. "
                             "PR code review phase may only write "
                             ".securevibes/PR_VULNERABILITIES.json. "
-                            f"Blocked write to: {file_path}"
+                            f"Blocked {tool_name.lower()} to: {file_path}"
                         ),
                         "is_error": True,
                     }
