@@ -1425,3 +1425,58 @@ class TestMergeDastResults:
             merged = scanner._merge_dast_results(result, tmp_path)
 
         assert merged is result
+
+
+class TestDerivePrDefaultGrepScope:
+    """Tests for _derive_pr_default_grep_scope."""
+
+    def _make_diff_context(self, changed_files):
+        from securevibes.diff.parser import DiffContext
+
+        return DiffContext(files=[], added_lines=0, removed_lines=0, changed_files=changed_files)
+
+    def test_root_level_files_return_dot(self):
+        """When all changed files are root-level (no subdirectories), return '.'."""
+        from securevibes.scanner.scanner import _derive_pr_default_grep_scope
+
+        ctx = self._make_diff_context(["README.md", "setup.py", "Makefile"])
+        assert _derive_pr_default_grep_scope(ctx) == "."
+
+    def test_src_files_return_src(self):
+        """When files are under src/, return 'src'."""
+        from securevibes.scanner.scanner import _derive_pr_default_grep_scope
+
+        ctx = self._make_diff_context(["src/app.py", "src/utils.py"])
+        assert _derive_pr_default_grep_scope(ctx) == "src"
+
+    def test_most_common_directory_returned(self):
+        """When no src/ and files in subdirectories, return the most common top-level dir."""
+        from securevibes.scanner.scanner import _derive_pr_default_grep_scope
+
+        ctx = self._make_diff_context(
+            ["lib/module.py", "lib/helper.py", "lib/utils.py", "tests/test_one.py"]
+        )
+        assert _derive_pr_default_grep_scope(ctx) == "lib"
+
+    def test_empty_changed_files_return_dot(self):
+        """When no changed files, return '.'."""
+        from securevibes.scanner.scanner import _derive_pr_default_grep_scope
+
+        ctx = self._make_diff_context([])
+        assert _derive_pr_default_grep_scope(ctx) == "."
+
+    def test_src_preferred_over_other_dirs(self):
+        """When src/ is among changed file directories, it is preferred even if not most common."""
+        from securevibes.scanner.scanner import _derive_pr_default_grep_scope
+
+        ctx = self._make_diff_context(["lib/a.py", "lib/b.py", "lib/c.py", "src/d.py"])
+        assert _derive_pr_default_grep_scope(ctx) == "src"
+
+    def test_mixed_root_and_subdir_files(self):
+        """Root-level files are ignored; subdirectory files determine scope."""
+        from securevibes.scanner.scanner import _derive_pr_default_grep_scope
+
+        ctx = self._make_diff_context(
+            ["README.md", "packages/core/app.py", "packages/core/tests/test.py"]
+        )
+        assert _derive_pr_default_grep_scope(ctx) == "packages"

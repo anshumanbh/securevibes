@@ -13,7 +13,6 @@ from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
 from claude_agent_sdk.types import (
     AssistantMessage,
     HookMatcher,
-    ToolUseBlock,
     TextBlock,
     ResultMessage,
 )
@@ -252,7 +251,7 @@ def _derive_pr_default_grep_scope(diff_context: DiffContext) -> str:
         dir_counts[top_level] = dir_counts.get(top_level, 0) + 1
 
     if not dir_counts:
-        return "src"
+        return "."
     if "src" in dir_counts:
         return "src"
     return sorted(dir_counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
@@ -1837,10 +1836,6 @@ Only report findings at or above: {severity_threshold}
                             if isinstance(block, TextBlock):
                                 # Show agent narration if in debug mode
                                 tracker.on_assistant_text(block.text)
-
-                            elif isinstance(block, ToolUseBlock):
-                                # Tool execution tracked via hooks
-                                pass
 
                     elif isinstance(message, ResultMessage):
                         # Track costs in real-time

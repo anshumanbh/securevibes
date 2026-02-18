@@ -32,7 +32,9 @@ _COMMAND_TOKEN_RE = re.compile(r"[a-z0-9._-]+")
 def _normalize_hook_path(file_path: object) -> str:
     """Normalize path-like values for robust hook path comparisons."""
     normalized = str(file_path or "").strip().replace("\\", "/")
-    return normalized.replace("\x00", "")
+    if "\x00" in normalized:
+        return ""
+    return normalized
 
 
 def _is_securevibes_artifact_path(file_path: object, artifact_name: str) -> bool:
@@ -183,24 +185,57 @@ def _is_repo_artifact_path(
         return False
 
 
-def _resolve_repo_candidate(repo_root: Path, candidate: object) -> Optional[Path]:
-    """Resolve a candidate path against repo_root."""
+def _resolve_repo_candidate(
+    repo_root: Path, candidate: object
+) -> tuple[Optional[Path], Optional[Path]]:
+    """Resolve a candidate path against repo_root.
+
+    Returns (resolved_path, unresolved_absolute_path) tuple.
+    """
     normalized_candidate = _normalize_hook_path(candidate)
     if not normalized_candidate:
-        return None
+        return None, None
 
     try:
         candidate_path = Path(normalized_candidate)
         if not candidate_path.is_absolute():
             candidate_path = repo_root / candidate_path
-        return candidate_path.resolve(strict=False)
+        return candidate_path.resolve(strict=False), candidate_path
     except (OSError, RuntimeError, ValueError, TypeError):
-        return None
+        return None, None
 
 
-def _is_inside_repo(repo_root: Path, candidate: Optional[Path]) -> bool:
-    """Return True when candidate resolves inside repository root."""
-    return bool(candidate and (candidate == repo_root or repo_root in candidate.parents))
+def _is_inside_repo(
+    repo_root: Path,
+    candidate: Optional[Path],
+    unresolved: Optional[Path] = None,
+) -> bool:
+    """Return True when candidate resolves inside repository root.
+
+    When *unresolved* is provided, also walks its components from repo_root
+    and rejects the path if any existing component is a symlink.
+    """
+    if not candidate:
+        return False
+    resolved_root = repo_root.resolve(strict=False)
+    if candidate != resolved_root and resolved_root not in candidate.parents:
+        return False
+    # Walk unresolved path components from repo root and reject symlinks.
+    check_path = unresolved if unresolved is not None else candidate
+    try:
+        rel_path = check_path.relative_to(resolved_root)
+    except ValueError:
+        # If unresolved path is not relative to resolved root, try against raw root.
+        try:
+            rel_path = check_path.relative_to(repo_root)
+        except ValueError:
+            return False
+    current = resolved_root
+    for part in rel_path.parts:
+        current = current / part
+        if current.exists() and current.is_symlink():
+            return False
+    return True
 
 
 _MAX_BLOCKED_PATHS = 100
@@ -344,9 +379,9 @@ def create_pre_tool_hook(
 
             if root_path:
                 blocked_candidate: Optional[Path] = None
-                resolved_path = _resolve_repo_candidate(root_path, path)
+                resolved_path, unresolved_path = _resolve_repo_candidate(root_path, path)
                 if path and resolved_path is not None:
-                    if not _is_inside_repo(root_path, resolved_path):
+                    if not _is_inside_repo(root_path, resolved_path, unresolved_path):
                         blocked_candidate = resolved_path
 
                 # Glob uses "patterns" instead of path/file_path; enforce guard for each pattern.
@@ -362,10 +397,12 @@ def create_pre_tool_hook(
                         glob_patterns = []
 
                     for pattern in glob_patterns:
-                        resolved_pattern = _resolve_repo_candidate(root_path, pattern)
+                        resolved_pattern, unresolved_pattern = _resolve_repo_candidate(
+                            root_path, pattern
+                        )
                         if resolved_pattern is None:
                             continue
-                        if not _is_inside_repo(root_path, resolved_pattern):
+                        if not _is_inside_repo(root_path, resolved_pattern, unresolved_pattern):
                             blocked_candidate = resolved_pattern
                             break
 
@@ -511,8 +548,12 @@ def create_pre_tool_hook(
         ):
             file_path = _normalize_hook_path(tool_input.get("file_path", ""))
             if file_path:
-                resolved_candidate = _resolve_repo_candidate(root_path, file_path)
-                if resolved_candidate and not _is_inside_repo(root_path, resolved_candidate):
+                resolved_candidate, unresolved_candidate = _resolve_repo_candidate(
+                    root_path, file_path
+                )
+                if resolved_candidate and not _is_inside_repo(
+                    root_path, resolved_candidate, unresolved_candidate
+                ):
                     _record_blocked_path(pr_tool_guard_observer, resolved_candidate)
                     return {
                         "hookSpecificOutput": {

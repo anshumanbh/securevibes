@@ -27,17 +27,6 @@ from securevibes.scanner.chain_analysis import (
     infer_chain_sink_family,
 )
 
-_PR_FINDING_TYPES = frozenset(
-    {
-        "new_threat",
-        "threat_enabler",
-        "mitigation_removal",
-        "known_vuln",
-        "regression",
-        "unknown",
-    }
-)
-
 EXPLOIT_PRIMITIVE_TERMS = (
     "option injection",
     "argument injection",
@@ -676,7 +665,9 @@ def _entry_quality(
             chain_identity, 0
         )
     contradiction_penalty = (
-        max(total_attempts - chain_support, 0) if total_attempts > 0 and chain_support > 0 else 0
+        max(total_attempts - chain_support, 0)
+        if total_attempts > 0 and chain_support_counts is not None
+        else 0
     )
     proof = _proof_score(entry)
     speculation = _speculation_penalty(entry)

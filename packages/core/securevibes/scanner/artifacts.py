@@ -10,6 +10,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from securevibes.scanner.chain_analysis import coerce_line_number
+
 
 @dataclass
 class ArtifactUpdateResult:
@@ -155,7 +157,7 @@ def _vuln_key(vuln: Mapping[str, object]) -> tuple[str, str, int, str]:
     file_path = str(vuln.get("file_path", ""))
     title = str(vuln.get("title", ""))
     severity = str(vuln.get("severity", ""))
-    line_number = _coerce_int(vuln.get("line_number"))
+    line_number = coerce_line_number(vuln.get("line_number"))
     return (file_path, title, line_number, severity)
 
 
@@ -173,13 +175,6 @@ def _append_vulnerability_if_new(
     vulnerabilities.append(entry)
     existing_vuln_keys.add(key)
     return True
-
-
-def _coerce_int(value: object) -> int:
-    try:
-        return int(value) if value is not None else 0
-    except (TypeError, ValueError):
-        return 0
 
 
 def _detect_new_components(pr_vulns: list[Mapping[str, object]], threats: list[object]) -> bool:

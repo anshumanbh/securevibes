@@ -9,6 +9,7 @@ import pytest
 from rich.console import Console
 
 from securevibes.scanner.hooks import (
+    _is_inside_repo,
     _is_within_tmp_dir,
     _MAX_BLOCKED_PATHS,
     _normalize_hook_path,
@@ -47,10 +48,32 @@ def test_record_blocked_path_none_observer_is_noop():
     _record_blocked_path(None, "/path")  # should not raise
 
 
-def test_normalize_hook_path_strips_null_bytes():
-    """Null bytes should be stripped from hook path normalization."""
-    normalized = _normalize_hook_path("src/app.py\x00trailing")
-    assert normalized == "src/app.pytrailing"
+def test_normalize_hook_path_rejects_null_bytes():
+    """Paths with null bytes should be rejected (return empty string)."""
+    assert _normalize_hook_path("src/app.py\x00trailing") == ""
+
+
+def test_normalize_hook_path_rejects_embedded_null_byte():
+    """Embedded null bytes anywhere in the path should cause rejection."""
+    assert _normalize_hook_path("src/\x00app.py") == ""
+
+
+def test_normalize_hook_path_rejects_leading_null_byte():
+    """Leading null byte should cause rejection."""
+    assert _normalize_hook_path("\x00src/app.py") == ""
+
+
+def test_normalize_hook_path_normal_paths_unaffected():
+    """Normal paths without null bytes should be normalized correctly."""
+    assert _normalize_hook_path("src/app.py") == "src/app.py"
+    assert _normalize_hook_path("src\\app.py") == "src/app.py"
+    assert _normalize_hook_path("  src/app.py  ") == "src/app.py"
+
+
+def test_normalize_hook_path_empty_and_none():
+    """Empty and None inputs should return empty string."""
+    assert _normalize_hook_path("") == ""
+    assert _normalize_hook_path(None) == ""
 
 
 def test_is_within_tmp_dir_rejects_existing_symlink_escape(tmp_path):
@@ -72,6 +95,110 @@ def test_is_within_tmp_dir_rejects_existing_symlink_escape(tmp_path):
         assert _is_within_tmp_dir(str(symlink_path / "payload.json")) is False
     finally:
         symlink_path.unlink(missing_ok=True)
+
+
+class TestIsInsideRepo:
+    """Tests for _is_inside_repo symlink-aware boundary checks."""
+
+    def test_normal_path_inside_repo_accepted(self, tmp_path):
+        """Normal path inside repo root should be accepted."""
+        repo_root = tmp_path / "repo"
+        src_dir = repo_root / "src"
+        src_dir.mkdir(parents=True)
+        unresolved = repo_root / "src" / "app.py"
+        candidate = unresolved.resolve(strict=False)
+        assert _is_inside_repo(repo_root, candidate, unresolved) is True
+
+    def test_repo_root_itself_accepted(self, tmp_path):
+        """The repo root path itself should be accepted."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir(parents=True)
+        assert _is_inside_repo(repo_root, repo_root.resolve(strict=False)) is True
+
+    def test_path_outside_repo_rejected(self, tmp_path):
+        """Path outside repo root should be rejected."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir(parents=True)
+        outside = (tmp_path / "outside" / "file.py").resolve(strict=False)
+        assert _is_inside_repo(repo_root, outside) is False
+
+    def test_none_candidate_rejected(self, tmp_path):
+        """None candidate should be rejected."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir(parents=True)
+        assert _is_inside_repo(repo_root, None) is False
+
+    def test_symlink_component_inside_repo_pointing_inside_rejected(self, tmp_path):
+        """A symlink inside the repo pointing to another repo dir should be rejected."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir(parents=True)
+        real_dir = repo_root / "real_dir"
+        real_dir.mkdir()
+
+        symlink_path = repo_root / "sneaky_link"
+        try:
+            symlink_path.symlink_to(real_dir, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("Symlink creation is not supported on this platform")
+
+        # Resolved path looks inside repo (real_dir/file.py), but unresolved
+        # path traverses a symlink component (sneaky_link/file.py)
+        unresolved = symlink_path / "file.py"
+        resolved = unresolved.resolve(strict=False)
+        assert _is_inside_repo(repo_root, resolved, unresolved) is False
+
+    def test_symlink_component_pointing_outside_rejected(self, tmp_path):
+        """A symlink inside the repo pointing outside should be rejected."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir(parents=True)
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+
+        symlink_path = repo_root / "escape_link"
+        try:
+            symlink_path.symlink_to(outside_dir, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("Symlink creation is not supported on this platform")
+
+        unresolved = symlink_path / "secret.txt"
+        resolved = unresolved.resolve(strict=False)
+        # Resolved path is outside repo, caught by parent check AND symlink walk
+        assert _is_inside_repo(repo_root, resolved, unresolved) is False
+
+    def test_deeply_nested_symlink_in_repo_rejected(self, tmp_path):
+        """A symlink deep inside the repo tree should be rejected."""
+        repo_root = tmp_path / "repo"
+        nested = repo_root / "a" / "b"
+        nested.mkdir(parents=True)
+        real_target = repo_root / "real"
+        real_target.mkdir()
+
+        symlink = nested / "link"
+        try:
+            symlink.symlink_to(real_target, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("Symlink creation is not supported on this platform")
+
+        unresolved = symlink / "file.py"
+        resolved = unresolved.resolve(strict=False)
+        assert _is_inside_repo(repo_root, resolved, unresolved) is False
+
+    def test_non_symlink_nested_path_accepted(self, tmp_path):
+        """A deeply nested path with no symlinks should be accepted."""
+        repo_root = tmp_path / "repo"
+        nested = repo_root / "a" / "b" / "c"
+        nested.mkdir(parents=True)
+        unresolved = nested / "file.py"
+        candidate = unresolved.resolve(strict=False)
+        assert _is_inside_repo(repo_root, candidate, unresolved) is True
+
+    def test_without_unresolved_falls_back_to_resolved_walk(self, tmp_path):
+        """When unresolved is not provided, walks resolved path (backward compat)."""
+        repo_root = tmp_path / "repo"
+        src_dir = repo_root / "src"
+        src_dir.mkdir(parents=True)
+        candidate = (repo_root / "src" / "app.py").resolve(strict=False)
+        assert _is_inside_repo(repo_root, candidate) is True
 
 
 @pytest.mark.parametrize(

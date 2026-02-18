@@ -442,6 +442,43 @@ class TestFixPrVulnerabilitiesJson:
         assert modified is True
         assert json.loads(fixed) == [valid_pr_vuln]
 
+    def test_code_fenced_pr_vulns_with_nonstandard_fields_get_normalized(self):
+        """Code-fence-stripped arrays with non-standard field names must be normalized."""
+        vuln_with_aliases = {
+            "id": "NEW-001",
+            "title": "Gateway URL injection",
+            "description": "Test description",
+            "severity": "high",
+            "file_path": "ui/app.ts",
+            "line_numbers": [10, 11],
+            "code_snippet": "const gatewayUrl = params.get('gatewayUrl')",
+            "attack_scenario": "Attacker controls gatewayUrl",
+            "evidence": "Token sent to attacker",
+            "vulnerability_types": ["CWE-918: SSRF"],
+            "recommendation": "Validate URL input",
+        }
+        content = f"```json\n{json.dumps([vuln_with_aliases])}\n```"
+
+        fixed, modified = fix_pr_vulnerabilities_json(content)
+
+        assert modified is True
+        parsed = json.loads(fixed)
+        assert len(parsed) == 1
+        normalized = parsed[0]
+        # Field aliases should have been normalized
+        assert normalized["threat_id"] == "NEW-001"
+        assert normalized["line_number"] == 10
+        assert normalized["cwe_id"] == "CWE-918"
+
+    def test_already_correct_flat_array_not_modified(self, valid_pr_vuln):
+        """Already-correct flat arrays should not be flagged as modified."""
+        content = json.dumps([valid_pr_vuln])
+
+        fixed, modified = fix_pr_vulnerabilities_json(content)
+
+        assert modified is False
+        assert json.loads(fixed) == [valid_pr_vuln]
+
 
 class TestFixThreatModelJson:
     """Tests for fix_threat_model_json() auto-fix function."""
@@ -483,30 +520,18 @@ class TestValidatePrVulnerabilitiesJson:
         assert is_valid is False
         assert "attack_scenario" in error
 
-    def test_empty_file_path_fails_validation(self, valid_pr_vuln):
-        """Empty file_path should fail validation."""
-        valid_pr_vuln["file_path"] = ""
-        content = json.dumps([valid_pr_vuln])
-
-        is_valid, error = validate_pr_vulnerabilities_json(content)
-
-        assert is_valid is False
-        assert "empty required evidence fields" in error
-        assert "file_path" in error
-
-    def test_empty_code_snippet_fails_validation(self, valid_pr_vuln):
-        """Empty code_snippet should fail validation."""
+    def test_empty_code_snippet_accepted(self, valid_pr_vuln):
+        """Empty code_snippet should be accepted (normalizer may produce it)."""
         valid_pr_vuln["code_snippet"] = ""
         content = json.dumps([valid_pr_vuln])
 
         is_valid, error = validate_pr_vulnerabilities_json(content)
 
-        assert is_valid is False
-        assert "empty required evidence fields" in error
-        assert "code_snippet" in error
+        assert is_valid is True
+        assert error is None
 
     def test_empty_evidence_fails_validation(self, valid_pr_vuln):
-        """Empty evidence should fail validation."""
+        """Empty evidence should fail validation (truly required)."""
         valid_pr_vuln["evidence"] = ""
         content = json.dumps([valid_pr_vuln])
 
@@ -516,27 +541,46 @@ class TestValidatePrVulnerabilitiesJson:
         assert "empty required evidence fields" in error
         assert "evidence" in error
 
-    def test_empty_cwe_id_fails_validation(self, valid_pr_vuln):
-        """Empty cwe_id should fail validation."""
+    def test_empty_cwe_id_accepted(self, valid_pr_vuln):
+        """Empty cwe_id should be accepted (normalizer may produce it)."""
         valid_pr_vuln["cwe_id"] = ""
         content = json.dumps([valid_pr_vuln])
 
         is_valid, error = validate_pr_vulnerabilities_json(content)
 
-        assert is_valid is False
-        assert "empty required evidence fields" in error
-        assert "cwe_id" in error
+        assert is_valid is True
+        assert error is None
 
-    def test_zero_line_number_fails_validation(self, valid_pr_vuln):
-        """line_number must be a positive integer."""
+    def test_zero_line_number_accepted(self, valid_pr_vuln):
+        """line_number=0 should be accepted (normalizer may produce it)."""
         valid_pr_vuln["line_number"] = 0
+        content = json.dumps([valid_pr_vuln])
+
+        is_valid, error = validate_pr_vulnerabilities_json(content)
+
+        assert is_valid is True
+        assert error is None
+
+    def test_negative_line_number_fails_validation(self, valid_pr_vuln):
+        """Negative line_number should still fail validation."""
+        valid_pr_vuln["line_number"] = -1
         content = json.dumps([valid_pr_vuln])
 
         is_valid, error = validate_pr_vulnerabilities_json(content)
 
         assert is_valid is False
         assert "invalid line_number" in error
-        assert "must be >= 1" in error
+
+    def test_empty_file_path_still_fails_validation(self, valid_pr_vuln):
+        """Empty file_path should still fail (truly required)."""
+        valid_pr_vuln["file_path"] = ""
+        content = json.dumps([valid_pr_vuln])
+
+        is_valid, error = validate_pr_vulnerabilities_json(content)
+
+        assert is_valid is False
+        assert "empty required evidence fields" in error
+        assert "file_path" in error
 
     def test_whitespace_only_evidence_fails_validation(self, valid_pr_vuln):
         """Whitespace-only evidence should fail validation."""

@@ -1304,6 +1304,59 @@ class TestEntryQuality:
         quality = _entry_quality({"title": "x"}, total_attempts=3)
         assert quality.contradiction_penalty == 0
 
+    def test_zero_chain_support_gets_max_contradiction_penalty(self):
+        """Findings with chain_support=0 and total_attempts>0 should get maximum penalty."""
+        entry = {"title": "x", "severity": "high", "cwe_id": "CWE-88", "file_path": "a.py"}
+        # Provide chain_support_counts but the finding has no match -> chain_support=0
+        quality = _entry_quality(
+            entry,
+            chain_support_counts={"unrelated_chain": 3},
+            total_attempts=3,
+        )
+        # contradiction_penalty should be -(3 - 0) = -3
+        assert quality.contradiction_penalty == -3
+
+    def test_partial_chain_support_gets_partial_penalty(self):
+        """Findings with chain_support=2 and total_attempts=3 get penalty=-1."""
+        entry = {"title": "x", "severity": "high", "cwe_id": "CWE-88", "file_path": "a.py"}
+        from securevibes.scanner.chain_analysis import build_chain_family_identity
+
+        family_id = build_chain_family_identity(entry)
+        quality = _entry_quality(
+            entry,
+            chain_support_counts={family_id: 2},
+            total_attempts=3,
+        )
+        # contradiction_penalty = -(3 - 2) = -1
+        assert quality.contradiction_penalty == -1
+
+    def test_full_chain_support_gets_no_penalty(self):
+        """Findings with chain_support=total_attempts get no contradiction penalty."""
+        entry = {"title": "x", "severity": "high", "cwe_id": "CWE-88", "file_path": "a.py"}
+        from securevibes.scanner.chain_analysis import build_chain_family_identity
+
+        family_id = build_chain_family_identity(entry)
+        quality = _entry_quality(
+            entry,
+            chain_support_counts={family_id: 3},
+            total_attempts=3,
+        )
+        # contradiction_penalty = -(3 - 3) = 0
+        assert quality.contradiction_penalty == 0
+
+    def test_zero_total_attempts_always_zero_penalty(self):
+        """With total_attempts=0, contradiction_penalty is always 0 regardless of support."""
+        entry = {"title": "x", "severity": "high", "cwe_id": "CWE-88", "file_path": "a.py"}
+        from securevibes.scanner.chain_analysis import build_chain_family_identity
+
+        family_id = build_chain_family_identity(entry)
+        quality = _entry_quality(
+            entry,
+            chain_support_counts={family_id: 0},
+            total_attempts=0,
+        )
+        assert quality.contradiction_penalty == 0
+
     def test_evidence_length_capped_at_4000(self):
         entry = {"title": "x", "evidence": "a" * 5000}
         quality = _entry_quality(entry)

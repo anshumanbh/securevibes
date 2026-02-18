@@ -849,7 +849,7 @@ def test_attempt_contains_core_chain_evidence_empty_findings():
 
 
 def test_attempt_contains_core_chain_evidence_no_expectations():
-    """No expected ids means any non-empty attempt is considered evidence."""
+    """Empty expected sets means nothing was checked -- should return False."""
     finding = {
         "file_path": "src/app.py",
         "title": "something_special",
@@ -863,7 +863,35 @@ def test_attempt_contains_core_chain_evidence_no_expectations():
             expected_family_ids=set(),
             expected_flow_ids=set(),
         )
-        is True
+        is False
+    )
+
+
+def test_attempt_contains_core_chain_evidence_empty_expectations_with_findings():
+    """Even with multiple findings, empty expected sets should return False (vacuous)."""
+    findings = [
+        {
+            "file_path": "src/app.py",
+            "title": "injection_vuln",
+            "description": "",
+            "attack_scenario": "",
+            "evidence": "",
+        },
+        {
+            "file_path": "src/handler.py",
+            "title": "path_traversal",
+            "description": "",
+            "attack_scenario": "",
+            "evidence": "",
+        },
+    ]
+    assert (
+        attempt_contains_core_chain_evidence(
+            attempt_findings=findings,
+            expected_family_ids=set(),
+            expected_flow_ids=set(),
+        )
+        is False
     )
 
 

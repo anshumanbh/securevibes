@@ -396,7 +396,7 @@ def attempt_contains_core_chain_evidence(
     if not attempt_findings:
         return False
     if not expected_family_ids and not expected_flow_ids:
-        return True
+        return False
 
     attempt_family_ids = collect_chain_family_ids(attempt_findings)
     if expected_family_ids and attempt_family_ids.intersection(expected_family_ids):

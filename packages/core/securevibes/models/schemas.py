@@ -405,7 +405,7 @@ def fix_pr_vulnerabilities_json(content: str) -> Tuple[str, bool]:
         return json.dumps(normalized, indent=2), was_modified or normalized_modified
 
     # For flat arrays / already-parsed content, try to normalize in place.
-    if not was_modified and stripped.lstrip().startswith("["):
+    if stripped.lstrip().startswith("["):
         try:
             data = json.loads(stripped)
         except json.JSONDecodeError:
@@ -837,7 +837,7 @@ def validate_pr_vulnerabilities_json(content: str) -> Tuple[bool, Optional[str]]
         if finding_type not in valid_finding_types:
             return False, f"Item {i} has invalid finding_type: {vuln.get('finding_type')}"
 
-        evidence_fields = {"file_path", "code_snippet", "evidence", "cwe_id"}
+        evidence_fields = {"file_path", "evidence"}
         empty_fields = [field for field in evidence_fields if not str(vuln.get(field, "")).strip()]
         if empty_fields:
             return (
@@ -846,8 +846,8 @@ def validate_pr_vulnerabilities_json(content: str) -> Tuple[bool, Optional[str]]
             )
 
         line_number = vuln.get("line_number", 0)
-        if not isinstance(line_number, int) or line_number < 1:
-            return False, f"Item {i} has invalid line_number: {line_number} (must be >= 1)"
+        if not isinstance(line_number, int) or line_number < 0:
+            return False, f"Item {i} has invalid line_number: {line_number} (must be >= 0)"
 
     return True, None
 

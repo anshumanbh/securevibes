@@ -493,7 +493,7 @@ def test_derive_pr_default_grep_scope_ignores_non_repo_paths():
 
     scope = _derive_pr_default_grep_scope(context)
 
-    assert scope == "src"
+    assert scope == "."
 
 
 def test_dedupe_pr_vulns_tags_known_matches():

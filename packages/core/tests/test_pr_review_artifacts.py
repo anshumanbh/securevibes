@@ -429,10 +429,12 @@ def test_derive_components_from_file_path_covers_edge_cases():
     assert artifacts_module._derive_components_from_file_path("README") == []
 
 
-def test_coerce_int_returns_zero_for_non_numeric_values():
-    assert artifacts_module._coerce_int(None) == 0
-    assert artifacts_module._coerce_int("abc") == 0
-    assert artifacts_module._coerce_int(object()) == 0
+def test_coerce_line_number_returns_zero_for_non_numeric_values():
+    from securevibes.scanner.chain_analysis import coerce_line_number
+
+    assert coerce_line_number(None) == 0
+    assert coerce_line_number("abc") == 0
+    assert coerce_line_number(object()) == 0
 
 
 def test_detect_new_components_handles_non_mapping_and_empty_inputs():

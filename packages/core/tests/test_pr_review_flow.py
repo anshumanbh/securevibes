@@ -229,9 +229,9 @@ class TestRecordAttemptRevalidationObservability:
         )
 
         assert state.attempt_revalidation_attempted == [False]
-        # With no expected ids, core evidence is considered present
-        assert result is True
-        assert state.attempt_core_evidence_present == [True]
+        # With no expected ids, nothing was actually checked — no evidence confirmed
+        assert result is False
+        assert state.attempt_core_evidence_present == [False]
 
     def test_revalidation_with_matching_evidence(self):
         runner = _make_runner()
