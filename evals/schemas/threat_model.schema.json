@@ -1,0 +1,104 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SecureVibes Threat Model",
+  "description": "Schema for THREAT_MODEL.json output from SecureVibes",
+  "oneOf": [
+    {
+      "type": "array",
+      "items": {"$ref": "#/definitions/threat"}
+    },
+    {
+      "type": "object",
+      "properties": {
+        "threats": {
+          "type": "array",
+          "items": {"$ref": "#/definitions/threat"}
+        },
+        "metadata": {
+          "type": "object",
+          "properties": {
+            "application_name": {"type": "string"},
+            "scan_date": {"type": "string"},
+            "is_agentic": {"type": "boolean"}
+          }
+        }
+      },
+      "required": ["threats"]
+    }
+  ],
+  "definitions": {
+    "threat": {
+      "type": "object",
+      "required": ["threat_id", "title", "stride_category"],
+      "properties": {
+        "threat_id": {
+          "type": "string",
+          "description": "Unique identifier (THREAT-STRIDE-XXX or THREAT-ASIXX-XXX)",
+          "pattern": "^THREAT-(STRIDE|ASI\\d{2})-\\d{3}$"
+        },
+        "title": {
+          "type": "string",
+          "description": "Short threat title",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "description": "Detailed threat description"
+        },
+        "stride_category": {
+          "type": "string",
+          "enum": [
+            "Spoofing",
+            "Tampering", 
+            "Repudiation",
+            "Information Disclosure",
+            "Denial of Service",
+            "Elevation of Privilege",
+            "ASI01",
+            "ASI02",
+            "ASI03",
+            "ASI04",
+            "ASI05",
+            "ASI06",
+            "ASI07",
+            "ASI08",
+            "ASI09",
+            "ASI10"
+          ]
+        },
+        "affected_component": {
+          "type": "string",
+          "description": "Component affected by this threat"
+        },
+        "attack_vector": {
+          "type": "string",
+          "description": "How the attack would be carried out"
+        },
+        "impact": {
+          "type": "string",
+          "description": "Impact if the threat is realized"
+        },
+        "likelihood": {
+          "type": "string",
+          "enum": ["LOW", "MEDIUM", "HIGH"],
+          "description": "Likelihood of the threat"
+        },
+        "risk_score": {
+          "type": "string",
+          "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"],
+          "description": "Overall risk score"
+        },
+        "existing_controls": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Existing security controls"
+        },
+        "recommended_mitigations": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Recommended mitigations"
+        }
+      }
+    }
+  }
+}

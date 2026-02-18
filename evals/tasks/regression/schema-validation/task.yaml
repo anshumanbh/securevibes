@@ -1,0 +1,48 @@
+id: "regression-schema-001"
+name: "Output Schema Validation"
+description: |
+  Ensures all output artifacts conform to their expected JSON schemas.
+  This is a regression test that should always pass - any failure indicates
+  a breaking change in output format.
+  
+  Per Anthropic guide: "Regression evals ask 'does the agent still handle 
+  all the tasks it used to?' and should have a nearly 100% pass rate."
+
+category: "regression"
+tags: ["schema", "regression", "output-format"]
+
+fixture:
+  source: "vulnerable-flask-app"
+
+scanner_options:
+  model: "sonnet"
+
+expected_outcome:
+  artifacts_exist:
+    - ".securevibes/SECURITY.md"
+    - ".securevibes/THREAT_MODEL.json"
+    - ".securevibes/VULNERABILITIES.json"
+    - ".securevibes/scan_results.json"
+  
+  # Schema compliance is mandatory
+  schema_valid: true
+
+graders:
+  - type: artifact_exists
+    files:
+      - ".securevibes/SECURITY.md"
+      - ".securevibes/THREAT_MODEL.json"
+      - ".securevibes/VULNERABILITIES.json"
+      - ".securevibes/scan_results.json"
+  
+  - type: json_schema
+    file: ".securevibes/scan_results.json"
+    schema: "scan_results.schema.json"
+  
+  - type: json_schema
+    file: ".securevibes/THREAT_MODEL.json"
+    schema: "threat_model.schema.json"
+
+tracked_metrics:
+  - scan_time_seconds
+  - cost_usd

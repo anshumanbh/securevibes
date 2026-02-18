@@ -1,0 +1,21 @@
+# Eval results (can be large, regenerated on each run)
+results/*.json
+results/*.html
+
+# Don't ignore the .gitkeep
+!results/.gitkeep
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
