@@ -1,0 +1,172 @@
+"""Scan state tracking helpers."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import tempfile
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, Iterator, Mapping, Optional
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None
+
+
+def load_scan_state(state_path: Path) -> Optional[Dict[str, object]]:
+    """Load scan state from disk, returning None when missing or invalid."""
+    if not state_path.exists():
+        return None
+
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    return data
+
+
+def update_scan_state(
+    state_path: Path,
+    *,
+    full_scan: Optional[Mapping[str, object]] = None,
+    pr_review: Optional[Mapping[str, object]] = None,
+) -> Dict[str, object]:
+    """Atomically update scan state with optional full-scan/PR-review entries."""
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = state_path.with_name(f".{state_path.name}.lock")
+    with _file_lock(lock_path):
+        state = load_scan_state(state_path) or {}
+
+        if full_scan is not None:
+            state["last_full_scan"] = dict(full_scan)
+        if pr_review is not None:
+            state["last_pr_review"] = dict(pr_review)
+
+        _write_json_atomic(state_path, state)
+
+    return state
+
+
+def build_full_scan_entry(*, commit: str, branch: str, timestamp: str) -> Dict[str, object]:
+    """Build metadata for a completed full scan."""
+    return {"commit": commit, "timestamp": timestamp, "branch": branch}
+
+
+def build_pr_review_entry(
+    *, commit: str, commits_reviewed: list[str], timestamp: str
+) -> Dict[str, object]:
+    """Build metadata for a completed PR review."""
+    return {
+        "commit": commit,
+        "timestamp": timestamp,
+        "commits_reviewed": list(commits_reviewed),
+    }
+
+
+def scan_state_branch_matches(state: Mapping[str, object], branch: str) -> bool:
+    """Check if scan state belongs to the provided branch."""
+    entry = state.get("last_full_scan")
+    if not isinstance(entry, dict):
+        return False
+    state_branch = entry.get("branch")
+    return isinstance(state_branch, str) and state_branch == branch
+
+
+def get_last_full_scan_commit(state: Mapping[str, object]) -> Optional[str]:
+    """Extract last_full_scan commit hash from state."""
+    entry = state.get("last_full_scan")
+    if not isinstance(entry, dict):
+        return None
+    commit = entry.get("commit")
+    return commit if isinstance(commit, str) else None
+
+
+def get_repo_head_commit(repo: Path) -> Optional[str]:
+    """Get the current HEAD commit hash for a repo."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    commit = result.stdout.strip()
+    return commit if commit else None
+
+
+def get_repo_branch(repo: Path) -> Optional[str]:
+    """Get the current branch name for a repo."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    branch = result.stdout.strip()
+    return branch if branch else None
+
+
+def utc_timestamp() -> str:
+    """Return current UTC timestamp in ISO format."""
+    timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return timestamp.replace("+00:00", "Z")
+
+
+def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
+    """Atomically write JSON payload to disk to avoid partial-file corruption."""
+    fd = -1
+    tmp_path: Optional[Path] = None
+    try:
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        tmp_path = Path(tmp_name)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            handle.write(json.dumps(payload, indent=2))
+            handle.flush()
+            os.fsync(handle.fileno())
+        tmp_path.replace(path)
+    except OSError:
+        if tmp_path and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+        raise
+    finally:
+        if fd != -1:
+            os.close(fd)
+
+
+@contextmanager
+def _file_lock(lock_path: Path) -> Iterator[None]:
+    """Acquire an exclusive file lock for cross-process state updates."""
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    locked = False
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            locked = True
+        yield
+    finally:
+        if locked:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)

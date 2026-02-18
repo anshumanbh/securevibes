@@ -1,8 +1,10 @@
 """Tests for scanner with real-time progress tracking"""
 
+import os
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
-from securevibes.scanner.scanner import Scanner, ProgressTracker
+from securevibes.scanner.scanner import Scanner
+from securevibes.scanner.progress import ProgressTracker
 from securevibes.models.result import ScanResult
 from securevibes.models.issue import Severity
 from rich.console import Console
@@ -50,6 +52,40 @@ def api():
 """
     )
     return tmp_path
+
+
+class TestScanResultWarnings:
+    """Test ScanResult warning behavior."""
+
+    def test_scan_result_warnings_default_empty(self):
+        """Warnings should default to an empty list."""
+        result = ScanResult(repository_path="/tmp/repo")
+
+        assert result.warnings == []
+
+    def test_scan_result_warnings_stores_values(self):
+        """Warnings passed to constructor should be stored."""
+        warnings = ["Analysis may be incomplete."]
+        result = ScanResult(repository_path="/tmp/repo", warnings=warnings)
+
+        assert result.warnings == warnings
+
+    def test_scan_result_to_dict_includes_warnings_when_non_empty(self):
+        """to_dict should include warnings only when present."""
+        warnings = ["Missing PR_VULNERABILITIES.json"]
+        result = ScanResult(repository_path="/tmp/repo", warnings=warnings)
+
+        data = result.to_dict()
+
+        assert data["warnings"] == warnings
+
+    def test_scan_result_to_dict_omits_warnings_when_empty(self):
+        """to_dict should not include warnings when list is empty."""
+        result = ScanResult(repository_path="/tmp/repo")
+
+        data = result.to_dict()
+
+        assert "warnings" not in data
 
 
 class TestProgressTracker:
@@ -111,15 +147,17 @@ class TestProgressTracker:
 
     def test_on_tool_complete_success(self, progress_tracker):
         """Test tracking successful tool completion"""
+        initial_count = progress_tracker.tool_count
         progress_tracker.on_tool_complete("Read", success=True)
-        # Should not raise any errors
-        assert True
+        assert progress_tracker.tool_count == initial_count
+        assert progress_tracker.console.file.getvalue() == ""
 
     def test_on_tool_complete_failure(self, progress_tracker):
         """Test tracking failed tool completion"""
         progress_tracker.on_tool_complete("Read", success=False, error_msg="File not found")
-        # Should handle error gracefully
-        assert True
+        output = progress_tracker.console.file.getvalue()
+        assert "Tool Read failed" in output
+        assert "File not found" in output
 
     def test_on_subagent_stop(self, progress_tracker):
         """Test tracking sub-agent completion"""
@@ -157,17 +195,17 @@ class TestProgressTracker:
         """Test agent narration in debug mode"""
         text = "I am analyzing the authentication system for security vulnerabilities"
 
-        # Should not raise errors
         debug_progress_tracker.on_assistant_text(text)
-        assert True
+        output = debug_progress_tracker.console.file.getvalue()
+        assert "I am analyzing the authentication system" in output
+        assert "💭" in output
 
     def test_non_debug_mode_skips_narration(self, progress_tracker):
         """Test agent narration is skipped in non-debug mode"""
         text = "Some agent thinking"
 
-        # Should be a no-op in non-debug mode
         progress_tracker.on_assistant_text(text)
-        assert True
+        assert progress_tracker.console.file.getvalue() == ""
 
     def test_smart_truncation_in_debug(self, debug_progress_tracker):
         """Test smart truncation of long prompts in debug mode"""
@@ -390,6 +428,52 @@ class TestScannerResultLoading:
         assert result.issues[0].severity == Severity.HIGH
 
     @pytest.mark.asyncio
+    async def test_load_scan_results_surfaces_artifact_regen_warning(
+        self, scanner, test_repo, monkeypatch
+    ):
+        """DAST artifact regeneration warnings should be included in ScanResult.warnings."""
+        securevibes_dir = test_repo / ".securevibes"
+        securevibes_dir.mkdir()
+
+        import json
+
+        (securevibes_dir / "scan_results.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "threat_id": "THREAT-1",
+                        "title": "XSS Vulnerability",
+                        "description": "Cross-site scripting",
+                        "severity": "high",
+                        "file_path": "views.py",
+                        "line_number": 20,
+                        "code_snippet": "return render(user_input)",
+                        "cwe_id": "CWE-79",
+                        "recommendation": "Sanitize input",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        def fake_merge(scan_result, _securevibes_dir):
+            scan_result.dast_enabled = True
+            return scan_result
+
+        monkeypatch.setattr(scanner, "_merge_dast_results", fake_merge)
+        monkeypatch.setattr(
+            scanner,
+            "_regenerate_artifacts",
+            lambda *_args, **_kwargs: "regeneration warning",
+        )
+
+        result = scanner._load_scan_results(
+            securevibes_dir, test_repo, files_scanned=10, scan_start_time=0
+        )
+
+        assert "regeneration warning" in result.warnings
+
+    @pytest.mark.asyncio
     async def test_load_handles_missing_files(self, scanner, test_repo):
         """Test error handling when no results files exist"""
         securevibes_dir = test_repo / ".securevibes"
@@ -400,6 +484,170 @@ class TestScannerResultLoading:
             scanner._load_scan_results(
                 securevibes_dir, test_repo, files_scanned=10, scan_start_time=0
             )
+
+    @pytest.mark.asyncio
+    @patch("securevibes.scanner.scanner.update_scan_state")
+    @patch("securevibes.scanner.scanner.get_repo_branch")
+    @patch("securevibes.scanner.scanner.get_repo_head_commit")
+    async def test_load_updates_scan_state_for_full_scan(
+        self, mock_commit, mock_branch, mock_update_state, scanner, test_repo
+    ):
+        """Test scan state is updated when single_subagent and resume_from are both None"""
+        securevibes_dir = test_repo / ".securevibes"
+        securevibes_dir.mkdir()
+
+        mock_commit.return_value = "abc123"
+        mock_branch.return_value = "main"
+
+        scan_results = {
+            "issues": [
+                {
+                    "threat_id": "TEST-1",
+                    "title": "Test Issue",
+                    "description": "Test",
+                    "severity": "low",
+                    "file_path": "test.py",
+                    "line_number": 1,
+                    "code_snippet": "test",
+                    "cwe_id": "CWE-000",
+                    "recommendation": "Fix it",
+                }
+            ]
+        }
+
+        import json
+
+        (securevibes_dir / "scan_results.json").write_text(json.dumps(scan_results))
+
+        # Call without single_subagent or resume_from (full scan)
+        result = scanner._load_scan_results(
+            securevibes_dir, test_repo, files_scanned=10, scan_start_time=0
+        )
+
+        assert isinstance(result, ScanResult)
+        mock_update_state.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("securevibes.scanner.scanner.update_scan_state")
+    @patch("securevibes.scanner.scanner.get_repo_branch")
+    @patch("securevibes.scanner.scanner.get_repo_head_commit")
+    async def test_load_skips_scan_state_for_subagent(
+        self, mock_commit, mock_branch, mock_update_state, scanner, test_repo
+    ):
+        """Test scan state is NOT updated when single_subagent is set"""
+        securevibes_dir = test_repo / ".securevibes"
+        securevibes_dir.mkdir()
+
+        mock_commit.return_value = "abc123"
+        mock_branch.return_value = "main"
+
+        scan_results = {"issues": []}
+
+        import json
+
+        (securevibes_dir / "scan_results.json").write_text(json.dumps(scan_results))
+
+        # Call with single_subagent set
+        result = scanner._load_scan_results(
+            securevibes_dir,
+            test_repo,
+            files_scanned=10,
+            scan_start_time=0,
+            single_subagent="assessment",
+        )
+
+        assert isinstance(result, ScanResult)
+        mock_update_state.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("securevibes.scanner.scanner.update_scan_state")
+    @patch("securevibes.scanner.scanner.get_repo_branch")
+    @patch("securevibes.scanner.scanner.get_repo_head_commit")
+    async def test_load_skips_scan_state_for_resume(
+        self, mock_commit, mock_branch, mock_update_state, scanner, test_repo
+    ):
+        """Test scan state is NOT updated when resume_from is set"""
+        securevibes_dir = test_repo / ".securevibes"
+        securevibes_dir.mkdir()
+
+        mock_commit.return_value = "abc123"
+        mock_branch.return_value = "main"
+
+        scan_results = {"issues": []}
+
+        import json
+
+        (securevibes_dir / "scan_results.json").write_text(json.dumps(scan_results))
+
+        # Call with resume_from set
+        result = scanner._load_scan_results(
+            securevibes_dir,
+            test_repo,
+            files_scanned=10,
+            scan_start_time=0,
+            resume_from="code-review",
+        )
+
+        assert isinstance(result, ScanResult)
+        mock_update_state.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("securevibes.scanner.scanner.update_scan_state")
+    @patch("securevibes.scanner.scanner.get_repo_branch")
+    @patch("securevibes.scanner.scanner.get_repo_head_commit")
+    async def test_load_subagent_code_review_skips_scan_state_update(
+        self, mock_commit, mock_branch, mock_update_state, scanner, test_repo
+    ):
+        """Subagent code-review should not update full-scan state."""
+        securevibes_dir = test_repo / ".securevibes"
+        securevibes_dir.mkdir()
+
+        mock_commit.return_value = "abc123"
+        mock_branch.return_value = "main"
+
+        import json
+
+        (securevibes_dir / "VULNERABILITIES.json").write_text(json.dumps([]))
+
+        result = scanner._load_subagent_results(
+            securevibes_dir,
+            test_repo,
+            files_scanned=10,
+            scan_start_time=0,
+            subagent="code-review",
+        )
+
+        assert isinstance(result, ScanResult)
+        mock_update_state.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("securevibes.scanner.scanner.update_scan_state")
+    @patch("securevibes.scanner.scanner.get_repo_branch")
+    @patch("securevibes.scanner.scanner.get_repo_head_commit")
+    async def test_load_subagent_report_generator_skips_scan_state_update(
+        self, mock_commit, mock_branch, mock_update_state, scanner, test_repo
+    ):
+        """Subagent report-generator should not update full-scan state."""
+        securevibes_dir = test_repo / ".securevibes"
+        securevibes_dir.mkdir()
+
+        mock_commit.return_value = "abc123"
+        mock_branch.return_value = "main"
+
+        import json
+
+        (securevibes_dir / "scan_results.json").write_text(json.dumps({"issues": []}))
+
+        result = scanner._load_subagent_results(
+            securevibes_dir,
+            test_repo,
+            files_scanned=10,
+            scan_start_time=0,
+            subagent="report-generator",
+        )
+
+        assert isinstance(result, ScanResult)
+        mock_update_state.assert_not_called()
 
 
 class TestProgressTrackerEdgeCases:
@@ -447,3 +695,926 @@ class TestProgressTrackerEdgeCases:
 
         assert long_path in progress_tracker.files_read
         assert progress_tracker.tool_count == 1
+
+
+class TestFullScanAllowedTools:
+    """Test that full scan includes Task in allowed_tools for subagent dispatch."""
+
+    @pytest.mark.asyncio
+    async def test_full_scan_allows_task_tool(self, test_repo):
+        """Full scan must include Task in allowed_tools for subagent dispatch."""
+        scanner = Scanner(model="sonnet", debug=False)
+        scanner.console = Console(file=StringIO())
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+            mock_instance = MagicMock()
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_instance.query = AsyncMock()
+
+            async def async_gen():
+                return
+                yield  # pragma: no cover
+
+            mock_instance.receive_messages = async_gen
+
+            try:
+                await scanner.scan(str(test_repo))
+            except RuntimeError:
+                pass  # Expected — no results file
+
+        options = mock_client.call_args[1]["options"]
+        assert (
+            "Task" in options.allowed_tools
+        ), f"Task tool missing from allowed_tools: {options.allowed_tools}"
+
+    @pytest.mark.asyncio
+    async def test_full_scan_has_subagent_hook(self, test_repo):
+        """Full scan must wire up SubagentStop hook for subagent lifecycle tracking."""
+        scanner = Scanner(model="sonnet", debug=False)
+        scanner.console = Console(file=StringIO())
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+            mock_instance = MagicMock()
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_instance.query = AsyncMock()
+
+            async def async_gen():
+                return
+                yield  # pragma: no cover
+
+            mock_instance.receive_messages = async_gen
+
+            try:
+                await scanner.scan(str(test_repo))
+            except RuntimeError:
+                pass  # Expected — no results file
+
+        options = mock_client.call_args[1]["options"]
+        assert "SubagentStop" in options.hooks, "SubagentStop hook must be configured"
+        assert len(options.hooks["SubagentStop"]) > 0
+
+    @pytest.mark.asyncio
+    async def test_full_scan_uses_default_permission_and_least_privilege_tools(self, test_repo):
+        """Full scan runtime policy should stay explicit and least-privilege."""
+        scanner = Scanner(model="sonnet", debug=False)
+        scanner.console = Console(file=StringIO())
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+            mock_instance = MagicMock()
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_instance.query = AsyncMock()
+
+            async def async_gen():
+                return
+                yield  # pragma: no cover
+
+            mock_instance.receive_messages = async_gen
+
+            try:
+                await scanner.scan(str(test_repo))
+            except RuntimeError:
+                pass  # Expected — no results file
+
+        options = mock_client.call_args[1]["options"]
+        assert options.permission_mode == "default"
+        assert set(options.allowed_tools) == {
+            "Task",
+            "Skill",
+            "Read",
+            "Write",
+            "Grep",
+            "Glob",
+            "LS",
+        }
+
+    @pytest.mark.asyncio
+    async def test_full_scan_with_dast_includes_bash_tool(self, test_repo):
+        """DAST-enabled scans should expose Bash for the DAST sub-agent only."""
+        scanner = Scanner(model="sonnet", debug=False)
+        scanner.configure_dast(target_url="http://localhost:3000")
+        scanner.console = Console(file=StringIO())
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+            mock_instance = MagicMock()
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_instance.query = AsyncMock()
+
+            async def async_gen():
+                return
+                yield  # pragma: no cover
+
+            mock_instance.receive_messages = async_gen
+
+            try:
+                await scanner.scan(str(test_repo))
+            except RuntimeError:
+                pass
+
+        options = mock_client.call_args[1]["options"]
+        assert "Bash" in options.allowed_tools
+
+    @pytest.mark.asyncio
+    async def test_full_scan_prompt_injects_execution_mode_context(self, test_repo):
+        """Full scan prompt should include authoritative execution mode context."""
+        scanner = Scanner(model="sonnet", debug=False)
+        scanner.console = Console(file=StringIO())
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+            mock_instance = MagicMock()
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_instance.query = AsyncMock()
+
+            async def async_gen():
+                return
+                yield  # pragma: no cover
+
+            mock_instance.receive_messages = async_gen
+
+            try:
+                await scanner.scan(str(test_repo))
+            except RuntimeError:
+                pass
+
+        prompt = mock_instance.query.call_args.args[0]
+        assert "<scan_execution_mode>" in prompt
+        assert "run_only_subagent=none" in prompt
+        assert "skip_subagents=none" in prompt
+        assert "dast_enabled=false" in prompt
+
+    @pytest.mark.asyncio
+    async def test_subagent_prompt_injects_run_only_execution_mode_context(self, test_repo):
+        """Sub-agent scans should inject run-only execution mode into orchestration prompt."""
+        scanner = Scanner(model="sonnet", debug=False)
+        scanner.console = Console(file=StringIO())
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+            mock_instance = MagicMock()
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_instance.query = AsyncMock()
+
+            async def async_gen():
+                return
+                yield  # pragma: no cover
+
+            mock_instance.receive_messages = async_gen
+
+            try:
+                await scanner.scan_subagent(str(test_repo), "assessment", skip_checks=True)
+            except RuntimeError:
+                pass
+
+        prompt = mock_instance.query.call_args.args[0]
+        assert "<scan_execution_mode>" in prompt
+        assert "run_only_subagent=assessment" in prompt
+        assert "dast_enabled=false" in prompt
+
+
+class TestScannerExecutionMode:
+    """Test explicit execution-mode propagation without environment mutation."""
+
+    @pytest.mark.asyncio
+    async def test_scan_does_not_mutate_existing_mode_env_vars(
+        self, scanner, test_repo, monkeypatch
+    ):
+        """Full scan should ignore stale env vars and leave caller env unchanged."""
+        monkeypatch.setenv("RUN_ONLY_SUBAGENT", "assessment")
+        monkeypatch.setenv("RESUME_FROM_SUBAGENT", "code-review")
+        monkeypatch.setenv("SKIP_SUBAGENTS", "assessment")
+
+        with patch.object(
+            scanner,
+            "_execute_scan",
+            new=AsyncMock(return_value=ScanResult(repository_path=str(test_repo), issues=[])),
+        ) as mock_execute:
+            await scanner.scan(str(test_repo))
+
+        mock_execute.assert_awaited_once()
+        assert os.environ.get("RUN_ONLY_SUBAGENT") == "assessment"
+        assert os.environ.get("RESUME_FROM_SUBAGENT") == "code-review"
+        assert os.environ.get("SKIP_SUBAGENTS") == "assessment"
+
+    @pytest.mark.asyncio
+    async def test_scan_subagent_passes_mode_explicitly_without_env_mutation(
+        self, scanner, test_repo, monkeypatch
+    ):
+        """Sub-agent mode should be passed via call args, not env mutation."""
+        monkeypatch.setenv("RUN_ONLY_SUBAGENT", "legacy-value")
+        monkeypatch.delenv("RESUME_FROM_SUBAGENT", raising=False)
+        monkeypatch.delenv("SKIP_SUBAGENTS", raising=False)
+        monkeypatch.setenv("DAST_ENABLED", "legacy-dast")
+
+        with patch.object(
+            scanner,
+            "_execute_scan",
+            new=AsyncMock(return_value=ScanResult(repository_path=str(test_repo), issues=[])),
+        ) as mock_execute:
+            await scanner.scan_subagent(str(test_repo), "assessment", skip_checks=True)
+
+        mock_execute.assert_awaited_once()
+        assert mock_execute.await_args.kwargs["single_subagent"] == "assessment"
+        assert os.environ.get("RUN_ONLY_SUBAGENT") == "legacy-value"
+        assert os.environ.get("DAST_ENABLED") == "legacy-dast"
+        assert "RESUME_FROM_SUBAGENT" not in os.environ
+        assert "SKIP_SUBAGENTS" not in os.environ
+
+    @pytest.mark.asyncio
+    async def test_scan_resume_passes_mode_explicitly_without_env_mutation(
+        self, scanner, test_repo, monkeypatch
+    ):
+        """Resume mode should be passed via call args, not env mutation."""
+        monkeypatch.setenv("RUN_ONLY_SUBAGENT", "legacy-value")
+        monkeypatch.setenv("RESUME_FROM_SUBAGENT", "legacy-resume")
+        monkeypatch.setenv("SKIP_SUBAGENTS", "legacy-skip")
+
+        with patch.object(
+            scanner,
+            "_execute_scan",
+            new=AsyncMock(return_value=ScanResult(repository_path=str(test_repo), issues=[])),
+        ) as mock_execute:
+            await scanner.scan_resume(str(test_repo), "code-review", skip_checks=True)
+
+        mock_execute.assert_awaited_once()
+        assert mock_execute.await_args.kwargs["resume_from"] == "code-review"
+        assert os.environ.get("RUN_ONLY_SUBAGENT") == "legacy-value"
+        assert os.environ.get("RESUME_FROM_SUBAGENT") == "legacy-resume"
+        assert os.environ.get("SKIP_SUBAGENTS") == "legacy-skip"
+
+    def test_build_scan_execution_mode_context_encodes_authoritative_values(self, scanner):
+        """Execution mode context should include explicit run/resume/skip fields."""
+        scanner.configure_dast("http://localhost:3000", timeout=90, accounts_path="accounts.json")
+        context = scanner._build_scan_execution_mode_context(
+            single_subagent="code-review",
+            resume_from="assessment",
+            skip_subagents=["assessment", "threat-modeling"],
+            dast_enabled_for_run=True,
+        )
+        assert "<scan_execution_mode>" in context
+        assert "run_only_subagent=code-review" in context
+        assert "resume_from_subagent=assessment" in context
+        assert "skip_subagents=assessment,threat-modeling" in context
+        assert "dast_enabled=true" in context
+        assert "dast_timeout_seconds=90" in context
+
+    def test_require_repo_scoped_path_returns_candidate_inside_repo(self, scanner, tmp_path):
+        """Repo-scoped path helper should allow paths under repository root."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        safe_path = repo / ".securevibes" / "scan_results.json"
+        selected = scanner._require_repo_scoped_path(
+            repo,
+            safe_path,
+            operation="test artifact write",
+        )
+        assert selected == safe_path
+
+    def test_require_repo_scoped_path_rejects_outside_repo(self, scanner, tmp_path):
+        """Repo-scoped path helper should block paths outside repository root."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        outside = tmp_path / "outside.json"
+        with pytest.raises(RuntimeError, match="outside repository root"):
+            scanner._require_repo_scoped_path(
+                repo,
+                outside,
+                operation="test artifact write",
+            )
+
+
+class TestScannerCostIsolation:
+    """Test per-invocation cost isolation on reused Scanner instances."""
+
+    @pytest.mark.asyncio
+    async def test_scan_resets_stale_total_cost(self, scanner, test_repo):
+        """Full scan should reset stale total_cost before execution starts."""
+        scanner.total_cost = 9.99
+
+        async def fake_execute(*args, **kwargs):
+            assert scanner.total_cost == 0.0
+            return ScanResult(repository_path=str(test_repo), issues=[])
+
+        with patch.object(scanner, "_execute_scan", new=AsyncMock(side_effect=fake_execute)):
+            await scanner.scan(str(test_repo))
+
+    @pytest.mark.asyncio
+    async def test_scan_subagent_resets_stale_total_cost(self, scanner, test_repo):
+        """Sub-agent scan should reset stale total_cost before execution starts."""
+        scanner.total_cost = 7.5
+
+        async def fake_execute(*args, **kwargs):
+            assert scanner.total_cost == 0.0
+            return ScanResult(repository_path=str(test_repo), issues=[])
+
+        with patch.object(scanner, "_execute_scan", new=AsyncMock(side_effect=fake_execute)):
+            await scanner.scan_subagent(str(test_repo), "assessment", skip_checks=True)
+
+
+class TestScannerDastAccountsSync:
+    """Test DAST accounts-file sync behavior."""
+
+    @pytest.mark.asyncio
+    async def test_scan_syncs_dast_accounts_before_execute_scan(self, scanner, test_repo):
+        """DAST accounts sync should create .securevibes even if execute scan is mocked."""
+        accounts_file = test_repo / "accounts.json"
+        accounts_file.write_text('{"users":[]}', encoding="utf-8")
+        scanner.configure_dast(
+            target_url="http://localhost:3000",
+            timeout=120,
+            accounts_path=str(accounts_file),
+        )
+
+        securevibes_dir = test_repo / ".securevibes"
+        if securevibes_dir.exists():
+            pytest.fail(".securevibes should not exist before test setup")
+
+        with patch.object(
+            scanner,
+            "_execute_scan",
+            new=AsyncMock(return_value=ScanResult(repository_path=str(test_repo), issues=[])),
+        ):
+            await scanner.scan(str(test_repo))
+
+        synced_file = securevibes_dir / "DAST_TEST_ACCOUNTS.json"
+        assert synced_file.exists()
+        assert synced_file.read_text(encoding="utf-8") == '{"users":[]}'
+
+
+class TestScannerPathGuards:
+    """Test repo boundary protections for scanner-owned writes."""
+
+    def _create_symlink(self, link_path, target_path):
+        """Create a directory symlink, skipping test if unsupported."""
+        try:
+            link_path.symlink_to(target_path, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("Symlinks are not supported in this environment")
+
+    def test_sync_dast_accounts_rejects_securevibes_symlink_escape(self, scanner, tmp_path):
+        """DAST accounts sync should fail when .securevibes escapes repo via symlink."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+
+        self._create_symlink(repo / ".securevibes", outside)
+
+        accounts_file = tmp_path / "accounts.json"
+        accounts_file.write_text('{"users":[]}', encoding="utf-8")
+        scanner.configure_dast(
+            target_url="http://localhost:3000",
+            timeout=120,
+            accounts_path=str(accounts_file),
+        )
+
+        with pytest.raises(RuntimeError, match="outside repository root"):
+            scanner._sync_dast_accounts_file(repo)
+
+    def test_setup_dast_skills_rejects_symlink_escape(self, scanner, tmp_path):
+        """DAST skill sync should fail when .claude/skills escapes repo via symlink."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+
+        (repo / ".claude").mkdir()
+        self._create_symlink(repo / ".claude" / "skills", outside)
+
+        with pytest.raises(RuntimeError, match="outside repository root"):
+            scanner._setup_dast_skills(repo)
+
+    def test_setup_threat_modeling_skills_rejects_symlink_escape(self, scanner, tmp_path):
+        """Threat-modeling skill sync should fail when .claude/skills escapes repo via symlink."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+
+        (repo / ".claude").mkdir()
+        self._create_symlink(repo / ".claude" / "skills", outside)
+
+        with pytest.raises(RuntimeError, match="outside repository root"):
+            scanner._setup_threat_modeling_skills(repo)
+
+    def test_setup_threat_modeling_skills_raises_on_copy_failure(self, scanner, tmp_path):
+        """Threat-modeling skill sync should fail closed when copy fails."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        with patch("shutil.copytree", side_effect=OSError("disk full")):
+            with pytest.raises(RuntimeError, match="Failed to sync threat modeling skills"):
+                scanner._setup_threat_modeling_skills(repo)
+
+
+# ---------------------------------------------------------------------------
+# Tests for _merge_dast_results (P3.8)
+# ---------------------------------------------------------------------------
+
+
+class TestMergeDastResults:
+    """Tests for Scanner._merge_dast_results."""
+
+    def _make_issue(self, issue_id: str, severity: str = "high"):
+        from securevibes.models.issue import SecurityIssue, Severity
+
+        return SecurityIssue(
+            id=issue_id,
+            severity=Severity(severity),
+            title=f"Issue {issue_id}",
+            description="Test issue",
+            file_path="app.py",
+            line_number=1,
+            code_snippet="x = 1",
+        )
+
+    def _make_scan_result(self, issues=None) -> ScanResult:
+        return ScanResult(
+            repository_path="/tmp/repo",
+            issues=issues or [],
+        )
+
+    def test_no_dast_file_returns_unchanged(self, scanner, tmp_path):
+        """When no DAST_VALIDATION.json exists, scan result is returned unchanged."""
+        result = self._make_scan_result([self._make_issue("V001")])
+        merged = scanner._merge_dast_results(result, tmp_path)
+
+        assert merged is result
+        assert not merged.dast_enabled
+
+    def test_empty_validations_returns_unchanged(self, scanner, tmp_path):
+        """When DAST file has no validations array, result is returned unchanged."""
+        import json
+
+        dast_file = tmp_path / "DAST_VALIDATION.json"
+        dast_file.write_text(
+            json.dumps(
+                {
+                    "dast_scan_metadata": {},
+                    "validations": [],
+                }
+            )
+        )
+
+        result = self._make_scan_result([self._make_issue("V001")])
+        merged = scanner._merge_dast_results(result, tmp_path)
+
+        assert merged is result
+
+    def test_validated_status_merges_correctly(self, scanner, tmp_path):
+        """VALIDATED status should be mapped and metrics updated."""
+        import json
+        from securevibes.models.issue import ValidationStatus
+
+        dast_file = tmp_path / "DAST_VALIDATION.json"
+        dast_file.write_text(
+            json.dumps(
+                {
+                    "dast_scan_metadata": {
+                        "total_vulnerabilities_tested": 1,
+                        "scan_duration_seconds": 42.0,
+                    },
+                    "validations": [
+                        {
+                            "vulnerability_id": "V001",
+                            "validation_status": "VALIDATED",
+                            "tested_at": "2026-01-01T00:00:00Z",
+                            "exploitability_score": 8.5,
+                            "evidence": {"request": "GET /admin", "response": "200 OK"},
+                        }
+                    ],
+                }
+            )
+        )
+
+        result = self._make_scan_result([self._make_issue("V001")])
+        merged = scanner._merge_dast_results(result, tmp_path)
+
+        assert merged.dast_enabled is True
+        assert merged.dast_validation_rate == 1.0
+        assert merged.dast_false_positive_rate == 0.0
+        assert merged.dast_scan_time_seconds == 42.0
+
+        issue = merged.issues[0]
+        assert issue.validation_status == ValidationStatus.VALIDATED
+        assert issue.validated_at == "2026-01-01T00:00:00Z"
+        assert issue.exploitability_score == 8.5
+        assert issue.dast_evidence == {"request": "GET /admin", "response": "200 OK"}
+
+    def test_legacy_top_level_array_format_merges(self, scanner, tmp_path):
+        """Legacy top-level JSON array format should be accepted."""
+        import json
+        from securevibes.models.issue import ValidationStatus
+
+        dast_file = tmp_path / "DAST_VALIDATION.json"
+        dast_file.write_text(
+            json.dumps(
+                [
+                    {
+                        "vulnerability_id": "V001",
+                        "validation_status": "VALIDATED",
+                        "tested_at": "2026-01-01T00:00:00Z",
+                    }
+                ]
+            )
+        )
+
+        result = self._make_scan_result([self._make_issue("V001")])
+        merged = scanner._merge_dast_results(result, tmp_path)
+
+        assert merged.dast_enabled is True
+        assert merged.dast_validation_rate == 1.0
+        assert merged.issues[0].validation_status == ValidationStatus.VALIDATED
+
+    def test_unexpected_top_level_type_returns_unchanged(self, scanner, tmp_path):
+        """Unexpected top-level JSON type should be treated as malformed and ignored."""
+        dast_file = tmp_path / "DAST_VALIDATION.json"
+        dast_file.write_text('"malformed"', encoding="utf-8")
+
+        result = self._make_scan_result([self._make_issue("V001")])
+        merged = scanner._merge_dast_results(result, tmp_path)
+
+        assert merged is result
+        assert not merged.dast_enabled
+
+    def test_non_mapping_validations_are_ignored(self, scanner, tmp_path):
+        """Non-object entries in validations should be ignored rather than crashing."""
+        import json
+        from securevibes.models.issue import ValidationStatus
+
+        dast_file = tmp_path / "DAST_VALIDATION.json"
+        dast_file.write_text(
+            json.dumps(
+                {
+                    "dast_scan_metadata": {"total_vulnerabilities_tested": 1},
+                    "validations": [
+                        "not-an-object",
+                        123,
+                        {"vulnerability_id": "V001", "validation_status": "FALSE_POSITIVE"},
+                    ],
+                }
+            )
+        )
+
+        result = self._make_scan_result([self._make_issue("V001")])
+        merged = scanner._merge_dast_results(result, tmp_path)
+
+        assert merged.issues[0].validation_status == ValidationStatus.FALSE_POSITIVE
+        assert merged.dast_false_positive_rate == 1.0
+
+    def test_false_positive_status(self, scanner, tmp_path):
+        """FALSE_POSITIVE status should be counted correctly."""
+        import json
+        from securevibes.models.issue import ValidationStatus
+
+        dast_file = tmp_path / "DAST_VALIDATION.json"
+        dast_file.write_text(
+            json.dumps(
+                {
+                    "dast_scan_metadata": {"total_vulnerabilities_tested": 1},
+                    "validations": [
+                        {
+                            "vulnerability_id": "V001",
+                            "validation_status": "FALSE_POSITIVE",
+                            "reason": "Endpoint not reachable",
+                        }
+                    ],
+                }
+            )
+        )
+
+        result = self._make_scan_result([self._make_issue("V001")])
+        merged = scanner._merge_dast_results(result, tmp_path)
+
+        assert merged.dast_enabled is True
+        assert merged.dast_false_positive_rate == 1.0
+        assert merged.dast_validation_rate == 0.0
+
+        issue = merged.issues[0]
+        assert issue.validation_status == ValidationStatus.FALSE_POSITIVE
+        assert issue.dast_evidence == {"reason": "Endpoint not reachable"}
+
+    def test_unknown_status_maps_to_unvalidated(self, scanner, tmp_path):
+        """Unknown validation_status string should map to UNVALIDATED."""
+        import json
+        from securevibes.models.issue import ValidationStatus
+
+        dast_file = tmp_path / "DAST_VALIDATION.json"
+        dast_file.write_text(
+            json.dumps(
+                {
+                    "dast_scan_metadata": {"total_vulnerabilities_tested": 1},
+                    "validations": [
+                        {
+                            "vulnerability_id": "V001",
+                            "validation_status": "BOGUS_STATUS",
+                        }
+                    ],
+                }
+            )
+        )
+
+        result = self._make_scan_result([self._make_issue("V001")])
+        merged = scanner._merge_dast_results(result, tmp_path)
+
+        issue = merged.issues[0]
+        assert issue.validation_status == ValidationStatus.UNVALIDATED
+
+    def test_evidence_from_test_steps_and_notes(self, scanner, tmp_path):
+        """Evidence should be built from test_steps/reason/notes when evidence field missing."""
+        import json
+
+        dast_file = tmp_path / "DAST_VALIDATION.json"
+        dast_file.write_text(
+            json.dumps(
+                {
+                    "dast_scan_metadata": {"total_vulnerabilities_tested": 1},
+                    "validations": [
+                        {
+                            "vulnerability_id": "V001",
+                            "validation_status": "VALIDATED",
+                            "test_steps": ["step1", "step2"],
+                            "notes": "Manual verification",
+                        }
+                    ],
+                }
+            )
+        )
+
+        result = self._make_scan_result([self._make_issue("V001")])
+        merged = scanner._merge_dast_results(result, tmp_path)
+
+        issue = merged.issues[0]
+        assert issue.dast_evidence["test_steps"] == ["step1", "step2"]
+        assert issue.dast_evidence["notes"] == "Manual verification"
+        assert "reason" not in issue.dast_evidence
+
+    def test_unmatched_issues_preserved(self, scanner, tmp_path):
+        """Issues without matching validation entries should be preserved as-is."""
+        import json
+
+        dast_file = tmp_path / "DAST_VALIDATION.json"
+        dast_file.write_text(
+            json.dumps(
+                {
+                    "dast_scan_metadata": {"total_vulnerabilities_tested": 1},
+                    "validations": [
+                        {
+                            "vulnerability_id": "V999",
+                            "validation_status": "VALIDATED",
+                        }
+                    ],
+                }
+            )
+        )
+
+        result = self._make_scan_result([self._make_issue("V001")])
+        merged = scanner._merge_dast_results(result, tmp_path)
+
+        assert len(merged.issues) == 1
+        assert merged.issues[0].validation_status is None
+
+    def test_mixed_statuses_metrics(self, scanner, tmp_path):
+        """Multiple issues with mixed statuses should produce correct metrics."""
+        import json
+
+        dast_file = tmp_path / "DAST_VALIDATION.json"
+        dast_file.write_text(
+            json.dumps(
+                {
+                    "dast_scan_metadata": {"total_vulnerabilities_tested": 3},
+                    "validations": [
+                        {"vulnerability_id": "V001", "validation_status": "VALIDATED"},
+                        {"vulnerability_id": "V002", "validation_status": "FALSE_POSITIVE"},
+                        {"vulnerability_id": "V003", "validation_status": "UNVALIDATED"},
+                    ],
+                }
+            )
+        )
+
+        issues = [self._make_issue("V001"), self._make_issue("V002"), self._make_issue("V003")]
+        result = self._make_scan_result(issues)
+        merged = scanner._merge_dast_results(result, tmp_path)
+
+        assert merged.dast_enabled is True
+        assert abs(merged.dast_validation_rate - 1 / 3) < 0.01
+        assert abs(merged.dast_false_positive_rate - 1 / 3) < 0.01
+
+    def test_json_decode_error_returns_unchanged(self, scanner, tmp_path):
+        """Corrupt DAST file should be handled gracefully."""
+        dast_file = tmp_path / "DAST_VALIDATION.json"
+        dast_file.write_text("not valid json {{{")
+
+        result = self._make_scan_result([self._make_issue("V001")])
+        merged = scanner._merge_dast_results(result, tmp_path)
+
+        assert merged is result
+        assert not merged.dast_enabled
+
+    def test_os_error_reading_file_returns_unchanged(self, scanner, tmp_path):
+        """OSError reading DAST file should be handled gracefully."""
+        dast_file = tmp_path / "DAST_VALIDATION.json"
+        dast_file.write_text("{}")
+
+        result = self._make_scan_result([self._make_issue("V001")])
+
+        with patch("builtins.open", side_effect=OSError("permission denied")):
+            merged = scanner._merge_dast_results(result, tmp_path)
+
+        assert merged is result
+
+
+class TestPrHypothesisTimeout:
+    """Test hypothesis generation timeout and logging behaviour."""
+
+    @pytest.mark.asyncio
+    async def test_hypothesis_uses_90s_timeout(self, tmp_path):
+        """Hypothesis generation should use a 90s timeout, not 30s."""
+        import asyncio
+        from securevibes.scanner.scanner import _generate_pr_hypotheses
+
+        captured = {}
+
+        async def capture_wait_for(coro, *, timeout):
+            captured["timeout"] = timeout
+            coro.close()
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+            mock_instance = MagicMock()
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_instance.query = AsyncMock()
+
+            async def async_gen():
+                return
+                yield  # pragma: no cover
+
+            mock_instance.receive_messages = async_gen
+
+            with patch("asyncio.wait_for", side_effect=capture_wait_for):
+                await _generate_pr_hypotheses(
+                    repo=tmp_path,
+                    model="sonnet",
+                    changed_files=["app.py"],
+                    diff_line_anchors="L10",
+                    diff_hunk_snippets="+ x = 1",
+                    threat_context_summary="none",
+                    vuln_context_summary="none",
+                    architecture_context="none",
+                )
+
+        assert captured["timeout"] == 90
+
+    @pytest.mark.asyncio
+    async def test_hypothesis_timeout_logs_without_traceback(self, tmp_path):
+        """Hypothesis timeout should log a clean warning without exc_info."""
+        import asyncio
+        from securevibes.scanner.scanner import _generate_pr_hypotheses
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+            mock_instance = MagicMock()
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
+                with patch("securevibes.scanner.scanner.logger") as mock_logger:
+                    result = await _generate_pr_hypotheses(
+                        repo=tmp_path,
+                        model="sonnet",
+                        changed_files=["app.py"],
+                        diff_line_anchors="L10",
+                        diff_hunk_snippets="+ x = 1",
+                        threat_context_summary="none",
+                        vuln_context_summary="none",
+                        architecture_context="none",
+                    )
+
+                    assert result == "- Unable to generate hypotheses."
+                    mock_logger.warning.assert_called_once()
+                    call_kwargs = mock_logger.warning.call_args[1]
+                    assert "exc_info" not in call_kwargs or call_kwargs["exc_info"] is False
+
+
+class TestPrRefinementTimeout:
+    """Test PR finding refinement timeout and logging behaviour."""
+
+    @pytest.mark.asyncio
+    async def test_refinement_uses_90s_timeout(self, tmp_path):
+        """PR finding refinement should use a 90s timeout, not 30s."""
+        import asyncio
+        from securevibes.scanner.scanner import _refine_pr_findings_with_llm
+
+        captured = {}
+
+        async def capture_wait_for(coro, *, timeout):
+            captured["timeout"] = timeout
+            coro.close()
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+            mock_instance = MagicMock()
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_instance.query = AsyncMock()
+
+            async def async_gen():
+                return
+                yield  # pragma: no cover
+
+            mock_instance.receive_messages = async_gen
+
+            with patch("asyncio.wait_for", side_effect=capture_wait_for):
+                await _refine_pr_findings_with_llm(
+                    repo=tmp_path,
+                    model="sonnet",
+                    diff_line_anchors="L10",
+                    diff_hunk_snippets="+ x = 1",
+                    findings=[{"id": "V001", "title": "test"}],
+                    severity_threshold="medium",
+                )
+
+        assert captured["timeout"] == 90
+
+    @pytest.mark.asyncio
+    async def test_refinement_timeout_logs_without_traceback(self, tmp_path):
+        """Refinement timeout should log a clean warning without exc_info."""
+        import asyncio
+        from securevibes.scanner.scanner import _refine_pr_findings_with_llm
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+            mock_instance = MagicMock()
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
+                with patch("securevibes.scanner.scanner.logger") as mock_logger:
+                    result = await _refine_pr_findings_with_llm(
+                        repo=tmp_path,
+                        model="sonnet",
+                        diff_line_anchors="L10",
+                        diff_hunk_snippets="+ x = 1",
+                        findings=[{"id": "V001", "title": "test"}],
+                        severity_threshold="medium",
+                    )
+
+                    assert result is None
+                    mock_logger.warning.assert_called_once()
+                    call_kwargs = mock_logger.warning.call_args[1]
+                    assert "exc_info" not in call_kwargs or call_kwargs["exc_info"] is False
+
+
+class TestDerivePrDefaultGrepScope:
+    """Tests for _derive_pr_default_grep_scope."""
+
+    def _make_diff_context(self, changed_files):
+        from securevibes.diff.parser import DiffContext
+
+        return DiffContext(files=[], added_lines=0, removed_lines=0, changed_files=changed_files)
+
+    def test_root_level_files_return_dot(self):
+        """When all changed files are root-level (no subdirectories), return '.'."""
+        from securevibes.scanner.scanner import _derive_pr_default_grep_scope
+
+        ctx = self._make_diff_context(["README.md", "setup.py", "Makefile"])
+        assert _derive_pr_default_grep_scope(ctx) == "."
+
+    def test_src_files_return_src(self):
+        """When files are under src/, return 'src'."""
+        from securevibes.scanner.scanner import _derive_pr_default_grep_scope
+
+        ctx = self._make_diff_context(["src/app.py", "src/utils.py"])
+        assert _derive_pr_default_grep_scope(ctx) == "src"
+
+    def test_most_common_directory_returned(self):
+        """When no src/ and files in subdirectories, return the most common top-level dir."""
+        from securevibes.scanner.scanner import _derive_pr_default_grep_scope
+
+        ctx = self._make_diff_context(
+            ["lib/module.py", "lib/helper.py", "lib/utils.py", "tests/test_one.py"]
+        )
+        assert _derive_pr_default_grep_scope(ctx) == "lib"
+
+    def test_empty_changed_files_return_dot(self):
+        """When no changed files, return '.'."""
+        from securevibes.scanner.scanner import _derive_pr_default_grep_scope
+
+        ctx = self._make_diff_context([])
+        assert _derive_pr_default_grep_scope(ctx) == "."
+
+    def test_src_preferred_over_other_dirs(self):
+        """When src/ is among changed file directories, it is preferred even if not most common."""
+        from securevibes.scanner.scanner import _derive_pr_default_grep_scope
+
+        ctx = self._make_diff_context(["lib/a.py", "lib/b.py", "lib/c.py", "src/d.py"])
+        assert _derive_pr_default_grep_scope(ctx) == "src"
+
+    def test_mixed_root_and_subdir_files(self):
+        """Root-level files are ignored; subdirectory files determine scope."""
+        from securevibes.scanner.scanner import _derive_pr_default_grep_scope
+
+        ctx = self._make_diff_context(
+            ["README.md", "packages/core/app.py", "packages/core/tests/test.py"]
+        )
+        assert _derive_pr_default_grep_scope(ctx) == "packages"

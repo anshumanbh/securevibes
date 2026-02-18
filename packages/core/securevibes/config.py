@@ -96,9 +96,15 @@ class ScanConfig:
         ".pnp",  # Yarn PnP
     }
 
-    EXCLUDED_DIRS_GO = {"vendor", "bin"}  # Go vendored dependencies  # Go binaries
+    EXCLUDED_DIRS_GO = {
+        "vendor",  # Go vendored dependencies
+        "bin",  # Go binaries
+    }
 
-    EXCLUDED_DIRS_RUBY = {"vendor/bundle", ".bundle"}  # Bundled gems  # Bundle config
+    EXCLUDED_DIRS_RUBY = {
+        "vendor/bundle",  # Bundled gems
+        ".bundle",  # Bundle config
+    }
 
     EXCLUDED_DIRS_JAVA = {
         "target",  # Maven build
@@ -212,6 +218,8 @@ class AgentConfig:
 
     # Default max turns for agent queries
     DEFAULT_MAX_TURNS = 50
+    DEFAULT_PR_REVIEW_TIMEOUT_SECONDS = 240
+    DEFAULT_PR_REVIEW_ATTEMPTS = 4
 
     @classmethod
     def get_agent_model(cls, agent_name: str, cli_override: Optional[str] = None) -> str:
@@ -286,6 +294,45 @@ class AgentConfig:
         except ValueError:
             # If invalid value provided, return default
             return cls.DEFAULT_MAX_TURNS
+
+    @classmethod
+    def get_pr_review_timeout_seconds(cls) -> int:
+        """
+        Get timeout for PR review agent execution.
+
+        Can be overridden via SECUREVIBES_PR_REVIEW_TIMEOUT_SECONDS.
+        """
+        try:
+            timeout = int(
+                os.getenv(
+                    "SECUREVIBES_PR_REVIEW_TIMEOUT_SECONDS",
+                    cls.DEFAULT_PR_REVIEW_TIMEOUT_SECONDS,
+                )
+            )
+        except ValueError:
+            return cls.DEFAULT_PR_REVIEW_TIMEOUT_SECONDS
+
+        if timeout < 1:
+            return cls.DEFAULT_PR_REVIEW_TIMEOUT_SECONDS
+        return timeout
+
+    @classmethod
+    def get_pr_review_attempts(cls) -> int:
+        """
+        Get number of PR review agent attempts before giving up.
+
+        Can be overridden via SECUREVIBES_PR_REVIEW_ATTEMPTS.
+        """
+        try:
+            attempts = int(
+                os.getenv("SECUREVIBES_PR_REVIEW_ATTEMPTS", cls.DEFAULT_PR_REVIEW_ATTEMPTS)
+            )
+        except ValueError:
+            return cls.DEFAULT_PR_REVIEW_ATTEMPTS
+
+        if attempts < 1:
+            return cls.DEFAULT_PR_REVIEW_ATTEMPTS
+        return attempts
 
 
 # Global configuration instance

@@ -102,6 +102,20 @@ securevibes scan /path/to/code --debug
 
 ---
 
+## 🔐 Runtime Safety Model
+
+SecureVibes runs scan orchestration with Claude SDK `permission_mode="default"`.
+Runtime safety depends on explicit tool surfaces and scanner hooks (including repository-boundary guardrails, PR review artifact constraints, and DAST database CLI blocking).
+
+Operational guidance:
+- Run scans only on trusted repositories.
+- Prefer isolated CI runners/containers for scans.
+- Avoid running scans with access to production credentials or sensitive networks.
+
+For package-level details, see `packages/core/README.md`.
+
+---
+
 ## 🎯 Usage
 
 ### Basic Commands
@@ -156,6 +170,17 @@ securevibes pr-review . --range abc123~1..abc123
 # Patch file
 securevibes pr-review . --diff changes.patch
 
+# Commit tracking (requires baseline scan and scan_state.json)
+securevibes pr-review . --since-last-scan
+securevibes pr-review . --since 2026-02-01
+securevibes pr-review . --last 10
+
+# Update base artifacts from PR findings
+securevibes pr-review . --range abc123~1..abc123 --update-artifacts
+
+# Clean transient PR artifacts before reruns
+securevibes pr-review . --range abc123~1..abc123 --clean-pr-artifacts
+
 # Output formats (default: markdown)
 securevibes pr-review . --base main --head feature-branch --format markdown
 securevibes pr-review . --base main --head feature-branch --format json --output pr_review.json
@@ -166,12 +191,33 @@ securevibes pr-review . --base main --head feature-branch --severity high
 
 # Model + debug
 securevibes pr-review . --base main --head feature-branch --model haiku --debug
+
+# Catchup: pull latest + review since last full scan
+securevibes catchup . --branch main
 ```
+
+`securevibes catchup` requires a clean working tree (commit, stash, or discard local changes first).
+
+PR review runtime controls:
+
+```bash
+# Timeout per PR review attempt in seconds (default: 240)
+export SECUREVIBES_PR_REVIEW_TIMEOUT_SECONDS=300
+
+# Number of PR review attempts before giving up (default: 4)
+export SECUREVIBES_PR_REVIEW_ATTEMPTS=5
+```
+
+PR review fails closed if diff context would be truncated
+(more than 16 prioritized files or any hunk over 200 lines).
+PR review also fails closed when `PR_VULNERABILITIES.json` is not produced after retry attempts.
+Split large reviews with smaller `--range`, `--last`, or `--since` windows.
 
 PR review artifacts (written to `.securevibes/`):
 - `DIFF_CONTEXT.json` (parsed diff summary)
 - `PR_VULNERABILITIES.json` (raw findings)
 - `pr_review_report.md` (default markdown report)
+- `scan_state.json` (commit tracking for pr-review/catchup)
 
 ### Agentic Detection Override
 

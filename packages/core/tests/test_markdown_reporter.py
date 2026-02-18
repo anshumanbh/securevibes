@@ -2,7 +2,7 @@
 
 import pytest
 from securevibes.reporters.markdown_reporter import MarkdownReporter
-from securevibes.models.issue import SecurityIssue, Severity
+from securevibes.models.issue import SecurityIssue, Severity, ValidationStatus
 from securevibes.models.result import ScanResult
 
 
@@ -118,6 +118,14 @@ class TestMarkdownStructure:
         assert "## Executive Summary" in markdown
         assert "3 security vulnerabilities found" in markdown
 
+    def test_markdown_has_primary_exploit_chain(self, sample_result):
+        """Test markdown includes primary exploit chain callout when issues exist."""
+        markdown = MarkdownReporter.generate(sample_result)
+
+        assert "## Primary Exploit Chain" in markdown
+        assert "**Finding:**" in markdown
+        assert "**Location:**" in markdown
+
     def test_markdown_has_severity_table(self, sample_result):
         """Test markdown includes severity distribution table"""
         markdown = MarkdownReporter.generate(sample_result)
@@ -204,6 +212,7 @@ class TestMarkdownEmptyResult:
         markdown = MarkdownReporter.generate(empty_result)
 
         # These sections should not appear
+        assert "## Primary Exploit Chain" not in markdown
         assert "## Severity Distribution" not in markdown
         assert "## Vulnerability Overview" not in markdown
         assert "## Detailed Findings" not in markdown
@@ -422,6 +431,61 @@ class TestMarkdownScanTime:
         assert "2m" in markdown
 
 
+class TestMarkdownDastRendering:
+    """Test DAST-specific markdown rendering."""
+
+    def test_validation_rate_fraction_is_rendered_as_percentage(self):
+        """DAST validation rate should render as percentage text."""
+        issue = SecurityIssue(
+            id="dast-1",
+            severity=Severity.HIGH,
+            title="SSRF candidate",
+            description="Potential SSRF vector",
+            file_path="api/client.py",
+            line_number=12,
+            code_snippet="requests.get(user_url)",
+            validation_status=ValidationStatus.VALIDATED,
+        )
+        result = ScanResult(
+            repository_path="/tmp/test",
+            issues=[issue],
+            files_scanned=5,
+            dast_enabled=True,
+            dast_validation_rate=0.5,
+        )
+
+        markdown = MarkdownReporter.generate(result)
+
+        assert "**Validation Rate:** 50.0%" in markdown
+        assert "**Validation Rate:** 0.5%" not in markdown
+
+    def test_non_dict_dast_evidence_does_not_crash(self):
+        """String evidence payloads should render without attribute errors."""
+        issue = SecurityIssue(
+            id="dast-2",
+            severity=Severity.MEDIUM,
+            title="XSS candidate",
+            description="Reflected XSS via query parameter",
+            file_path="web/routes.py",
+            line_number=28,
+            code_snippet="return request.args['q']",
+            validation_status=ValidationStatus.UNVALIDATED,
+            dast_evidence="Replay failed: upstream timed out",
+        )
+        result = ScanResult(
+            repository_path="/tmp/test",
+            issues=[issue],
+            files_scanned=3,
+            dast_enabled=True,
+            dast_validation_rate=0.0,
+        )
+
+        markdown = MarkdownReporter.generate(result)
+
+        assert "**DAST Evidence:**" in markdown
+        assert "Replay failed: upstream timed out" in markdown
+
+
 class TestMarkdownRecommendationFormatter:
     """Test the _format_recommendation() method"""
 
@@ -514,3 +578,19 @@ class TestMarkdownRecommendationFormatter:
 
         # Single item might not get split but should still format code
         assert "1." in result
+
+    def test_formats_parenthesized_numbering(self):
+        """Test normalizing 1) 2) style recommendations."""
+        input_text = "1) First item. 2) Second item."
+        result = MarkdownReporter._format_recommendation(input_text)
+
+        assert "1. First item." in result
+        assert "2. Second item." in result
+
+    def test_fixes_malformed_leading_number_artifact(self):
+        """Test sanitizing malformed prefixes like '9. 2)' seen in noisy outputs."""
+        input_text = "9. 2) Only accept https URLs. 3) Add safe-root checks."
+        result = MarkdownReporter._format_recommendation(input_text)
+
+        assert "9. 2)" not in result
+        assert "2. Only accept https URLs." in result

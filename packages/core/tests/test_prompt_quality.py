@@ -1,5 +1,6 @@
 """Tests for prompt quality and false positive prevention guidance."""
 
+import pytest
 from pathlib import Path
 from securevibes.prompts.loader import load_prompt, load_shared_rules
 
@@ -300,3 +301,80 @@ class TestPromptConsistency:
         # Both should contain the same shared rules
         assert shared_rules in tm_content, "threat_modeling missing shared rules content"
         assert shared_rules in cr_content, "code_review missing shared rules content"
+
+
+class TestPrCodeReviewAttackPatterns:
+    """PR code review prompt should include critical attack pattern detection."""
+
+    @pytest.fixture
+    def prompt_content(self):
+        raw_path = (
+            Path(__file__).parent.parent
+            / "securevibes"
+            / "prompts"
+            / "agents"
+            / "pr_code_review.txt"
+        )
+        return raw_path.read_text()
+
+    def test_has_attack_patterns_section(self, prompt_content):
+        assert "## CRITICAL ATTACK PATTERNS" in prompt_content
+
+    def test_has_credential_exposure_subsection(self, prompt_content):
+        assert "### Credential Exposure" in prompt_content
+
+    def test_has_sandbox_bypass_subsection(self, prompt_content):
+        assert "### Sandbox" in prompt_content or "### Safety Bypass" in prompt_content
+
+    def test_has_ssrf_rce_subsection(self, prompt_content):
+        assert "### Localhost Bypass" in prompt_content or "### SSRF" in prompt_content
+
+    def test_has_multi_stage_chain_subsection(self, prompt_content):
+        assert "### Multi-Stage" in prompt_content or "### Exploit Chain" in prompt_content
+
+    def test_has_cwe_references(self, prompt_content):
+        """Each subsection should reference specific CWE IDs."""
+        assert prompt_content.count("CWE-") >= 4
+
+
+class TestPrCodeReviewEvidenceRequirements:
+    """PR code review prompt should enforce evidence quality requirements."""
+
+    @pytest.fixture
+    def prompt_content(self):
+        raw_path = (
+            Path(__file__).parent.parent
+            / "securevibes"
+            / "prompts"
+            / "agents"
+            / "pr_code_review.txt"
+        )
+        return raw_path.read_text()
+
+    def test_has_workflow_section(self, prompt_content):
+        assert "## WORKFLOW" in prompt_content
+
+    def test_instructs_to_read_source_files(self, prompt_content):
+        assert "Read/Grep" in prompt_content or "Read tool" in prompt_content
+        assert "actual source files" in prompt_content
+
+    def test_disallows_diff_context_file_reads(self, prompt_content):
+        assert "Do not read or grep DIFF_CONTEXT.json" in prompt_content
+
+    def test_requires_nonempty_evidence(self, prompt_content):
+        assert "empty file_path/code_snippet/evidence" in prompt_content
+        assert "REJECTED" in prompt_content
+
+    def test_has_severity_calibration(self, prompt_content):
+        assert "## SEVERITY CALIBRATION" in prompt_content
+
+    def test_has_prerequisite_analysis(self, prompt_content):
+        lower_prompt = prompt_content.lower()
+        assert "auth required" in lower_prompt
+        assert "admin access" in lower_prompt
+        assert "local access" in lower_prompt
+
+    def test_instructs_verify_before_claiming(self, prompt_content):
+        lower_prompt = prompt_content.lower()
+        assert "verify-before-claiming" in lower_prompt or "verify before claiming" in lower_prompt
+        assert "schema" in lower_prompt

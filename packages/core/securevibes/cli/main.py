@@ -1,9 +1,17 @@
 """Main CLI entry point for SecureVibes"""
 
 import asyncio
+import ipaddress
+import json
+import subprocess
 import sys
+from datetime import datetime, time
 from pathlib import Path
 from typing import Optional
+from urllib import error as urllib_error
+from urllib import parse as urllib_parse
+from urllib import request as urllib_request
+from zoneinfo import ZoneInfo
 
 import click
 from rich.console import Console
@@ -11,16 +19,153 @@ from rich.table import Table
 from rich import box
 
 from securevibes import __version__
-from securevibes.models.issue import Severity
+from securevibes.models.issue import SEVERITY_RANK, Severity
 from securevibes.scanner.scanner import Scanner
 from securevibes.diff.extractor import (
+    validate_git_ref,
+    get_commits_after,
+    get_commits_between,
+    get_commits_for_range,
+    get_commits_since,
+    get_diff_from_commit_list,
     get_diff_from_commits,
     get_diff_from_file,
     get_diff_from_git_range,
+    get_last_n_commits,
 )
 from securevibes.diff.parser import DiffContext, parse_unified_diff
+from securevibes.scanner.state import (
+    build_pr_review_entry,
+    get_last_full_scan_commit,
+    get_repo_branch,
+    get_repo_head_commit,
+    load_scan_state,
+    scan_state_branch_matches,
+    update_scan_state,
+    utc_timestamp,
+)
 
 console = Console()
+
+SAFE_NON_PRODUCTION_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0", "::1")
+SAFE_NON_PRODUCTION_SUFFIXES = (".local", ".test", ".localhost")
+TRANSIENT_PR_ARTIFACTS = (
+    "PR_VULNERABILITIES.json",
+    "DIFF_CONTEXT.json",
+    "pr_review_report.md",
+)
+REQUIRED_REPORT_FIELDS = ("repository_path", "files_scanned", "scan_time_seconds", "issues")
+REQUIRED_REPORT_ISSUE_FIELDS = ("severity", "title", "description", "file_path", "line_number")
+
+
+def _require_repo_scoped_path(repo_root: Path, candidate: Path, *, operation: str) -> Path:
+    """Ensure a candidate path resolves inside the repository root."""
+    resolved_repo_root = repo_root.resolve(strict=False)
+    resolved_candidate = candidate.resolve(strict=False)
+    if resolved_candidate == resolved_repo_root or resolved_repo_root in resolved_candidate.parents:
+        return candidate
+    raise RuntimeError(
+        f"Refusing unsafe {operation}: {candidate} resolves outside repository root "
+        f"({resolved_candidate})"
+    )
+
+
+def _repo_output_path(repo_root: Path, path: Path | str, *, operation: str) -> Path:
+    """Resolve a path relative to repo_root and enforce repository boundary."""
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = repo_root / candidate
+    return _require_repo_scoped_path(repo_root, candidate, operation=operation)
+
+
+def _filter_by_severity(result, min_severity: Optional[str]) -> None:
+    """Filter scan issues to only include findings at/above minimum severity."""
+    if not min_severity:
+        return
+
+    threshold = Severity(min_severity)
+    min_rank = SEVERITY_RANK[threshold.value]
+    result.issues = [
+        issue for issue in result.issues if SEVERITY_RANK.get(issue.severity.value, 0) >= min_rank
+    ]
+
+
+def _resolve_markdown_output_path(
+    repo_path: Path, output: Optional[str], default_filename: str
+) -> Path:
+    """Resolve markdown output to absolute path, defaulting to .securevibes."""
+    if output:
+        output_path = Path(output)
+        if output_path.is_absolute():
+            return _repo_output_path(repo_path, output_path, operation="markdown output file")
+        return _repo_output_path(
+            repo_path,
+            Path(".securevibes") / output,
+            operation="markdown output file",
+        )
+    return _repo_output_path(
+        repo_path,
+        Path(".securevibes") / default_filename,
+        operation="markdown output file",
+    )
+
+
+def _write_output(
+    result,
+    output_format: str,
+    output: Optional[str],
+    repo_path: Path,
+    markdown_default_filename: str,
+    markdown_label: str,
+    quiet: bool = False,
+) -> None:
+    """Render or persist CLI output in the selected format."""
+    if output_format == "markdown":
+        from securevibes.reporters.markdown_reporter import MarkdownReporter
+
+        output_path = _resolve_markdown_output_path(repo_path, output, markdown_default_filename)
+        try:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            MarkdownReporter.save(result, output_path)
+            if output:
+                console.print(f"\n✅ {markdown_label} saved to: {output_path}")
+            else:
+                console.print(f"\n📄 {markdown_label}: [cyan]{output_path}[/cyan]")
+        except (IOError, OSError, PermissionError) as exc:
+            console.print(f"[bold red]❌ Error writing output file:[/bold red] {exc}")
+            sys.exit(1)
+        return
+
+    if output_format == "json":
+        output_data = result.to_dict()
+        if output:
+            try:
+                output_path = _repo_output_path(
+                    repo_path,
+                    Path(output),
+                    operation="JSON output file",
+                )
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(json.dumps(output_data, indent=2), encoding="utf-8")
+                console.print(f"\n✅ Results saved to: {output_path}")
+            except (IOError, OSError, PermissionError) as exc:
+                console.print(f"[bold red]❌ Error writing output file:[/bold red] {exc}")
+                sys.exit(1)
+        else:
+            console.print_json(data=output_data)
+        return
+
+    if output_format == "table":
+        _display_table_results(result, quiet=quiet)
+        return
+
+    _display_text_results(result)
+
+
+def _validate_target_url(target_url: str) -> bool:
+    """Validate target URL format for DAST execution."""
+    parsed = urllib_parse.urlparse(target_url.strip())
+    return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
 
 
 @click.group()
@@ -41,6 +186,7 @@ def cli():
 @click.option(
     "--format",
     "-f",
+    "output_format",
     type=click.Choice(["markdown", "json", "text", "table"]),
     default="markdown",
     help="Output format (default: markdown)",
@@ -51,7 +197,6 @@ def cli():
     type=click.Choice(["critical", "high", "medium", "low"]),
     help="Minimum severity to report",
 )
-@click.option("--no-save", is_flag=True, help="Do not save results to .securevibes/")
 @click.option("--quiet", "-q", is_flag=True, help="Minimal output (errors only)")
 @click.option("--debug", is_flag=True, help="Show verbose diagnostic output")
 @click.option("--dast", is_flag=True, help="Enable DAST validation in full scan")
@@ -101,9 +246,8 @@ def scan(
     path: str,
     model: str,
     output: Optional[str],
-    format: str,
+    output_format: str,
     severity: Optional[str],
-    no_save: bool,
     quiet: bool,
     debug: bool,
     dast: bool,
@@ -136,6 +280,8 @@ def scan(
         securevibes scan . --model claude-3-5-haiku-20241022  # Use faster/cheaper model
     """
     try:
+        repo = Path(path).resolve()
+
         # Validate flag conflicts
         if quiet and debug:
             console.print(
@@ -178,11 +324,13 @@ def scan(
                 sys.exit(1)
 
         # Validate target-url requirement for resume-from dast
-        if resume_from == "dast" and not target_url:
-            console.print(
-                "[bold red]❌ Error:[/bold red] --target-url is required when resuming from DAST"
-            )
-            sys.exit(1)
+        if resume_from == "dast":
+            if not target_url:
+                console.print(
+                    "[bold red]❌ Error:[/bold red] --target-url is required when resuming from DAST"
+                )
+                sys.exit(1)
+            dast = True
 
         # Show banner unless quiet
         if not quiet:
@@ -190,20 +338,29 @@ def scan(
             console.print("[dim]AI-Powered Vulnerability Detection[/dim]")
             console.print()
 
-        # Ensure output directory exists if saving results
-        if not no_save:
-            output_dir = Path(path) / ".securevibes"
-            try:
-                output_dir.mkdir(parents=True, exist_ok=True)
-            except (IOError, OSError) as e:
-                console.print(f"[bold red]❌ Error:[/bold red] Cannot create output directory: {e}")
-                sys.exit(1)
+        output_dir = _repo_output_path(
+            repo, Path(".securevibes"), operation="scan output directory"
+        )
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except (IOError, OSError) as e:
+            console.print(f"[bold red]❌ Error:[/bold red] Cannot create output directory: {e}")
+            sys.exit(1)
 
         # DAST validation checks
         if dast:
             if not target_url:
                 console.print(
                     "[bold red]❌ Error:[/bold red] --target-url is required when --dast is enabled"
+                )
+                console.print(
+                    "[dim]Example: securevibes scan . --dast --target-url http://localhost:3000[/dim]"
+                )
+                sys.exit(1)
+
+            if not _validate_target_url(target_url):
+                console.print(
+                    "[bold red]❌ Error:[/bold red] --target-url must be a valid HTTP/HTTPS URL"
                 )
                 console.print(
                     "[dim]Example: securevibes scan . --dast --target-url http://localhost:3000[/dim]"
@@ -226,7 +383,7 @@ def scan(
             if not allow_production and not quiet:
                 console.print("\n[bold yellow]⚠️  DAST Validation Enabled[/bold yellow]")
                 console.print(f"Target: {target_url}")
-                console.print("\nDAst will send HTTP requests to validate IDOR vulnerabilities.")
+                console.print("\nDAST will send HTTP requests to validate IDOR vulnerabilities.")
                 console.print("Ensure you have authorization to test this target.\n")
 
                 if not click.confirm("Proceed with DAST validation?", default=False):
@@ -239,9 +396,9 @@ def scan(
         agentic_override = True if agentic else False if no_agentic else None
         result = asyncio.run(
             _run_scan(
-                path,
+                str(repo),
                 model,
-                not no_save,
+                True,
                 quiet,
                 debug,
                 dast,
@@ -256,67 +413,16 @@ def scan(
             )
         )
 
-        # Filter by severity if specified
-        if severity:
-            min_severity = Severity(severity)
-            severity_order = ["info", "low", "medium", "high", "critical"]
-            min_index = severity_order.index(min_severity.value)
-            result.issues = [
-                issue
-                for issue in result.issues
-                if severity_order.index(issue.severity.value) >= min_index
-            ]
-
-        # Output results
-        if format == "markdown":
-            from securevibes.reporters.markdown_reporter import MarkdownReporter
-
-            if output:
-                # If absolute path, use as-is; otherwise save to .securevibes/
-                output_path = Path(output)
-                if not output_path.is_absolute():
-                    output_path = Path(path) / ".securevibes" / output
-
-                try:
-                    # Ensure parent directory exists
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    MarkdownReporter.save(result, output_path)
-                    console.print(f"\n✅ Markdown report saved to: {output_path}")
-                except (IOError, OSError, PermissionError) as e:
-                    console.print(f"[bold red]❌ Error writing output file:[/bold red] {e}")
-                    sys.exit(1)
-            else:
-                # Save to default location
-                default_path = Path(path) / ".securevibes" / "scan_report.md"
-                try:
-                    MarkdownReporter.save(result, default_path)
-                    console.print(f"\n📄 Markdown report: [cyan]{default_path}[/cyan]")
-                except (IOError, OSError, PermissionError) as e:
-                    console.print(f"[bold red]❌ Error writing report:[/bold red] {e}")
-                    sys.exit(1)
-
-        elif format == "json":
-            import json
-
-            output_data = result.to_dict()
-            if output:
-                try:
-                    output_path = Path(output)
-                    # Ensure parent directory exists
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    output_path.write_text(json.dumps(output_data, indent=2))
-                    console.print(f"\n✅ Results saved to: {output}")
-                except (IOError, OSError, PermissionError) as e:
-                    console.print(f"[bold red]❌ Error writing output file:[/bold red] {e}")
-                    sys.exit(1)
-            else:
-                console.print_json(data=output_data)
-
-        elif format == "table":
-            _display_table_results(result, quiet)
-
-        else:  # text
-            _display_text_results(result)
+        _filter_by_severity(result, severity)
+        _write_output(
+            result=result,
+            output_format=output_format,
+            output=output,
+            repo_path=repo,
+            markdown_default_filename="scan_report.md",
+            markdown_label="Markdown report",
+            quiet=quiet,
+        )
 
         # Exit code based on findings
         if result.critical_count > 0:
@@ -342,11 +448,25 @@ def scan(
 @click.option("--head", help="Head branch/commit (e.g., feature-branch)")
 @click.option("--range", "commit_range", help="Commit range (e.g., abc123~1..abc123)")
 @click.option("--diff", "diff_file", type=click.Path(exists=True), help="Path to diff/patch file")
+@click.option("--since-last-scan", is_flag=True, help="Review commits since last full scan")
+@click.option("--since", "since_date", help="Review commits since date (YYYY-MM-DD, Pacific)")
+@click.option("--last", "last_commits", type=click.IntRange(min=1), help="Review last N commits")
+@click.option(
+    "--update-artifacts",
+    is_flag=True,
+    help="Update THREAT_MODEL.json and VULNERABILITIES.json from PR findings",
+)
+@click.option(
+    "--clean-pr-artifacts",
+    is_flag=True,
+    help="Delete transient PR review artifacts before running",
+)
 @click.option("--model", "-m", default="sonnet", help="Claude model to use (e.g., sonnet, haiku)")
 @click.option(
     "--format",
     "-f",
-    type=click.Choice(["markdown", "json", "table"]),
+    "output_format",
+    type=click.Choice(["markdown", "json", "text", "table"]),
     default="markdown",
     help="Output format (default: markdown)",
 )
@@ -365,8 +485,13 @@ def pr_review(
     head: Optional[str],
     commit_range: Optional[str],
     diff_file: Optional[str],
+    since_last_scan: bool,
+    since_date: Optional[str],
+    last_commits: Optional[int],
+    update_artifacts: bool,
+    clean_pr_artifacts: bool,
     model: str,
-    format: str,
+    output_format: str,
     output: Optional[str],
     debug: bool,
     severity: str,
@@ -384,7 +509,36 @@ def pr_review(
     """
     try:
         repo = Path(path).resolve()
-        securevibes_dir = repo / ".securevibes"
+        securevibes_dir = _repo_output_path(
+            repo,
+            Path(".securevibes"),
+            operation="PR review artifact directory",
+        )
+
+        if (base or head) and not (base and head):
+            console.print("[bold red]❌ Must specify both --base and --head[/bold red]")
+            sys.exit(1)
+
+        selection_count = sum(
+            [
+                bool(diff_file),
+                bool(commit_range),
+                bool(base and head),
+                bool(since_last_scan),
+                bool(since_date),
+                bool(last_commits is not None),
+            ]
+        )
+        if selection_count != 1:
+            console.print(
+                "[bold red]❌ Choose exactly one of --base/--head, --range, --diff, "
+                "--since-last-scan, --since, or --last[/bold red]"
+            )
+            sys.exit(1)
+
+        if since_last_scan:
+            _ensure_baseline_scan(repo, model, debug)
+
         required_artifacts = ["SECURITY.md", "THREAT_MODEL.json"]
         missing = [a for a in required_artifacts if not (securevibes_dir / a).exists()]
         if missing:
@@ -392,14 +546,57 @@ def pr_review(
             console.print("Run 'securevibes scan' first to generate base artifacts.")
             sys.exit(1)
 
+        if clean_pr_artifacts:
+            removed_artifacts = _clean_pr_artifacts(securevibes_dir, repo_root=repo)
+            if removed_artifacts:
+                removed_list = ", ".join(path.name for path in removed_artifacts)
+                console.print(f"[dim]Removed transient PR artifacts: {removed_list}[/dim]")
+
+        commits_reviewed: list[str] = []
         if diff_file:
             diff_content = get_diff_from_file(Path(diff_file))
         elif commit_range:
             diff_content = get_diff_from_commits(repo, commit_range)
+            commits_reviewed = get_commits_for_range(repo, commit_range)
         elif base and head:
             diff_content = get_diff_from_git_range(repo, base, head)
+            commits_reviewed = get_commits_between(repo, base, head)
+        elif since_last_scan:
+            state_path = _repo_output_path(
+                repo,
+                securevibes_dir / "scan_state.json",
+                operation="PR review scan_state artifact",
+            )
+            state = load_scan_state(state_path) or {}
+            base_commit = get_last_full_scan_commit(state)
+            if not base_commit:
+                console.print(
+                    "[bold red]❌ Missing last_full_scan commit in scan_state.json[/bold red]"
+                )
+                sys.exit(1)
+            commits_reviewed = get_commits_after(repo, base_commit)
+            if not commits_reviewed:
+                console.print("[yellow]No commits since last scan.[/yellow]")
+                sys.exit(0)
+            diff_content = get_diff_from_commit_list(repo, commits_reviewed)
+        elif since_date:
+            since_str = _parse_since_date_pacific(since_date)
+            commits_reviewed = get_commits_since(repo, since_str)
+            if not commits_reviewed:
+                console.print(f"[yellow]No commits since {since_date}.[/yellow]")
+                sys.exit(0)
+            diff_content = get_diff_from_commit_list(repo, commits_reviewed)
+        elif last_commits is not None:
+            commits_reviewed = get_last_n_commits(repo, last_commits)
+            if not commits_reviewed:
+                console.print("[yellow]No commits found for the requested range.[/yellow]")
+                sys.exit(0)
+            diff_content = get_diff_from_commit_list(repo, commits_reviewed)
         else:
-            console.print("[bold red]❌ Must specify --base/--head, --range, or --diff[/bold red]")
+            console.print(
+                "[bold red]❌ Must specify --base/--head, --range, --diff, "
+                "--since-last-scan, --since, or --last[/bold red]"
+            )
             sys.exit(1)
 
         if not diff_content.strip():
@@ -411,7 +608,11 @@ def pr_review(
             console.print("[yellow]No changed files found in diff.[/yellow]")
             sys.exit(0)
 
-        known_vulns_path = securevibes_dir / "VULNERABILITIES.json"
+        known_vulns_path = _repo_output_path(
+            repo,
+            securevibes_dir / "VULNERABILITIES.json",
+            operation="PR review baseline vulnerabilities artifact",
+        )
         known_vulns = known_vulns_path if known_vulns_path.exists() else None
 
         result = asyncio.run(
@@ -422,61 +623,36 @@ def pr_review(
                 diff_context,
                 known_vulns,
                 severity,
+                update_artifacts,
             )
         )
 
-        # Safety filter by severity threshold (defense in depth)
-        if severity:
-            min_severity = Severity(severity)
-            severity_order = ["info", "low", "medium", "high", "critical"]
-            min_index = severity_order.index(min_severity.value)
-            result.issues = [
-                issue
-                for issue in result.issues
-                if severity_order.index(issue.severity.value) >= min_index
-            ]
+        _filter_by_severity(result, severity)
+        _write_output(
+            result=result,
+            output_format=output_format,
+            output=output,
+            repo_path=repo,
+            markdown_default_filename="pr_review_report.md",
+            markdown_label="PR review report",
+            quiet=False,
+        )
 
-        if format == "markdown":
-            from securevibes.reporters.markdown_reporter import MarkdownReporter
-
-            if output:
-                output_path = Path(output)
-                if not output_path.is_absolute():
-                    output_path = repo / ".securevibes" / output
-                try:
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    MarkdownReporter.save(result, output_path)
-                    console.print(f"\n✅ PR review report saved to: {output_path}")
-                except (IOError, OSError, PermissionError) as e:
-                    console.print(f"[bold red]❌ Error writing output file:[/bold red] {e}")
-                    sys.exit(1)
-            else:
-                default_path = repo / ".securevibes" / "pr_review_report.md"
-                try:
-                    MarkdownReporter.save(result, default_path)
-                    console.print(f"\n📄 PR review report: [cyan]{default_path}[/cyan]")
-                except (IOError, OSError, PermissionError) as e:
-                    console.print(f"[bold red]❌ Error writing report:[/bold red] {e}")
-                    sys.exit(1)
-
-        elif format == "json":
-            import json
-
-            output_data = result.to_dict()
-            if output:
-                try:
-                    output_path = Path(output)
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    output_path.write_text(json.dumps(output_data, indent=2))
-                    console.print(f"\n✅ Results saved to: {output}")
-                except (IOError, OSError, PermissionError) as e:
-                    console.print(f"[bold red]❌ Error writing output file:[/bold red] {e}")
-                    sys.exit(1)
-            else:
-                console.print_json(data=output_data)
-
-        else:
-            _display_table_results(result, quiet=False)
+        head_commit = get_repo_head_commit(repo)
+        if head_commit:
+            scan_state_path = _repo_output_path(
+                repo,
+                securevibes_dir / "scan_state.json",
+                operation="PR review scan_state artifact",
+            )
+            update_scan_state(
+                scan_state_path,
+                pr_review=build_pr_review_entry(
+                    commit=head_commit,
+                    commits_reviewed=commits_reviewed,
+                    timestamp=utc_timestamp(),
+                ),
+            )
 
         if result.critical_count > 0:
             sys.exit(2)
@@ -490,53 +666,236 @@ def pr_review(
         sys.exit(1)
 
 
+@cli.command("catchup")
+@click.argument("path", type=click.Path(exists=True), default=".")
+@click.option("--branch", default="main", help="Branch to pull before reviewing")
+@click.option("--model", "-m", default="sonnet", help="Claude model to use (e.g., sonnet, haiku)")
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    type=click.Choice(["markdown", "json", "text", "table"]),
+    default="markdown",
+    help="Output format (default: markdown)",
+)
+@click.option("--output", "-o", type=click.Path(), help="Output file path")
+@click.option("--debug", is_flag=True, help="Show verbose diagnostic output")
+@click.option(
+    "--severity",
+    "-s",
+    type=click.Choice(["critical", "high", "medium", "low"]),
+    default="medium",
+    help="Minimum severity to report",
+)
+@click.option(
+    "--update-artifacts",
+    is_flag=True,
+    help="Update THREAT_MODEL.json and VULNERABILITIES.json from PR findings",
+)
+def catchup(
+    path: str,
+    branch: str,
+    model: str,
+    output_format: str,
+    output: Optional[str],
+    debug: bool,
+    severity: str,
+    update_artifacts: bool,
+):
+    """
+    Pull latest changes and review commits since the last full scan.
+
+    Example:
+
+        securevibes catchup . --branch main
+    """
+    try:
+        repo = Path(path).resolve()
+        current_branch = get_repo_branch(repo)
+        if current_branch and current_branch != branch:
+            console.print(
+                f"[bold red]❌ Current branch is {current_branch}. "
+                f"Please checkout {branch} before running catchup.[/bold red]"
+            )
+            sys.exit(1)
+
+        if _repo_has_local_changes(repo):
+            console.print(
+                "[bold red]❌ Working tree is not clean. "
+                "Commit, stash, or discard local changes before running catchup.[/bold red]"
+            )
+            sys.exit(1)
+
+        try:
+            _git_pull(repo, branch)
+        except (RuntimeError, ValueError) as e:
+            console.print(f"[bold red]❌ git pull failed:[/bold red] {e}")
+            sys.exit(1)
+
+        pr_review(
+            path=path,
+            base=None,
+            head=None,
+            commit_range=None,
+            diff_file=None,
+            since_last_scan=True,
+            since_date=None,
+            last_commits=None,
+            update_artifacts=update_artifacts,
+            clean_pr_artifacts=False,
+            model=model,
+            output_format=output_format,
+            output=output,
+            debug=debug,
+            severity=severity,
+        )
+    except Exception as e:
+        console.print(f"\n[bold red]❌ Error:[/bold red] {e}", style="red")
+        console.print("\n[dim]Run with --help for usage information[/dim]")
+        sys.exit(1)
+
+
 def _is_production_url(url: str) -> bool:
-    """Detect if a URL appears to be a production system"""
-    url_lower = url.lower()
+    """Heuristically detect production URLs for DAST safety checks.
 
-    # Safe patterns (local development)
-    safe_patterns = [
-        "localhost",
-        "127.0.0.1",
-        "0.0.0.0",
-        "[::1]",
-        "staging",
-        "dev",
-        "test",
-        "qa",
-        ".local",
-        ".test",
-        ".dev",
-    ]
+    This is a best-effort heuristic, not strict URL classification.
+    """
+    parsed = urllib_parse.urlparse(url.lower().strip())
+    hostname = parsed.hostname
+    if not hostname:
+        return True
 
-    # Check if URL contains any safe pattern
-    if any(pattern in url_lower for pattern in safe_patterns):
+    if hostname in SAFE_NON_PRODUCTION_HOSTS or hostname.endswith(SAFE_NON_PRODUCTION_SUFFIXES):
         return False
 
-    # Production indicators
-    production_patterns = [
-        ".com",
-        ".net",
-        ".org",
-        ".io",
-        "production",
-        "prod",
-        "api.",
-        "app.",
-        "www.",
-    ]
+    try:
+        ip = ipaddress.ip_address(hostname)
+        return not ip.is_loopback
+    except ValueError:
+        return True
 
-    return any(pattern in url_lower for pattern in production_patterns)
+
+def _clean_pr_artifacts(securevibes_dir: Path, *, repo_root: Optional[Path] = None) -> list[Path]:
+    """Delete transient PR review artifacts that can taint reruns."""
+    removed: list[Path] = []
+    for file_name in TRANSIENT_PR_ARTIFACTS:
+        candidate = securevibes_dir / file_name
+        if repo_root is not None:
+            candidate = _repo_output_path(
+                repo_root,
+                candidate,
+                operation="transient PR artifact cleanup",
+            )
+        if not candidate.exists() or not candidate.is_file():
+            continue
+        try:
+            candidate.unlink()
+        except OSError as exc:
+            raise RuntimeError(f"Failed to remove transient artifact {candidate}: {exc}") from exc
+        removed.append(candidate)
+    return removed
+
+
+def _parse_since_date_pacific(date_str: str) -> str:
+    """Parse a YYYY-MM-DD date as Pacific midnight and return an ISO string."""
+    try:
+        parsed_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise click.BadParameter("Date must be in YYYY-MM-DD format") from exc
+
+    pacific = ZoneInfo("America/Los_Angeles")
+    since_dt = datetime.combine(parsed_date, time.min, tzinfo=pacific)
+    return since_dt.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
+def _ensure_baseline_scan(repo: Path, model: str, debug: bool) -> None:
+    securevibes_dir = _repo_output_path(
+        repo,
+        Path(".securevibes"),
+        operation="baseline artifact directory",
+    )
+    state_path = _repo_output_path(
+        repo,
+        securevibes_dir / "scan_state.json",
+        operation="baseline scan_state artifact",
+    )
+    state = load_scan_state(state_path)
+    branch = get_repo_branch(repo)
+
+    if state and branch and scan_state_branch_matches(state, branch):
+        return
+
+    console.print(
+        "[yellow]⚠️  No baseline scan found for this branch.[/yellow]",
+    )
+
+    if not sys.stdin.isatty():
+        console.print("Run 'securevibes scan .' to generate base artifacts.")
+        sys.exit(1)
+
+    if not click.confirm(
+        "No baseline scan found for this branch. Run a baseline full scan now?",
+        default=False,
+    ):
+        console.print("Run 'securevibes scan .' to generate base artifacts.")
+        sys.exit(1)
+
+    console.print("Running baseline scan...")
+    asyncio.run(
+        _run_scan(
+            str(repo),
+            model=model,
+            save_results=True,
+            quiet=False,
+            debug=debug,
+        )
+    )
+
+    state = load_scan_state(state_path)
+    branch = get_repo_branch(repo)
+    if not state or not branch or not scan_state_branch_matches(state, branch):
+        console.print("[bold red]❌ Baseline scan did not initialize scan_state.json[/bold red]")
+        sys.exit(1)
+
+
+def _git_pull(repo: Path, branch: str) -> None:
+    validate_git_ref(branch)
+    result = subprocess.run(
+        ["git", "pull", "origin", "--", branch],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.strip() or "Unknown git pull error"
+        raise RuntimeError(stderr)
+
+
+def _repo_has_local_changes(repo: Path) -> bool:
+    """Return True if the repository has local changes or git status fails."""
+    result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return True
+    return bool(result.stdout.strip())
 
 
 def _check_target_reachability(target_url: str, timeout: int = 5) -> bool:
     """Check if target URL is reachable"""
-    import requests
-
     try:
-        requests.get(target_url, timeout=timeout, allow_redirects=True)
+        req = urllib_request.Request(target_url, method="HEAD")
+        with urllib_request.urlopen(req, timeout=timeout):
+            return True
+    except urllib_error.HTTPError:
+        # 4xx/5xx still proves the host is reachable.
         return True
-    except requests.RequestException:
+    except (urllib_error.URLError, ValueError):
         return False
 
 
@@ -608,6 +967,7 @@ async def _run_pr_review(
     diff_context: DiffContext,
     known_vulns_path: Optional[Path],
     severity_threshold: str,
+    update_artifacts: bool,
 ):
     """Run the PR review with the configured scanner."""
     scanner = Scanner(model=model, debug=debug)
@@ -616,6 +976,7 @@ async def _run_pr_review(
         diff_context,
         known_vulns_path,
         severity_threshold,
+        update_artifacts=update_artifacts,
     )
 
 
@@ -642,6 +1003,12 @@ def _display_table_results(result, quiet: bool):
         stats_table.add_row("   🟢 Low:", f"[dim]{result.low_count}[/dim]")
 
     console.print(stats_table)
+
+    warnings = getattr(result, "warnings", None)
+    if isinstance(warnings, list) and warnings:
+        for warning in warnings:
+            console.print(f"[bold yellow]WARNING:[/bold yellow] {warning}")
+
     console.print()
 
     if result.issues:
@@ -687,6 +1054,11 @@ def _display_text_results(result):
     console.print(f"Scan time: {result.scan_time_seconds}s")
     console.print(f"Issues found: {len(result.issues)}")
 
+    warnings = getattr(result, "warnings", None)
+    if isinstance(warnings, list) and warnings:
+        for warning in warnings:
+            console.print(f"WARNING: {warning}")
+
     if result.issues:
         console.print(f"  Critical: {result.critical_count}")
         console.print(f"  High: {result.high_count}")
@@ -698,6 +1070,55 @@ def _display_text_results(result):
             console.print(f"\n{idx}. [{issue.severity.value.upper()}] {issue.title}")
             console.print(f"   File: {issue.file_path}:{issue.line_number}")
             console.print(f"   {issue.description[:150]}...")
+
+
+def _parse_report_issues(raw_issues: list[dict]) -> list:
+    """Parse report issues into SecurityIssue models, skipping malformed entries."""
+    from securevibes.models.issue import SecurityIssue, Severity
+
+    issues = []
+    for idx, item in enumerate(raw_issues):
+        if not isinstance(item, dict):
+            console.print(
+                f"[yellow]⚠️  Warning: Issue #{idx + 1} is not an object - skipping[/yellow]"
+            )
+            continue
+
+        try:
+            issue_id = item.get("threat_id") or item.get("id")
+            if not issue_id:
+                console.print(
+                    f"[yellow]⚠️  Warning: Issue #{idx + 1} missing ID, using index[/yellow]"
+                )
+                issue_id = f"ISSUE-{idx + 1}"
+
+            missing = [field for field in REQUIRED_REPORT_ISSUE_FIELDS if field not in item]
+            if missing:
+                console.print(
+                    f"[yellow]⚠️  Warning: Issue #{idx + 1} missing fields: "
+                    f"{', '.join(missing)} - skipping[/yellow]"
+                )
+                continue
+
+            issues.append(
+                SecurityIssue(
+                    id=issue_id,
+                    severity=Severity(item["severity"]),
+                    title=item["title"],
+                    description=item["description"],
+                    file_path=item["file_path"],
+                    line_number=item["line_number"],
+                    code_snippet=item.get("code_snippet", ""),
+                    recommendation=item.get("recommendation"),
+                    cwe_id=item.get("cwe_id"),
+                )
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            console.print(
+                f"[yellow]⚠️  Warning: Failed to parse issue #{idx + 1}: {exc} - skipping[/yellow]"
+            )
+            continue
+    return issues
 
 
 @cli.command()
@@ -721,9 +1142,7 @@ def report(report_path: str):
 
         data = JSONReporter.load(report_path)
 
-        # Validate required fields
-        required_fields = ["repository_path", "files_scanned", "scan_time_seconds", "issues"]
-        missing_fields = [field for field in required_fields if field not in data]
+        missing_fields = [field for field in REQUIRED_REPORT_FIELDS if field not in data]
         if missing_fields:
             console.print(
                 f"[bold red]❌ Invalid report format:[/bold red] Missing fields: {', '.join(missing_fields)}"
@@ -735,52 +1154,14 @@ def report(report_path: str):
 
         # Create a mock result object for display
         from securevibes.models.result import ScanResult
-        from securevibes.models.issue import SecurityIssue, Severity
 
-        issues = []
-        for idx, item in enumerate(data.get("issues", [])):
-            try:
-                # Accept both threat_id and id, but warn if neither exists
-                issue_id = item.get("threat_id") or item.get("id")
-                if not issue_id:
-                    console.print(
-                        f"[yellow]⚠️  Warning: Issue #{idx + 1} missing ID, using index[/yellow]"
-                    )
-                    issue_id = f"ISSUE-{idx + 1}"
-
-                # Validate required fields for each issue
-                required_issue_fields = [
-                    "severity",
-                    "title",
-                    "description",
-                    "file_path",
-                    "line_number",
-                ]
-                missing = [f for f in required_issue_fields if f not in item]
-                if missing:
-                    console.print(
-                        f"[yellow]⚠️  Warning: Issue #{idx + 1} missing fields: {', '.join(missing)} - skipping[/yellow]"
-                    )
-                    continue
-
-                issues.append(
-                    SecurityIssue(
-                        id=issue_id,
-                        severity=Severity(item["severity"]),
-                        title=item["title"],
-                        description=item["description"],
-                        file_path=item["file_path"],
-                        line_number=item["line_number"],
-                        code_snippet=item.get("code_snippet", ""),
-                        recommendation=item.get("recommendation"),
-                        cwe_id=item.get("cwe_id"),
-                    )
-                )
-            except (KeyError, ValueError) as e:
-                console.print(
-                    f"[yellow]⚠️  Warning: Failed to parse issue #{idx + 1}: {e} - skipping[/yellow]"
-                )
-                continue
+        raw_issues = data.get("issues", [])
+        if not isinstance(raw_issues, list):
+            console.print(
+                "[yellow]⚠️  Warning: Report 'issues' field is not a list; treating as empty[/yellow]"
+            )
+            raw_issues = []
+        issues = _parse_report_issues(raw_issues)
 
         try:
             result = ScanResult(

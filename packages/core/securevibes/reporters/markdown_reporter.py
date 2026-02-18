@@ -59,8 +59,14 @@ class MarkdownReporter:
 
         # DAST metrics if enabled
         if result.dast_enabled:
+            # Internal DAST rates are stored as fractions (0.0-1.0), but older reports may store
+            # percentage values directly.
+            validation_rate_pct = result.dast_validation_rate
+            if 0.0 <= validation_rate_pct <= 1.0:
+                validation_rate_pct *= 100
+
             lines.append("**DAST Enabled:** ✓ Yes  ")
-            lines.append(f"**Validation Rate:** {result.dast_validation_rate:.1f}%  ")
+            lines.append(f"**Validation Rate:** {validation_rate_pct:.1f}%  ")
             if result.dast_scan_time_seconds > 0:
                 lines.append(f"**DAST Time:** {result.dast_scan_time_seconds:.1f}s  ")
 
@@ -112,6 +118,40 @@ class MarkdownReporter:
                 lines.append(f"- ✅ {len(result.validated_issues)} Validated")
                 lines.append(f"- ❌ {len(result.false_positives)} False Positives")
                 lines.append(f"- ❓ {len(result.unvalidated_issues)} Unvalidated")
+
+            severity_order = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+            primary_issue = max(
+                result.issues,
+                key=lambda issue: (
+                    severity_order.get(issue.severity.value, 0),
+                    len(issue.attack_scenario or ""),
+                    len(issue.evidence or ""),
+                ),
+            )
+            primary_location = (
+                f"`{primary_issue.file_path}:{primary_issue.line_number}`"
+                if primary_issue.line_number
+                else f"`{primary_issue.file_path}`"
+            )
+            chain_text = (
+                primary_issue.attack_scenario
+                or primary_issue.evidence
+                or primary_issue.description
+                or primary_issue.title
+            )
+            chain_text = " ".join(chain_text.split())
+            if len(chain_text) > 420:
+                chain_text = f"{chain_text[:417]}..."
+
+            lines.append("")
+            lines.append("## Primary Exploit Chain")
+            lines.append("")
+            lines.append(f"**Finding:** {primary_issue.title}")
+            lines.append(f"**Location:** {primary_location}")
+            if primary_issue.cwe_id:
+                lines.append(f"**CWE:** {primary_issue.cwe_id}")
+            lines.append("")
+            lines.append(chain_text)
         else:
             lines.append("## Executive Summary")
             lines.append("")
@@ -274,30 +314,37 @@ class MarkdownReporter:
                     lines.append("**DAST Evidence:**")
                     lines.append("")
 
-                    # Show test steps if available
-                    test_steps = issue.dast_evidence.get("test_steps")
-                    if test_steps:
-                        if isinstance(test_steps, list):
-                            for step in test_steps:
-                                lines.append(f"- {step}")
-                        else:
-                            lines.append(str(test_steps))
-                        lines.append("")
-
-                    # Show HTTP requests if available
-                    http_requests = issue.dast_evidence.get("http_requests")
-                    if http_requests and isinstance(http_requests, list):
-                        for req in http_requests:
-                            lines.append(f"Request: `{req.get('request', 'N/A')}`")
-                            lines.append(f"- Status: {req.get('status', 'N/A')}")
-                            if req.get("authenticated_as"):
-                                lines.append(f"- Auth: {req['authenticated_as']}")
+                    if isinstance(issue.dast_evidence, dict):
+                        # Show test steps if available
+                        test_steps = issue.dast_evidence.get("test_steps")
+                        if test_steps:
+                            if isinstance(test_steps, list):
+                                for step in test_steps:
+                                    lines.append(f"- {step}")
+                            else:
+                                lines.append(str(test_steps))
                             lines.append("")
 
-                    # Show notes or reason if available
-                    notes = issue.dast_evidence.get("notes") or issue.dast_evidence.get("reason")
-                    if notes:
-                        lines.append(f"*{notes}*")
+                        # Show HTTP requests if available
+                        http_requests = issue.dast_evidence.get("http_requests")
+                        if http_requests and isinstance(http_requests, list):
+                            for req in http_requests:
+                                lines.append(f"Request: `{req.get('request', 'N/A')}`")
+                                lines.append(f"- Status: {req.get('status', 'N/A')}")
+                                if req.get("authenticated_as"):
+                                    lines.append(f"- Auth: {req['authenticated_as']}")
+                                lines.append("")
+
+                        # Show notes or reason if available
+                        notes = issue.dast_evidence.get("notes") or issue.dast_evidence.get(
+                            "reason"
+                        )
+                        if notes:
+                            lines.append(f"*{notes}*")
+                            lines.append("")
+                    else:
+                        # Fall back to plain rendering for non-dict payloads.
+                        lines.append(str(issue.dast_evidence))
                         lines.append("")
 
                 # Recommendation
@@ -338,13 +385,23 @@ class MarkdownReporter:
         """
         import re
 
-        # If already well-formatted (has newlines with numbers), return as-is
-        if re.search(r"\n\d+\.", recommendation):
-            return recommendation
+        raw = recommendation or ""
+        if not raw.strip():
+            return raw
+
+        normalized = raw.strip()
+        # Fix malformed lead like "9. 2) ..." produced by some LLM outputs.
+        normalized = re.sub(r"^\s*\d+\.\s+(\d+)\)\s+", r"\1. ", normalized)
+        # Normalize parenthesized enumerations: "1) item" -> "1. item".
+        normalized = re.sub(r"(?<!\d)(\d+)\)\s+", r"\1. ", normalized)
+
+        # If already well-formatted multiline list, keep ordering and line breaks intact.
+        if re.search(r"\n\d+\.\s", normalized):
+            return normalized
 
         # Split on numbered patterns: "1. ", "2. ", etc.
         # Use lookahead to keep the number
-        items = re.split(r"(?=\d+\.\s+)", recommendation.strip())
+        items = re.split(r"(?=\d+\.\s+)", normalized)
         items = [item.strip() for item in items if item.strip()]
 
         # Check if any items start with numbered pattern
@@ -352,7 +409,7 @@ class MarkdownReporter:
 
         if not has_numbered_items or len(items) == 0:
             # No numbered list detected, return as-is
-            return recommendation
+            return normalized
 
         # Format each item
         formatted_items = []

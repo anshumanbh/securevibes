@@ -1,56 +1,58 @@
 Perform a complete security analysis of this codebase.
 
 EXECUTION MODE CHECK:
-- Check if environment variable RUN_ONLY_SUBAGENT is set
-- If RUN_ONLY_SUBAGENT is set, run ONLY that sub-agent and skip all others
-- Check if environment variable SKIP_SUBAGENTS is set  
-- If SKIP_SUBAGENTS is set (comma-separated list), skip those sub-agents
-- Otherwise, execute all phases sequentially
+- First read the <scan_execution_mode> block in this prompt.
+- Treat these fields as authoritative for this run: run_only_subagent, resume_from_subagent, skip_subagents, dast_enabled.
+- Ignore conflicting OS environment variables.
+- Legacy fallback only if <scan_execution_mode> is missing:
+  - RUN_ONLY_SUBAGENT
+  - SKIP_SUBAGENTS
+  - DAST_ENABLED
 
 Execute these phases SEQUENTIALLY, ONE AT A TIME:
 
 PHASE 1: ASSESSMENT
-- Skip if: SKIP_SUBAGENTS contains "assessment" OR (RUN_ONLY_SUBAGENT is set AND != "assessment")
+- Skip if: skip_subagents contains "assessment" OR (run_only_subagent != "none" AND run_only_subagent != "assessment")
 - Announce: "Starting Phase 1: Assessment"
-- Use the 'assessment' agent to analyze architecture
+- Use the Task tool to invoke the 'assessment' agent to analyze architecture
 - Creates .securevibes/SECURITY.md
 - Report: "Assessment complete" when done
 - WAIT for completion before proceeding
 
 PHASE 2: THREAT MODELING
-- Skip if: SKIP_SUBAGENTS contains "threat-modeling" OR (RUN_ONLY_SUBAGENT is set AND != "threat-modeling")
+- Skip if: skip_subagents contains "threat-modeling" OR (run_only_subagent != "none" AND run_only_subagent != "threat-modeling")
 - Announce: "Starting Phase 2: Threat Modeling"
-- Use the 'threat-modeling' agent to search for threat patterns using STRIDE
+- Use the Task tool to invoke the 'threat-modeling' agent to search for threat patterns using STRIDE
 - Reads .securevibes/SECURITY.md
 - Creates .securevibes/THREAT_MODEL.json
 - Report: "Threat modeling complete" when done (do NOT include threat counts - counts will be calculated from the file)
 - WAIT for completion before proceeding
 
 PHASE 3: CODE REVIEW
-- Skip if: SKIP_SUBAGENTS contains "code-review" OR (RUN_ONLY_SUBAGENT is set AND != "code-review")
+- Skip if: skip_subagents contains "code-review" OR (run_only_subagent != "none" AND run_only_subagent != "code-review")
 - Announce: "Starting Phase 3: Code Review"
-- Use the 'code-review' agent to validate threats with evidence
+- Use the Task tool to invoke the 'code-review' agent to validate threats with evidence
 - Reads .securevibes/THREAT_MODEL.json
 - Creates .securevibes/VULNERABILITIES.json
 - Report: "Code review complete" when done
 - WAIT for completion before proceeding
 
 PHASE 4: REPORT GENERATION
-- Skip if: SKIP_SUBAGENTS contains "report-generator" OR (RUN_ONLY_SUBAGENT is set AND != "report-generator")
+- Skip if: skip_subagents contains "report-generator" OR (run_only_subagent != "none" AND run_only_subagent != "report-generator")
 - Announce: "Starting Phase 4: Report Generation"
-- Use the 'report-generator' agent for final report
+- Use the Task tool to invoke the 'report-generator' agent for final report
 - Reads SECURITY.md, THREAT_MODEL.json, VULNERABILITIES.json
 - Creates .securevibes/scan_results.json with ALL vulnerabilities
 - Report: "Report generation complete" when done
 - WAIT for completion before proceeding
 
 PHASE 5: DAST VALIDATION (CONDITIONAL)
-- Skip if: DAST_ENABLED != "true" OR SKIP_SUBAGENTS contains "dast" OR (RUN_ONLY_SUBAGENT is set AND != "dast")
-- Check environment variable DAST_ENABLED
-- If DAST_ENABLED != "true", SKIP this phase entirely
-- If DAST_ENABLED == "true":
+- Skip if: dast_enabled != "true" OR skip_subagents contains "dast" OR (run_only_subagent != "none" AND run_only_subagent != "dast")
+- Check scan_execution_mode.dast_enabled
+- If dast_enabled != "true", SKIP this phase entirely
+- If dast_enabled == "true":
   - Announce: "Starting Phase 5: DAST Validation"
-  - Use the 'dast' agent to validate vulnerabilities via HTTP-based dynamic testing
+  - Use the Task tool to invoke the 'dast' agent to validate vulnerabilities via HTTP-based dynamic testing
   - Reads .securevibes/VULNERABILITIES.json
   - Creates .securevibes/DAST_VALIDATION.json
   - Agent may use skills discovered in .claude/skills/dast/
@@ -61,8 +63,8 @@ CRITICAL RULES:
 - Explicitly announce each phase before starting
 - WAIT for each phase to complete before starting the next
 - VERIFY the required artifact exists after each phase. If missing, STOP IMMEDIATELY.
-- Do NOT delegate work to other agents via Task tool
+- Use the Task tool to invoke each agent. Do NOT create agents manually or write agent code.
 - Each agent uses ONLY its assigned tools
-- Phase 5 is OPTIONAL - only run if DAST_ENABLED=true
+- Phase 5 is OPTIONAL - only run if dast_enabled=true
 
 Keep responses brief - focus on announcing phases, invoking agents, and reporting completion.

@@ -95,7 +95,10 @@ def create_agent_definitions(
             model=config.get_agent_model("code_review", cli_override=cli_model),
         ),
         "pr-code-review": AgentDefinition(
-            description="Analyzes PR diffs for new vulnerabilities with architecture and threat context",
+            description=(
+                "Analyzes PR diffs for introduced/enabled/regressed exploit chains "
+                "with architecture and threat context"
+            ),
             prompt=AGENT_PROMPTS["pr_code_review"],
             tools=["Read", "Grep", "Glob", "Write"],
             model=config.get_agent_model("pr_code_review", cli_override=cli_model),
