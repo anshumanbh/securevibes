@@ -7,6 +7,7 @@ import pytest
 from securevibes.models.schemas import (
     derive_pr_finding_id,
     extract_cwe_id,
+    fix_threat_model_json,
     fix_pr_vulnerabilities_json,
     fix_vulnerabilities_json,
     normalize_pr_vulnerability,
@@ -93,6 +94,15 @@ class TestFixVulnerabilitiesJson:
         fixed, modified = fix_vulnerabilities_json("[]")
 
         assert modified is False
+        assert fixed == "[]"
+
+    def test_code_fenced_array_is_unwrapped(self):
+        """Code-fenced arrays should be normalized to plain JSON arrays."""
+        content = "```json\n[]\n```"
+
+        fixed, modified = fix_vulnerabilities_json(content)
+
+        assert modified is True
         assert fixed == "[]"
 
     def test_single_vuln_object_wrapped_in_array(self):
@@ -423,6 +433,24 @@ class TestFixPrVulnerabilitiesJson:
 
         assert modified is False
         assert json.loads(fixed) == [valid_pr_vuln]
+
+    def test_code_fenced_pr_array_is_unwrapped(self, valid_pr_vuln):
+        content = f"```json\n{json.dumps([valid_pr_vuln])}\n```"
+
+        fixed, modified = fix_pr_vulnerabilities_json(content)
+
+        assert modified is True
+        assert json.loads(fixed) == [valid_pr_vuln]
+
+
+class TestFixThreatModelJson:
+    """Tests for fix_threat_model_json() auto-fix function."""
+
+    def test_empty_string_is_not_normalized_to_empty_array(self):
+        fixed, modified = fix_threat_model_json("")
+
+        assert modified is False
+        assert fixed == ""
 
 
 class TestValidatePrVulnerabilitiesJson:

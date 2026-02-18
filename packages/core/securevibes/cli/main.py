@@ -97,7 +97,7 @@ def _resolve_markdown_output_path(
     if output:
         output_path = Path(output)
         if output_path.is_absolute():
-            return output_path
+            return _repo_output_path(repo_path, output_path, operation="markdown output file")
         return _repo_output_path(
             repo_path,
             Path(".securevibes") / output,
@@ -140,7 +140,11 @@ def _write_output(
         output_data = result.to_dict()
         if output:
             try:
-                output_path = Path(output)
+                output_path = _repo_output_path(
+                    repo_path,
+                    Path(output),
+                    operation="JSON output file",
+                )
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 output_path.write_text(json.dumps(output_data, indent=2), encoding="utf-8")
                 console.print(f"\n✅ Results saved to: {output_path}")

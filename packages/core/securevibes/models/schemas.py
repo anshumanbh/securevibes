@@ -201,7 +201,8 @@ def fix_threat_model_json(content: str) -> Tuple[str, bool]:
     """
 
     if not content or not content.strip():
-        return "[]", True
+        # Fail closed: empty agent output must not be normalized to "no threats found".
+        return content, False
 
     original = content
     content = _strip_code_fences(content)
@@ -330,19 +331,21 @@ def _unwrap_json_array(content: str) -> Tuple[str, Any, bool]:
     if not content or not content.strip():
         return "[]", None, True
 
-    content = content.strip()
+    original = content.strip()
+    content = _strip_code_fences(content).strip()
+    stripped_code_fences = content != original
 
     # Already a flat array - no fix needed
     if content.startswith("["):
-        return content, None, False
+        return content, None, stripped_code_fences
 
     try:
         data = json.loads(content)
     except json.JSONDecodeError:
-        return content, None, False
+        return content, None, stripped_code_fences
 
     if isinstance(data, list):
-        return json.dumps(data, indent=2), None, False
+        return json.dumps(data, indent=2), None, True
 
     if isinstance(data, dict):
         for key in WRAPPER_KEYS:
@@ -356,7 +359,7 @@ def _unwrap_json_array(content: str) -> Tuple[str, Any, bool]:
         if "threat_id" in data or "title" in data:
             return "", [data], True
 
-    return content, None, False
+    return content, None, stripped_code_fences
 
 
 def fix_vulnerabilities_json(content: str) -> Tuple[str, bool]:

@@ -1870,6 +1870,31 @@ class TestPRJsonValidationHook:
         assert "updatedInput" not in result
 
     @pytest.mark.asyncio
+    async def test_pr_vulnerabilities_edit_is_validated_and_normalized(self, console):
+        """Edit operations should be validated like Write for PR artifacts."""
+        import json
+
+        hook = create_json_validation_hook(console, debug=False)
+
+        vuln = self._make_valid_pr_vuln()
+        content = json.dumps({"vulnerabilities": [vuln]})
+
+        input_data = {
+            "tool_name": "Edit",
+            "tool_input": {
+                "file_path": "/project/.securevibes/PR_VULNERABILITIES.json",
+                "content": content,
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "hookSpecificOutput" in result
+        assert "updatedInput" in result["hookSpecificOutput"]
+        updated_content = result["hookSpecificOutput"]["updatedInput"]["content"]
+        assert json.loads(updated_content) == [vuln]
+
+    @pytest.mark.asyncio
     async def test_pr_artifact_backup_filename_is_not_intercepted(self, console):
         """Only exact PR artifact path should be intercepted."""
         import json

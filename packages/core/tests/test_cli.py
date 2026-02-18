@@ -275,9 +275,9 @@ class TestScanCommand:
         assert report_path.exists()
         assert "custom_report.md" in result.output
 
-    def test_scan_markdown_output_absolute_path(self, runner, test_repo, tmp_path):
-        """Test markdown output with absolute path preserves the path"""
-        output_file = tmp_path / "absolute_report.md"
+    def test_scan_markdown_output_absolute_path(self, runner, test_repo):
+        """Absolute markdown output path is allowed when it stays within repo root."""
+        output_file = (test_repo / "absolute_report.md").resolve()
         with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _empty_scan_result(test_repo)
             result = runner.invoke(
@@ -287,6 +287,45 @@ class TestScanCommand:
         assert result.exit_code == 0
         assert output_file.exists()
         assert output_file.name in result.output
+
+    def test_scan_markdown_output_rejects_absolute_path_outside_repo(self, runner, test_repo, tmp_path):
+        """Absolute markdown output path must not escape repository boundaries."""
+        output_file = (test_repo.parent / "outside_report.md").resolve()
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _empty_scan_result(test_repo)
+            result = runner.invoke(
+                cli, ["scan", str(test_repo), "--format", "markdown", "--output", str(output_file)]
+            )
+
+        assert result.exit_code == 1
+        assert "outside repository root" in result.output
+        assert not output_file.exists()
+
+    def test_scan_json_output_absolute_path_inside_repo(self, runner, test_repo):
+        """Absolute JSON output path is allowed when it stays within repo root."""
+        output_file = (test_repo / "scan_results.json").resolve()
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _empty_scan_result(test_repo)
+            result = runner.invoke(
+                cli, ["scan", str(test_repo), "--format", "json", "--output", str(output_file)]
+            )
+
+        assert result.exit_code == 0
+        assert output_file.exists()
+        assert "Results saved to" in result.output
+
+    def test_scan_json_output_rejects_absolute_path_outside_repo(self, runner, test_repo, tmp_path):
+        """Absolute JSON output path must not escape repository boundaries."""
+        output_file = (test_repo.parent / "outside_results.json").resolve()
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _empty_scan_result(test_repo)
+            result = runner.invoke(
+                cli, ["scan", str(test_repo), "--format", "json", "--output", str(output_file)]
+            )
+
+        assert result.exit_code == 1
+        assert "outside repository root" in result.output
+        assert not output_file.exists()
 
     def test_scan_markdown_output_rejects_relative_path_escape(self, runner, test_repo, tmp_path):
         """Relative markdown output should not allow escaping repository boundaries."""

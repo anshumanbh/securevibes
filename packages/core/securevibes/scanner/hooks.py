@@ -765,8 +765,8 @@ def create_json_validation_hook(
 
         tool_name = input_data.get("tool_name")
 
-        # Only intercept Write operations
-        if tool_name != "Write":
+        # Only intercept artifact mutations.
+        if tool_name not in {"Write", "Edit"}:
             return {}
 
         tool_input = input_data.get("tool_input", {})
