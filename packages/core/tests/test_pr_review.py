@@ -33,12 +33,12 @@ from securevibes.scanner.chain_analysis import (
     summarize_revalidation_support,
 )
 from securevibes.scanner.pr_review_merge import (
-    _attempts_show_pr_disagreement,
-    _build_pr_retry_focus_plan,
-    _build_pr_review_retry_suffix,
-    _extract_observed_pr_findings,
-    _merge_pr_attempt_findings,
-    _should_run_pr_verifier,
+    attempts_show_pr_disagreement,
+    build_pr_retry_focus_plan,
+    build_pr_review_retry_suffix,
+    extract_observed_pr_findings,
+    merge_pr_attempt_findings,
+    should_run_pr_verifier,
     dedupe_pr_vulns,
     filter_baseline_vulns,
 )
@@ -516,7 +516,7 @@ def test_dedupe_pr_vulns_tags_known_matches():
 
 def test_merge_pr_attempt_findings_collapses_duplicate_chain_variants():
     """Near-duplicate chain variants from multiple attempts should collapse to one finding."""
-    merged = _merge_pr_attempt_findings(
+    merged = merge_pr_attempt_findings(
         [
             {
                 "title": "Unvalidated gatewayUrl parameter enables credential theft",
@@ -550,7 +550,7 @@ def test_merge_pr_attempt_findings_collapses_duplicate_chain_variants():
 
 def test_merge_pr_attempt_findings_preserves_distinct_chains():
     """Different chains in the same file should remain as separate findings."""
-    merged = _merge_pr_attempt_findings(
+    merged = merge_pr_attempt_findings(
         [
             {
                 "title": "Docker bind mount allows host filesystem escape",
@@ -582,7 +582,7 @@ def test_merge_pr_attempt_findings_preserves_distinct_chains():
 
 def test_merge_pr_attempt_findings_prefers_concrete_exploit_primitive():
     """Concrete exploit-primitive findings should win over speculative hardening variants."""
-    merged = _merge_pr_attempt_findings(
+    merged = merge_pr_attempt_findings(
         [
             {
                 "title": "Potential shell interpolation hardening gap in SSH helper",
@@ -632,7 +632,7 @@ def test_merge_pr_attempt_findings_prefers_concrete_exploit_primitive():
 
 def test_merge_pr_attempt_findings_drops_speculative_noise_when_concrete_exists():
     """Strongly-proven chain should suppress separate speculative hardening noise entries."""
-    merged = _merge_pr_attempt_findings(
+    merged = merge_pr_attempt_findings(
         [
             {
                 "title": "Local file exfiltration via media parser path acceptance",
@@ -682,7 +682,7 @@ def test_merge_pr_attempt_findings_drops_speculative_noise_when_concrete_exists(
 def test_merge_pr_attempt_findings_collapses_subchain_step_variants():
     """Same exploit chain split into parser steps should collapse to one canonical finding."""
     merge_stats: dict[str, int] = {}
-    merged = _merge_pr_attempt_findings(
+    merged = merge_pr_attempt_findings(
         [
             {
                 "title": "Parser accepts file URI local paths",
@@ -730,7 +730,7 @@ def test_merge_pr_attempt_findings_collapses_subchain_step_variants():
 
 def test_merge_pr_attempt_findings_preserves_distinct_same_file_same_cwe_chains():
     """Different sinks in same file/CWE should not be collapsed as one chain."""
-    merged = _merge_pr_attempt_findings(
+    merged = merge_pr_attempt_findings(
         [
             {
                 "title": "Shell command injection in startup helper",
@@ -771,7 +771,7 @@ def test_merge_pr_attempt_findings_preserves_distinct_same_file_same_cwe_chains(
 def test_merge_pr_attempt_findings_collapses_cross_cwe_enabler_variant():
     """Threat-enabler variants with same sink chain should collapse under concrete finding."""
     merge_stats: dict[str, int] = {}
-    merged = _merge_pr_attempt_findings(
+    merged = merge_pr_attempt_findings(
         [
             {
                 "title": "Path traversal in parser leads to file exfiltration",
@@ -858,7 +858,7 @@ def test_merge_pr_attempt_findings_drops_low_support_noise_when_core_is_repeated
         build_chain_family_identity(noisy_finding): 1,
     }
 
-    merged = _merge_pr_attempt_findings(
+    merged = merge_pr_attempt_findings(
         [core_finding, noisy_finding],
         merge_stats=merge_stats,
         chain_support_counts=chain_support_counts,
@@ -873,7 +873,7 @@ def test_merge_pr_attempt_findings_drops_low_support_noise_when_core_is_repeated
 def test_merge_pr_attempt_findings_drops_secondary_chain_variant():
     """Weaker same-family chain variants should be dropped as secondary findings."""
     merge_stats: dict[str, int] = {}
-    merged = _merge_pr_attempt_findings(
+    merged = merge_pr_attempt_findings(
         [
             {
                 "title": "Local file exfiltration via parser to media route",
@@ -951,26 +951,26 @@ def test_dedupe_with_baseline_filter_preserves_pr_findings():
 
 def test_pr_review_retry_suffix_attempt_two_focuses_command_injection():
     """Second pass should prioritize command/option injection chains."""
-    suffix = _build_pr_review_retry_suffix(2)
+    suffix = build_pr_review_retry_suffix(2)
     assert "FOCUS AREA: COMMAND/OPTION INJECTION CHAINS" in suffix
 
 
 def test_pr_review_retry_suffix_attempt_three_focuses_path_chains():
     """Third pass should prioritize path/file exfiltration chains."""
-    suffix = _build_pr_review_retry_suffix(3)
+    suffix = build_pr_review_retry_suffix(3)
     assert "FOCUS AREA: PATH + FILE EXFILTRATION CHAINS" in suffix
 
 
 def test_pr_review_retry_suffix_adds_command_builder_hint():
     """When command-builder deltas are detected, retry guidance should call that out."""
-    suffix = _build_pr_review_retry_suffix(2, command_builder_signals=True)
+    suffix = build_pr_review_retry_suffix(2, command_builder_signals=True)
     assert "COMMAND-BUILDER DELTA DETECTED" in suffix
     assert "missing `--` separators" in suffix
 
 
 def test_pr_review_retry_focus_plan_prioritizes_detected_signals():
     """Retry focus should prioritize active diff signals before default ordering."""
-    retry_plan = _build_pr_retry_focus_plan(
+    retry_plan = build_pr_retry_focus_plan(
         4,
         command_builder_signals=False,
         path_parser_signals=True,
@@ -982,13 +982,13 @@ def test_pr_review_retry_focus_plan_prioritizes_detected_signals():
 
 def test_pr_review_retry_suffix_respects_explicit_focus_area():
     """Adaptive retry scheduling should be able to set explicit focus area text."""
-    suffix = _build_pr_review_retry_suffix(2, focus_area="auth_privileged")
+    suffix = build_pr_review_retry_suffix(2, focus_area="auth_privileged")
     assert "FOCUS AREA: AUTH + PRIVILEGED OPERATION CHAINING" in suffix
 
 
 def test_pr_review_retry_suffix_includes_candidate_revalidation_block():
     """Retry guidance should carry forward prior candidate chains when provided."""
-    suffix = _build_pr_review_retry_suffix(
+    suffix = build_pr_review_retry_suffix(
         4,
         focus_area="path_exfiltration",
         candidate_summary="- Chain A (src/a.ts:10, CWE-22, support=1/3)",
@@ -1003,7 +1003,7 @@ def test_pr_review_retry_suffix_includes_candidate_revalidation_block():
 
 def test_pr_review_retry_suffix_requires_candidate_revalidation_without_consensus_mode():
     """Candidate revalidation requirement should be enforced even without recovery mode."""
-    suffix = _build_pr_review_retry_suffix(
+    suffix = build_pr_review_retry_suffix(
         2,
         focus_area="path_exfiltration",
         candidate_summary="- Chain B (src/b.ts:42, CWE-94, support=2/2)",
@@ -1077,20 +1077,20 @@ def test_diff_signal_detectors_identify_path_and_auth_deltas():
 
 def test_attempt_disagreement_detector_flags_sparse_attempt_success():
     """Mixed zero/non-zero attempt outputs should be observable as disagreement telemetry."""
-    assert _attempts_show_pr_disagreement([0, 2, 0, 1])
-    assert not _attempts_show_pr_disagreement([2, 2, 2])
+    assert attempts_show_pr_disagreement([0, 2, 0, 1])
+    assert not attempts_show_pr_disagreement([2, 2, 2])
 
 
 def test_should_run_pr_verifier_only_when_consensus_is_weak():
     """Verifier should run only when canonical findings exist and consensus is weak."""
-    assert not _should_run_pr_verifier(has_findings=False, weak_consensus=True)
-    assert not _should_run_pr_verifier(has_findings=True, weak_consensus=False)
-    assert _should_run_pr_verifier(has_findings=True, weak_consensus=True)
+    assert not should_run_pr_verifier(has_findings=False, weak_consensus=True)
+    assert not should_run_pr_verifier(has_findings=True, weak_consensus=False)
+    assert should_run_pr_verifier(has_findings=True, weak_consensus=True)
 
 
 def test_extract_observed_pr_findings_reads_hook_observer_payload():
     """Hook observer payload should be converted into list[dict] findings."""
-    observed = _extract_observed_pr_findings(
+    observed = extract_observed_pr_findings(
         {
             "max_items": 2,
             "max_content": json.dumps(
@@ -1222,7 +1222,7 @@ def test_canonicalize_finding_path_normalizes_absolute_repo_suffix():
 
 def test_merge_pr_attempt_findings_collapses_absolute_relative_path_duplicates():
     """Same chain reported with absolute vs relative path should dedupe to one finding."""
-    merged = _merge_pr_attempt_findings(
+    merged = merge_pr_attempt_findings(
         [
             {
                 "title": "Path traversal via MEDIA token",
@@ -1542,9 +1542,10 @@ async def test_pr_review_retries_when_first_attempt_returns_empty(tmp_path: Path
 
 @pytest.mark.asyncio
 async def test_pr_review_empty_follow_up_attempt_is_logged_without_warning(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, caplog
 ):
     """No-new-findings follow-up attempts should not emit warning-level retry noise."""
+    caplog.set_level("DEBUG", logger="securevibes.scanner.pr_review_flow")
     repo = tmp_path / "repo"
     repo.mkdir()
     securevibes_dir = repo / ".securevibes"
@@ -1613,11 +1614,12 @@ async def test_pr_review_empty_follow_up_attempt_is_logged_without_warning(
         )
 
     console_text = console_output.getvalue()
+    log_text = caplog.text
     assert result.issues
     assert attempt_counter["count"] == config.get_pr_review_attempts()
     assert not any("returned no findings yet" in warning for warning in result.warnings)
-    assert "no new findings" in console_text
-    assert "cumulative remains 1" in console_text
+    assert "no new findings" in log_text
+    assert "cumulative remains 1" in log_text
     assert "PR review attempt summary:" in console_text
     assert "canonical_pre_filter=" in console_text
     assert "final_post_filter=" in console_text

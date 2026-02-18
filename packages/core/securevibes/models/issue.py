@@ -27,6 +27,10 @@ class Severity(str, Enum):
         return None
 
 
+SEVERITY_ORDER = ("info", "low", "medium", "high", "critical")
+SEVERITY_RANK = {name: idx for idx, name in enumerate(SEVERITY_ORDER)}
+
+
 class ValidationStatus(str, Enum):
     """DAST validation status"""
 

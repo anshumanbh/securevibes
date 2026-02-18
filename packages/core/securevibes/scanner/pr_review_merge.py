@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional
 
 from rich.console import Console
 
-from securevibes.models.issue import SecurityIssue, Severity
+from securevibes.models.issue import SEVERITY_RANK, SecurityIssue, Severity
 from securevibes.models.schemas import fix_pr_vulnerabilities_json
 from securevibes.scanner.chain_analysis import (
     CHAIN_STOPWORDS,
@@ -38,9 +38,6 @@ _PR_FINDING_TYPES = frozenset(
     }
 )
 
-# ---------------------------------------------------------------------------
-# Keyword tuples used for chain classification and speculation detection
-# ---------------------------------------------------------------------------
 EXPLOIT_PRIMITIVE_TERMS = (
     "option injection",
     "argument injection",
@@ -119,33 +116,32 @@ CHAIN_SINK_TERMS = (
     "/media/",
 )
 
-# ---------------------------------------------------------------------------
-# Numeric thresholds for chain deduplication and quality scoring
-# ---------------------------------------------------------------------------
 # NOTE: these thresholds were tuned against existing SecureVibes PR-review fixtures
 # to reduce duplicate chain reports while retaining cross-file exploit-chain recall.
 # Keep changes conservative and update tests when adjusting these constants.
-MAX_LINE_GAP_CLOSE = 4
-MIN_TOKEN_SIMILARITY_ADJACENT = 0.24
-MIN_TOKEN_SIMILARITY_CWE78_88 = 0.16
-MIN_TOKEN_SIMILARITY_SAME_FILE = 0.52
-MIN_TITLE_SIMILARITY_SAME_FILE = 0.82
-MAX_LINE_GAP_SAME_FILE_SIM = 120
-MIN_TOKEN_SIMILARITY_SAME_DIR = 0.68
-MAX_LINE_GAP_SUBCHAIN = 40
-MIN_TOKEN_SIMILARITY_SUBCHAIN_SHARED_LOC = 0.20
-MAX_LINE_GAP_SUBCHAIN_E2E = 30
-MIN_TOKEN_SIMILARITY_SUBCHAIN_E2E = 0.16
-MAX_LINE_GAP_SUBCHAIN_ENABLER = 30
-MIN_TOKEN_SIMILARITY_ENABLER_SHARED_LOC = 0.18
-MIN_TOKEN_SIMILARITY_ENABLER_E2E = 0.28
-MAX_LINE_GAP_SECONDARY_GUARD = 8
-MIN_TOKEN_SIMILARITY_SECONDARY_SAME_PATH = 0.34
-MIN_TITLE_SIMILARITY_SECONDARY_SAME_PATH = 0.58
-MIN_TOKEN_SIMILARITY_CROSS_FILE_NEAR_DUP = 0.62
-MIN_TITLE_SIMILARITY_CROSS_FILE_NEAR_DUP = 0.66
-MAX_LINE_GAP_SECONDARY_CHAIN = 120
-
+# -- _same_chain thresholds (primary dedup: merge findings describing the same exploit chain) --
+MAX_LINE_GAP_CLOSE = 4  # Max line distance to treat same-file findings as adjacent
+MIN_TOKEN_SIMILARITY_ADJACENT = 0.24  # Token similarity floor for adjacent same-file dedup
+MIN_TOKEN_SIMILARITY_CWE78_88 = 0.16  # Relaxed token similarity for adjacent CWE-78/88 (OS command injection) pairs
+MIN_TOKEN_SIMILARITY_SAME_FILE = 0.52  # Token similarity floor for same-file dedup within MAX_LINE_GAP_SAME_FILE_SIM
+MIN_TITLE_SIMILARITY_SAME_FILE = 0.82  # Title similarity floor for same-file dedup within MAX_LINE_GAP_SAME_FILE_SIM
+MAX_LINE_GAP_SAME_FILE_SIM = 120  # Max line distance for similarity-based same-file dedup
+MIN_TOKEN_SIMILARITY_SAME_DIR = 0.68  # Token similarity floor for cross-file dedup within the same directory
+# -- _same_subchain_family thresholds (collapse subchain variants in the same file) --
+MAX_LINE_GAP_SUBCHAIN = 40  # Max line distance to consider two findings part of the same subchain
+MIN_TOKEN_SIMILARITY_SUBCHAIN_SHARED_LOC = 0.20  # Token similarity floor when subchain findings share referenced locations
+MAX_LINE_GAP_SUBCHAIN_E2E = 30  # Max line distance for collapsing end-to-end chain variants in same CWE family
+MIN_TOKEN_SIMILARITY_SUBCHAIN_E2E = 0.16  # Token similarity floor for end-to-end subchain variant collapse
+MAX_LINE_GAP_SUBCHAIN_ENABLER = 30  # Max line distance for collapsing enabler/mitigation-removal pairs across CWE families
+MIN_TOKEN_SIMILARITY_ENABLER_SHARED_LOC = 0.18  # Token similarity floor for enabler pairs that share referenced locations
+MIN_TOKEN_SIMILARITY_ENABLER_E2E = 0.28  # Token similarity floor for enabler pairs with an end-to-end variant
+# -- Secondary guard thresholds (collapse residual near-duplicates after primary dedup) --
+MAX_LINE_GAP_SECONDARY_GUARD = 8  # Max line distance to enter secondary same-path dedup
+MIN_TOKEN_SIMILARITY_SECONDARY_SAME_PATH = 0.34  # Token similarity floor for secondary same-path near-duplicate collapse
+MIN_TITLE_SIMILARITY_SECONDARY_SAME_PATH = 0.58  # Title similarity floor for secondary same-path near-duplicate collapse
+MIN_TOKEN_SIMILARITY_CROSS_FILE_NEAR_DUP = 0.62  # Token similarity floor for cross-file near-duplicate collapse
+MIN_TITLE_SIMILARITY_CROSS_FILE_NEAR_DUP = 0.66  # Title similarity floor for cross-file near-duplicate collapse
+MAX_LINE_GAP_SECONDARY_CHAIN = 120  # Max line distance for dropping weaker secondary chains in the same file
 
 def filter_baseline_vulns(known_vulns: list[dict]) -> list[dict]:
     """Return only baseline vulnerability entries, excluding PR-derived ones.
@@ -172,12 +168,10 @@ def filter_baseline_vulns(known_vulns: list[dict]) -> list[dict]:
         baseline.append(vuln)
     return baseline
 
-
 def _normalize_finding_identity(value: object) -> str:
     if not isinstance(value, str):
         return ""
     return value.strip().lower()
-
 
 def _build_vuln_match_keys(
     vuln: dict,
@@ -204,8 +198,7 @@ def _build_vuln_match_keys(
 
     return {(path_key, identity) for path_key in path_keys for identity in identities}
 
-
-def _issues_from_pr_vulns(pr_vulns: list[dict]) -> list[SecurityIssue]:
+def issues_from_pr_vulns(pr_vulns: list[dict]) -> list[SecurityIssue]:
     """Convert PR vulnerability dict entries to SecurityIssue models."""
     issues: list[SecurityIssue] = []
     for vuln in pr_vulns:
@@ -238,7 +231,6 @@ def _issues_from_pr_vulns(pr_vulns: list[dict]) -> list[SecurityIssue]:
             )
         )
     return issues
-
 
 _PR_RETRY_FOCUS_LABELS = {
     "command_option": "COMMAND/OPTION INJECTION CHAINS",
@@ -279,13 +271,11 @@ _DEFAULT_PR_RETRY_FOCUS_ORDER = (
     "auth_privileged",
 )
 
-
-def _focus_area_label(focus_area: str) -> str:
+def focus_area_label(focus_area: str) -> str:
     """Return human-readable label for retry focus area."""
     return _PR_RETRY_FOCUS_LABELS.get(focus_area, focus_area)
 
-
-def _build_pr_retry_focus_plan(
+def build_pr_retry_focus_plan(
     attempt_count: int,
     *,
     command_builder_signals: bool,
@@ -314,8 +304,7 @@ def _build_pr_retry_focus_plan(
         retry_plan.append(prioritized[idx % len(prioritized)])
     return retry_plan
 
-
-def _attempts_show_pr_disagreement(attempt_counts: list[int]) -> bool:
+def attempts_show_pr_disagreement(attempt_counts: list[int]) -> bool:
     """Return True when attempt outcomes are inconsistent enough to require verification."""
     if len(attempt_counts) < 2:
         return False
@@ -325,13 +314,11 @@ def _attempts_show_pr_disagreement(attempt_counts: list[int]) -> bool:
         return True
     return len(set(attempt_counts)) > 1
 
-
-def _should_run_pr_verifier(*, has_findings: bool, weak_consensus: bool) -> bool:
+def should_run_pr_verifier(*, has_findings: bool, weak_consensus: bool) -> bool:
     """Single verifier gate based on canonical finding presence and consensus strength."""
     return has_findings and weak_consensus
 
-
-def _extract_observed_pr_findings(write_observer: Optional[Dict[str, Any]]) -> list[dict]:
+def extract_observed_pr_findings(write_observer: Optional[Dict[str, Any]]) -> list[dict]:
     """Extract highest-volume observed PR findings captured by write-observer hook state."""
     if not write_observer:
         return []
@@ -349,8 +336,7 @@ def _extract_observed_pr_findings(write_observer: Optional[Dict[str, Any]]) -> l
         return []
     return [entry for entry in parsed if isinstance(entry, dict)]
 
-
-def _build_pr_review_retry_suffix(
+def build_pr_review_retry_suffix(
     attempt_num: int,
     command_builder_signals: bool = False,
     *,
@@ -457,8 +443,7 @@ Previous attempt was incomplete or inconclusive. Re-run the review with this str
 {focus_block}
 """
 
-
-def _load_pr_vulnerabilities_artifact(
+def load_pr_vulnerabilities_artifact(
     pr_vulns_path: Path,
     console: Console,
 ) -> tuple[list[dict], Optional[str]]:
@@ -489,17 +474,6 @@ def _load_pr_vulnerabilities_artifact(
     normalized = [item for item in pr_vulns if isinstance(item, dict)]
     return normalized, None
 
-
-# ---------------------------------------------------------------------------
-# Merge scoring constants and dataclasses (extracted from _merge_pr_attempt_findings)
-# ---------------------------------------------------------------------------
-
-_SEVERITY_RANK = {
-    "low": 1,
-    "medium": 2,
-    "high": 3,
-    "critical": 4,
-}
 _FINDING_TYPE_RANK = {
     "known_vuln": 6,
     "regression": 5,
@@ -508,7 +482,6 @@ _FINDING_TYPE_RANK = {
     "new_threat": 3,
     "unknown": 1,
 }
-
 
 @dataclass(order=True)
 class _EntryQuality:
@@ -526,7 +499,6 @@ class _EntryQuality:
     speculation_penalty: int
     evidence_length: int
     description_length: int
-
 
 @dataclass(order=True)
 class _SubchainQuality:
@@ -547,12 +519,6 @@ class _SubchainQuality:
     evidence_length: int
     description_length: int
 
-
-# ---------------------------------------------------------------------------
-# Merge helper functions (extracted from _merge_pr_attempt_findings)
-# ---------------------------------------------------------------------------
-
-
 def _chain_role(entry: dict) -> str:
     """Classify a finding as end-to-end or step-level based on evidence structure."""
     evidence_text = finding_text(entry, fields=("evidence",))
@@ -571,7 +537,6 @@ def _chain_role(entry: dict) -> str:
     ):
         return "end_to_end"
     return "step_level"
-
 
 def _proof_score(entry: dict) -> int:
     """Score the concreteness of a finding's exploit-chain evidence."""
@@ -602,7 +567,6 @@ def _proof_score(entry: dict) -> int:
 
     return score
 
-
 def _speculation_penalty(entry: dict) -> int:
     """Count speculative/hedging language in a finding's text fields."""
     text = finding_text(entry, fields=("title", "description", "attack_scenario", "evidence"))
@@ -618,7 +582,6 @@ def _speculation_penalty(entry: dict) -> int:
         penalty += 1
     return min(penalty, 6)
 
-
 def _finding_tokens(entry: dict) -> set[str]:
     """Extract normalized content tokens for similarity comparison."""
     text = " ".join(
@@ -632,7 +595,6 @@ def _finding_tokens(entry: dict) -> set[str]:
         if len(token) >= 4 and token not in CHAIN_STOPWORDS and not token.isdigit()
     }
 
-
 def _token_similarity(a: set[str], b: set[str]) -> float:
     """Jaccard similarity between two token sets."""
     if not a or not b:
@@ -641,7 +603,6 @@ def _token_similarity(a: set[str], b: set[str]) -> float:
     union = len(a | b)
     return overlap / union if union else 0.0
 
-
 def _entry_quality(
     entry: dict,
     *,
@@ -649,7 +610,7 @@ def _entry_quality(
     total_attempts: int = 0,
 ) -> _EntryQuality:
     """Build composite quality ranking for a finding entry."""
-    severity = _SEVERITY_RANK.get(str(entry.get("severity", "")).strip().lower(), 0)
+    severity = SEVERITY_RANK.get(str(entry.get("severity", "")).strip().lower(), 0)
     ft = _FINDING_TYPE_RANK.get(str(entry.get("finding_type", "")).strip().lower(), 0)
     chain_support = 0
     if chain_support_counts:
@@ -678,7 +639,6 @@ def _entry_quality(
         description_length=min(description_chars, 2000),
     )
 
-
 def _chain_support(
     entry: dict,
     chain_support_counts: Optional[Dict[str, int]],
@@ -694,7 +654,6 @@ def _chain_support(
         return 0
     return chain_support_counts.get(chain_identity, 0)
 
-
 def _has_concrete_chain_structure(entry: dict) -> bool:
     """Return True when a finding has file path, line number, and evidence flow markers."""
     normalized_path = canonicalize_finding_path(entry.get("file_path"))
@@ -709,7 +668,6 @@ def _has_concrete_chain_structure(entry: dict) -> bool:
     has_flow_anchor = "->" in evidence_text or "flow" in evidence_text
     has_step_markers = len(re.findall(r"\b[1-4][\)\.\:]", scenario_text)) >= 2
     return has_flow_anchor or has_step_markers
-
 
 def _same_chain(candidate: dict, canonical: dict) -> bool:
     """Return True when two findings describe the same exploit chain."""
@@ -767,7 +725,6 @@ def _same_chain(candidate: dict, canonical: dict) -> bool:
         return True
 
     return False
-
 
 def _same_subchain_family(candidate: dict, canonical: dict) -> bool:
     """Return True when candidate is a subchain variant of canonical."""
@@ -847,7 +804,6 @@ def _same_subchain_family(candidate: dict, canonical: dict) -> bool:
                 return True
     return False
 
-
 def _subchain_quality(
     entry: dict,
     *,
@@ -875,13 +831,7 @@ def _subchain_quality(
         description_length=quality.description_length,
     )
 
-
-# ---------------------------------------------------------------------------
-# Merge orchestration
-# ---------------------------------------------------------------------------
-
-
-def _merge_pr_attempt_findings(
+def merge_pr_attempt_findings(
     vulns: list[dict],
     merge_stats: Optional[Dict[str, int]] = None,
     chain_support_counts: Optional[Dict[str, int]] = None,
@@ -1093,7 +1043,7 @@ def _merge_pr_attempt_findings(
         if max_support >= 2:
             retained_findings: list[dict] = []
             for finding, support in zip(filtered_findings, supports):
-                severity = _SEVERITY_RANK.get(str(finding.get("severity", "")).strip().lower(), 0)
+                severity = SEVERITY_RANK.get(str(finding.get("severity", "")).strip().lower(), 0)
                 if support >= 2:
                     retained_findings.append(finding)
                     continue
@@ -1124,7 +1074,6 @@ def _merge_pr_attempt_findings(
         )
 
     return filtered_findings
-
 
 def dedupe_pr_vulns(pr_vulns: list[dict], known_vulns: list[dict]) -> list[dict]:
     """Tag PR findings as known_vuln when they overlap baseline issues.

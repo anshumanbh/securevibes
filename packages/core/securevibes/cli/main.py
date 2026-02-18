@@ -19,7 +19,7 @@ from rich.table import Table
 from rich import box
 
 from securevibes import __version__
-from securevibes.models.issue import Severity
+from securevibes.models.issue import SEVERITY_RANK, Severity
 from securevibes.scanner.scanner import Scanner
 from securevibes.diff.extractor import (
     validate_git_ref,
@@ -47,8 +47,6 @@ from securevibes.scanner.state import (
 
 console = Console()
 
-SEVERITY_ORDER = ("info", "low", "medium", "high", "critical")
-SEVERITY_RANK = {name: idx for idx, name in enumerate(SEVERITY_ORDER)}
 SAFE_NON_PRODUCTION_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0", "::1")
 SAFE_NON_PRODUCTION_SUFFIXES = (".local", ".test", ".localhost")
 TRANSIENT_PR_ARTIFACTS = (

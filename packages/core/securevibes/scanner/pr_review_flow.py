@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional, Type
@@ -27,12 +28,14 @@ from securevibes.scanner.hooks import (
     create_subagent_hook,
 )
 from securevibes.scanner.pr_review_merge import (
-    _build_pr_review_retry_suffix,
-    _extract_observed_pr_findings,
-    _focus_area_label,
-    _load_pr_vulnerabilities_artifact,
-    _merge_pr_attempt_findings,
+    build_pr_review_retry_suffix,
+    extract_observed_pr_findings,
+    focus_area_label,
+    load_pr_vulnerabilities_artifact,
+    merge_pr_attempt_findings,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -148,7 +151,7 @@ class PRReviewAttemptRunner:
         attempt_findings: list,
     ) -> None:
         """Record chain IDs from an attempt's findings into state."""
-        canonical_attempt = _merge_pr_attempt_findings(attempt_findings)
+        canonical_attempt = merge_pr_attempt_findings(attempt_findings)
         exact_ids = collect_chain_exact_ids(canonical_attempt)
         family_ids = collect_chain_family_ids(canonical_attempt)
         flow_ids = collect_chain_flow_ids(canonical_attempt)
@@ -167,7 +170,7 @@ class PRReviewAttemptRunner:
         state: PRReviewState,
     ) -> None:
         """Refresh carry-forward candidate summary from cumulative findings."""
-        cumulative_candidates = _merge_pr_attempt_findings(
+        cumulative_candidates = merge_pr_attempt_findings(
             [*state.collected_pr_vulns, *state.ephemeral_pr_vulns],
             chain_support_counts=state.chain_support_counts,
             total_attempts=len(state.attempt_chain_ids),
@@ -203,10 +206,7 @@ class PRReviewAttemptRunner:
         state.attempt_revalidation_attempted.append(revalidation_attempted)
         state.attempt_core_evidence_present.append(core_evidence_present)
         if self.debug and revalidation_attempted and not core_evidence_present:
-            self.console.print(
-                "  🧪 Revalidation pass did not reproduce carried core-chain evidence",
-                style="dim",
-            )
+            logger.debug("Revalidation pass did not reproduce carried core-chain evidence")
         return core_evidence_present
 
     def _process_attempt_outcome(
@@ -223,7 +223,7 @@ class PRReviewAttemptRunner:
         load_warning: Optional[str],
     ) -> None:
         """Process the outcome of a single PR review attempt."""
-        observed_vulns = _extract_observed_pr_findings(attempt_write_observer)
+        observed_vulns = extract_observed_pr_findings(attempt_write_observer)
         attempt_finding_count = len(loaded_vulns) if not load_warning else 0
         observed_count = max(attempt_finding_count, len(observed_vulns))
         state.attempt_finding_counts.append(attempt_finding_count)
@@ -236,11 +236,13 @@ class PRReviewAttemptRunner:
             state.attempts_with_overwritten_artifact += 1
             state.ephemeral_pr_vulns.extend(observed_vulns)
             if self.debug:
-                self.console.print(
-                    f"  🔎 PR pass {attempt_num}/{ctx.pr_review_attempts}: "
-                    f"captured {len(observed_vulns)} intermediate finding(s) from write logs "
-                    f"while final artifact had {attempt_finding_count}.",
-                    style="dim",
+                logger.debug(
+                    "PR pass %d/%d: captured %d intermediate finding(s) from write logs "
+                    "while final artifact had %d.",
+                    attempt_num,
+                    ctx.pr_review_attempts,
+                    len(observed_vulns),
+                    attempt_finding_count,
                 )
         effective_attempt_vulns = (
             observed_vulns if len(observed_vulns) > attempt_finding_count else loaded_vulns
@@ -315,7 +317,7 @@ class PRReviewAttemptRunner:
                     retry_focus_area = ctx.retry_focus_plan[plan_index]
                     state.attempt_focus_areas.append(retry_focus_area)
                 attempt_force_revalidation = attempt_candidate_cores_present
-                retry_suffix = _build_pr_review_retry_suffix(
+                retry_suffix = build_pr_review_retry_suffix(
                     attempt_num,
                     command_builder_signals=ctx.command_builder_signals,
                     focus_area=retry_focus_area,
@@ -325,16 +327,14 @@ class PRReviewAttemptRunner:
                     require_candidate_revalidation=attempt_candidate_cores_present,
                 )
                 if self.debug and retry_focus_area:
-                    self.console.print(
-                        f"  🎯 PR pass {attempt_num}/{pr_review_attempts} focus: "
-                        f"{_focus_area_label(retry_focus_area)}",
-                        style="dim",
+                    logger.debug(
+                        "PR pass %d/%d focus: %s",
+                        attempt_num,
+                        pr_review_attempts,
+                        focus_area_label(retry_focus_area),
                     )
                 if self.debug and attempt_candidate_cores_present:
-                    self.console.print(
-                        "  🧪 PR pass requires explicit carried-chain revalidation",
-                        style="dim",
-                    )
+                    logger.debug("PR pass requires explicit carried-chain revalidation")
 
             agents = create_agent_definitions(cli_model=self.model)
             attempt_prompt = f"{ctx.contextualized_prompt}{retry_suffix}"
@@ -403,7 +403,7 @@ class PRReviewAttemptRunner:
                 state.warnings.append(attempt_error)
                 self.console.print(f"\n[bold yellow]WARNING:[/bold yellow] {attempt_error}\n")
 
-            loaded_vulns, load_warning = _load_pr_vulnerabilities_artifact(
+            loaded_vulns, load_warning = load_pr_vulnerabilities_artifact(
                 pr_vulns_path=ctx.pr_vulns_path,
                 console=self.console,
             )
@@ -411,13 +411,13 @@ class PRReviewAttemptRunner:
                 state.warnings.append(
                     f"PR code review attempt {attempt_num}/{pr_review_attempts}: {load_warning}"
                 )
-                observed_vulns = _extract_observed_pr_findings(attempt_write_observer)
+                observed_vulns = extract_observed_pr_findings(attempt_write_observer)
                 if observed_vulns and self.debug:
-                    self.console.print(
-                        f"  🔎 PR pass {attempt_num}/{pr_review_attempts}: "
-                        f"artifact read failed, but write logs captured "
-                        f"{len(observed_vulns)} finding(s).",
-                        style="dim",
+                    logger.debug(
+                        "PR pass %d/%d: artifact read failed, but write logs captured %d finding(s).",
+                        attempt_num,
+                        pr_review_attempts,
+                        len(observed_vulns),
                     )
 
             self._process_attempt_outcome(
@@ -438,17 +438,15 @@ class PRReviewAttemptRunner:
             attempt_finding_count = len(loaded_vulns)
             if attempt_finding_count:
                 if self.debug:
-                    self.console.print(
-                        f"  PR pass {attempt_num}/{pr_review_attempts}: "
-                        f"{attempt_finding_count} finding(s), "
-                        f"cumulative {len(state.collected_pr_vulns)}",
-                        style="dim",
+                    logger.debug(
+                        "PR pass %d/%d: %d finding(s), cumulative %d",
+                        attempt_num,
+                        pr_review_attempts,
+                        attempt_finding_count,
+                        len(state.collected_pr_vulns),
                     )
                 if attempt_num < pr_review_attempts and self.debug:
-                    self.console.print(
-                        "  🔁 Running additional focused PR pass for broader chain coverage",
-                        style="dim",
-                    )
+                    logger.debug("Running additional focused PR pass for broader chain coverage")
                 continue
 
             if attempt_num < pr_review_attempts:
@@ -466,11 +464,13 @@ class PRReviewAttemptRunner:
                             if last_observed > attempt_finding_count
                             else "no new findings."
                         )
-                        self.console.print(
-                            f"  PR pass {attempt_num}/{pr_review_attempts}: {no_new_note} "
-                            f"cumulative remains {cumulative_findings}. "
+                        logger.debug(
+                            "PR pass %d/%d: %s cumulative remains %d. "
                             "Continuing with chain-focused prompt.",
-                            style="dim",
+                            attempt_num,
+                            pr_review_attempts,
+                            no_new_note,
+                            cumulative_findings,
                         )
                 else:
                     retry_warning = (

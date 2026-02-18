@@ -47,7 +47,6 @@ CHAIN_STOPWORDS = {
     "line",
     "file",
 }
-_CHAIN_ID_STOPWORDS = CHAIN_STOPWORDS
 _CHAIN_FAMILY_PATH_TERMS = (
     "path traversal",
     "file exfiltration",
@@ -111,7 +110,7 @@ def chain_text_tokens(value: object, *, max_tokens: int = 5) -> tuple[str, ...]:
     filtered = [
         token
         for token in tokens
-        if len(token) >= 4 and token not in _CHAIN_ID_STOPWORDS and not token.isdigit()
+        if len(token) >= 4 and token not in CHAIN_STOPWORDS and not token.isdigit()
     ]
     return tuple(filtered[:max_tokens])
 

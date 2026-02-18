@@ -7,35 +7,29 @@ from rich.console import Console
 
 from securevibes.models.issue import SecurityIssue, Severity
 from securevibes.scanner.pr_review_merge import (
-    _attempts_show_pr_disagreement,
-    _build_pr_retry_focus_plan,
-    _build_pr_review_retry_suffix,
+    attempts_show_pr_disagreement,
+    build_pr_retry_focus_plan,
+    build_pr_review_retry_suffix,
     _build_vuln_match_keys,
     _chain_role,
     _entry_quality,
-    _extract_observed_pr_findings,
+    extract_observed_pr_findings,
     _finding_tokens,
-    _focus_area_label,
+    focus_area_label,
     _has_concrete_chain_structure,
-    _issues_from_pr_vulns,
-    _load_pr_vulnerabilities_artifact,
-    _merge_pr_attempt_findings,
+    issues_from_pr_vulns,
+    load_pr_vulnerabilities_artifact,
+    merge_pr_attempt_findings,
     _normalize_finding_identity,
     _proof_score,
     _same_chain,
     _same_subchain_family,
-    _should_run_pr_verifier,
+    should_run_pr_verifier,
     _speculation_penalty,
     _token_similarity,
     dedupe_pr_vulns,
     filter_baseline_vulns,
 )
-
-
-# ---------------------------------------------------------------------------
-# filter_baseline_vulns
-# ---------------------------------------------------------------------------
-
 
 class TestFilterBaselineVulns:
     """Tests for filter_baseline_vulns."""
@@ -120,12 +114,6 @@ class TestFilterBaselineVulns:
         assert baseline[0]["title"] == "Baseline"
         assert baseline[1]["title"] == "Baseline 2"
 
-
-# ---------------------------------------------------------------------------
-# _normalize_finding_identity
-# ---------------------------------------------------------------------------
-
-
 class TestNormalizeFindingIdentity:
     """Tests for _normalize_finding_identity."""
 
@@ -146,12 +134,6 @@ class TestNormalizeFindingIdentity:
 
     def test_already_lowercase(self):
         assert _normalize_finding_identity("already lower") == "already lower"
-
-
-# ---------------------------------------------------------------------------
-# _build_vuln_match_keys
-# ---------------------------------------------------------------------------
-
 
 class TestBuildVulnMatchKeys:
     """Tests for _build_vuln_match_keys."""
@@ -194,14 +176,8 @@ class TestBuildVulnMatchKeys:
         paths = {k[0] for k in keys}
         assert "handler.py" in paths
 
-
-# ---------------------------------------------------------------------------
-# _issues_from_pr_vulns
-# ---------------------------------------------------------------------------
-
-
 class TestIssuesFromPrVulns:
-    """Tests for _issues_from_pr_vulns."""
+    """Tests for issues_from_pr_vulns."""
 
     def test_valid_entry(self):
         vulns = [
@@ -220,7 +196,7 @@ class TestIssuesFromPrVulns:
                 "evidence": "No input validation found",
             }
         ]
-        issues = _issues_from_pr_vulns(vulns)
+        issues = issues_from_pr_vulns(vulns)
         assert len(issues) == 1
         issue = issues[0]
         assert isinstance(issue, SecurityIssue)
@@ -234,7 +210,7 @@ class TestIssuesFromPrVulns:
 
     def test_missing_fields_use_defaults(self):
         vulns = [{}]
-        issues = _issues_from_pr_vulns(vulns)
+        issues = issues_from_pr_vulns(vulns)
         assert len(issues) == 1
         issue = issues[0]
         assert issue.id == "UNKNOWN"
@@ -244,73 +220,61 @@ class TestIssuesFromPrVulns:
 
     def test_invalid_severity_defaults_to_medium(self):
         vulns = [{"severity": "super_critical"}]
-        issues = _issues_from_pr_vulns(vulns)
+        issues = issues_from_pr_vulns(vulns)
         assert issues[0].severity == Severity.MEDIUM
 
     def test_non_dict_entries_skipped(self):
         vulns = ["not a dict", 42, None, {"title": "Valid"}]
-        issues = _issues_from_pr_vulns(vulns)
+        issues = issues_from_pr_vulns(vulns)
         assert len(issues) == 1
         assert issues[0].title == "Valid"
 
     def test_invalid_line_number_defaults_to_zero(self):
         vulns = [{"line_number": "not_a_number"}]
-        issues = _issues_from_pr_vulns(vulns)
+        issues = issues_from_pr_vulns(vulns)
         assert issues[0].line_number == 0
 
     def test_none_line_number_defaults_to_zero(self):
         vulns = [{"line_number": None}]
-        issues = _issues_from_pr_vulns(vulns)
+        issues = issues_from_pr_vulns(vulns)
         assert issues[0].line_number == 0
 
     def test_empty_list(self):
-        assert _issues_from_pr_vulns([]) == []
+        assert issues_from_pr_vulns([]) == []
 
     def test_multiple_entries(self):
         vulns = [
             {"threat_id": "PR-1", "title": "Issue 1"},
             {"threat_id": "PR-2", "title": "Issue 2"},
         ]
-        issues = _issues_from_pr_vulns(vulns)
+        issues = issues_from_pr_vulns(vulns)
         assert len(issues) == 2
         assert issues[0].id == "PR-1"
         assert issues[1].id == "PR-2"
 
-
-# ---------------------------------------------------------------------------
-# _focus_area_label
-# ---------------------------------------------------------------------------
-
-
 class TestFocusAreaLabel:
-    """Tests for _focus_area_label."""
+    """Tests for focus_area_label."""
 
     def test_known_command_option(self):
-        assert _focus_area_label("command_option") == "COMMAND/OPTION INJECTION CHAINS"
+        assert focus_area_label("command_option") == "COMMAND/OPTION INJECTION CHAINS"
 
     def test_known_path_exfiltration(self):
-        assert _focus_area_label("path_exfiltration") == "PATH + FILE EXFILTRATION CHAINS"
+        assert focus_area_label("path_exfiltration") == "PATH + FILE EXFILTRATION CHAINS"
 
     def test_known_auth_privileged(self):
-        assert _focus_area_label("auth_privileged") == "AUTH + PRIVILEGED OPERATION CHAINING"
+        assert focus_area_label("auth_privileged") == "AUTH + PRIVILEGED OPERATION CHAINING"
 
     def test_unknown_label_returns_input(self):
-        assert _focus_area_label("something_else") == "something_else"
+        assert focus_area_label("something_else") == "something_else"
 
     def test_empty_string(self):
-        assert _focus_area_label("") == ""
-
-
-# ---------------------------------------------------------------------------
-# _build_pr_retry_focus_plan
-# ---------------------------------------------------------------------------
-
+        assert focus_area_label("") == ""
 
 class TestBuildPrRetryFocusPlan:
-    """Tests for _build_pr_retry_focus_plan."""
+    """Tests for build_pr_retry_focus_plan."""
 
     def test_attempt_count_1_returns_empty(self):
-        result = _build_pr_retry_focus_plan(
+        result = build_pr_retry_focus_plan(
             1,
             command_builder_signals=True,
             path_parser_signals=True,
@@ -319,7 +283,7 @@ class TestBuildPrRetryFocusPlan:
         assert result == []
 
     def test_attempt_count_0_returns_empty(self):
-        result = _build_pr_retry_focus_plan(
+        result = build_pr_retry_focus_plan(
             0,
             command_builder_signals=True,
             path_parser_signals=True,
@@ -328,7 +292,7 @@ class TestBuildPrRetryFocusPlan:
         assert result == []
 
     def test_attempt_count_3_with_all_signals(self):
-        result = _build_pr_retry_focus_plan(
+        result = build_pr_retry_focus_plan(
             3,
             command_builder_signals=True,
             path_parser_signals=True,
@@ -340,7 +304,7 @@ class TestBuildPrRetryFocusPlan:
         assert result[1] == "path_exfiltration"
 
     def test_attempt_count_3_no_signals(self):
-        result = _build_pr_retry_focus_plan(
+        result = build_pr_retry_focus_plan(
             3,
             command_builder_signals=False,
             path_parser_signals=False,
@@ -352,7 +316,7 @@ class TestBuildPrRetryFocusPlan:
         assert result[1] == "path_exfiltration"
 
     def test_attempt_count_2_with_path_signal_only(self):
-        result = _build_pr_retry_focus_plan(
+        result = build_pr_retry_focus_plan(
             2,
             command_builder_signals=False,
             path_parser_signals=True,
@@ -363,7 +327,7 @@ class TestBuildPrRetryFocusPlan:
         assert result[0] == "path_exfiltration"
 
     def test_wraps_around_with_many_retries(self):
-        result = _build_pr_retry_focus_plan(
+        result = build_pr_retry_focus_plan(
             5,
             command_builder_signals=False,
             path_parser_signals=False,
@@ -373,152 +337,128 @@ class TestBuildPrRetryFocusPlan:
         assert len(result) == 4
         assert result[3] == result[0]  # wraps around
 
-
-# ---------------------------------------------------------------------------
-# _attempts_show_pr_disagreement
-# ---------------------------------------------------------------------------
-
-
 class TestAttemptsShowPrDisagreement:
-    """Tests for _attempts_show_pr_disagreement."""
+    """Tests for attempts_show_pr_disagreement."""
 
     def test_single_attempt_returns_false(self):
-        assert _attempts_show_pr_disagreement([5]) is False
+        assert attempts_show_pr_disagreement([5]) is False
 
     def test_empty_list_returns_false(self):
-        assert _attempts_show_pr_disagreement([]) is False
+        assert attempts_show_pr_disagreement([]) is False
 
     def test_all_same_nonzero_returns_false(self):
-        assert _attempts_show_pr_disagreement([3, 3, 3]) is False
+        assert attempts_show_pr_disagreement([3, 3, 3]) is False
 
     def test_all_zero_returns_false(self):
-        assert _attempts_show_pr_disagreement([0, 0, 0]) is False
+        assert attempts_show_pr_disagreement([0, 0, 0]) is False
 
     def test_some_zero_some_nonzero_returns_true(self):
-        assert _attempts_show_pr_disagreement([3, 0, 3]) is True
+        assert attempts_show_pr_disagreement([3, 0, 3]) is True
 
     def test_all_different_nonzero_returns_true(self):
-        assert _attempts_show_pr_disagreement([1, 2, 3]) is True
+        assert attempts_show_pr_disagreement([1, 2, 3]) is True
 
     def test_two_attempts_same(self):
-        assert _attempts_show_pr_disagreement([2, 2]) is False
+        assert attempts_show_pr_disagreement([2, 2]) is False
 
     def test_two_attempts_different(self):
-        assert _attempts_show_pr_disagreement([2, 5]) is True
+        assert attempts_show_pr_disagreement([2, 5]) is True
 
     def test_one_zero_one_nonzero(self):
-        assert _attempts_show_pr_disagreement([0, 5]) is True
-
-
-# ---------------------------------------------------------------------------
-# _should_run_pr_verifier
-# ---------------------------------------------------------------------------
-
+        assert attempts_show_pr_disagreement([0, 5]) is True
 
 class TestShouldRunPrVerifier:
-    """Tests for _should_run_pr_verifier."""
+    """Tests for should_run_pr_verifier."""
 
     def test_true_when_both_conditions_met(self):
-        assert _should_run_pr_verifier(has_findings=True, weak_consensus=True) is True
+        assert should_run_pr_verifier(has_findings=True, weak_consensus=True) is True
 
     def test_false_when_no_findings(self):
-        assert _should_run_pr_verifier(has_findings=False, weak_consensus=True) is False
+        assert should_run_pr_verifier(has_findings=False, weak_consensus=True) is False
 
     def test_false_when_strong_consensus(self):
-        assert _should_run_pr_verifier(has_findings=True, weak_consensus=False) is False
+        assert should_run_pr_verifier(has_findings=True, weak_consensus=False) is False
 
     def test_false_when_neither(self):
-        assert _should_run_pr_verifier(has_findings=False, weak_consensus=False) is False
-
-
-# ---------------------------------------------------------------------------
-# _extract_observed_pr_findings
-# ---------------------------------------------------------------------------
-
+        assert should_run_pr_verifier(has_findings=False, weak_consensus=False) is False
 
 class TestExtractObservedPrFindings:
-    """Tests for _extract_observed_pr_findings."""
+    """Tests for extract_observed_pr_findings."""
 
     def test_none_observer_returns_empty(self):
-        assert _extract_observed_pr_findings(None) == []
+        assert extract_observed_pr_findings(None) == []
 
     def test_empty_dict_observer_returns_empty(self):
-        assert _extract_observed_pr_findings({}) == []
+        assert extract_observed_pr_findings({}) == []
 
     def test_empty_max_content_returns_empty(self):
-        assert _extract_observed_pr_findings({"max_content": ""}) == []
+        assert extract_observed_pr_findings({"max_content": ""}) == []
 
     def test_whitespace_max_content_returns_empty(self):
-        assert _extract_observed_pr_findings({"max_content": "   "}) == []
+        assert extract_observed_pr_findings({"max_content": "   "}) == []
 
     def test_valid_json_list(self):
         findings = [{"title": "Issue 1"}, {"title": "Issue 2"}]
         observer = {"max_content": json.dumps(findings)}
-        result = _extract_observed_pr_findings(observer)
+        result = extract_observed_pr_findings(observer)
         assert len(result) == 2
         assert result[0]["title"] == "Issue 1"
 
     def test_invalid_json_returns_empty(self):
-        assert _extract_observed_pr_findings({"max_content": "not json {"}) == []
+        assert extract_observed_pr_findings({"max_content": "not json {"}) == []
 
     def test_non_list_json_returns_empty(self):
-        assert _extract_observed_pr_findings({"max_content": '{"key": "value"}'}) == []
+        assert extract_observed_pr_findings({"max_content": '{"key": "value"}'}) == []
 
     def test_non_dict_entries_filtered(self):
         observer = {"max_content": json.dumps([{"title": "Valid"}, "invalid", 42])}
-        result = _extract_observed_pr_findings(observer)
+        result = extract_observed_pr_findings(observer)
         assert len(result) == 1
         assert result[0]["title"] == "Valid"
 
     def test_non_string_max_content_returns_empty(self):
-        assert _extract_observed_pr_findings({"max_content": 12345}) == []
-
-
-# ---------------------------------------------------------------------------
-# _build_pr_review_retry_suffix
-# ---------------------------------------------------------------------------
-
+        assert extract_observed_pr_findings({"max_content": 12345}) == []
 
 class TestBuildPrReviewRetrySuffix:
-    """Tests for _build_pr_review_retry_suffix."""
+    """Tests for build_pr_review_retry_suffix."""
 
     def test_basic_retry_contains_attempt_number(self):
-        result = _build_pr_review_retry_suffix(2)
+        result = build_pr_review_retry_suffix(2)
         assert "FOLLOW-UP ANALYSIS PASS 2" in result
 
     def test_default_focus_area_attempt_2(self):
-        result = _build_pr_review_retry_suffix(2)
+        result = build_pr_review_retry_suffix(2)
         # attempt_num==2 defaults to command_option focus
         assert "COMMAND/OPTION INJECTION CHAINS" in result
 
     def test_default_focus_area_attempt_3(self):
-        result = _build_pr_review_retry_suffix(3)
+        result = build_pr_review_retry_suffix(3)
         assert "PATH + FILE EXFILTRATION CHAINS" in result
 
     def test_default_focus_area_attempt_4(self):
-        result = _build_pr_review_retry_suffix(4)
+        result = build_pr_review_retry_suffix(4)
         assert "AUTH + PRIVILEGED OPERATION CHAINING" in result
 
     def test_explicit_focus_area_overrides_default(self):
-        result = _build_pr_review_retry_suffix(2, focus_area="auth_privileged")
+        result = build_pr_review_retry_suffix(2, focus_area="auth_privileged")
         assert "AUTH + PRIVILEGED OPERATION CHAINING" in result
         # Should NOT contain command_option default focus for attempt 2
         assert "FOCUS AREA: COMMAND/OPTION INJECTION CHAINS" not in result
 
     def test_command_builder_signals_hint(self):
-        result = _build_pr_review_retry_suffix(2, command_builder_signals=True)
+        result = build_pr_review_retry_suffix(2, command_builder_signals=True)
         assert "COMMAND-BUILDER DELTA DETECTED" in result
 
     def test_path_parser_signals_hint(self):
-        result = _build_pr_review_retry_suffix(2, path_parser_signals=True)
+        result = build_pr_review_retry_suffix(2, path_parser_signals=True)
         assert "PATH-PARSER DELTA DETECTED" in result
 
     def test_auth_privilege_signals_hint(self):
-        result = _build_pr_review_retry_suffix(2, auth_privilege_signals=True)
+        result = build_pr_review_retry_suffix(2, auth_privilege_signals=True)
         assert "AUTH/PRIVILEGE DELTA DETECTED" in result
 
     def test_candidate_summary_included(self):
-        result = _build_pr_review_retry_suffix(
+        result = build_pr_review_retry_suffix(
             2, candidate_summary="Chain 1: option injection in build_cmd"
         )
         assert "Chain 1: option injection in build_cmd" in result
@@ -526,40 +466,34 @@ class TestBuildPrReviewRetrySuffix:
         assert "UNRESOLVED HYPOTHESIS DISPOSITION" in result
 
     def test_empty_candidate_summary_no_hint(self):
-        result = _build_pr_review_retry_suffix(2, candidate_summary="")
+        result = build_pr_review_retry_suffix(2, candidate_summary="")
         assert "PRIOR HIGH-IMPACT CHAIN CANDIDATES" not in result
 
     def test_whitespace_only_candidate_summary_no_hint(self):
-        result = _build_pr_review_retry_suffix(2, candidate_summary="   ")
+        result = build_pr_review_retry_suffix(2, candidate_summary="   ")
         assert "PRIOR HIGH-IMPACT CHAIN CANDIDATES" not in result
 
     def test_require_candidate_revalidation(self):
-        result = _build_pr_review_retry_suffix(
+        result = build_pr_review_retry_suffix(
             2, candidate_summary="something", require_candidate_revalidation=True
         )
         assert "CORE CHAIN REVALIDATION REQUIREMENT" in result
 
     def test_revalidation_without_candidate_summary(self):
-        result = _build_pr_review_retry_suffix(2, require_candidate_revalidation=True)
+        result = build_pr_review_retry_suffix(2, require_candidate_revalidation=True)
         # Without candidate_summary, revalidation hint should still appear
         assert "CORE CHAIN REVALIDATION REQUIREMENT" in result
 
-
-# ---------------------------------------------------------------------------
-# _merge_pr_attempt_findings
-# ---------------------------------------------------------------------------
-
-
 class TestMergePrAttemptFindings:
-    """Tests for _merge_pr_attempt_findings."""
+    """Tests for merge_pr_attempt_findings."""
 
     def test_empty_input_returns_empty(self):
-        result = _merge_pr_attempt_findings([])
+        result = merge_pr_attempt_findings([])
         assert result == []
 
     def test_empty_input_populates_merge_stats(self):
         stats = {}
-        _merge_pr_attempt_findings([], merge_stats=stats)
+        merge_pr_attempt_findings([], merge_stats=stats)
         assert stats["input_count"] == 0
         assert stats["canonical_count"] == 0
         assert stats["final_count"] == 0
@@ -583,7 +517,7 @@ class TestMergePrAttemptFindings:
             "attack_scenario": "1) Attacker supplies -o ProxyCommand=... as host\n2) ssh executes attacker payload",
             "evidence": "src/ssh_client.py:42 -> ssh exec without -- separator",
         }
-        result = _merge_pr_attempt_findings([finding])
+        result = merge_pr_attempt_findings([finding])
         assert len(result) >= 1
 
     def test_duplicate_findings_merged(self):
@@ -613,7 +547,7 @@ class TestMergePrAttemptFindings:
             "evidence": "src/ssh_client.py:42 -> exec flow",
         }
         stats = {}
-        result = _merge_pr_attempt_findings([finding_1, finding_2], merge_stats=stats)
+        result = merge_pr_attempt_findings([finding_1, finding_2], merge_stats=stats)
         # Should merge into one since they are about the same chain
         assert stats["input_count"] == 2
         assert len(result) == 1
@@ -629,7 +563,7 @@ class TestMergePrAttemptFindings:
             "finding_type": "new_threat",
         }
         stats = {}
-        _merge_pr_attempt_findings([finding], merge_stats=stats)
+        merge_pr_attempt_findings([finding], merge_stats=stats)
         assert "input_count" in stats
         assert stats["input_count"] == 1
         assert "canonical_count" in stats
@@ -637,7 +571,7 @@ class TestMergePrAttemptFindings:
 
     def test_non_dict_entries_filtered(self):
         vulns = ["not_a_dict", 42, {"threat_id": "PR-1", "title": "Valid"}]
-        result = _merge_pr_attempt_findings(vulns)
+        result = merge_pr_attempt_findings(vulns)
         # Non-dict entries should be filtered out during normalization
         assert all(isinstance(r, dict) for r in result)
 
@@ -682,7 +616,7 @@ class TestMergePrAttemptFindings:
                 chain_support[key] = 1
 
         stats = {}
-        _merge_pr_attempt_findings(
+        merge_pr_attempt_findings(
             [high_support_finding, low_support_finding],
             merge_stats=stats,
             chain_support_counts=chain_support,
@@ -701,7 +635,7 @@ class TestMergePrAttemptFindings:
         }
         stats = {}
         chain_support = {"some_chain": 5}
-        _merge_pr_attempt_findings(
+        merge_pr_attempt_findings(
             [finding],
             merge_stats=stats,
             chain_support_counts=chain_support,
@@ -711,19 +645,13 @@ class TestMergePrAttemptFindings:
 
     def test_no_chain_support_counts_stat_zero(self):
         stats = {}
-        _merge_pr_attempt_findings(
+        merge_pr_attempt_findings(
             [{"threat_id": "PR-1", "title": "Test"}],
             merge_stats=stats,
             chain_support_counts=None,
             total_attempts=0,
         )
         assert stats["max_chain_support"] == 0
-
-
-# ---------------------------------------------------------------------------
-# dedupe_pr_vulns
-# ---------------------------------------------------------------------------
-
 
 class TestDedupePrVulns:
     """Tests for dedupe_pr_vulns."""
@@ -857,19 +785,13 @@ class TestDedupePrVulns:
         deduped = dedupe_pr_vulns(pr_vulns, known_vulns)
         assert deduped[0]["finding_type"] == "unknown"
 
-
-# ---------------------------------------------------------------------------
-# _load_pr_vulnerabilities_artifact
-# ---------------------------------------------------------------------------
-
-
 class TestLoadPrVulnerabilitiesArtifact:
-    """Tests for _load_pr_vulnerabilities_artifact."""
+    """Tests for load_pr_vulnerabilities_artifact."""
 
     def test_file_not_found_returns_empty_with_error(self, tmp_path):
         missing = tmp_path / "PR_VULNERABILITIES.json"
         console = Console(quiet=True)
-        result, error = _load_pr_vulnerabilities_artifact(missing, console)
+        result, error = load_pr_vulnerabilities_artifact(missing, console)
         assert result == []
         assert error is not None
         assert "was not produced" in error
@@ -878,7 +800,7 @@ class TestLoadPrVulnerabilitiesArtifact:
         bad_path = tmp_path / "PR_VULNERABILITIES.json"
         bad_path.mkdir()  # directory, not a file — read_text will raise OSError
         console = Console(quiet=True)
-        result, error = _load_pr_vulnerabilities_artifact(bad_path, console)
+        result, error = load_pr_vulnerabilities_artifact(bad_path, console)
         assert result == []
         assert error is not None
         assert "Failed to read" in error
@@ -887,7 +809,7 @@ class TestLoadPrVulnerabilitiesArtifact:
         path = tmp_path / "PR_VULNERABILITIES.json"
         path.write_text("{not valid json", encoding="utf-8")
         console = Console(quiet=True)
-        result, error = _load_pr_vulnerabilities_artifact(path, console)
+        result, error = load_pr_vulnerabilities_artifact(path, console)
         assert result == []
         assert error is not None
         assert "Failed to parse" in error
@@ -896,7 +818,7 @@ class TestLoadPrVulnerabilitiesArtifact:
         path = tmp_path / "PR_VULNERABILITIES.json"
         path.write_text('{"key": "value"}', encoding="utf-8")
         console = Console(quiet=True)
-        result, error = _load_pr_vulnerabilities_artifact(path, console)
+        result, error = load_pr_vulnerabilities_artifact(path, console)
         assert result == []
         assert error is not None
         assert "not a JSON array" in error
@@ -906,7 +828,7 @@ class TestLoadPrVulnerabilitiesArtifact:
         path = tmp_path / "PR_VULNERABILITIES.json"
         path.write_text(json.dumps(findings), encoding="utf-8")
         console = Console(quiet=True)
-        result, error = _load_pr_vulnerabilities_artifact(path, console)
+        result, error = load_pr_vulnerabilities_artifact(path, console)
         assert error is None
         assert len(result) == 2
         assert result[0]["threat_id"] == "PR-1"
@@ -916,7 +838,7 @@ class TestLoadPrVulnerabilitiesArtifact:
         path = tmp_path / "PR_VULNERABILITIES.json"
         path.write_text(json.dumps(data), encoding="utf-8")
         console = Console(quiet=True)
-        result, error = _load_pr_vulnerabilities_artifact(path, console)
+        result, error = load_pr_vulnerabilities_artifact(path, console)
         assert error is None
         assert len(result) == 2
 
@@ -925,7 +847,7 @@ class TestLoadPrVulnerabilitiesArtifact:
         # Wrapped format that fix_pr_vulnerabilities_json should normalize
         path.write_text('{"vulnerabilities": [{"threat_id": "PR-1"}]}', encoding="utf-8")
         console = Console(quiet=True)
-        result, error = _load_pr_vulnerabilities_artifact(path, console)
+        result, error = load_pr_vulnerabilities_artifact(path, console)
         assert error is None
         assert len(result) == 1
         assert result[0]["threat_id"] == "PR-1"
@@ -940,7 +862,7 @@ class TestLoadPrVulnerabilitiesArtifact:
             "securevibes.scanner.pr_review_merge.fix_pr_vulnerabilities_json",
             return_value=("{broken", True),
         ):
-            result, error = _load_pr_vulnerabilities_artifact(path, console)
+            result, error = load_pr_vulnerabilities_artifact(path, console)
         assert error is None
         assert len(result) == 1
 
@@ -948,15 +870,9 @@ class TestLoadPrVulnerabilitiesArtifact:
         path = tmp_path / "PR_VULNERABILITIES.json"
         path.write_text("[]", encoding="utf-8")
         console = Console(quiet=True)
-        result, error = _load_pr_vulnerabilities_artifact(path, console)
+        result, error = load_pr_vulnerabilities_artifact(path, console)
         assert error is None
         assert result == []
-
-
-# ---------------------------------------------------------------------------
-# _proof_score
-# ---------------------------------------------------------------------------
-
 
 class TestProofScore:
     """Tests for _proof_score (extracted merge helper)."""
@@ -1028,12 +944,6 @@ class TestProofScore:
         score = _proof_score(entry)
         assert score >= 15  # high-evidence finding
 
-
-# ---------------------------------------------------------------------------
-# _speculation_penalty
-# ---------------------------------------------------------------------------
-
-
 class TestSpeculationPenalty:
     """Tests for _speculation_penalty (extracted merge helper)."""
 
@@ -1078,12 +988,6 @@ class TestSpeculationPenalty:
     def test_single_word_term_requires_word_boundary(self):
         entry = {"title": "computation", "description": ""}  # "could" not present as word
         assert _speculation_penalty(entry) == 0
-
-
-# ---------------------------------------------------------------------------
-# _same_chain
-# ---------------------------------------------------------------------------
-
 
 class TestSameChain:
     """Tests for _same_chain (extracted merge helper)."""
@@ -1187,12 +1091,6 @@ class TestSameChain:
         )
         assert _same_chain(a, b) is True
 
-
-# ---------------------------------------------------------------------------
-# _same_subchain_family
-# ---------------------------------------------------------------------------
-
-
 class TestSameSubchainFamily:
     """Tests for _same_subchain_family (extracted merge helper)."""
 
@@ -1235,12 +1133,6 @@ class TestSameSubchainFamily:
         a = self._make_finding(cwe_id="CWE-88", finding_type="new_threat")
         b = self._make_finding(cwe_id="CWE-79", line_number=44, finding_type="new_threat")
         assert _same_subchain_family(a, b) is False
-
-
-# ---------------------------------------------------------------------------
-# _entry_quality
-# ---------------------------------------------------------------------------
-
 
 class TestEntryQuality:
     """Tests for _entry_quality (extracted merge helper)."""
@@ -1291,12 +1183,6 @@ class TestEntryQuality:
         quality = _entry_quality(entry)
         assert quality.evidence_length == 4000
 
-
-# ---------------------------------------------------------------------------
-# _finding_tokens / _token_similarity
-# ---------------------------------------------------------------------------
-
-
 class TestFindingTokensAndSimilarity:
     """Tests for _finding_tokens and _token_similarity."""
 
@@ -1342,12 +1228,6 @@ class TestFindingTokensAndSimilarity:
         assert _token_similarity(set(), {"x"}) == 0.0
         assert _token_similarity({"x"}, set()) == 0.0
 
-
-# ---------------------------------------------------------------------------
-# _chain_role
-# ---------------------------------------------------------------------------
-
-
 class TestChainRole:
     """Tests for _chain_role (extracted merge helper)."""
 
@@ -1371,12 +1251,6 @@ class TestChainRole:
             "evidence": "src/a.py:10 and src/b.py:20 are involved",
         }
         assert _chain_role(entry) == "end_to_end"
-
-
-# ---------------------------------------------------------------------------
-# _has_concrete_chain_structure
-# ---------------------------------------------------------------------------
-
 
 class TestHasConcreteChainStructure:
     """Tests for _has_concrete_chain_structure (extracted merge helper)."""
@@ -1415,12 +1289,6 @@ class TestHasConcreteChainStructure:
         }
         assert _has_concrete_chain_structure(entry) is False
 
-
-# ---------------------------------------------------------------------------
-# _merge_pr_attempt_findings — deeper integration tests
-# ---------------------------------------------------------------------------
-
-
 class TestMergePrAttemptFindingsDeep:
     """Deeper merge tests with precise expected outcomes."""
 
@@ -1442,7 +1310,7 @@ class TestMergePrAttemptFindingsDeep:
 
     def test_identical_findings_merge_to_one(self):
         finding = self._make_finding()
-        result = _merge_pr_attempt_findings([finding, dict(finding)])
+        result = merge_pr_attempt_findings([finding, dict(finding)])
         assert len(result) == 1
 
     def test_same_chain_different_quality_keeps_better(self):
@@ -1457,7 +1325,7 @@ class TestMergePrAttemptFindingsDeep:
             attack_scenario="1) Attacker supplies -o ProxyCommand=payload\n2) ssh executes",
         )
         stats = {}
-        result = _merge_pr_attempt_findings([weak, strong], merge_stats=stats)
+        result = merge_pr_attempt_findings([weak, strong], merge_stats=stats)
         assert len(result) == 1
         # The strong finding should be the survivor
         assert result[0]["threat_id"] == "PR-2"
@@ -1479,7 +1347,7 @@ class TestMergePrAttemptFindingsDeep:
             attack_scenario="1) User submits <script> tag\n2) Rendered in page",
             evidence="src/views.py:100 -> render_template",
         )
-        result = _merge_pr_attempt_findings([ssh_finding, xss_finding])
+        result = merge_pr_attempt_findings([ssh_finding, xss_finding])
         assert len(result) == 2
         threat_ids = {r["threat_id"] for r in result}
         assert threat_ids == {"PR-1", "PR-2"}
@@ -1502,7 +1370,7 @@ class TestMergePrAttemptFindingsDeep:
             evidence="might exist",
             attack_scenario="could happen",
         )
-        result = _merge_pr_attempt_findings([strong, speculative])
+        result = merge_pr_attempt_findings([strong, speculative])
         # The speculative finding should be filtered by the strong-findings gate
         assert len(result) == 1
         assert result[0]["threat_id"] == "PR-1"
@@ -1521,7 +1389,7 @@ class TestMergePrAttemptFindingsDeep:
             evidence="src/views.py:100 -> render",
         )
         stats = {}
-        result = _merge_pr_attempt_findings([f1, f2, f3], merge_stats=stats)
+        result = merge_pr_attempt_findings([f1, f2, f3], merge_stats=stats)
         assert len(result) == 2
         assert stats["input_count"] == 3
         # f1 and f2 merge in canonical pass, f3 is separate
@@ -1549,6 +1417,6 @@ class TestMergePrAttemptFindingsDeep:
             evidence="",
         )
 
-        result = _merge_pr_attempt_findings([close_a, close_b])
+        result = merge_pr_attempt_findings([close_a, close_b])
         assert len(result) == 2
         assert {entry["threat_id"] for entry in result} == {"PR-A", "PR-B"}

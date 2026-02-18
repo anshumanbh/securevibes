@@ -18,12 +18,6 @@ from securevibes.scanner.pr_review_flow import (
     PRReviewState,
 )
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _make_finding(
     *,
     title: str = "SQL Injection in handler",
@@ -48,14 +42,12 @@ def _make_finding(
         "evidence": evidence,
     }
 
-
 def _make_scanner(*, debug: bool = False, model: str = "test-model") -> MagicMock:
     scanner = MagicMock()
     scanner.debug = debug
     scanner.model = model
     scanner.console = MagicMock()
     return scanner
-
 
 def _make_runner(*, debug: bool = False) -> PRReviewAttemptRunner:
     scanner = _make_scanner(debug=debug)
@@ -65,7 +57,6 @@ def _make_runner(*, debug: bool = False) -> PRReviewAttemptRunner:
         claude_client_cls=MagicMock,
         hook_matcher_cls=MagicMock,
     )
-
 
 def _make_context(tmp_path: Path) -> PRReviewContext:
     """Build a minimal PRReviewContext for testing."""
@@ -92,12 +83,6 @@ def _make_context(tmp_path: Path) -> PRReviewContext:
         severity_threshold="medium",
     )
 
-
-# ---------------------------------------------------------------------------
-# Dataclass construction / default tests
-# ---------------------------------------------------------------------------
-
-
 class TestPRAttemptState:
     def test_defaults(self):
         state = PRAttemptState()
@@ -113,7 +98,6 @@ class TestPRAttemptState:
 
         assert "chain-1" not in b.carry_forward_candidate_family_ids
 
-
 class TestPRReviewContext:
     def test_construction(self, tmp_path: Path):
         ctx = _make_context(tmp_path)
@@ -122,7 +106,6 @@ class TestPRReviewContext:
         assert ctx.pr_review_attempts == 3
         assert ctx.detected_languages == {"python"}
         assert ctx.retry_focus_plan == ["command_option", "path_exfiltration"]
-
 
 class TestPRReviewState:
     def test_defaults(self):
@@ -167,12 +150,6 @@ class TestPRReviewState:
         assert b.warnings == []
         assert b.chain_support_counts == {}
 
-
-# ---------------------------------------------------------------------------
-# PRReviewAttemptRunner property delegation
-# ---------------------------------------------------------------------------
-
-
 class TestRunnerProperties:
     def test_console_delegates_to_scanner(self):
         runner = _make_runner()
@@ -185,12 +162,6 @@ class TestRunnerProperties:
     def test_model_delegates_to_scanner(self):
         runner = _make_runner()
         assert runner.model == "test-model"
-
-
-# ---------------------------------------------------------------------------
-# _record_attempt_chains
-# ---------------------------------------------------------------------------
-
 
 class TestRecordAttemptChains:
     def test_records_ids_and_increments_support(self):
@@ -232,12 +203,6 @@ class TestRecordAttemptChains:
         assert state.attempt_chain_family_ids == [set()]
         assert state.attempt_chain_flow_ids == [set()]
         assert state.chain_support_counts == {}
-
-
-# ---------------------------------------------------------------------------
-# _record_attempt_revalidation_observability
-# ---------------------------------------------------------------------------
-
 
 class TestRecordAttemptRevalidationObservability:
     def test_no_revalidation_records_false(self):
@@ -294,8 +259,6 @@ class TestRecordAttemptRevalidationObservability:
 
         assert result is False
         assert state.attempt_core_evidence_present == [False]
-        # debug console message should be printed
-        runner._scanner.console.print.assert_called()
 
     def test_empty_findings_returns_false(self):
         runner = _make_runner()
@@ -310,12 +273,6 @@ class TestRecordAttemptRevalidationObservability:
         )
 
         assert result is False
-
-
-# ---------------------------------------------------------------------------
-# _process_attempt_outcome
-# ---------------------------------------------------------------------------
-
 
 class TestProcessAttemptOutcome:
     def _call(
@@ -387,8 +344,6 @@ class TestProcessAttemptOutcome:
 
         assert state.attempts_with_overwritten_artifact == 1
         assert len(state.ephemeral_pr_vulns) == 2
-        # Debug console should have been notified
-        runner._scanner.console.print.assert_called()
 
     def test_force_revalidation_miss_triggers_weak_consensus(self, tmp_path: Path):
         runner = _make_runner()
@@ -431,12 +386,6 @@ class TestProcessAttemptOutcome:
 
         assert call_count == 1
 
-
-# ---------------------------------------------------------------------------
-# _refresh_carry_forward_candidates
-# ---------------------------------------------------------------------------
-
-
 class TestRefreshCarryForwardCandidates:
     def test_updates_attempt_state(self):
         runner = _make_runner()
@@ -460,13 +409,7 @@ class TestRefreshCarryForwardCandidates:
 
         assert state.attempt_state.carry_forward_candidate_summary == "- None"
 
-
-# ---------------------------------------------------------------------------
-# run_attempt_loop async tests
-# ---------------------------------------------------------------------------
-
 _MODULE = "securevibes.scanner.pr_review_flow"
-
 
 class _FakeTracker:
     """Minimal tracker stub that avoids MagicMock spec issues."""
@@ -476,7 +419,6 @@ class _FakeTracker:
 
     def on_assistant_text(self, text):
         pass
-
 
 def _make_async_client():
     """Build a mock ClaudeSDKClient that works as an async context manager."""
@@ -496,7 +438,6 @@ def _make_async_client():
     cls = MagicMock(return_value=ctx_mgr)
     return cls, client
 
-
 def _make_loop_runner(*, debug: bool = False):
     """Build a runner wired for run_attempt_loop tests with patched externals."""
     client_cls, client_mock = _make_async_client()
@@ -508,7 +449,6 @@ def _make_loop_runner(*, debug: bool = False):
         hook_matcher_cls=MagicMock,
     )
     return runner, client_cls, client_mock
-
 
 def _make_error_runner(*, error_cls=RuntimeError, error_msg="boom"):
     """Build a runner whose client raises the given exception on __aenter__."""
@@ -531,7 +471,6 @@ def _make_error_runner(*, error_cls=RuntimeError, error_msg="boom"):
     )
     return runner, client_cls
 
-
 @pytest.fixture()
 def _patch_loop_externals():
     """Patch module-level functions used by run_attempt_loop."""
@@ -549,7 +488,6 @@ def _patch_loop_externals():
     ):
         mock_config.get_max_turns.return_value = 10
         yield
-
 
 @pytest.mark.usefixtures("_patch_loop_externals")
 class TestRunAttemptLoop:
@@ -571,7 +509,7 @@ class TestRunAttemptLoop:
         state = PRReviewState()
         vulns = [_make_finding()]
 
-        with patch(f"{_MODULE}._load_pr_vulnerabilities_artifact", return_value=(vulns, None)):
+        with patch(f"{_MODULE}.load_pr_vulnerabilities_artifact", return_value=(vulns, None)):
             await runner.run_attempt_loop(single_attempt_ctx, state)
 
         assert state.attempts_run == 1
@@ -703,7 +641,7 @@ class TestRunAttemptLoop:
 
         vulns = [_make_finding()]
         with patch(
-            f"{_MODULE}._load_pr_vulnerabilities_artifact",
+            f"{_MODULE}.load_pr_vulnerabilities_artifact",
             side_effect=[(vulns, None), (vulns, None)],
         ):
             await runner.run_attempt_loop(ctx, state)
@@ -721,7 +659,7 @@ class TestRunAttemptLoop:
 
         vulns = [_make_finding()]
         with patch(
-            f"{_MODULE}._load_pr_vulnerabilities_artifact",
+            f"{_MODULE}.load_pr_vulnerabilities_artifact",
             side_effect=[(vulns, None), (vulns, None)],
         ):
             await runner.run_attempt_loop(ctx, state)
@@ -737,7 +675,7 @@ class TestRunAttemptLoop:
         state = PRReviewState()
 
         with patch(
-            f"{_MODULE}._load_pr_vulnerabilities_artifact",
+            f"{_MODULE}.load_pr_vulnerabilities_artifact",
             side_effect=[
                 ([], "not produced"),
                 ([], "not produced"),
@@ -799,7 +737,7 @@ class TestRunAttemptLoop:
         state = PRReviewState()
 
         with patch(
-            f"{_MODULE}._load_pr_vulnerabilities_artifact", return_value=([], "not produced")
+            f"{_MODULE}.load_pr_vulnerabilities_artifact", return_value=([], "not produced")
         ):
             await runner.run_attempt_loop(single_attempt_ctx, state)
 

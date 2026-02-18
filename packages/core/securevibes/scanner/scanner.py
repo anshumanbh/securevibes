@@ -72,12 +72,12 @@ from securevibes.scanner.state import (
     utc_timestamp,
 )
 from securevibes.scanner.pr_review_merge import (
-    _attempts_show_pr_disagreement,
-    _build_pr_retry_focus_plan,
-    _focus_area_label,
-    _issues_from_pr_vulns,
-    _merge_pr_attempt_findings,
-    _should_run_pr_verifier,
+    attempts_show_pr_disagreement,
+    build_pr_retry_focus_plan,
+    focus_area_label,
+    issues_from_pr_vulns,
+    merge_pr_attempt_findings,
+    should_run_pr_verifier,
     dedupe_pr_vulns,
     filter_baseline_vulns,
 )
@@ -394,7 +394,7 @@ async def _refine_pr_findings_with_llm(
 
     focus_area_lines = (
         "\n".join(
-            f"- {_focus_area_label(focus_area)}" for focus_area in (focus_areas or [])
+            f"- {focus_area_label(focus_area)}" for focus_area in (focus_areas or [])
         ).strip()
         or "- General exploit-chain verification"
     )
@@ -772,81 +772,39 @@ class Scanner:
         )
         target_accounts.write_text(accounts_file.read_text(encoding="utf-8"), encoding="utf-8")
 
-    def _setup_dast_skills(self, repo: Path):
+    def _setup_skills(self, repo: Path, skill_type: str, *, required: bool = True):
         """
-        Sync DAST skills to target project for SDK discovery.
+        Sync skills of the given type to a target project for SDK discovery.
 
-        Skills are bundled with SecureVibes package and automatically
-        synced to each project's .claude/skills/dast/ directory.
+        Skills are bundled with the SecureVibes package and automatically
+        synced to each project's ``.claude/skills/<skill_type>/`` directory.
         Always syncs to ensure new skills are available.
 
         Args:
-            repo: Target repository path
+            repo: Target repository path.
+            skill_type: Subdirectory name under ``skills/`` (e.g. ``"dast"``
+                or ``"threat-modeling"``).
+            required: When ``True`` (default), raise ``RuntimeError`` if the
+                package skills directory is missing.  When ``False``, silently
+                return instead.
         """
         import shutil
 
-        # Get skills from package installation
-        package_skills_dir = Path(__file__).parent.parent / "skills" / "dast"
+        label = skill_type.replace("-", " ")
+        package_skills_dir = Path(__file__).parent.parent / "skills" / skill_type
 
         if not package_skills_dir.exists():
-            raise RuntimeError(
-                f"DAST skills not found at {package_skills_dir}. "
-                "Package installation may be corrupted."
-            )
-
-        # Count skills in package
-        package_skills = [d.name for d in package_skills_dir.iterdir() if d.is_dir()]
-        target_skills_dir = self._repo_output_path(
-            repo,
-            Path(".claude") / "skills" / "dast",
-            operation="DAST skill sync target",
-        )
-
-        # Sync skills to target project (always sync to pick up new skills)
-        try:
-            target_skills_parent = self._repo_output_path(
-                repo,
-                target_skills_dir.parent,
-                operation="DAST skill sync parent directory",
-            )
-            target_skills_parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(package_skills_dir, target_skills_dir, dirs_exist_ok=True)
-
-            if self.debug:
-                self.console.print(
-                    f"  📦 Synced {len(package_skills)} DAST skill(s) to .claude/skills/dast/",
-                    style="dim green",
+            if required:
+                raise RuntimeError(
+                    f"{label.upper()} skills not found at {package_skills_dir}. "
+                    "Package installation may be corrupted."
                 )
-                for skill in package_skills:
-                    self.console.print(f"      - {skill}", style="dim")
-
-        except (OSError, PermissionError) as e:
-            raise RuntimeError(f"Failed to sync DAST skills: {e}")
-
-    def _setup_threat_modeling_skills(self, repo: Path):
-        """
-        Sync threat modeling skills to target project for SDK discovery.
-
-        Skills are bundled with SecureVibes package and automatically
-        synced to each project's .claude/skills/threat-modeling/ directory.
-        Always syncs to ensure new skills are available.
-
-        Args:
-            repo: Target repository path
-        """
-        import shutil
-
-        # Get skills from package installation
-        package_skills_dir = Path(__file__).parent.parent / "skills" / "threat-modeling"
-
-        if not package_skills_dir.exists():
             if self.debug:
                 self.console.print(
-                    f"  ℹ️  No threat modeling skills found at {package_skills_dir}", style="dim"
+                    f"  No {label} skills found at {package_skills_dir}", style="dim"
                 )
             return
 
-        # Count skills in package
         package_skills = [d.name for d in package_skills_dir.iterdir() if d.is_dir()]
 
         if not package_skills:
@@ -854,30 +812,39 @@ class Scanner:
 
         target_skills_dir = self._repo_output_path(
             repo,
-            Path(".claude") / "skills" / "threat-modeling",
-            operation="threat modeling skill sync target",
+            Path(".claude") / "skills" / skill_type,
+            operation=f"{label} skill sync target",
         )
 
-        # Sync skills to target project (always sync to pick up new skills)
         try:
             target_skills_parent = self._repo_output_path(
                 repo,
                 target_skills_dir.parent,
-                operation="threat modeling skill sync parent directory",
+                operation=f"{label} skill sync parent directory",
             )
             target_skills_parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(package_skills_dir, target_skills_dir, dirs_exist_ok=True)
 
             if self.debug:
-                self.console.print(
-                    f"  📦 Synced {len(package_skills)} threat modeling skill(s) to .claude/skills/threat-modeling/",
-                    style="dim green",
+                logger.debug(
+                    "Synced %d %s skill(s) to .claude/skills/%s/",
+                    len(package_skills),
+                    label,
+                    skill_type,
                 )
                 for skill in package_skills:
-                    self.console.print(f"      - {skill}", style="dim")
+                    logger.debug("  - %s", skill)
 
         except (OSError, PermissionError) as e:
-            raise RuntimeError(f"Failed to sync threat modeling skills: {e}") from e
+            raise RuntimeError(f"Failed to sync {label} skills: {e}") from e
+
+    def _setup_dast_skills(self, repo: Path):
+        """Sync DAST skills to target project (required -- raises on missing)."""
+        self._setup_skills(repo, "dast", required=True)
+
+    def _setup_threat_modeling_skills(self, repo: Path):
+        """Sync threat-modeling skills to target project (optional -- skips on missing)."""
+        self._setup_skills(repo, "threat-modeling", required=False)
 
     async def scan_subagent(
         self, repo_path: str, subagent: str, force: bool = False, skip_checks: bool = False
@@ -1158,7 +1125,7 @@ class Scanner:
         auth_privilege_signals = diff_has_auth_privilege_signals(focused_diff_context)
         pr_grep_default_scope = _derive_pr_default_grep_scope(focused_diff_context)
         pr_review_attempts = config.get_pr_review_attempts()
-        retry_focus_plan = _build_pr_retry_focus_plan(
+        retry_focus_plan = build_pr_retry_focus_plan(
             pr_review_attempts,
             command_builder_signals=command_builder_signals,
             path_parser_signals=path_parser_signals,
@@ -1177,19 +1144,18 @@ class Scanner:
                 architecture_context=architecture_context,
             )
         if self.debug:
-            self.console.print("  🧠 PR exploit hypotheses prepared", style="dim")
-            self.console.print(
-                "  🔎 PR diff risk signals: "
-                f"command_builder={command_builder_signals}, "
-                f"path_parser={path_parser_signals}, "
-                f"auth_privilege={auth_privilege_signals}",
-                style="dim",
+            logger.debug("PR exploit hypotheses prepared")
+            logger.debug(
+                "PR diff risk signals: command_builder=%s, path_parser=%s, auth_privilege=%s",
+                command_builder_signals,
+                path_parser_signals,
+                auth_privilege_signals,
             )
             if retry_focus_plan:
                 focus_preview = " -> ".join(
-                    _focus_area_label(focus_area) for focus_area in retry_focus_plan
+                    focus_area_label(focus_area) for focus_area in retry_focus_plan
                 )
-                self.console.print(f"  🎯 PR retry focus plan: {focus_preview}", style="dim")
+                logger.debug("PR retry focus plan: %s", focus_preview)
 
         base_agents = create_agent_definitions(cli_model=self.model)
         base_pr_prompt = base_agents["pr-code-review"].prompt
@@ -1280,7 +1246,7 @@ Only report findings at or above: {severity_threshold}
         raw_candidates = [*state.collected_pr_vulns, *state.ephemeral_pr_vulns]
         raw_pr_finding_count = len(raw_candidates)
         state.merge_stats = {}
-        state.pr_vulns = _merge_pr_attempt_findings(
+        state.pr_vulns = merge_pr_attempt_findings(
             raw_candidates,
             merge_stats=state.merge_stats,
             chain_support_counts=state.chain_support_counts,
@@ -1288,7 +1254,7 @@ Only report findings at or above: {severity_threshold}
         )
 
         attempt_outcome_counts = state.attempt_observed_counts or state.attempt_finding_counts
-        attempt_disagreement = _attempts_show_pr_disagreement(attempt_outcome_counts)
+        attempt_disagreement = attempts_show_pr_disagreement(attempt_outcome_counts)
         high_risk_signal_count = sum(
             [ctx.command_builder_signals, ctx.path_parser_signals, ctx.auth_privilege_signals]
         )
@@ -1375,7 +1341,7 @@ Only report findings at or above: {severity_threshold}
             )
             if refined_pr_vulns is not None:
                 refined_merge_stats: Dict[str, int] = {}
-                refined_canonical = _merge_pr_attempt_findings(
+                refined_canonical = merge_pr_attempt_findings(
                     refined_pr_vulns,
                     merge_stats=refined_merge_stats,
                     chain_support_counts=state.chain_support_counts,
@@ -1422,7 +1388,7 @@ Only report findings at or above: {severity_threshold}
         passes_with_core_chain_family = support_counts_snapshot.get("family", 0)
         passes_with_core_chain_flow = support_counts_snapshot.get("flow", 0)
         verifier_reason = state.weak_consensus_reason or detected_reason
-        should_run_verifier = _should_run_pr_verifier(
+        should_run_verifier = should_run_pr_verifier(
             has_findings=bool(state.pr_vulns),
             weak_consensus=weak_consensus,
         )
@@ -1452,7 +1418,7 @@ Only report findings at or above: {severity_threshold}
             )
             if verified_pr_vulns is not None:
                 verified_merge_stats: Dict[str, int] = {}
-                verified_canonical = _merge_pr_attempt_findings(
+                verified_canonical = merge_pr_attempt_findings(
                     verified_pr_vulns,
                     merge_stats=verified_merge_stats,
                     chain_support_counts=state.chain_support_counts,
@@ -1606,7 +1572,7 @@ Only report findings at or above: {severity_threshold}
 
         return ScanResult(
             repository_path=str(ctx.repo),
-            issues=_issues_from_pr_vulns(pr_vulns if isinstance(pr_vulns, list) else []),
+            issues=issues_from_pr_vulns(pr_vulns if isinstance(pr_vulns, list) else []),
             files_scanned=len(ctx.diff_context.changed_files),
             scan_time_seconds=round(time.time() - ctx.scan_start_time, 2),
             total_cost_usd=round(self.total_cost, 4),
@@ -1701,12 +1667,12 @@ Only report findings at or above: {severity_threshold}
 
         if self.debug:
             if is_agentic:
-                self.console.print(
-                    f"  🤖 Agentic application detected ({len(detection_result.matched_categories)} category matches)",
-                    style="dim green",
+                logger.debug(
+                    "Agentic application detected (%d category matches)",
+                    len(detection_result.matched_categories),
                 )
             else:
-                self.console.print("  📦 Non-agentic application detected", style="dim")
+                logger.debug("Non-agentic application detected")
 
         # Setup DAST / threat-modeling skills if those subagents will be executed.
         # Create SubAgentManager once for resume_from lookups to avoid duplicate
@@ -1736,16 +1702,15 @@ Only report findings at or above: {severity_threshold}
             if skills_dir.exists():
                 skills = [d.name for d in skills_dir.iterdir() if d.is_dir()]
                 if skills:
-                    self.console.print(
-                        f"  ✅ Skills directory found: {len(skills)} skill(s) available: {', '.join(skills)}",
-                        style="dim green",
+                    logger.debug(
+                        "Skills directory found: %d skill(s) available: %s",
+                        len(skills),
+                        ", ".join(skills),
                     )
                 else:
-                    self.console.print(
-                        "  ⚠️  Skills directory exists but is empty", style="dim yellow"
-                    )
+                    logger.debug("Skills directory exists but is empty")
             else:
-                self.console.print("  ℹ️  No skills directory found (.claude/skills/)", style="dim")
+                logger.debug("No skills directory found (.claude/skills/)")
 
         # Show scan info (banner already printed by CLI)
         self.console.print(f"📁 Scanning: {repo}")
