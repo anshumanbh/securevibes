@@ -1427,6 +1427,144 @@ class TestMergeDastResults:
         assert merged is result
 
 
+class TestPrHypothesisTimeout:
+    """Test hypothesis generation timeout and logging behaviour."""
+
+    @pytest.mark.asyncio
+    async def test_hypothesis_uses_90s_timeout(self, tmp_path):
+        """Hypothesis generation should use a 90s timeout, not 30s."""
+        import asyncio
+        from securevibes.scanner.scanner import _generate_pr_hypotheses
+
+        captured = {}
+
+        async def capture_wait_for(coro, *, timeout):
+            captured["timeout"] = timeout
+            coro.close()
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+            mock_instance = MagicMock()
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_instance.query = AsyncMock()
+
+            async def async_gen():
+                return
+                yield  # pragma: no cover
+
+            mock_instance.receive_messages = async_gen
+
+            with patch("asyncio.wait_for", side_effect=capture_wait_for):
+                await _generate_pr_hypotheses(
+                    repo=tmp_path,
+                    model="sonnet",
+                    changed_files=["app.py"],
+                    diff_line_anchors="L10",
+                    diff_hunk_snippets="+ x = 1",
+                    threat_context_summary="none",
+                    vuln_context_summary="none",
+                    architecture_context="none",
+                )
+
+        assert captured["timeout"] == 90
+
+    @pytest.mark.asyncio
+    async def test_hypothesis_timeout_logs_without_traceback(self, tmp_path):
+        """Hypothesis timeout should log a clean warning without exc_info."""
+        import asyncio
+        from securevibes.scanner.scanner import _generate_pr_hypotheses
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+            mock_instance = MagicMock()
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
+                with patch("securevibes.scanner.scanner.logger") as mock_logger:
+                    result = await _generate_pr_hypotheses(
+                        repo=tmp_path,
+                        model="sonnet",
+                        changed_files=["app.py"],
+                        diff_line_anchors="L10",
+                        diff_hunk_snippets="+ x = 1",
+                        threat_context_summary="none",
+                        vuln_context_summary="none",
+                        architecture_context="none",
+                    )
+
+                    assert result == "- Unable to generate hypotheses."
+                    mock_logger.warning.assert_called_once()
+                    call_kwargs = mock_logger.warning.call_args[1]
+                    assert "exc_info" not in call_kwargs or call_kwargs["exc_info"] is False
+
+
+class TestPrRefinementTimeout:
+    """Test PR finding refinement timeout and logging behaviour."""
+
+    @pytest.mark.asyncio
+    async def test_refinement_uses_90s_timeout(self, tmp_path):
+        """PR finding refinement should use a 90s timeout, not 30s."""
+        import asyncio
+        from securevibes.scanner.scanner import _refine_pr_findings_with_llm
+
+        captured = {}
+
+        async def capture_wait_for(coro, *, timeout):
+            captured["timeout"] = timeout
+            coro.close()
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+            mock_instance = MagicMock()
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+            mock_instance.query = AsyncMock()
+
+            async def async_gen():
+                return
+                yield  # pragma: no cover
+
+            mock_instance.receive_messages = async_gen
+
+            with patch("asyncio.wait_for", side_effect=capture_wait_for):
+                await _refine_pr_findings_with_llm(
+                    repo=tmp_path,
+                    model="sonnet",
+                    diff_line_anchors="L10",
+                    diff_hunk_snippets="+ x = 1",
+                    findings=[{"id": "V001", "title": "test"}],
+                    severity_threshold="medium",
+                )
+
+        assert captured["timeout"] == 90
+
+    @pytest.mark.asyncio
+    async def test_refinement_timeout_logs_without_traceback(self, tmp_path):
+        """Refinement timeout should log a clean warning without exc_info."""
+        import asyncio
+        from securevibes.scanner.scanner import _refine_pr_findings_with_llm
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+            mock_instance = MagicMock()
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
+                with patch("securevibes.scanner.scanner.logger") as mock_logger:
+                    result = await _refine_pr_findings_with_llm(
+                        repo=tmp_path,
+                        model="sonnet",
+                        diff_line_anchors="L10",
+                        diff_hunk_snippets="+ x = 1",
+                        findings=[{"id": "V001", "title": "test"}],
+                        severity_threshold="medium",
+                    )
+
+                    assert result is None
+                    mock_logger.warning.assert_called_once()
+                    call_kwargs = mock_logger.warning.call_args[1]
+                    assert "exc_info" not in call_kwargs or call_kwargs["exc_info"] is False
+
+
 class TestDerivePrDefaultGrepScope:
     """Tests for _derive_pr_default_grep_scope."""
 

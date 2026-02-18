@@ -366,15 +366,13 @@ ARCHITECTURE CONTEXT:
                     elif isinstance(message, ResultMessage):
                         break
 
-            # NOTE: 30s timeout covers the entire LLM exchange (query + stream).
-            # If the model is slow, this silently falls back to the default
-            # "Unable to generate hypotheses" string — acceptable degradation
-            # but may cause missed context for downstream review passes.
-            await asyncio.wait_for(_run_llm_exchange(), timeout=30)
+            # NOTE: 90s timeout covers the entire LLM exchange (query + stream).
+            # The Claude SDK cold-starts on the first call, and the hypothesis
+            # prompt includes substantial context, so 30s is insufficient.
+            await asyncio.wait_for(_run_llm_exchange(), timeout=90)
     except (OSError, asyncio.TimeoutError, RuntimeError):
         logger.warning(
             "Hypothesis generation timed out or failed — downstream review passes may lack context",
-            exc_info=True,
         )
         return "- Unable to generate hypotheses."
 
@@ -477,15 +475,13 @@ CANDIDATE FINDINGS JSON:
                     elif isinstance(message, ResultMessage):
                         break
 
-            # NOTE: 30s timeout covers the entire LLM exchange (query + stream).
-            # If the model is slow, this returns None — the caller treats it as
-            # a no-op refinement and retains the unrefined findings. Acceptable
-            # but may leave speculative findings unfiltered.
-            await asyncio.wait_for(_run_llm_exchange(), timeout=30)
+            # NOTE: 90s timeout covers the entire LLM exchange (query + stream).
+            # The Claude SDK cold-starts on the first call, and the refinement
+            # prompt includes substantial context, so 30s is insufficient.
+            await asyncio.wait_for(_run_llm_exchange(), timeout=90)
     except (OSError, asyncio.TimeoutError, RuntimeError):
         logger.warning(
             "PR finding refinement timed out or failed — unrefined findings will be retained",
-            exc_info=True,
         )
         return None
 
