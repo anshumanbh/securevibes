@@ -58,6 +58,26 @@ REQUIRED_REPORT_FIELDS = ("repository_path", "files_scanned", "scan_time_seconds
 REQUIRED_REPORT_ISSUE_FIELDS = ("severity", "title", "description", "file_path", "line_number")
 
 
+def _require_repo_scoped_path(repo_root: Path, candidate: Path, *, operation: str) -> Path:
+    """Ensure a candidate path resolves inside the repository root."""
+    resolved_repo_root = repo_root.resolve(strict=False)
+    resolved_candidate = candidate.resolve(strict=False)
+    if resolved_candidate == resolved_repo_root or resolved_repo_root in resolved_candidate.parents:
+        return candidate
+    raise RuntimeError(
+        f"Refusing unsafe {operation}: {candidate} resolves outside repository root "
+        f"({resolved_candidate})"
+    )
+
+
+def _repo_output_path(repo_root: Path, path: Path | str, *, operation: str) -> Path:
+    """Resolve a path relative to repo_root and enforce repository boundary."""
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = repo_root / candidate
+    return _require_repo_scoped_path(repo_root, candidate, operation=operation)
+
+
 def _filter_by_severity(result, min_severity: Optional[str]) -> None:
     """Filter scan issues to only include findings at/above minimum severity."""
     if not min_severity:
@@ -78,8 +98,16 @@ def _resolve_markdown_output_path(
         output_path = Path(output)
         if output_path.is_absolute():
             return output_path
-        return repo_path / ".securevibes" / output
-    return repo_path / ".securevibes" / default_filename
+        return _repo_output_path(
+            repo_path,
+            Path(".securevibes") / output,
+            operation="markdown output file",
+        )
+    return _repo_output_path(
+        repo_path,
+        Path(".securevibes") / default_filename,
+        operation="markdown output file",
+    )
 
 
 def _write_output(
@@ -248,6 +276,8 @@ def scan(
         securevibes scan . --model claude-3-5-haiku-20241022  # Use faster/cheaper model
     """
     try:
+        repo = Path(path).resolve()
+
         # Validate flag conflicts
         if quiet and debug:
             console.print(
@@ -304,7 +334,9 @@ def scan(
             console.print("[dim]AI-Powered Vulnerability Detection[/dim]")
             console.print()
 
-        output_dir = Path(path) / ".securevibes"
+        output_dir = _repo_output_path(
+            repo, Path(".securevibes"), operation="scan output directory"
+        )
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
         except (IOError, OSError) as e:
@@ -360,7 +392,7 @@ def scan(
         agentic_override = True if agentic else False if no_agentic else None
         result = asyncio.run(
             _run_scan(
-                path,
+                str(repo),
                 model,
                 True,
                 quiet,
@@ -382,7 +414,7 @@ def scan(
             result=result,
             output_format=output_format,
             output=output,
-            repo_path=Path(path),
+            repo_path=repo,
             markdown_default_filename="scan_report.md",
             markdown_label="Markdown report",
             quiet=quiet,
@@ -473,7 +505,11 @@ def pr_review(
     """
     try:
         repo = Path(path).resolve()
-        securevibes_dir = repo / ".securevibes"
+        securevibes_dir = _repo_output_path(
+            repo,
+            Path(".securevibes"),
+            operation="PR review artifact directory",
+        )
 
         if (base or head) and not (base and head):
             console.print("[bold red]❌ Must specify both --base and --head[/bold red]")
@@ -507,7 +543,7 @@ def pr_review(
             sys.exit(1)
 
         if clean_pr_artifacts:
-            removed_artifacts = _clean_pr_artifacts(securevibes_dir)
+            removed_artifacts = _clean_pr_artifacts(securevibes_dir, repo_root=repo)
             if removed_artifacts:
                 removed_list = ", ".join(path.name for path in removed_artifacts)
                 console.print(f"[dim]Removed transient PR artifacts: {removed_list}[/dim]")
@@ -522,7 +558,12 @@ def pr_review(
             diff_content = get_diff_from_git_range(repo, base, head)
             commits_reviewed = get_commits_between(repo, base, head)
         elif since_last_scan:
-            state = load_scan_state(securevibes_dir / "scan_state.json") or {}
+            state_path = _repo_output_path(
+                repo,
+                securevibes_dir / "scan_state.json",
+                operation="PR review scan_state artifact",
+            )
+            state = load_scan_state(state_path) or {}
             base_commit = get_last_full_scan_commit(state)
             if not base_commit:
                 console.print(
@@ -563,7 +604,11 @@ def pr_review(
             console.print("[yellow]No changed files found in diff.[/yellow]")
             sys.exit(0)
 
-        known_vulns_path = securevibes_dir / "VULNERABILITIES.json"
+        known_vulns_path = _repo_output_path(
+            repo,
+            securevibes_dir / "VULNERABILITIES.json",
+            operation="PR review baseline vulnerabilities artifact",
+        )
         known_vulns = known_vulns_path if known_vulns_path.exists() else None
 
         result = asyncio.run(
@@ -591,8 +636,13 @@ def pr_review(
 
         head_commit = get_repo_head_commit(repo)
         if head_commit:
-            update_scan_state(
+            scan_state_path = _repo_output_path(
+                repo,
                 securevibes_dir / "scan_state.json",
+                operation="PR review scan_state artifact",
+            )
+            update_scan_state(
+                scan_state_path,
                 pr_review=build_pr_review_entry(
                     commit=head_commit,
                     commits_reviewed=commits_reviewed,
@@ -721,11 +771,17 @@ def _is_production_url(url: str) -> bool:
         return True
 
 
-def _clean_pr_artifacts(securevibes_dir: Path) -> list[Path]:
+def _clean_pr_artifacts(securevibes_dir: Path, *, repo_root: Optional[Path] = None) -> list[Path]:
     """Delete transient PR review artifacts that can taint reruns."""
     removed: list[Path] = []
     for file_name in TRANSIENT_PR_ARTIFACTS:
         candidate = securevibes_dir / file_name
+        if repo_root is not None:
+            candidate = _repo_output_path(
+                repo_root,
+                candidate,
+                operation="transient PR artifact cleanup",
+            )
         if not candidate.exists() or not candidate.is_file():
             continue
         try:
@@ -749,7 +805,16 @@ def _parse_since_date_pacific(date_str: str) -> str:
 
 
 def _ensure_baseline_scan(repo: Path, model: str, debug: bool) -> None:
-    state_path = repo / ".securevibes" / "scan_state.json"
+    securevibes_dir = _repo_output_path(
+        repo,
+        Path(".securevibes"),
+        operation="baseline artifact directory",
+    )
+    state_path = _repo_output_path(
+        repo,
+        securevibes_dir / "scan_state.json",
+        operation="baseline scan_state artifact",
+    )
     state = load_scan_state(state_path)
     branch = get_repo_branch(repo)
 

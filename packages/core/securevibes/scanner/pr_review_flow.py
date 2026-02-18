@@ -278,7 +278,12 @@ class PRReviewAttemptRunner:
                         tracker.on_assistant_text(block.text)
             elif isinstance(message, ResultMessage):
                 if message.total_cost_usd:
-                    self._scanner.total_cost = message.total_cost_usd
+                    current_total_raw = getattr(self._scanner, "total_cost", 0.0)
+                    if isinstance(current_total_raw, (int, float)):
+                        current_total = float(current_total_raw)
+                    else:
+                        current_total = 0.0
+                    self._scanner.total_cost = current_total + float(message.total_cost_usd)
                 break
 
     async def run_attempt_loop(

@@ -640,11 +640,35 @@ def test_subagent_dast_cli_invocation(runner, tmp_path):
         assert "--target-url is required" not in result.output
 
 
-def test_subagent_dast_auto_enables_dast():
-    """Test that --subagent dast automatically enables DAST"""
-    # This is tested via CLI validation logic
-    # When --subagent dast is used, dast flag is auto-enabled
-    assert True  # Logic tested in test_subagent_selection.py
+def test_subagent_dast_auto_enables_dast(runner, tmp_path):
+    """`--subagent dast` should force dast=True when invoking scan runtime."""
+    with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
+        mock_run.return_value = ScanResult(
+            repository_path=str(tmp_path),
+            issues=[],
+            files_scanned=1,
+            scan_time_seconds=1.0,
+        )
+
+        with patch("securevibes.cli.main._check_target_reachability", return_value=True):
+            result = runner.invoke(
+                cli,
+                [
+                    "scan",
+                    str(tmp_path),
+                    "--subagent",
+                    "dast",
+                    "--target-url",
+                    "http://localhost:3000",
+                    "--format",
+                    "table",
+                    "--quiet",
+                ],
+            )
+
+    assert result.exit_code == 0
+    assert mock_run.call_args is not None
+    assert mock_run.call_args.args[5] is True  # dast argument
 
 
 def test_setup_dast_skills_copies_to_target(tmp_path):

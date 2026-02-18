@@ -76,6 +76,28 @@ def test_clean_pr_artifacts_raises_on_unlink_error(tmp_path: Path, monkeypatch):
         _clean_pr_artifacts(securevibes_dir)
 
 
+def test_clean_pr_artifacts_rejects_repo_symlink_escape(tmp_path: Path):
+    """Cleanup should fail closed when `.securevibes` escapes repo via symlink."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    escaped_artifact = outside / "PR_VULNERABILITIES.json"
+    escaped_artifact.write_text("[]", encoding="utf-8")
+
+    securevibes_link = repo / ".securevibes"
+    try:
+        securevibes_link.symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks are not supported in this environment")
+
+    with pytest.raises(RuntimeError, match="outside repository root"):
+        _clean_pr_artifacts(securevibes_link, repo_root=repo)
+
+    assert escaped_artifact.exists()
+
+
 def test_pr_review_empty_diff_exits_cleanly(tmp_path: Path):
     """Empty diff should exit early without invoking the scanner."""
     repo = tmp_path / "repo"

@@ -1,8 +1,6 @@
 """Tests for diff.context helpers."""
 
 import json
-import pytest
-from pathlib import Path
 
 from securevibes.diff.context import (
     normalize_repo_path,
@@ -131,8 +129,7 @@ class TestFilterRelevantThreats:
     def test_respects_max_items(self, tmp_path):
         tm = tmp_path / "THREAT_MODEL.json"
         threats = [
-            {"id": f"T{i}", "title": f"Threat {i}", "file_path": "src/app.py"}
-            for i in range(20)
+            {"id": f"T{i}", "title": f"Threat {i}", "file_path": "src/app.py"} for i in range(20)
         ]
         tm.write_text(json.dumps(threats), encoding="utf-8")
         result = filter_relevant_threats(tm, ["src/app.py"], max_items=3)
@@ -193,7 +190,11 @@ class TestFilterRelevantVulnerabilities:
         assert len(result) <= 5
 
     def test_skips_non_dict_items(self):
-        vulns = ["not a dict", None, {"threat_id": "V1", "title": "Real", "file_path": "src/app.py"}]
+        vulns = [
+            "not a dict",
+            None,
+            {"threat_id": "V1", "title": "Real", "file_path": "src/app.py"},
+        ]
         result = filter_relevant_vulnerabilities(vulns, ["src/app.py"])
         assert all(isinstance(v, dict) for v in result)
 

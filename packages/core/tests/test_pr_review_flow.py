@@ -18,6 +18,7 @@ from securevibes.scanner.pr_review_flow import (
     PRReviewState,
 )
 
+
 def _make_finding(
     *,
     title: str = "SQL Injection in handler",
@@ -42,12 +43,14 @@ def _make_finding(
         "evidence": evidence,
     }
 
+
 def _make_scanner(*, debug: bool = False, model: str = "test-model") -> MagicMock:
     scanner = MagicMock()
     scanner.debug = debug
     scanner.model = model
     scanner.console = MagicMock()
     return scanner
+
 
 def _make_runner(*, debug: bool = False) -> PRReviewAttemptRunner:
     scanner = _make_scanner(debug=debug)
@@ -57,6 +60,7 @@ def _make_runner(*, debug: bool = False) -> PRReviewAttemptRunner:
         claude_client_cls=MagicMock,
         hook_matcher_cls=MagicMock,
     )
+
 
 def _make_context(tmp_path: Path) -> PRReviewContext:
     """Build a minimal PRReviewContext for testing."""
@@ -83,6 +87,7 @@ def _make_context(tmp_path: Path) -> PRReviewContext:
         severity_threshold="medium",
     )
 
+
 class TestPRAttemptState:
     def test_defaults(self):
         state = PRAttemptState()
@@ -98,6 +103,7 @@ class TestPRAttemptState:
 
         assert "chain-1" not in b.carry_forward_candidate_family_ids
 
+
 class TestPRReviewContext:
     def test_construction(self, tmp_path: Path):
         ctx = _make_context(tmp_path)
@@ -106,6 +112,7 @@ class TestPRReviewContext:
         assert ctx.pr_review_attempts == 3
         assert ctx.detected_languages == {"python"}
         assert ctx.retry_focus_plan == ["command_option", "path_exfiltration"]
+
 
 class TestPRReviewState:
     def test_defaults(self):
@@ -150,6 +157,7 @@ class TestPRReviewState:
         assert b.warnings == []
         assert b.chain_support_counts == {}
 
+
 class TestRunnerProperties:
     def test_console_delegates_to_scanner(self):
         runner = _make_runner()
@@ -162,6 +170,7 @@ class TestRunnerProperties:
     def test_model_delegates_to_scanner(self):
         runner = _make_runner()
         assert runner.model == "test-model"
+
 
 class TestRecordAttemptChains:
     def test_records_ids_and_increments_support(self):
@@ -203,6 +212,7 @@ class TestRecordAttemptChains:
         assert state.attempt_chain_family_ids == [set()]
         assert state.attempt_chain_flow_ids == [set()]
         assert state.chain_support_counts == {}
+
 
 class TestRecordAttemptRevalidationObservability:
     def test_no_revalidation_records_false(self):
@@ -273,6 +283,7 @@ class TestRecordAttemptRevalidationObservability:
         )
 
         assert result is False
+
 
 class TestProcessAttemptOutcome:
     def _call(
@@ -386,6 +397,7 @@ class TestProcessAttemptOutcome:
 
         assert call_count == 1
 
+
 class TestRefreshCarryForwardCandidates:
     def test_updates_attempt_state(self):
         runner = _make_runner()
@@ -409,7 +421,9 @@ class TestRefreshCarryForwardCandidates:
 
         assert state.attempt_state.carry_forward_candidate_summary == "- None"
 
+
 _MODULE = "securevibes.scanner.pr_review_flow"
+
 
 class _FakeTracker:
     """Minimal tracker stub that avoids MagicMock spec issues."""
@@ -419,6 +433,7 @@ class _FakeTracker:
 
     def on_assistant_text(self, text):
         pass
+
 
 def _make_async_client():
     """Build a mock ClaudeSDKClient that works as an async context manager."""
@@ -438,6 +453,7 @@ def _make_async_client():
     cls = MagicMock(return_value=ctx_mgr)
     return cls, client
 
+
 def _make_loop_runner(*, debug: bool = False):
     """Build a runner wired for run_attempt_loop tests with patched externals."""
     client_cls, client_mock = _make_async_client()
@@ -449,6 +465,7 @@ def _make_loop_runner(*, debug: bool = False):
         hook_matcher_cls=MagicMock,
     )
     return runner, client_cls, client_mock
+
 
 def _make_error_runner(*, error_cls=RuntimeError, error_msg="boom"):
     """Build a runner whose client raises the given exception on __aenter__."""
@@ -471,6 +488,7 @@ def _make_error_runner(*, error_cls=RuntimeError, error_msg="boom"):
     )
     return runner, client_cls
 
+
 @pytest.fixture()
 def _patch_loop_externals():
     """Patch module-level functions used by run_attempt_loop."""
@@ -488,6 +506,7 @@ def _patch_loop_externals():
     ):
         mock_config.get_max_turns.return_value = 10
         yield
+
 
 @pytest.mark.usefixtures("_patch_loop_externals")
 class TestRunAttemptLoop:
@@ -743,6 +762,66 @@ class TestRunAttemptLoop:
 
         assert observed_texts == ["assistant evidence summary"]
         assert scanner.total_cost == 1.25
+
+    async def test_run_attempt_loop_accumulates_total_cost_across_attempts(self, tmp_path):
+        """ResultMessage cost should accumulate across multiple PR review attempts."""
+        scanner = _make_scanner()
+        scanner.total_cost = 0.0
+        ctx = _make_context(tmp_path)
+        ctx.pr_review_attempts = 2
+        ctx.retry_focus_plan = ["command_option"]
+
+        class _SilentTracker:
+            def __init__(self, *args, **kwargs):
+                self.current_phase = None
+
+            def on_assistant_text(self, _text):
+                return None
+
+        class _CostClient:
+            def __init__(self, cost: float):
+                self._cost = cost
+
+            async def query(self, prompt):
+                return None
+
+            async def receive_messages(self):
+                yield ResultMessage(
+                    subtype="success",
+                    duration_ms=10,
+                    duration_api_ms=10,
+                    is_error=False,
+                    num_turns=1,
+                    session_id="session-cost",
+                    total_cost_usd=self._cost,
+                )
+
+        class _CostClientCtx:
+            def __init__(self, cost: float):
+                self._client = _CostClient(cost)
+
+            async def __aenter__(self):
+                return self._client
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        client_cls = MagicMock(side_effect=[_CostClientCtx(1.25), _CostClientCtx(2.75)])
+        runner = PRReviewAttemptRunner(
+            scanner,
+            progress_tracker_cls=_SilentTracker,
+            claude_client_cls=client_cls,
+            hook_matcher_cls=MagicMock,
+        )
+        state = PRReviewState()
+
+        with patch(
+            f"{_MODULE}.load_pr_vulnerabilities_artifact",
+            side_effect=[([], "not produced"), ([], "not produced")],
+        ):
+            await runner.run_attempt_loop(ctx, state)
+
+        assert scanner.total_cost == pytest.approx(4.0)
 
     async def test_attempt_error_skips_load_warning_append(self, single_attempt_ctx):
         """When attempt fails, load warning should not be added as a separate warning."""

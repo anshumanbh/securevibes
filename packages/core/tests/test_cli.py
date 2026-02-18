@@ -288,6 +288,52 @@ class TestScanCommand:
         assert output_file.exists()
         assert output_file.name in result.output
 
+    def test_scan_markdown_output_rejects_relative_path_escape(self, runner, test_repo, tmp_path):
+        """Relative markdown output should not allow escaping repository boundaries."""
+        escaped_name = "escaped_scan_report.md"
+        escaped_path = (test_repo / ".securevibes" / ".." / ".." / escaped_name).resolve()
+        if escaped_path.exists():
+            escaped_path.unlink()
+
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _empty_scan_result(test_repo)
+            result = runner.invoke(
+                cli,
+                [
+                    "scan",
+                    str(test_repo),
+                    "--format",
+                    "markdown",
+                    "--output",
+                    f"../../{escaped_name}",
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert "outside repository root" in result.output
+        assert not escaped_path.exists()
+
+    def test_scan_rejects_securevibes_symlink_escape(self, runner, tmp_path):
+        """Scan should fail closed when `.securevibes` symlink resolves outside repo."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "app.py").write_text("print('hi')\n", encoding="utf-8")
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+
+        try:
+            (repo / ".securevibes").symlink_to(outside_dir, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("Symlinks are not supported in this environment")
+
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _empty_scan_result(repo)
+            result = runner.invoke(cli, ["scan", str(repo), "--format", "table"])
+
+        assert result.exit_code == 1
+        assert "outside repository root" in result.output
+        mock_run.assert_not_called()
+
     def test_scan_table_format_still_works(self, runner, test_repo):
         """Test backward compatibility - table format still works"""
         with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
