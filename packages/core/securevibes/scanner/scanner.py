@@ -356,20 +356,27 @@ ARCHITECTURE CONTEXT:
     collected_text: list[str] = []
     try:
         async with ClaudeSDKClient(options=options) as client:
-            # NOTE: 30s timeout covers the entire LLM exchange (max_turns=8).
+
+            async def _run_llm_exchange() -> None:
+                await client.query(hypothesis_prompt)
+                async for message in client.receive_messages():
+                    if isinstance(message, AssistantMessage):
+                        for block in message.content:
+                            if isinstance(block, TextBlock):
+                                collected_text.append(block.text)
+                    elif isinstance(message, ResultMessage):
+                        break
+
+            # NOTE: 30s timeout covers the entire LLM exchange (query + stream).
             # If the model is slow, this silently falls back to the default
             # "Unable to generate hypotheses" string — acceptable degradation
             # but may cause missed context for downstream review passes.
-            await asyncio.wait_for(client.query(hypothesis_prompt), timeout=30)
-            async for message in client.receive_messages():
-                if isinstance(message, AssistantMessage):
-                    for block in message.content:
-                        if isinstance(block, TextBlock):
-                            collected_text.append(block.text)
-                elif isinstance(message, ResultMessage):
-                    break
+            await asyncio.wait_for(_run_llm_exchange(), timeout=30)
     except (OSError, asyncio.TimeoutError, RuntimeError):
-        logger.warning("Hypothesis generation timed out or failed — downstream review passes may lack context", exc_info=True)
+        logger.warning(
+            "Hypothesis generation timed out or failed — downstream review passes may lack context",
+            exc_info=True,
+        )
         return "- Unable to generate hypotheses."
 
     return _normalize_hypothesis_output("\n".join(collected_text))
@@ -393,9 +400,7 @@ async def _refine_pr_findings_with_llm(
         return None
 
     focus_area_lines = (
-        "\n".join(
-            f"- {focus_area_label(focus_area)}" for focus_area in (focus_areas or [])
-        ).strip()
+        "\n".join(f"- {focus_area_label(focus_area)}" for focus_area in (focus_areas or [])).strip()
         or "- General exploit-chain verification"
     )
     verification_mode = "verifier" if mode == "verifier" else "quality"
@@ -462,20 +467,27 @@ CANDIDATE FINDINGS JSON:
     collected_text: list[str] = []
     try:
         async with ClaudeSDKClient(options=options) as client:
-            # NOTE: 30s timeout covers the entire LLM exchange (max_turns=10).
+
+            async def _run_llm_exchange() -> None:
+                await client.query(refinement_prompt)
+                async for message in client.receive_messages():
+                    if isinstance(message, AssistantMessage):
+                        for block in message.content:
+                            if isinstance(block, TextBlock):
+                                collected_text.append(block.text)
+                    elif isinstance(message, ResultMessage):
+                        break
+
+            # NOTE: 30s timeout covers the entire LLM exchange (query + stream).
             # If the model is slow, this returns None — the caller treats it as
             # a no-op refinement and retains the unrefined findings. Acceptable
             # but may leave speculative findings unfiltered.
-            await asyncio.wait_for(client.query(refinement_prompt), timeout=30)
-            async for message in client.receive_messages():
-                if isinstance(message, AssistantMessage):
-                    for block in message.content:
-                        if isinstance(block, TextBlock):
-                            collected_text.append(block.text)
-                elif isinstance(message, ResultMessage):
-                    break
+            await asyncio.wait_for(_run_llm_exchange(), timeout=30)
     except (OSError, asyncio.TimeoutError, RuntimeError):
-        logger.warning("PR finding refinement timed out or failed — unrefined findings will be retained", exc_info=True)
+        logger.warning(
+            "PR finding refinement timed out or failed — unrefined findings will be retained",
+            exc_info=True,
+        )
         return None
 
     raw_output = "\n".join(collected_text).strip()

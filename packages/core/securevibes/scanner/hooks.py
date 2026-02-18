@@ -126,9 +126,30 @@ def _is_within_tmp_dir(file_path: object) -> bool:
         candidate = Path(normalized)
         if not candidate.is_absolute():
             return False
-        resolved_candidate = candidate.resolve(strict=False)
-        tmp_root = Path("/tmp").resolve(strict=False)
-        return resolved_candidate == tmp_root or tmp_root in resolved_candidate.parents
+        tmp_roots: list[Path] = [Path("/tmp")]
+        resolved_tmp = Path("/tmp").resolve(strict=False)
+        if resolved_tmp not in tmp_roots:
+            tmp_roots.append(resolved_tmp)
+
+        for tmp_root in tmp_roots:
+            try:
+                rel_path = candidate.relative_to(tmp_root)
+            except ValueError:
+                continue
+
+            if any(part == ".." for part in rel_path.parts):
+                return False
+
+            # Fail closed on existing symlink components under tmp roots.
+            current = tmp_root
+            for part in rel_path.parts:
+                current = current / part
+                if current.exists() and current.is_symlink():
+                    return False
+
+            return True
+
+        return False
     except (OSError, RuntimeError, ValueError, TypeError):
         return False
 
@@ -802,9 +823,6 @@ def create_json_validation_hook(
         except (json.JSONDecodeError, TypeError):
             parsed_fixed_content = None
 
-        if is_pr_review:
-            _observe_pr_write(parsed_fixed_content, fixed_content)
-
         # Log normalization result
         if debug:
             if isinstance(parsed_fixed_content, list) and parsed_fixed_content:
@@ -915,6 +933,9 @@ def create_json_validation_hook(
                 ),
                 style="green",
             )
+
+        if is_pr_review:
+            _observe_pr_write(parsed_fixed_content, fixed_content)
 
         # If content was modified, return updated input
         if was_modified:

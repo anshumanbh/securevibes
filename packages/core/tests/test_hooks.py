@@ -1,20 +1,24 @@
 """Tests for scanner hooks"""
 
-import pytest
-from unittest.mock import Mock
+import tempfile
 from io import StringIO
+from pathlib import Path
+from unittest.mock import Mock
+
+import pytest
 from rich.console import Console
 
 from securevibes.scanner.hooks import (
+    _is_within_tmp_dir,
+    _MAX_BLOCKED_PATHS,
     _normalize_hook_path,
     _record_blocked_path,
-    _MAX_BLOCKED_PATHS,
     _sanitize_pr_grep_scope,
-    create_dast_security_hook,
-    create_pre_tool_hook,
-    create_post_tool_hook,
-    create_subagent_hook,
     create_json_validation_hook,
+    create_dast_security_hook,
+    create_post_tool_hook,
+    create_pre_tool_hook,
+    create_subagent_hook,
 )
 from securevibes.scanner.progress import ProgressTracker
 
@@ -47,6 +51,27 @@ def test_normalize_hook_path_strips_null_bytes():
     """Null bytes should be stripped from hook path normalization."""
     normalized = _normalize_hook_path("src/app.py\x00trailing")
     assert normalized == "src/app.pytrailing"
+
+
+def test_is_within_tmp_dir_rejects_existing_symlink_escape(tmp_path):
+    """Paths under /tmp should be denied when a symlinked component escapes tmp root."""
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+
+    symlink_path = Path(tempfile.gettempdir()) / "securevibes_hook_symlink_escape"
+    try:
+        try:
+            symlink_path.symlink_to(outside_dir, target_is_directory=True)
+        except FileExistsError:
+            symlink_path.unlink()
+            symlink_path.symlink_to(outside_dir, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlink creation is not supported on this platform")
+
+    try:
+        assert _is_within_tmp_dir(str(symlink_path / "payload.json")) is False
+    finally:
+        symlink_path.unlink(missing_ok=True)
 
 
 @pytest.mark.parametrize(
@@ -1896,6 +1921,29 @@ class TestPRJsonValidationHook:
         max_payload = json.loads(str(observer["max_content"]))
         assert isinstance(max_payload, list)
         assert len(max_payload) == 1
+
+    @pytest.mark.asyncio
+    async def test_pr_write_observer_does_not_track_invalid_payload(self, console):
+        """Observer should only capture payloads that passed PR schema validation."""
+        import json
+
+        observer: dict[str, object] = {}
+        hook = create_json_validation_hook(console, debug=False, write_observer=observer)
+
+        vuln = self._make_valid_pr_vuln()
+        vuln["evidence"] = ""  # invalid by PR schema
+        input_data = {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/project/.securevibes/PR_VULNERABILITIES.json",
+                "content": json.dumps([vuln]),
+            },
+        }
+
+        result = await hook(input_data, "tool-123", {})
+
+        assert "override_result" in result
+        assert observer == {}
 
     @pytest.mark.asyncio
     async def test_pr_wrapped_findings_gets_fixed(self, console):

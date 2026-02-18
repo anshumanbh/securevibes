@@ -2554,13 +2554,45 @@ class TestGeneratePrHypotheses:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client), \
-             patch("securevibes.scanner.scanner.logger") as mock_logger:
+        with (
+            patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client),
+            patch("securevibes.scanner.scanner.logger") as mock_logger,
+        ):
             result = await _generate_pr_hypotheses(**self._DEFAULT_KWARGS)
 
         assert result == "- Unable to generate hypotheses."
         mock_logger.warning.assert_called_once()
         mock_logger.debug.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_receive_stream_timeout_returns_fallback(self):
+        """Timeout budget should cover receive_messages stream for hypothesis generation."""
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=None)
+
+        async def slow_receive():
+            await asyncio.sleep(0.05)
+            if False:  # pragma: no cover
+                yield None
+
+        mock_client.receive_messages = slow_receive
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        real_wait_for = asyncio.wait_for
+
+        async def short_wait_for(awaitable, timeout):
+            return await real_wait_for(awaitable, timeout=0.01)
+
+        with (
+            patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client),
+            patch("securevibes.scanner.scanner.asyncio.wait_for", new=short_wait_for),
+            patch("securevibes.scanner.scanner.logger") as mock_logger,
+        ):
+            result = await _generate_pr_hypotheses(**self._DEFAULT_KWARGS)
+
+        assert result == "- Unable to generate hypotheses."
+        mock_logger.warning.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -2608,8 +2640,10 @@ class TestRefinePrFindingsWithLlm:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client), \
-             patch("securevibes.scanner.scanner.logger") as mock_logger:
+        with (
+            patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client),
+            patch("securevibes.scanner.scanner.logger") as mock_logger,
+        ):
             result = await _refine_pr_findings_with_llm(
                 findings=[{"title": "test"}], **self._DEFAULT_KWARGS
             )
@@ -2617,6 +2651,38 @@ class TestRefinePrFindingsWithLlm:
         assert result is None
         mock_logger.warning.assert_called_once()
         mock_logger.debug.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_receive_stream_timeout_logs_warning(self):
+        """Timeout budget should cover receive_messages stream for finding refinement."""
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=None)
+
+        async def slow_receive():
+            await asyncio.sleep(0.05)
+            if False:  # pragma: no cover
+                yield None
+
+        mock_client.receive_messages = slow_receive
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        real_wait_for = asyncio.wait_for
+
+        async def short_wait_for(awaitable, timeout):
+            return await real_wait_for(awaitable, timeout=0.01)
+
+        with (
+            patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client),
+            patch("securevibes.scanner.scanner.asyncio.wait_for", new=short_wait_for),
+            patch("securevibes.scanner.scanner.logger") as mock_logger,
+        ):
+            result = await _refine_pr_findings_with_llm(
+                findings=[{"title": "test"}], **self._DEFAULT_KWARGS
+            )
+
+        assert result is None
+        mock_logger.warning.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_os_error_returns_none(self):

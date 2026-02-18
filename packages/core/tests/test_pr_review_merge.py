@@ -31,6 +31,7 @@ from securevibes.scanner.pr_review_merge import (
     filter_baseline_vulns,
 )
 
+
 class TestFilterBaselineVulns:
     """Tests for filter_baseline_vulns."""
 
@@ -43,7 +44,11 @@ class TestFilterBaselineVulns:
             {"threat_id": "THREAT-4", "title": "Baseline vuln"},
         ]
         baseline = filter_baseline_vulns(known_vulns)
-        assert baseline == [{"threat_id": "THREAT-4", "title": "Baseline vuln"}]
+        assert baseline == [
+            {"threat_id": "THREAT-2", "finding_type": "regression", "title": "PR regression"},
+            {"threat_id": "THREAT-3", "finding_type": "unknown", "title": "PR unknown"},
+            {"threat_id": "THREAT-4", "title": "Baseline vuln"},
+        ]
 
     def test_empty_list_returns_empty(self):
         assert filter_baseline_vulns([]) == []
@@ -95,12 +100,19 @@ class TestFilterBaselineVulns:
         ]
         assert filter_baseline_vulns(vulns) == [{"threat_id": "THREAT-2", "title": "Baseline"}]
 
-    def test_finding_type_case_insensitive(self):
+    def test_finding_type_alone_does_not_filter_baseline(self):
         vulns = [
-            {"threat_id": "THREAT-1", "finding_type": "REGRESSION", "title": "Upper case"},
-            {"threat_id": "THREAT-2", "finding_type": " Unknown ", "title": "Whitespace"},
+            {"threat_id": "THREAT-1", "finding_type": "REGRESSION", "title": "Baseline"},
+            {
+                "threat_id": "THREAT-2",
+                "source": "pr_review",
+                "finding_type": " Unknown ",
+                "title": "PR generated",
+            },
         ]
-        assert filter_baseline_vulns(vulns) == []
+        assert filter_baseline_vulns(vulns) == [
+            {"threat_id": "THREAT-1", "finding_type": "REGRESSION", "title": "Baseline"}
+        ]
 
     def test_mixed_baseline_and_pr(self):
         vulns = [
@@ -110,9 +122,11 @@ class TestFilterBaselineVulns:
             {"finding_type": "new_threat", "title": "PR threat"},
         ]
         baseline = filter_baseline_vulns(vulns)
-        assert len(baseline) == 2
+        assert len(baseline) == 3
         assert baseline[0]["title"] == "Baseline"
         assert baseline[1]["title"] == "Baseline 2"
+        assert baseline[2]["title"] == "PR threat"
+
 
 class TestNormalizeFindingIdentity:
     """Tests for _normalize_finding_identity."""
@@ -134,6 +148,7 @@ class TestNormalizeFindingIdentity:
 
     def test_already_lowercase(self):
         assert _normalize_finding_identity("already lower") == "already lower"
+
 
 class TestBuildVulnMatchKeys:
     """Tests for _build_vuln_match_keys."""
@@ -175,6 +190,7 @@ class TestBuildVulnMatchKeys:
         keys = _build_vuln_match_keys(vuln)
         paths = {k[0] for k in keys}
         assert "handler.py" in paths
+
 
 class TestIssuesFromPrVulns:
     """Tests for issues_from_pr_vulns."""
@@ -252,6 +268,7 @@ class TestIssuesFromPrVulns:
         assert issues[0].id == "PR-1"
         assert issues[1].id == "PR-2"
 
+
 class TestFocusAreaLabel:
     """Tests for focus_area_label."""
 
@@ -269,6 +286,7 @@ class TestFocusAreaLabel:
 
     def test_empty_string(self):
         assert focus_area_label("") == ""
+
 
 class TestBuildPrRetryFocusPlan:
     """Tests for build_pr_retry_focus_plan."""
@@ -337,6 +355,7 @@ class TestBuildPrRetryFocusPlan:
         assert len(result) == 4
         assert result[3] == result[0]  # wraps around
 
+
 class TestAttemptsShowPrDisagreement:
     """Tests for attempts_show_pr_disagreement."""
 
@@ -367,6 +386,7 @@ class TestAttemptsShowPrDisagreement:
     def test_one_zero_one_nonzero(self):
         assert attempts_show_pr_disagreement([0, 5]) is True
 
+
 class TestShouldRunPrVerifier:
     """Tests for should_run_pr_verifier."""
 
@@ -381,6 +401,7 @@ class TestShouldRunPrVerifier:
 
     def test_false_when_neither(self):
         assert should_run_pr_verifier(has_findings=False, weak_consensus=False) is False
+
 
 class TestExtractObservedPrFindings:
     """Tests for extract_observed_pr_findings."""
@@ -418,6 +439,7 @@ class TestExtractObservedPrFindings:
 
     def test_non_string_max_content_returns_empty(self):
         assert extract_observed_pr_findings({"max_content": 12345}) == []
+
 
 class TestBuildPrReviewRetrySuffix:
     """Tests for build_pr_review_retry_suffix."""
@@ -483,6 +505,7 @@ class TestBuildPrReviewRetrySuffix:
         result = build_pr_review_retry_suffix(2, require_candidate_revalidation=True)
         # Without candidate_summary, revalidation hint should still appear
         assert "CORE CHAIN REVALIDATION REQUIREMENT" in result
+
 
 class TestMergePrAttemptFindings:
     """Tests for merge_pr_attempt_findings."""
@@ -653,6 +676,7 @@ class TestMergePrAttemptFindings:
         )
         assert stats["max_chain_support"] == 0
 
+
 class TestDedupePrVulns:
     """Tests for dedupe_pr_vulns."""
 
@@ -785,6 +809,7 @@ class TestDedupePrVulns:
         deduped = dedupe_pr_vulns(pr_vulns, known_vulns)
         assert deduped[0]["finding_type"] == "unknown"
 
+
 class TestLoadPrVulnerabilitiesArtifact:
     """Tests for load_pr_vulnerabilities_artifact."""
 
@@ -874,6 +899,7 @@ class TestLoadPrVulnerabilitiesArtifact:
         assert error is None
         assert result == []
 
+
 class TestProofScore:
     """Tests for _proof_score (extracted merge helper)."""
 
@@ -944,6 +970,7 @@ class TestProofScore:
         score = _proof_score(entry)
         assert score >= 15  # high-evidence finding
 
+
 class TestSpeculationPenalty:
     """Tests for _speculation_penalty (extracted merge helper)."""
 
@@ -988,6 +1015,7 @@ class TestSpeculationPenalty:
     def test_single_word_term_requires_word_boundary(self):
         entry = {"title": "computation", "description": ""}  # "could" not present as word
         assert _speculation_penalty(entry) == 0
+
 
 class TestSameChain:
     """Tests for _same_chain (extracted merge helper)."""
@@ -1090,6 +1118,7 @@ class TestSameChain:
             evidence="evidence B",
         )
         assert _same_chain(a, b) is True
+
 
 class TestSameSubchainFamily:
     """Tests for _same_subchain_family (extracted merge helper)."""
@@ -1230,6 +1259,7 @@ class TestSameSubchainFamily:
         )
         assert _same_subchain_family(a, b) is True
 
+
 class TestEntryQuality:
     """Tests for _entry_quality (extracted merge helper)."""
 
@@ -1279,6 +1309,7 @@ class TestEntryQuality:
         quality = _entry_quality(entry)
         assert quality.evidence_length == 4000
 
+
 class TestFindingTokensAndSimilarity:
     """Tests for _finding_tokens and _token_similarity."""
 
@@ -1324,6 +1355,7 @@ class TestFindingTokensAndSimilarity:
         assert _token_similarity(set(), {"x"}) == 0.0
         assert _token_similarity({"x"}, set()) == 0.0
 
+
 class TestChainRole:
     """Tests for _chain_role (extracted merge helper)."""
 
@@ -1347,6 +1379,7 @@ class TestChainRole:
             "evidence": "src/a.py:10 and src/b.py:20 are involved",
         }
         assert _chain_role(entry) == "end_to_end"
+
 
 class TestHasConcreteChainStructure:
     """Tests for _has_concrete_chain_structure (extracted merge helper)."""
@@ -1384,6 +1417,7 @@ class TestHasConcreteChainStructure:
             "attack_scenario": "does something",
         }
         assert _has_concrete_chain_structure(entry) is False
+
 
 class TestMergePrAttemptFindingsDeep:
     """Deeper merge tests with precise expected outcomes."""
