@@ -36,6 +36,8 @@ REQUIRED_REPORT_FIELDS = (
 )
 COMPLETED = "completed"
 INFRA_FAILURE = "infra_failure"
+DEFAULT_GIT_TIMEOUT_SECONDS = 60
+DEFAULT_SCAN_TIMEOUT_SECONDS = 900
 
 
 @dataclass
@@ -76,6 +78,17 @@ def generate_run_id() -> str:
     )
 
 
+def positive_int(value: str) -> int:
+    """Parse positive integer argparse values."""
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments for incremental wrapper."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -107,6 +120,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--rewrite-policy",
         default="reset_warn",
         choices=("reset_warn", "since_date", "strict_fail"),
+    )
+    parser.add_argument(
+        "--git-timeout-seconds",
+        type=positive_int,
+        default=DEFAULT_GIT_TIMEOUT_SECONDS,
+        help="Timeout for each git command invocation",
+    )
+    parser.add_argument(
+        "--scan-timeout-seconds",
+        type=positive_int,
+        default=DEFAULT_SCAN_TIMEOUT_SECONDS,
+        help="Timeout for each securevibes pr-review invocation",
     )
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--debug", action="store_true")
@@ -176,7 +201,7 @@ def ensure_dependencies() -> None:
         raise RuntimeError(f"Missing required dependency: {binary}")
 
 
-def ensure_repo(repo: Path) -> None:
+def ensure_repo(repo: Path, timeout_seconds: int = DEFAULT_GIT_TIMEOUT_SECONDS) -> None:
     """Ensure repository exists and is a git worktree."""
     if not repo.exists() or not repo.is_dir():
         raise RuntimeError(f"Repository path does not exist: {repo}")
@@ -186,6 +211,7 @@ def ensure_repo(repo: Path) -> None:
         cwd=repo,
         capture_output=True,
         text=True,
+        timeout=timeout_seconds,
         check=False,
     )
     if result.returncode != 0 or result.stdout.strip() != "true":
@@ -206,18 +232,31 @@ def ensure_baseline_artifacts(repo: Path) -> None:
         raise RuntimeError(f"Missing baseline artifacts for pr-review: {joined}")
 
 
-def git_fetch(repo: Path, remote: str, branch: str, retries: int) -> None:
+def git_fetch(
+    repo: Path,
+    remote: str,
+    branch: str,
+    retries: int,
+    timeout_seconds: int = DEFAULT_GIT_TIMEOUT_SECONDS,
+) -> None:
     """Fetch remote branch with retry on transient failure."""
     attempts = max(0, retries) + 1
     last_error = ""
     for attempt in range(1, attempts + 1):
-        result = subprocess.run(
-            ["git", "fetch", remote, branch],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                ["git", "fetch", remote, branch],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            last_error = f"git fetch timed out after {timeout_seconds}s"
+            if attempt < attempts:
+                time.sleep(1)
+            continue
         if result.returncode == 0:
             return
         last_error = result.stderr.strip() or "git fetch failed"
@@ -226,15 +265,24 @@ def git_fetch(repo: Path, remote: str, branch: str, retries: int) -> None:
     raise RuntimeError(last_error)
 
 
-def resolve_head(repo: Path, remote: str, branch: str) -> str:
+def resolve_head(
+    repo: Path,
+    remote: str,
+    branch: str,
+    timeout_seconds: int = DEFAULT_GIT_TIMEOUT_SECONDS,
+) -> str:
     """Resolve the latest commit SHA for remote branch."""
-    result = subprocess.run(
-        ["git", "rev-parse", f"{remote}/{branch}"],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", f"{remote}/{branch}"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"git rev-parse timed out after {timeout_seconds}s") from exc
     if result.returncode != 0:
         stderr = result.stderr.strip() or "unable to resolve head"
         raise RuntimeError(stderr)
@@ -244,15 +292,26 @@ def resolve_head(repo: Path, remote: str, branch: str) -> str:
     return head
 
 
-def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
+def is_ancestor(
+    repo: Path,
+    ancestor: str,
+    descendant: str,
+    timeout_seconds: int = DEFAULT_GIT_TIMEOUT_SECONDS,
+) -> bool:
     """Return True when ancestor is reachable from descendant."""
-    result = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"git merge-base timed out after {timeout_seconds}s"
+        ) from exc
     if result.returncode == 0:
         return True
     if result.returncode == 1:
@@ -261,15 +320,24 @@ def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
     raise RuntimeError(stderr)
 
 
-def get_commit_list(repo: Path, base: str, head: str) -> list[str]:
+def get_commit_list(
+    repo: Path,
+    base: str,
+    head: str,
+    timeout_seconds: int = DEFAULT_GIT_TIMEOUT_SECONDS,
+) -> list[str]:
     """Collect commits in base..head ordered oldest-to-newest."""
-    result = subprocess.run(
-        ["git", "rev-list", "--reverse", f"{base}..{head}"],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "rev-list", "--reverse", f"{base}..{head}"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"git rev-list timed out after {timeout_seconds}s") from exc
     if result.returncode != 0:
         stderr = result.stderr.strip() or "rev-list failed"
         raise RuntimeError(stderr)
@@ -358,6 +426,7 @@ def run_scan(
     severity: str,
     debug: bool,
     output_path: Path,
+    timeout_seconds: int = DEFAULT_SCAN_TIMEOUT_SECONDS,
 ) -> ScanCommandResult:
     """Run securevibes pr-review for an explicit commit range."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -381,7 +450,22 @@ def run_scan(
     if debug:
         command.append("--debug")
 
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return ScanCommandResult(
+            command=command,
+            exit_code=124,
+            classification=INFRA_FAILURE,
+            stderr_tail=f"scan timed out after {timeout_seconds}s",
+            output_path=output_path,
+        )
     return ScanCommandResult(
         command=command,
         exit_code=result.returncode,
@@ -398,6 +482,7 @@ def run_since_date_scan(
     severity: str,
     debug: bool,
     output_path: Path,
+    timeout_seconds: int = DEFAULT_SCAN_TIMEOUT_SECONDS,
 ) -> ScanCommandResult:
     """Run securevibes pr-review using --since date fallback mode."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -421,7 +506,22 @@ def run_since_date_scan(
     if debug:
         command.append("--debug")
 
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return ScanCommandResult(
+            command=command,
+            exit_code=124,
+            classification=INFRA_FAILURE,
+            stderr_tail=f"scan timed out after {timeout_seconds}s",
+            output_path=output_path,
+        )
     return ScanCommandResult(
         command=command,
         exit_code=result.returncode,
@@ -524,8 +624,15 @@ def _strict_exit(status: str, strict: bool) -> int:
 def run(args: argparse.Namespace) -> int:
     """Run incremental scan wrapper end-to-end."""
     repo = Path(args.repo).resolve()
+    git_timeout = max(
+        1, int(getattr(args, "git_timeout_seconds", DEFAULT_GIT_TIMEOUT_SECONDS))
+    )
+    scan_timeout = max(
+        1, int(getattr(args, "scan_timeout_seconds", DEFAULT_SCAN_TIMEOUT_SECONDS))
+    )
+
     ensure_dependencies()
-    ensure_repo(repo)
+    ensure_repo(repo, git_timeout)
     ensure_baseline_artifacts(repo)
 
     securevibes_dir = repo / ".securevibes"
@@ -569,8 +676,8 @@ def run(args: argparse.Namespace) -> int:
         }
 
         try:
-            git_fetch(repo, args.remote, args.branch, args.retry_network)
-            new_head = resolve_head(repo, args.remote, args.branch)
+            git_fetch(repo, args.remote, args.branch, args.retry_network, git_timeout)
+            new_head = resolve_head(repo, args.remote, args.branch, git_timeout)
             run_record["new_head"] = new_head
 
             if not state or not isinstance(state.get("last_seen_sha"), str):
@@ -613,7 +720,7 @@ def run(args: argparse.Namespace) -> int:
                 )
                 return 0
 
-            if not is_ancestor(repo, current_anchor, new_head):
+            if not is_ancestor(repo, current_anchor, new_head, git_timeout):
                 rewrite = handle_rewrite(args.rewrite_policy)
                 if rewrite.action == "reset":
                     new_state = _build_state(
@@ -669,12 +776,13 @@ def run(args: argparse.Namespace) -> int:
                 since_date = rewrite.since_date or pacific_today()
                 since_output = runs_dir / f"{run_id}-rewrite-since.json"
                 since_result = run_since_date_scan(
-                    repo=repo,
-                    since_date=since_date,
-                    model=args.model,
-                    severity=args.severity,
-                    debug=args.debug,
-                    output_path=since_output,
+                    repo,
+                    since_date,
+                    args.model,
+                    args.severity,
+                    args.debug,
+                    since_output,
+                    scan_timeout,
                 )
                 run_record["chunks"].append(
                     {
@@ -689,25 +797,38 @@ def run(args: argparse.Namespace) -> int:
                     }
                 )
                 if since_result.classification == COMPLETED:
+                    failure = {
+                        "phase": "history_validation",
+                        "reason": (
+                            "history rewrite detected; completed since-date scan but "
+                            "anchor preserved to avoid skipping commits"
+                        ),
+                    }
                     new_state = _build_state(
                         repo=repo,
                         branch=args.branch,
                         remote=args.remote,
-                        anchor=new_head,
+                        anchor=current_anchor,
                         run_id=run_id,
-                        status="success",
+                        status="partial",
                         previous_success_utc=previous_success_utc,
+                        failure=failure,
                     )
                     save_state(state_path, new_state)
-                    run_record["status"] = "success"
+                    run_record["status"] = "partial"
                     run_record["strategy"] = "rewrite_since_date"
+                    run_record["final_anchor"] = current_anchor
+                    run_record["failure"] = failure
                     run_record["finished_utc"] = utc_timestamp()
                     _write_run_record(run_record_path, run_record)
                     append_log(
                         log_file,
-                        f"run_id={run_id} status=success strategy=rewrite_since_date",
+                        (
+                            f"run_id={run_id} status=partial strategy=rewrite_since_date "
+                            f"anchor={current_anchor}"
+                        ),
                     )
-                    return 0
+                    return _strict_exit("partial", args.strict)
 
                 failure = {
                     "phase": "chunk_run",
@@ -735,7 +856,7 @@ def run(args: argparse.Namespace) -> int:
                 )
                 return _strict_exit("failed", args.strict)
 
-            commits = get_commit_list(repo, current_anchor, new_head)
+            commits = get_commit_list(repo, current_anchor, new_head, git_timeout)
             run_record["total_new_commits"] = len(commits)
             if not commits:
                 new_state = _build_state(
@@ -776,13 +897,14 @@ def run(args: argparse.Namespace) -> int:
             for idx, (base, head) in enumerate(chunks, start=1):
                 chunk_output = runs_dir / f"{run_id}-chunk-{idx}.json"
                 result = run_scan(
-                    repo=repo,
-                    base=base,
-                    head=head,
-                    model=args.model,
-                    severity=args.severity,
-                    debug=args.debug,
-                    output_path=chunk_output,
+                    repo,
+                    base,
+                    head,
+                    args.model,
+                    args.severity,
+                    args.debug,
+                    chunk_output,
+                    scan_timeout,
                 )
                 run_record["chunks"].append(
                     {

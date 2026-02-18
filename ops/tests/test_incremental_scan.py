@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,6 +31,8 @@ def build_args(repo_dir: Path, **overrides: Any) -> argparse.Namespace:
         "chunk_medium_size": 5,
         "retry_network": 1,
         "rewrite_policy": "reset_warn",
+        "git_timeout_seconds": 60,
+        "scan_timeout_seconds": 900,
         "strict": False,
         "debug": False,
     }
@@ -94,6 +97,18 @@ def test_save_state_creates_file(
 def test_generate_run_id_format() -> None:
     run_id = inc.generate_run_id()
     assert re.match(r"^\d{8}T\d{6}Z-[0-9a-f]{6}$", run_id)
+
+
+def test_positive_int_validation() -> None:
+    assert inc.positive_int("7") == 7
+    with pytest.raises(argparse.ArgumentTypeError):
+        inc.positive_int("0")
+
+
+def test_parse_args_defaults_include_timeouts() -> None:
+    args = inc.parse_args([])
+    assert args.git_timeout_seconds == inc.DEFAULT_GIT_TIMEOUT_SECONDS
+    assert args.scan_timeout_seconds == inc.DEFAULT_SCAN_TIMEOUT_SECONDS
 
 
 def test_compute_chunks_small_window() -> None:
@@ -227,6 +242,123 @@ def test_run_scan_includes_debug_flag(
     assert "--debug" in seen["command"]
 
 
+def test_run_scan_timeout_returns_infra_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def fake_run(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        raise subprocess.TimeoutExpired(cmd=["securevibes"], timeout=3)
+
+    monkeypatch.setattr(inc.subprocess, "run", fake_run)
+    out = tmp_path / "timeout.json"
+    result = inc.run_scan(
+        Path("/repo"),
+        "base",
+        "head",
+        "sonnet",
+        "medium",
+        False,
+        out,
+        timeout_seconds=3,
+    )
+    assert result.classification == inc.INFRA_FAILURE
+    assert result.exit_code == 124
+    assert "timed out" in result.stderr_tail
+
+
+def test_run_since_date_scan_timeout_returns_infra_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def fake_run(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        raise subprocess.TimeoutExpired(cmd=["securevibes"], timeout=4)
+
+    monkeypatch.setattr(inc.subprocess, "run", fake_run)
+    out = tmp_path / "since-timeout.json"
+    result = inc.run_since_date_scan(
+        Path("/repo"),
+        "2026-01-01",
+        "sonnet",
+        "medium",
+        False,
+        out,
+        timeout_seconds=4,
+    )
+    assert result.classification == inc.INFRA_FAILURE
+    assert result.exit_code == 124
+    assert "timed out" in result.stderr_tail
+
+
+def test_git_fetch_retries_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"n": 0}
+
+    def fake_run(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return SimpleNamespace(returncode=1, stderr="temporary fetch error")
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(inc.subprocess, "run", fake_run)
+    monkeypatch.setattr(inc.time, "sleep", _noop)
+
+    inc.git_fetch(Path("/repo"), "origin", "main", retries=1, timeout_seconds=3)
+    assert calls["n"] == 2
+
+
+def test_git_fetch_timeout_raises_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        raise subprocess.TimeoutExpired(cmd=["git", "fetch"], timeout=2)
+
+    monkeypatch.setattr(inc.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="timed out"):
+        inc.git_fetch(Path("/repo"), "origin", "main", retries=0, timeout_seconds=2)
+
+
+def test_resolve_head_timeout_raises_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        raise subprocess.TimeoutExpired(cmd=["git", "rev-parse"], timeout=2)
+
+    monkeypatch.setattr(inc.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="timed out"):
+        inc.resolve_head(Path("/repo"), "origin", "main", timeout_seconds=2)
+
+
+def test_is_ancestor_timeout_raises_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        raise subprocess.TimeoutExpired(cmd=["git", "merge-base"], timeout=2)
+
+    monkeypatch.setattr(inc.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="timed out"):
+        inc.is_ancestor(Path("/repo"), "a", "b", timeout_seconds=2)
+
+
+def test_get_commit_list_timeout_raises_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        raise subprocess.TimeoutExpired(cmd=["git", "rev-list"], timeout=2)
+
+    monkeypatch.setattr(inc.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="timed out"):
+        inc.get_commit_list(Path("/repo"), "a", "b", timeout_seconds=2)
+
+
+def test_determine_chunk_strategy_variants() -> None:
+    assert inc.determine_chunk_strategy(2, 8, 25) == "single_range"
+    assert inc.determine_chunk_strategy(10, 8, 25) == "chunked"
+    assert inc.determine_chunk_strategy(30, 8, 25) == "per_commit"
+
+
+def test_strict_exit_behavior() -> None:
+    assert inc._strict_exit("partial", strict=True) == 1
+    assert inc._strict_exit("failed", strict=True) == 1
+    assert inc._strict_exit("success", strict=True) == 0
+
+
 def test_handle_rewrite_reset_warn() -> None:
     outcome = inc.handle_rewrite("reset_warn")
     assert outcome.action == "reset"
@@ -315,6 +447,7 @@ def test_small_window_single_scan(
         severity: str,
         debug: bool,
         output_path: Path,
+        timeout_seconds: int,
     ) -> inc.ScanCommandResult:
         calls.append((base, head))
         return _valid_result(["securevibes"], output_path)
@@ -358,6 +491,7 @@ def test_medium_window_chunked_scans(
         severity: str,
         debug: bool,
         output_path: Path,
+        timeout_seconds: int,
     ) -> inc.ScanCommandResult:
         calls.append((base, head))
         return _valid_result(["securevibes"], output_path)
@@ -400,6 +534,7 @@ def test_large_window_per_commit_scans(
         severity: str,
         debug: bool,
         output_path: Path,
+        timeout_seconds: int,
     ) -> inc.ScanCommandResult:
         calls.append((base, head))
         return _valid_result(["securevibes"], output_path)
@@ -444,6 +579,7 @@ def test_partial_failure_anchors_at_last_success(
         severity: str,
         debug: bool,
         output_path: Path,
+        timeout_seconds: int,
     ) -> inc.ScanCommandResult:
         call_count["n"] += 1
         if call_count["n"] == 1:
@@ -540,6 +676,7 @@ def test_since_date_policy_success(
         severity: str,
         debug: bool,
         output_path: Path,
+        timeout_seconds: int,
     ) -> inc.ScanCommandResult:
         return _valid_result(["securevibes"], output_path)
 
@@ -548,8 +685,46 @@ def test_since_date_policy_success(
     exit_code = inc.run(args)
     assert exit_code == 0
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["last_status"] == "success"
-    assert state["last_seen_sha"] == "newhead"
+    assert state["last_status"] == "partial"
+    assert state["last_seen_sha"] == "abc123"
+
+
+def test_since_date_policy_strict_returns_nonzero(
+    monkeypatch: pytest.MonkeyPatch,
+    repo_dir: Path,
+    state_path: Path,
+    write_state,
+    sample_state: dict[str, object],
+) -> None:
+    args = build_args(repo_dir, rewrite_policy="since_date", strict=True)
+    write_state(sample_state)
+
+    monkeypatch.setattr(inc, "ensure_dependencies", _noop)
+    monkeypatch.setattr(inc, "ensure_repo", _noop)
+    monkeypatch.setattr(inc, "ensure_baseline_artifacts", _noop)
+    monkeypatch.setattr(inc, "git_fetch", _noop)
+    monkeypatch.setattr(inc, "resolve_head", lambda *_args: "newhead")
+    monkeypatch.setattr(inc, "is_ancestor", lambda *_args: False)
+    monkeypatch.setattr(inc, "generate_run_id", lambda: "RUN131B")
+
+    def fake_run_since(
+        repo: Path,
+        since_date: str,
+        model: str,
+        severity: str,
+        debug: bool,
+        output_path: Path,
+        timeout_seconds: int,
+    ) -> inc.ScanCommandResult:
+        return _valid_result(["securevibes"], output_path)
+
+    monkeypatch.setattr(inc, "run_since_date_scan", fake_run_since)
+
+    exit_code = inc.run(args)
+    assert exit_code == 1
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["last_status"] == "partial"
+    assert state["last_seen_sha"] == "abc123"
 
 
 def test_concurrent_run_exits_cleanly(
@@ -603,6 +778,7 @@ def test_findings_exit_codes_advance_anchor(
         severity: str,
         debug: bool,
         output_path: Path,
+        timeout_seconds: int,
     ) -> inc.ScanCommandResult:
         return _valid_result(["securevibes"], output_path, exit_code=1)
 
@@ -642,6 +818,7 @@ def test_exit_1_without_output_halts_pipeline(
         severity: str,
         debug: bool,
         output_path: Path,
+        timeout_seconds: int,
     ) -> inc.ScanCommandResult:
         return inc.ScanCommandResult(
             command=["securevibes"],
@@ -686,6 +863,7 @@ def test_run_record_written_with_chunk_results(
         severity: str,
         debug: bool,
         output_path: Path,
+        timeout_seconds: int,
     ) -> inc.ScanCommandResult:
         return _valid_result(["securevibes", "pr-review"], output_path)
 
@@ -719,3 +897,16 @@ def test_corrupt_state_triggers_bootstrap(
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["last_status"] == "bootstrap"
     assert state["last_seen_sha"] == "head456"
+
+
+def test_main_returns_error_code_on_exception(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(inc, "parse_args", lambda _argv=None: argparse.Namespace())
+
+    def _boom(_args: argparse.Namespace) -> int:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(inc, "run", _boom)
+    assert inc.main([]) == 1
+    assert "ERROR: boom" in capsys.readouterr().err
