@@ -349,11 +349,11 @@ def test_enforce_focused_diff_coverage_rejects_dropped_files():
         _enforce_focused_diff_coverage(context, focused)
 
 
-def test_enforce_focused_diff_coverage_rejects_truncated_hunks():
-    """PR review should fail closed when any hunk exceeds safe max lines."""
+def test_enforce_focused_diff_coverage_rejects_severely_truncated_hunks():
+    """PR review should fail closed when any hunk is severely truncated (>2x max)."""
     many_lines = [
         DiffLine(type="add", content=f"line {idx}", old_line_num=None, new_line_num=idx)
-        for idx in range(1, 280)
+        for idx in range(1, 450)  # 449 lines, well above 2*200=400 threshold
     ]
     noisy_file = DiffFile(
         old_path="src/gateway/server.ts",
@@ -379,8 +379,42 @@ def test_enforce_focused_diff_coverage_rejects_truncated_hunks():
     )
     focused = _build_focused_diff_context(context)
 
-    with pytest.raises(RuntimeError, match="would be truncated"):
+    with pytest.raises(RuntimeError, match="would lose majority of context"):
         _enforce_focused_diff_coverage(context, focused)
+
+
+def test_enforce_focused_diff_coverage_allows_mildly_truncated_hunks():
+    """Hunks just above max but below severe threshold should not trigger fail-closed."""
+    mild_lines = [
+        DiffLine(type="add", content=f"line {idx}", old_line_num=None, new_line_num=idx)
+        for idx in range(1, 280)  # 279 lines — above 200 but below 400
+    ]
+    file_with_mild_hunk = DiffFile(
+        old_path="src/agents/credentials.ts",
+        new_path="src/agents/credentials.ts",
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+        hunks=[
+            DiffHunk(
+                old_start=1,
+                old_count=200,
+                new_start=1,
+                new_count=200,
+                lines=mild_lines,
+            )
+        ],
+    )
+    context = DiffContext(
+        files=[file_with_mild_hunk],
+        added_lines=len(mild_lines),
+        removed_lines=0,
+        changed_files=["src/agents/credentials.ts"],
+    )
+    focused = _build_focused_diff_context(context)
+
+    # Should NOT raise — truncation is mild (keeps 200 of 279 lines = 72%)
+    _enforce_focused_diff_coverage(context, focused)
 
 
 def test_enforce_focused_diff_coverage_allows_boundary_diff():

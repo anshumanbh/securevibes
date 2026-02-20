@@ -615,13 +615,18 @@ def _enforce_focused_diff_coverage(
     )
     focused_file_count = len(focused_diff_context.files)
     dropped_file_count = max(0, security_relevant_count - focused_file_count)
-    truncated_hunk_count = sum(
+    # Only flag severely truncated hunks — those that would lose more than half
+    # their content.  Mild truncation (e.g. 277 → 200 lines) still retains the
+    # majority of the security-relevant diff and is acceptable.
+    _SEVERE_TRUNCATION_THRESHOLD = 2 * _FOCUSED_DIFF_MAX_HUNK_LINES
+    severely_truncated_hunk_count = sum(
         1
         for diff_file in original_diff_context.files
+        if _score_diff_file_for_security_review(diff_file) > 0
         for hunk in diff_file.hunks
-        if len(hunk.lines) > _FOCUSED_DIFF_MAX_HUNK_LINES
+        if len(hunk.lines) > _SEVERE_TRUNCATION_THRESHOLD
     )
-    if dropped_file_count == 0 and truncated_hunk_count == 0:
+    if dropped_file_count == 0 and severely_truncated_hunk_count == 0:
         return
 
     details: list[str] = []
@@ -630,10 +635,10 @@ def _enforce_focused_diff_coverage(
             f"{dropped_file_count} file(s) would be excluded "
             f"(focused limit: {_FOCUSED_DIFF_MAX_FILES} files)"
         )
-    if truncated_hunk_count:
+    if severely_truncated_hunk_count:
         details.append(
-            f"{truncated_hunk_count} hunk(s) exceed {_FOCUSED_DIFF_MAX_HUNK_LINES} lines "
-            "and would be truncated"
+            f"{severely_truncated_hunk_count} hunk(s) exceed {_SEVERE_TRUNCATION_THRESHOLD} lines "
+            "and would lose majority of context"
         )
     detail_text = "; ".join(details)
     raise RuntimeError(
