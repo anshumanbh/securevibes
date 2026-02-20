@@ -417,6 +417,34 @@ def test_enforce_focused_diff_coverage_allows_boundary_diff():
     _enforce_focused_diff_coverage(context, focused)
 
 
+def test_enforce_focused_diff_coverage_ignores_non_security_files():
+    """Non-security files (docs, changelogs) dropped by scoring should not trigger fail-closed."""
+    one_line = [DiffLine(type="add", content="x = 1", old_line_num=None, new_line_num=1)]
+    one_hunk = [DiffHunk(old_start=1, old_count=1, new_start=1, new_count=1, lines=one_line)]
+    diff_files = [
+        # security-relevant source files
+        DiffFile(old_path="src/auth.ts", new_path="src/auth.ts", hunks=one_hunk,
+                 is_new=False, is_deleted=False, is_renamed=False),
+        DiffFile(old_path="src/config.ts", new_path="src/config.ts", hunks=one_hunk,
+                 is_new=False, is_deleted=False, is_renamed=False),
+        # non-security files (score <= 0)
+        DiffFile(old_path="CHANGELOG.md", new_path="CHANGELOG.md", hunks=one_hunk,
+                 is_new=False, is_deleted=False, is_renamed=False),
+        DiffFile(old_path="docs/install/setup.md", new_path="docs/install/setup.md", hunks=one_hunk,
+                 is_new=False, is_deleted=False, is_renamed=False),
+    ]
+    context = DiffContext(
+        files=diff_files,
+        added_lines=4,
+        removed_lines=0,
+        changed_files=["src/auth.ts", "src/config.ts", "CHANGELOG.md", "docs/install/setup.md"],
+    )
+    focused = _build_focused_diff_context(context)
+
+    # Should NOT raise — only 2 security-relevant files remain, matching the focused count
+    _enforce_focused_diff_coverage(context, focused)
+
+
 def test_summarize_diff_hunk_snippets_includes_diff_lines():
     """Prompt hunk snippets should preserve +/- diff lines for missing-file analysis."""
     diff_file = DiffFile(

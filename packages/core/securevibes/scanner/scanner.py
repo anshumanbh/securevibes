@@ -605,9 +605,16 @@ def _enforce_focused_diff_coverage(
     focused_diff_context: DiffContext,
 ) -> None:
     """Fail closed when focused diff pruning would hide parts of the reviewed diff."""
-    original_file_count = len(original_diff_context.files)
+    # Only count security-relevant files (score > 0) as dropped.  Files with
+    # score <= 0 (docs, changelogs, etc.) are intentionally filtered out by
+    # _build_focused_diff_context — excluding them is not a coverage gap.
+    security_relevant_count = sum(
+        1
+        for f in original_diff_context.files
+        if _score_diff_file_for_security_review(f) > 0
+    )
     focused_file_count = len(focused_diff_context.files)
-    dropped_file_count = max(0, original_file_count - focused_file_count)
+    dropped_file_count = max(0, security_relevant_count - focused_file_count)
     truncated_hunk_count = sum(
         1
         for diff_file in original_diff_context.files
