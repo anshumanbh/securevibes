@@ -43,16 +43,21 @@ from securevibes.scanner.pr_review_merge import (
     filter_baseline_vulns,
 )
 from securevibes.scanner.scanner import (
+    DIFF_FILES_DIR,
     Scanner,
     _build_focused_diff_context,
     _derive_pr_default_grep_scope,
     _enforce_focused_diff_coverage,
     _generate_pr_hypotheses,
+    _NEW_FILE_HUNK_MAX_LINES,
+    _NEW_FILE_ANCHOR_MAX_LINES,
     _normalize_hypothesis_output,
+    _PROMPT_HUNK_MAX_LINES_PER_HUNK,
     _refine_pr_findings_with_llm,
     _score_diff_file_for_security_review,
     _summarize_diff_hunk_snippets,
     _summarize_diff_line_anchors,
+    _write_diff_files_for_agent,
 )
 from securevibes.config import config
 
@@ -2484,6 +2489,212 @@ def test_summarize_diff_hunk_snippets_truncates_hunks():
     )
     result = _summarize_diff_hunk_snippets(context, max_hunks_per_file=2)
     assert "truncated 4 hunks" in result
+
+
+def test_summarize_diff_hunk_snippets_new_file_uses_higher_limit():
+    """New files should use _NEW_FILE_HUNK_MAX_LINES instead of the standard 80-line cap."""
+    # Create a new file with 150 lines — well beyond 80 but within 200
+    lines = [
+        DiffLine(type="add", content=f"line {i}", old_line_num=None, new_line_num=i)
+        for i in range(1, 151)
+    ]
+    diff_file = DiffFile(
+        old_path=None,
+        new_path="src/cli-credentials.ts",
+        hunks=[DiffHunk(old_start=0, old_count=0, new_start=1, new_count=150, lines=lines)],
+        is_new=True,
+        is_deleted=False,
+        is_renamed=False,
+    )
+    context = DiffContext(
+        files=[diff_file],
+        added_lines=150,
+        removed_lines=0,
+        changed_files=["src/cli-credentials.ts"],
+    )
+
+    result = _summarize_diff_hunk_snippets(context)
+
+    # With the standard 80-line limit, lines 81-150 would be truncated.
+    # The new-file logic should include them.
+    assert "line 100" in result
+    assert "line 150" in result
+    # Should NOT show truncation since 150 < _NEW_FILE_HUNK_MAX_LINES (200)
+    assert "truncated" not in result
+
+
+def test_summarize_diff_hunk_snippets_modified_file_uses_standard_limit():
+    """Modified (non-new) files should still use the standard 80-line hunk cap."""
+    lines = [
+        DiffLine(type="add", content=f"line {i}", old_line_num=None, new_line_num=i)
+        for i in range(1, 151)
+    ]
+    diff_file = DiffFile(
+        old_path="src/existing.ts",
+        new_path="src/existing.ts",
+        hunks=[DiffHunk(old_start=0, old_count=0, new_start=1, new_count=150, lines=lines)],
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+    )
+    context = DiffContext(
+        files=[diff_file],
+        added_lines=150,
+        removed_lines=0,
+        changed_files=["src/existing.ts"],
+    )
+
+    result = _summarize_diff_hunk_snippets(context)
+
+    # Standard limit applies — line 100 should be truncated
+    assert "line 80" in result
+    assert "line 100" not in result
+    assert "truncated" in result
+
+
+def test_summarize_diff_line_anchors_new_file_uses_higher_limit():
+    """New files should use _NEW_FILE_ANCHOR_MAX_LINES instead of the standard 48-line cap."""
+    lines = [
+        DiffLine(type="add", content=f"content at line {i}", old_line_num=None, new_line_num=i)
+        for i in range(1, 101)
+    ]
+    diff_file = DiffFile(
+        old_path=None,
+        new_path="src/cli-credentials.ts",
+        hunks=[DiffHunk(old_start=0, old_count=0, new_start=1, new_count=100, lines=lines)],
+        is_new=True,
+        is_deleted=False,
+        is_renamed=False,
+    )
+    context = DiffContext(
+        files=[diff_file],
+        added_lines=100,
+        removed_lines=0,
+        changed_files=["src/cli-credentials.ts"],
+    )
+
+    result = _summarize_diff_line_anchors(context)
+
+    # With standard 48-line cap, line 60 would be truncated.
+    # New-file logic should include it (up to 120).
+    assert "L60:" in result
+    assert "L100:" in result
+    # Should NOT show "more added lines" since 100 < _NEW_FILE_ANCHOR_MAX_LINES (120)
+    assert "more added lines" not in result
+
+
+def test_summarize_diff_line_anchors_modified_file_uses_standard_limit():
+    """Modified (non-new) files should still use the standard 48-line cap."""
+    lines = [
+        DiffLine(type="add", content=f"content at line {i}", old_line_num=None, new_line_num=i)
+        for i in range(1, 101)
+    ]
+    diff_file = DiffFile(
+        old_path="src/existing.ts",
+        new_path="src/existing.ts",
+        hunks=[DiffHunk(old_start=0, old_count=0, new_start=1, new_count=100, lines=lines)],
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+    )
+    context = DiffContext(
+        files=[diff_file],
+        added_lines=100,
+        removed_lines=0,
+        changed_files=["src/existing.ts"],
+    )
+
+    result = _summarize_diff_line_anchors(context)
+
+    # Standard 48-line cap — line 60 should be truncated
+    assert "L48:" in result
+    assert "L60:" not in result
+    assert "more added lines" in result
+
+
+def test_new_file_hunk_limit_constants():
+    """New-file limits should be higher than standard limits."""
+    assert _NEW_FILE_HUNK_MAX_LINES > _PROMPT_HUNK_MAX_LINES_PER_HUNK
+    assert _NEW_FILE_ANCHOR_MAX_LINES > 48  # default max_lines_per_file
+
+
+def test_write_diff_files_for_agent_creates_files(tmp_path: Path):
+    """_write_diff_files_for_agent should write one file per diff file."""
+    lines = [
+        DiffLine(type="add", content=f"line {i}", old_line_num=None, new_line_num=i)
+        for i in range(1, 6)
+    ]
+    diff_file = DiffFile(
+        old_path=None,
+        new_path="src/cli-credentials.ts",
+        hunks=[DiffHunk(old_start=0, old_count=0, new_start=1, new_count=5, lines=lines)],
+        is_new=True,
+        is_deleted=False,
+        is_renamed=False,
+    )
+    context = DiffContext(
+        files=[diff_file],
+        added_lines=5,
+        removed_lines=0,
+        changed_files=["src/cli-credentials.ts"],
+    )
+
+    result = _write_diff_files_for_agent(tmp_path, context)
+
+    diff_dir = tmp_path / DIFF_FILES_DIR
+    assert diff_dir.is_dir()
+    written_files = list(diff_dir.iterdir())
+    assert len(written_files) == 1
+    content = written_files[0].read_text()
+    assert "line 1" in content
+    assert "line 5" in content
+    # Return value should list the written files
+    assert len(result) == 1
+    assert "cli-credentials.ts" in result[0]
+
+
+def test_write_diff_files_for_agent_flattens_nested_paths(tmp_path: Path):
+    """Nested file paths should be flattened with -- separator."""
+    diff_file = DiffFile(
+        old_path=None,
+        new_path="packages/core/src/auth.py",
+        hunks=[
+            DiffHunk(
+                old_start=0,
+                old_count=0,
+                new_start=1,
+                new_count=1,
+                lines=[DiffLine(type="add", content="pass", old_line_num=None, new_line_num=1)],
+            )
+        ],
+        is_new=True,
+        is_deleted=False,
+        is_renamed=False,
+    )
+    context = DiffContext(
+        files=[diff_file],
+        added_lines=1,
+        removed_lines=0,
+        changed_files=["packages/core/src/auth.py"],
+    )
+
+    _write_diff_files_for_agent(tmp_path, context)
+
+    diff_dir = tmp_path / DIFF_FILES_DIR
+    files = list(diff_dir.iterdir())
+    assert len(files) == 1
+    # Nested path should be flattened
+    assert "--" in files[0].name or "auth.py" in files[0].name
+
+
+def test_write_diff_files_for_agent_empty_context(tmp_path: Path):
+    """Empty diff context should create no files."""
+    context = DiffContext(files=[], added_lines=0, removed_lines=0, changed_files=[])
+
+    result = _write_diff_files_for_agent(tmp_path, context)
+
+    assert result == []
+    assert not (tmp_path / DIFF_FILES_DIR).exists()
 
 
 # ---------------------------------------------------------------------------
