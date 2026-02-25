@@ -448,6 +448,7 @@ def test_small_window_single_scan(
         debug: bool,
         output_path: Path,
         timeout_seconds: int,
+        **_kwargs: Any,
     ) -> inc.ScanCommandResult:
         calls.append((base, head))
         return _valid_result(["securevibes"], output_path)
@@ -492,6 +493,7 @@ def test_medium_window_chunked_scans(
         debug: bool,
         output_path: Path,
         timeout_seconds: int,
+        **_kwargs: Any,
     ) -> inc.ScanCommandResult:
         calls.append((base, head))
         return _valid_result(["securevibes"], output_path)
@@ -535,6 +537,7 @@ def test_large_window_per_commit_scans(
         debug: bool,
         output_path: Path,
         timeout_seconds: int,
+        **_kwargs: Any,
     ) -> inc.ScanCommandResult:
         calls.append((base, head))
         return _valid_result(["securevibes"], output_path)
@@ -580,6 +583,7 @@ def test_partial_failure_anchors_at_last_success(
         debug: bool,
         output_path: Path,
         timeout_seconds: int,
+        **_kwargs: Any,
     ) -> inc.ScanCommandResult:
         call_count["n"] += 1
         if call_count["n"] == 1:
@@ -677,6 +681,7 @@ def test_since_date_policy_success(
         debug: bool,
         output_path: Path,
         timeout_seconds: int,
+        **_kwargs: Any,
     ) -> inc.ScanCommandResult:
         return _valid_result(["securevibes"], output_path)
 
@@ -715,6 +720,7 @@ def test_since_date_policy_strict_returns_nonzero(
         debug: bool,
         output_path: Path,
         timeout_seconds: int,
+        **_kwargs: Any,
     ) -> inc.ScanCommandResult:
         return _valid_result(["securevibes"], output_path)
 
@@ -779,6 +785,7 @@ def test_findings_exit_codes_advance_anchor(
         debug: bool,
         output_path: Path,
         timeout_seconds: int,
+        **_kwargs: Any,
     ) -> inc.ScanCommandResult:
         return _valid_result(["securevibes"], output_path, exit_code=1)
 
@@ -819,6 +826,7 @@ def test_exit_1_without_output_halts_pipeline(
         debug: bool,
         output_path: Path,
         timeout_seconds: int,
+        **_kwargs: Any,
     ) -> inc.ScanCommandResult:
         return inc.ScanCommandResult(
             command=["securevibes"],
@@ -864,6 +872,7 @@ def test_run_record_written_with_chunk_results(
         debug: bool,
         output_path: Path,
         timeout_seconds: int,
+        **_kwargs: Any,
     ) -> inc.ScanCommandResult:
         return _valid_result(["securevibes", "pr-review"], output_path)
 

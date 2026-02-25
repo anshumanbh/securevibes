@@ -479,6 +479,18 @@ def scan(
     default="medium",
     help="Minimum severity to report",
 )
+@click.option(
+    "--pr-attempts",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Number of PR review retry attempts (default: from config/env)",
+)
+@click.option(
+    "--pr-timeout",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Per-attempt timeout in seconds (default: from config/env)",
+)
 def pr_review(
     path: str,
     base: Optional[str],
@@ -495,6 +507,8 @@ def pr_review(
     output: Optional[str],
     debug: bool,
     severity: str,
+    pr_attempts: Optional[int],
+    pr_timeout: Optional[int],
 ):
     """
     Review a PR diff for security vulnerabilities.
@@ -624,6 +638,8 @@ def pr_review(
                 known_vulns,
                 severity,
                 update_artifacts,
+                pr_review_attempts=pr_attempts,
+                pr_timeout_seconds=pr_timeout,
             )
         )
 
@@ -968,6 +984,8 @@ async def _run_pr_review(
     known_vulns_path: Optional[Path],
     severity_threshold: str,
     update_artifacts: bool,
+    pr_review_attempts: Optional[int] = None,
+    pr_timeout_seconds: Optional[int] = None,
 ):
     """Run the PR review with the configured scanner."""
     scanner = Scanner(model=model, debug=debug)
@@ -977,6 +995,8 @@ async def _run_pr_review(
         known_vulns_path,
         severity_threshold,
         update_artifacts=update_artifacts,
+        pr_review_attempts=pr_review_attempts,
+        pr_timeout_seconds=pr_timeout_seconds,
     )
 
 
