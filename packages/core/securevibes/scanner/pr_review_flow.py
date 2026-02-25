@@ -293,6 +293,7 @@ class PRReviewAttemptRunner:
     ) -> None:
         """Run the multi-pass PR scanning attempt loop."""
         pr_review_attempts = ctx.pr_review_attempts
+        consecutive_clean_passes = 0
 
         for attempt_idx in range(pr_review_attempts):
             attempt_num = attempt_idx + 1
@@ -438,10 +439,12 @@ class PRReviewAttemptRunner:
             )
 
             if attempt_error or load_warning:
+                consecutive_clean_passes = 0
                 continue
 
             attempt_finding_count = len(loaded_vulns)
             if attempt_finding_count:
+                consecutive_clean_passes = 0
                 if self.debug:
                     logger.debug(
                         "PR pass %d/%d: %d finding(s), cumulative %d",
@@ -453,6 +456,9 @@ class PRReviewAttemptRunner:
                 if attempt_num < pr_review_attempts and self.debug:
                     logger.debug("Running additional focused PR pass for broader chain coverage")
                 continue
+
+            # No findings in this attempt — track consecutive clean passes for early exit.
+            consecutive_clean_passes += 1
 
             if attempt_num < pr_review_attempts:
                 cumulative_findings = len(state.collected_pr_vulns) + len(state.ephemeral_pr_vulns)
@@ -477,6 +483,14 @@ class PRReviewAttemptRunner:
                             no_new_note,
                             cumulative_findings,
                         )
+                elif consecutive_clean_passes >= 2:
+                    # Two consecutive clean passes with zero findings anywhere — the diff is clean.
+                    if self.debug:
+                        logger.debug(
+                            "Early exit: %d consecutive clean passes with no findings",
+                            consecutive_clean_passes,
+                        )
+                    break
                 else:
                     retry_warning = (
                         f"PR code review attempt {attempt_num}/{pr_review_attempts} returned no findings "

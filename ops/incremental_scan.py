@@ -133,6 +133,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_SCAN_TIMEOUT_SECONDS,
         help="Timeout for each securevibes pr-review invocation",
     )
+    parser.add_argument(
+        "--pr-attempts",
+        type=positive_int,
+        default=None,
+        help="Override number of PR review retry attempts (passed to securevibes pr-review)",
+    )
+    parser.add_argument(
+        "--pr-timeout",
+        type=positive_int,
+        default=None,
+        help="Override per-attempt timeout in seconds (passed to securevibes pr-review)",
+    )
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--debug", action="store_true")
     return parser.parse_args(argv)
@@ -427,6 +439,8 @@ def run_scan(
     debug: bool,
     output_path: Path,
     timeout_seconds: int = DEFAULT_SCAN_TIMEOUT_SECONDS,
+    pr_attempts: int | None = None,
+    pr_timeout: int | None = None,
 ) -> ScanCommandResult:
     """Run securevibes pr-review for an explicit commit range."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -447,6 +461,10 @@ def run_scan(
         "--update-artifacts",
         "--clean-pr-artifacts",
     ]
+    if pr_attempts is not None:
+        command.extend(["--pr-attempts", str(pr_attempts)])
+    if pr_timeout is not None:
+        command.extend(["--pr-timeout", str(pr_timeout)])
     if debug:
         command.append("--debug")
 
@@ -483,6 +501,8 @@ def run_since_date_scan(
     debug: bool,
     output_path: Path,
     timeout_seconds: int = DEFAULT_SCAN_TIMEOUT_SECONDS,
+    pr_attempts: int | None = None,
+    pr_timeout: int | None = None,
 ) -> ScanCommandResult:
     """Run securevibes pr-review using --since date fallback mode."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -503,6 +523,10 @@ def run_since_date_scan(
         "--update-artifacts",
         "--clean-pr-artifacts",
     ]
+    if pr_attempts is not None:
+        command.extend(["--pr-attempts", str(pr_attempts)])
+    if pr_timeout is not None:
+        command.extend(["--pr-timeout", str(pr_timeout)])
     if debug:
         command.append("--debug")
 
@@ -630,6 +654,8 @@ def run(args: argparse.Namespace) -> int:
     scan_timeout = max(
         1, int(getattr(args, "scan_timeout_seconds", DEFAULT_SCAN_TIMEOUT_SECONDS))
     )
+    pr_attempts: int | None = getattr(args, "pr_attempts", None)
+    pr_timeout: int | None = getattr(args, "pr_timeout", None)
 
     ensure_dependencies()
     ensure_repo(repo, git_timeout)
@@ -783,6 +809,8 @@ def run(args: argparse.Namespace) -> int:
                     args.debug,
                     since_output,
                     scan_timeout,
+                    pr_attempts=pr_attempts,
+                    pr_timeout=pr_timeout,
                 )
                 run_record["chunks"].append(
                     {
@@ -905,6 +933,8 @@ def run(args: argparse.Namespace) -> int:
                     args.debug,
                     chunk_output,
                     scan_timeout,
+                    pr_attempts=pr_attempts,
+                    pr_timeout=pr_timeout,
                 )
                 run_record["chunks"].append(
                     {

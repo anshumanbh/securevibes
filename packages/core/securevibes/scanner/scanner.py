@@ -1093,6 +1093,8 @@ class Scanner:
         known_vulns_path: Optional[Path],
         severity_threshold: str,
         update_artifacts: bool = False,
+        pr_review_attempts: Optional[int] = None,
+        pr_timeout_seconds: Optional[int] = None,
     ) -> ScanResult:
         """
         Run context-aware PR security review.
@@ -1102,6 +1104,8 @@ class Scanner:
             diff_context: Parsed diff context
             known_vulns_path: Optional path to VULNERABILITIES.json for dedupe
             severity_threshold: Minimum severity to report
+            pr_review_attempts: Optional override for number of retry attempts
+            pr_timeout_seconds: Optional override for per-attempt timeout
         """
         self._reset_scan_runtime_state()
         repo = Path(repo_path).resolve()
@@ -1124,6 +1128,8 @@ class Scanner:
             diff_context,
             known_vulns_path,
             severity_threshold,
+            pr_review_attempts_override=pr_review_attempts,
+            pr_timeout_seconds_override=pr_timeout_seconds,
         )
         state = PRReviewState()
 
@@ -1153,6 +1159,8 @@ class Scanner:
         diff_context: DiffContext,
         known_vulns_path: Optional[Path],
         severity_threshold: str,
+        pr_review_attempts_override: Optional[int] = None,
+        pr_timeout_seconds_override: Optional[int] = None,
     ) -> PRReviewContext:
         """Assemble all context needed before the PR review attempt loop."""
         scan_start_time = time.time()
@@ -1213,7 +1221,7 @@ class Scanner:
         path_parser_signals = diff_has_path_parser_signals(focused_diff_context)
         auth_privilege_signals = diff_has_auth_privilege_signals(focused_diff_context)
         pr_grep_default_scope = _derive_pr_default_grep_scope(focused_diff_context)
-        pr_review_attempts = config.get_pr_review_attempts()
+        pr_review_attempts = pr_review_attempts_override if pr_review_attempts_override is not None else config.get_pr_review_attempts()
         retry_focus_plan = build_pr_retry_focus_plan(
             pr_review_attempts,
             command_builder_signals=command_builder_signals,
@@ -1289,7 +1297,7 @@ You may output [] only if every hypothesis is disproved with concrete code evide
 Only report findings at or above: {severity_threshold}
 """
 
-        pr_timeout_seconds = config.get_pr_review_timeout_seconds()
+        pr_timeout_seconds = pr_timeout_seconds_override if pr_timeout_seconds_override is not None else config.get_pr_review_timeout_seconds()
         pr_vulns_path = securevibes_dir / PR_VULNERABILITIES_FILE
         detected_languages = LanguageConfig.detect_languages(repo) if repo else set()
 
