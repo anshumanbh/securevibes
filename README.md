@@ -198,7 +198,15 @@ securevibes catchup . --branch main
 
 `securevibes catchup` requires a clean working tree (commit, stash, or discard local changes first).
 
-PR review runtime controls:
+```bash
+# Override PR review budget via CLI flags
+securevibes pr-review . --range abc123~1..abc123 --pr-attempts 2 --pr-timeout 120
+
+# Auto-triage: reduce budget for low-risk diffs (docs, tests, etc.)
+securevibes pr-review . --range abc123~1..abc123 --auto-triage
+```
+
+PR review runtime controls (CLI flags take precedence over env vars):
 
 ```bash
 # Timeout per PR review attempt in seconds (default: 240)
@@ -207,6 +215,8 @@ export SECUREVIBES_PR_REVIEW_TIMEOUT_SECONDS=300
 # Number of PR review attempts before giving up (default: 4)
 export SECUREVIBES_PR_REVIEW_ATTEMPTS=5
 ```
+
+`--auto-triage` runs a deterministic pre-filter that classifies diffs as low-risk (docs, tests, config-only changes) and reduces retry budget for those diffs.
 
 PR review fails closed if diff context would be truncated
 (more than 16 prioritized files or any hunk over 200 lines).

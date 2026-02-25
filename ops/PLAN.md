@@ -14,6 +14,10 @@ and writes structured run records under `.securevibes/incremental_runs/`.
 - Supports per-command timeouts to prevent indefinite hangs:
   - `--git-timeout-seconds` (default `60`)
   - `--scan-timeout-seconds` (default `900`)
+- Threads PR review budget flags through to `securevibes pr-review`:
+  - `--pr-attempts` — override PR review retry count (default from env or `4`)
+  - `--pr-timeout` — override per-attempt timeout in seconds (default from env or `240`)
+  - `--auto-triage` — deterministic triage pre-filter to reduce budget for low-risk diffs (docs, tests, config-only changes)
 
 ## Rewrite policy behavior
 
