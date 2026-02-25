@@ -491,6 +491,12 @@ def scan(
     default=None,
     help="Per-attempt timeout in seconds (default: from config/env)",
 )
+@click.option(
+    "--auto-triage",
+    is_flag=True,
+    default=False,
+    help="Run deterministic triage to reduce budget for low-risk diffs",
+)
 def pr_review(
     path: str,
     base: Optional[str],
@@ -509,6 +515,7 @@ def pr_review(
     severity: str,
     pr_attempts: Optional[int],
     pr_timeout: Optional[int],
+    auto_triage: bool,
 ):
     """
     Review a PR diff for security vulnerabilities.
@@ -640,6 +647,7 @@ def pr_review(
                 update_artifacts,
                 pr_review_attempts=pr_attempts,
                 pr_timeout_seconds=pr_timeout,
+                auto_triage=auto_triage,
             )
         )
 
@@ -986,6 +994,7 @@ async def _run_pr_review(
     update_artifacts: bool,
     pr_review_attempts: Optional[int] = None,
     pr_timeout_seconds: Optional[int] = None,
+    auto_triage: bool = False,
 ):
     """Run the PR review with the configured scanner."""
     scanner = Scanner(model=model, debug=debug)
@@ -997,6 +1006,7 @@ async def _run_pr_review(
         update_artifacts=update_artifacts,
         pr_review_attempts=pr_review_attempts,
         pr_timeout_seconds=pr_timeout_seconds,
+        auto_triage=auto_triage,
     )
 
 

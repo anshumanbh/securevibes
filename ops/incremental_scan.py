@@ -145,6 +145,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Override per-attempt timeout in seconds (passed to securevibes pr-review)",
     )
+    parser.add_argument(
+        "--auto-triage",
+        action="store_true",
+        default=False,
+        help="Enable deterministic triage to reduce budget for low-risk diffs",
+    )
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--debug", action="store_true")
     return parser.parse_args(argv)
@@ -441,6 +447,7 @@ def run_scan(
     timeout_seconds: int = DEFAULT_SCAN_TIMEOUT_SECONDS,
     pr_attempts: int | None = None,
     pr_timeout: int | None = None,
+    auto_triage: bool = False,
 ) -> ScanCommandResult:
     """Run securevibes pr-review for an explicit commit range."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -465,6 +472,8 @@ def run_scan(
         command.extend(["--pr-attempts", str(pr_attempts)])
     if pr_timeout is not None:
         command.extend(["--pr-timeout", str(pr_timeout)])
+    if auto_triage:
+        command.append("--auto-triage")
     if debug:
         command.append("--debug")
 
@@ -503,6 +512,7 @@ def run_since_date_scan(
     timeout_seconds: int = DEFAULT_SCAN_TIMEOUT_SECONDS,
     pr_attempts: int | None = None,
     pr_timeout: int | None = None,
+    auto_triage: bool = False,
 ) -> ScanCommandResult:
     """Run securevibes pr-review using --since date fallback mode."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -527,6 +537,8 @@ def run_since_date_scan(
         command.extend(["--pr-attempts", str(pr_attempts)])
     if pr_timeout is not None:
         command.extend(["--pr-timeout", str(pr_timeout)])
+    if auto_triage:
+        command.append("--auto-triage")
     if debug:
         command.append("--debug")
 
@@ -656,6 +668,7 @@ def run(args: argparse.Namespace) -> int:
     )
     pr_attempts: int | None = getattr(args, "pr_attempts", None)
     pr_timeout: int | None = getattr(args, "pr_timeout", None)
+    auto_triage: bool = getattr(args, "auto_triage", False)
 
     ensure_dependencies()
     ensure_repo(repo, git_timeout)
@@ -811,6 +824,7 @@ def run(args: argparse.Namespace) -> int:
                     scan_timeout,
                     pr_attempts=pr_attempts,
                     pr_timeout=pr_timeout,
+                    auto_triage=auto_triage,
                 )
                 run_record["chunks"].append(
                     {
@@ -935,6 +949,7 @@ def run(args: argparse.Namespace) -> int:
                     scan_timeout,
                     pr_attempts=pr_attempts,
                     pr_timeout=pr_timeout,
+                    auto_triage=auto_triage,
                 )
                 run_record["chunks"].append(
                     {

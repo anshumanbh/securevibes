@@ -334,3 +334,73 @@ def test_pr_review_runtime_failure_exits_non_zero(tmp_path: Path, monkeypatch):
 
     assert result.exit_code == 1
     assert "Refusing fail-open PR review result" in result.output
+
+
+def test_auto_triage_flag_reaches_run_pr_review(tmp_path: Path, monkeypatch):
+    """--auto-triage should be threaded to _run_pr_review as auto_triage=True."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+
+    diff_file = tmp_path / "changes.patch"
+    diff_file.write_text(
+        "diff --git a/docs/readme.md b/docs/readme.md\n"
+        "--- a/docs/readme.md\n"
+        "+++ b/docs/readme.md\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n",
+        encoding="utf-8",
+    )
+
+    captured: dict = {}
+
+    def _capture_pr_review(*_args, **kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("short-circuit")
+
+    monkeypatch.setattr("securevibes.cli.main._run_pr_review", _capture_pr_review)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["pr-review", str(repo), "--diff", str(diff_file), "--auto-triage"]
+    )
+
+    assert captured.get("auto_triage") is True
+
+
+def test_auto_triage_default_is_false(tmp_path: Path, monkeypatch):
+    """Without --auto-triage, auto_triage should default to False."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+
+    diff_file = tmp_path / "changes.patch"
+    diff_file.write_text(
+        "diff --git a/docs/readme.md b/docs/readme.md\n"
+        "--- a/docs/readme.md\n"
+        "+++ b/docs/readme.md\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n",
+        encoding="utf-8",
+    )
+
+    captured: dict = {}
+
+    def _capture_pr_review(*_args, **kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("short-circuit")
+
+    monkeypatch.setattr("securevibes.cli.main._run_pr_review", _capture_pr_review)
+
+    runner = CliRunner()
+    runner.invoke(cli, ["pr-review", str(repo), "--diff", str(diff_file)])
+
+    assert captured.get("auto_triage") is False

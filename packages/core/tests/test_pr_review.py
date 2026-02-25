@@ -54,7 +54,7 @@ from securevibes.scanner.scanner import (
     _normalize_hypothesis_output,
     _PROMPT_HUNK_MAX_LINES_PER_HUNK,
     _refine_pr_findings_with_llm,
-    _score_diff_file_for_security_review,
+    score_diff_file_for_security_review,
     _summarize_diff_hunk_snippets,
     _summarize_diff_line_anchors,
     _write_diff_files_for_agent,
@@ -2116,7 +2116,7 @@ def test_normalize_hypothesis_output_mixed_formats():
 
 
 # ---------------------------------------------------------------------------
-# _score_diff_file_for_security_review tests
+# score_diff_file_for_security_review tests
 # ---------------------------------------------------------------------------
 
 
@@ -2135,7 +2135,7 @@ def _make_diff_file(new_path, is_new=False, is_deleted=False, is_renamed=False):
 def test_score_diff_file_code_file_base_score():
     """A regular source code file should get the base code score."""
     diff_file = _make_diff_file("src/app.py")
-    score = _score_diff_file_for_security_review(diff_file)
+    score = score_diff_file_for_security_review(diff_file)
     # 60 (code) + 20 (src/) = 80
     assert score == 80
 
@@ -2143,7 +2143,7 @@ def test_score_diff_file_code_file_base_score():
 def test_score_diff_file_non_code_suffix():
     """Non-code files (markdown, images, etc.) should not get the code bonus."""
     diff_file = _make_diff_file("docs/README.md")
-    score = _score_diff_file_for_security_review(diff_file)
+    score = score_diff_file_for_security_review(diff_file)
     # No 60 (non-code suffix .md), -35 (docs/), = -35
     assert score == -35
 
@@ -2151,7 +2151,7 @@ def test_score_diff_file_non_code_suffix():
 def test_score_diff_file_security_path_hints():
     """Files with security-related path segments should score higher."""
     diff_file = _make_diff_file("src/auth/token_guard.py")
-    score = _score_diff_file_for_security_review(diff_file)
+    score = score_diff_file_for_security_review(diff_file)
     # 60 (code) + 20 (src/) + 12 (auth) + 12 (token) + 12 (guard) = 116
     assert score == 116
 
@@ -2159,7 +2159,7 @@ def test_score_diff_file_security_path_hints():
 def test_score_diff_file_test_file_penalty():
     """Test files should receive a score penalty."""
     diff_file = _make_diff_file("src/tests/test_auth.py")
-    score = _score_diff_file_for_security_review(diff_file)
+    score = score_diff_file_for_security_review(diff_file)
     # 60 (code) + 20 (src/) - 20 (/tests/) + 12 (auth) = 72
     assert score == 72
 
@@ -2169,8 +2169,8 @@ def test_score_diff_file_new_file_bonus():
     regular = _make_diff_file("src/handler.py")
     new = _make_diff_file("src/handler.py", is_new=True)
     assert (
-        _score_diff_file_for_security_review(new)
-        == _score_diff_file_for_security_review(regular) + 8
+        score_diff_file_for_security_review(new)
+        == score_diff_file_for_security_review(regular) + 8
     )
 
 
@@ -2179,8 +2179,8 @@ def test_score_diff_file_renamed_file_bonus():
     regular = _make_diff_file("src/handler.py")
     renamed = _make_diff_file("src/handler.py", is_renamed=True)
     assert (
-        _score_diff_file_for_security_review(renamed)
-        == _score_diff_file_for_security_review(regular) + 4
+        score_diff_file_for_security_review(renamed)
+        == score_diff_file_for_security_review(regular) + 4
     )
 
 
@@ -2194,13 +2194,13 @@ def test_score_diff_file_no_path():
         is_deleted=False,
         is_renamed=False,
     )
-    assert _score_diff_file_for_security_review(diff_file) == 0
+    assert score_diff_file_for_security_review(diff_file) == 0
 
 
 def test_score_diff_file_docs_path():
     """Files in docs/ path should receive the docs penalty."""
     diff_file = _make_diff_file("docs/api-guide.rst")
-    score = _score_diff_file_for_security_review(diff_file)
+    score = score_diff_file_for_security_review(diff_file)
     # No 60 (.rst is non-code), -35 (docs/) = -35
     assert score == -35
 
@@ -2208,7 +2208,7 @@ def test_score_diff_file_docs_path():
 def test_score_diff_file_lock_file():
     """Lock files are non-code and should not get the code bonus."""
     diff_file = _make_diff_file("package-lock.lock")
-    score = _score_diff_file_for_security_review(diff_file)
+    score = score_diff_file_for_security_review(diff_file)
     # No 60 (.lock is non-code) = 0
     assert score == 0
 
@@ -3154,3 +3154,168 @@ class TestRefinePrFindingsWithLlm:
         assert result is not None
         assert len(result) == 1
         assert result[0]["title"] == "valid"
+
+
+# ---------------------------------------------------------------------------
+# Triage integration wiring tests
+# ---------------------------------------------------------------------------
+
+
+class TestTriageWiring:
+    """Verify auto_triage in Scanner.pr_review wires through to _prepare_pr_review_context."""
+
+    @staticmethod
+    def _make_simple_diff_context():
+        from securevibes.diff.parser import DiffLine
+
+        line = DiffLine(type="add", content="+ pass", old_line_num=None, new_line_num=1)
+        hunk = DiffHunk(old_start=1, old_count=0, new_start=1, new_count=1, lines=[line])
+        diff_file = DiffFile(
+            old_path="docs/readme.md",
+            new_path="docs/readme.md",
+            hunks=[hunk],
+            is_new=False,
+            is_deleted=False,
+            is_renamed=False,
+        )
+        return DiffContext(
+            files=[diff_file],
+            added_lines=1,
+            removed_lines=0,
+            changed_files=["docs/readme.md"],
+        )
+
+    def test_auto_triage_false_preserves_existing_behavior(self, tmp_path, monkeypatch):
+        """auto_triage=False should not change attempts/timeout from explicit overrides."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        securevibes_dir = repo / ".securevibes"
+        securevibes_dir.mkdir()
+        (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
+        (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+
+        captured = {}
+
+        original_prepare = Scanner._prepare_pr_review_context.__wrapped__ if hasattr(Scanner._prepare_pr_review_context, '__wrapped__') else Scanner._prepare_pr_review_context
+
+        async def mock_prepare(self_inner, repo_arg, securevibes_dir_arg, diff_context_arg, known_vulns_path_arg, severity_threshold_arg, pr_review_attempts_override=None, pr_timeout_seconds_override=None):
+            captured["attempts"] = pr_review_attempts_override
+            captured["timeout"] = pr_timeout_seconds_override
+            raise RuntimeError("short-circuit")
+
+        monkeypatch.setattr(Scanner, "_prepare_pr_review_context", mock_prepare)
+
+        scanner = Scanner(model="sonnet", debug=False)
+        with pytest.raises(RuntimeError, match="short-circuit"):
+            asyncio.run(scanner.pr_review(
+                str(repo),
+                self._make_simple_diff_context(),
+                None,
+                "medium",
+                auto_triage=False,
+                pr_review_attempts=3,
+                pr_timeout_seconds=120,
+            ))
+
+        assert captured["attempts"] == 3
+        assert captured["timeout"] == 120
+
+    def test_auto_triage_low_risk_applies_reduced_budget(self, tmp_path, monkeypatch):
+        """auto_triage=True on low_risk diff applies reduced attempts/timeout."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        securevibes_dir = repo / ".securevibes"
+        securevibes_dir.mkdir()
+        (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
+        (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+        (securevibes_dir / "VULNERABILITIES.json").write_text("[]", encoding="utf-8")
+
+        captured = {}
+
+        async def mock_prepare(self_inner, repo_arg, securevibes_dir_arg, diff_context_arg, known_vulns_path_arg, severity_threshold_arg, pr_review_attempts_override=None, pr_timeout_seconds_override=None):
+            captured["attempts"] = pr_review_attempts_override
+            captured["timeout"] = pr_timeout_seconds_override
+            raise RuntimeError("short-circuit")
+
+        monkeypatch.setattr(Scanner, "_prepare_pr_review_context", mock_prepare)
+
+        scanner = Scanner(model="sonnet", debug=False)
+        with pytest.raises(RuntimeError, match="short-circuit"):
+            asyncio.run(scanner.pr_review(
+                str(repo),
+                self._make_simple_diff_context(),
+                None,
+                "medium",
+                auto_triage=True,
+            ))
+
+        assert captured["attempts"] == 1
+        assert captured["timeout"] == 60
+
+    def test_explicit_attempts_preserved_with_triage(self, tmp_path, monkeypatch):
+        """Explicit pr_review_attempts should win over triage suggestion."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        securevibes_dir = repo / ".securevibes"
+        securevibes_dir.mkdir()
+        (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
+        (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+        (securevibes_dir / "VULNERABILITIES.json").write_text("[]", encoding="utf-8")
+
+        captured = {}
+
+        async def mock_prepare(self_inner, repo_arg, securevibes_dir_arg, diff_context_arg, known_vulns_path_arg, severity_threshold_arg, pr_review_attempts_override=None, pr_timeout_seconds_override=None):
+            captured["attempts"] = pr_review_attempts_override
+            captured["timeout"] = pr_timeout_seconds_override
+            raise RuntimeError("short-circuit")
+
+        monkeypatch.setattr(Scanner, "_prepare_pr_review_context", mock_prepare)
+
+        scanner = Scanner(model="sonnet", debug=False)
+        with pytest.raises(RuntimeError, match="short-circuit"):
+            asyncio.run(scanner.pr_review(
+                str(repo),
+                self._make_simple_diff_context(),
+                None,
+                "medium",
+                auto_triage=True,
+                pr_review_attempts=3,
+            ))
+
+        # Explicit attempts=3 preserved; timeout reduced by triage since not explicitly set
+        assert captured["attempts"] == 3
+        assert captured["timeout"] == 60
+
+    def test_explicit_timeout_preserved_with_triage(self, tmp_path, monkeypatch):
+        """Explicit pr_timeout_seconds should win over triage suggestion."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        securevibes_dir = repo / ".securevibes"
+        securevibes_dir.mkdir()
+        (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
+        (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+        (securevibes_dir / "VULNERABILITIES.json").write_text("[]", encoding="utf-8")
+
+        captured = {}
+
+        async def mock_prepare(self_inner, repo_arg, securevibes_dir_arg, diff_context_arg, known_vulns_path_arg, severity_threshold_arg, pr_review_attempts_override=None, pr_timeout_seconds_override=None):
+            captured["attempts"] = pr_review_attempts_override
+            captured["timeout"] = pr_timeout_seconds_override
+            raise RuntimeError("short-circuit")
+
+        monkeypatch.setattr(Scanner, "_prepare_pr_review_context", mock_prepare)
+
+        scanner = Scanner(model="sonnet", debug=False)
+        with pytest.raises(RuntimeError, match="short-circuit"):
+            asyncio.run(scanner.pr_review(
+                str(repo),
+                self._make_simple_diff_context(),
+                None,
+                "medium",
+                auto_triage=True,
+                pr_timeout_seconds=200,
+            ))
+
+        # Timeout=200 preserved; attempts reduced by triage since not explicitly set
+        assert captured["attempts"] == 1
+        assert captured["timeout"] == 200

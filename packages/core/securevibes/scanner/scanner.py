@@ -108,7 +108,7 @@ _NEW_FILE_ANCHOR_MAX_LINES = 120  # Same rationale — new files need higher anc
 DIFF_FILES_DIR = "DIFF_FILES"  # Subdirectory for agent-readable diff content
 _SAFE_PERMISSION_MODE = "default"
 _BASE_ALLOWED_TOOLS = ("Task", "Skill", "Read", "Write", "Grep", "Glob", "LS")
-_SECURITY_PATH_HINTS = (
+SECURITY_PATH_HINTS = (
     "auth",
     "permission",
     "policy",
@@ -121,7 +121,7 @@ _SECURITY_PATH_HINTS = (
     "websocket",
     "rpc",
 )
-_NON_CODE_SUFFIXES = {
+NON_CODE_SUFFIXES = {
     ".md",
     ".txt",
     ".rst",
@@ -568,7 +568,7 @@ CANDIDATE FINDINGS JSON:
     return [entry for entry in parsed if isinstance(entry, dict)]
 
 
-def _score_diff_file_for_security_review(diff_file: DiffFile) -> int:
+def score_diff_file_for_security_review(diff_file: DiffFile) -> int:
     path = diff_file_path(diff_file).lower()
     if not path:
         return 0
@@ -576,14 +576,14 @@ def _score_diff_file_for_security_review(diff_file: DiffFile) -> int:
     score = 0
     suffix = Path(path).suffix.lower()
 
-    if suffix not in _NON_CODE_SUFFIXES:
+    if suffix not in NON_CODE_SUFFIXES:
         score += 60
     if "/docs/" in path or path.startswith("docs/"):
         score -= 35
     if "/test/" in path or "/tests/" in path or ".test." in path or ".spec." in path:
         score -= 20
 
-    score += sum(12 for hint in _SECURITY_PATH_HINTS if hint in path)
+    score += sum(12 for hint in SECURITY_PATH_HINTS if hint in path)
     if path.startswith("src/"):
         score += 20
     if diff_file.is_new:
@@ -601,14 +601,14 @@ def _build_focused_diff_context(diff_context: DiffContext) -> DiffContext:
 
     scored_files = sorted(
         diff_context.files,
-        key=lambda f: (_score_diff_file_for_security_review(f), diff_file_path(f)),
+        key=lambda f: (score_diff_file_for_security_review(f), diff_file_path(f)),
         reverse=True,
     )
 
     top_files = [
         f
         for f in scored_files[:_FOCUSED_DIFF_MAX_FILES]
-        if _score_diff_file_for_security_review(f) > 0
+        if score_diff_file_for_security_review(f) > 0
     ]
     if not top_files:
         top_files = scored_files[: min(len(scored_files), _FOCUSED_DIFF_MAX_FILES)]
@@ -677,7 +677,7 @@ def _enforce_focused_diff_coverage(
     security_relevant_count = sum(
         1
         for f in original_diff_context.files
-        if _score_diff_file_for_security_review(f) > 0
+        if score_diff_file_for_security_review(f) > 0
     )
     focused_file_count = len(focused_diff_context.files)
     dropped_file_count = max(0, security_relevant_count - focused_file_count)
@@ -688,7 +688,7 @@ def _enforce_focused_diff_coverage(
     severely_truncated_hunk_count = sum(
         1
         for diff_file in original_diff_context.files
-        if _score_diff_file_for_security_review(diff_file) > 0
+        if score_diff_file_for_security_review(diff_file) > 0
         for hunk in diff_file.hunks
         if len(hunk.lines) > _SEVERE_TRUNCATION_THRESHOLD
     )
@@ -1095,6 +1095,7 @@ class Scanner:
         update_artifacts: bool = False,
         pr_review_attempts: Optional[int] = None,
         pr_timeout_seconds: Optional[int] = None,
+        auto_triage: bool = False,
     ) -> ScanResult:
         """
         Run context-aware PR security review.
@@ -1106,6 +1107,7 @@ class Scanner:
             severity_threshold: Minimum severity to report
             pr_review_attempts: Optional override for number of retry attempts
             pr_timeout_seconds: Optional override for per-attempt timeout
+            auto_triage: When True, run deterministic triage to reduce budget for low-risk diffs
         """
         self._reset_scan_runtime_state()
         repo = Path(repo_path).resolve()
@@ -1122,14 +1124,52 @@ class Scanner:
         except (OSError, PermissionError) as e:
             raise RuntimeError(f"Failed to create output directory {securevibes_dir}: {e}")
 
+        # Resolve baseline PR-review budgets from explicit overrides + config
+        effective_attempts = pr_review_attempts
+        effective_timeout = pr_timeout_seconds
+
+        if auto_triage:
+            from securevibes.scanner.triage import (
+                compute_triage_overrides,
+                triage_diff,
+            )
+
+            triage_result = triage_diff(diff_context, securevibes_dir)
+            suggested = compute_triage_overrides(triage_result)
+
+            if suggested is not None:
+                # Explicit user overrides win over triage suggestions
+                if effective_attempts is None:
+                    effective_attempts = suggested.pr_review_attempts
+                if effective_timeout is None:
+                    effective_timeout = suggested.pr_timeout_seconds
+
+            logger.info(
+                "Triage classification=%s applied=%s effective_attempts=%s effective_timeout=%s",
+                triage_result.classification,
+                suggested is not None,
+                effective_attempts,
+                effective_timeout,
+            )
+            if self.debug:
+                logger.debug(
+                    "Triage details: reasons=%s detector_hits=%s max_file_score=%d "
+                    "matched_vuln_paths=%s matched_components=%s",
+                    triage_result.reasons,
+                    triage_result.detector_hits,
+                    triage_result.max_file_score,
+                    triage_result.matched_vuln_paths,
+                    triage_result.matched_components,
+                )
+
         ctx = await self._prepare_pr_review_context(
             repo,
             securevibes_dir,
             diff_context,
             known_vulns_path,
             severity_threshold,
-            pr_review_attempts_override=pr_review_attempts,
-            pr_timeout_seconds_override=pr_timeout_seconds,
+            pr_review_attempts_override=effective_attempts,
+            pr_timeout_seconds_override=effective_timeout,
         )
         state = PRReviewState()
 

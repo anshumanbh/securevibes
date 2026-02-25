@@ -919,3 +919,126 @@ def test_main_returns_error_code_on_exception(
     monkeypatch.setattr(inc, "run", _boom)
     assert inc.main([]) == 1
     assert "ERROR: boom" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Auto-triage integration tests
+# ---------------------------------------------------------------------------
+
+
+def test_parse_args_auto_triage_flag() -> None:
+    """--auto-triage should set args.auto_triage to True."""
+    args = inc.parse_args(["--auto-triage"])
+    assert args.auto_triage is True
+
+
+def test_parse_args_auto_triage_default_false() -> None:
+    """auto_triage should default to False."""
+    args = inc.parse_args([])
+    assert args.auto_triage is False
+
+
+def test_run_scan_appends_auto_triage_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """run_scan with auto_triage=True should append --auto-triage to the command."""
+    seen: dict[str, Any] = {}
+
+    def fake_run(command: list[str], **_kwargs: Any) -> SimpleNamespace:
+        seen["command"] = command
+        output_idx = command.index("--output") + 1
+        output_path = Path(command[output_idx])
+        output_path.write_text(
+            json.dumps(
+                {
+                    "repository_path": "/tmp/repo",
+                    "files_scanned": 1,
+                    "scan_time_seconds": 1,
+                    "issues": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(inc.subprocess, "run", fake_run)
+    out = tmp_path / "triage-scan.json"
+    inc.run_scan(
+        Path("/repo"), "base", "head", "sonnet", "medium", False, out,
+        auto_triage=True,
+    )
+    assert "--auto-triage" in seen["command"]
+
+
+def test_run_since_date_scan_appends_auto_triage_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """run_since_date_scan with auto_triage=True should append --auto-triage."""
+    seen: dict[str, Any] = {}
+
+    def fake_run(command: list[str], **_kwargs: Any) -> SimpleNamespace:
+        seen["command"] = command
+        output_idx = command.index("--output") + 1
+        output_path = Path(command[output_idx])
+        output_path.write_text(
+            json.dumps(
+                {
+                    "repository_path": "/tmp/repo",
+                    "files_scanned": 1,
+                    "scan_time_seconds": 1,
+                    "issues": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(inc.subprocess, "run", fake_run)
+    out = tmp_path / "triage-since.json"
+    inc.run_since_date_scan(
+        Path("/repo"), "2026-01-01", "sonnet", "medium", False, out,
+        auto_triage=True,
+    )
+    assert "--auto-triage" in seen["command"]
+
+
+def test_run_threads_auto_triage_to_run_scan(
+    monkeypatch: pytest.MonkeyPatch,
+    repo_dir: Path,
+    state_path: Path,
+    write_state,
+    sample_state: dict[str, object],
+) -> None:
+    """run() should pass auto_triage through to run_scan."""
+    args = build_args(repo_dir, auto_triage=True)
+    write_state(sample_state)
+    scan_kwargs: dict[str, Any] = {}
+
+    monkeypatch.setattr(inc, "ensure_dependencies", _noop)
+    monkeypatch.setattr(inc, "ensure_repo", _noop)
+    monkeypatch.setattr(inc, "ensure_baseline_artifacts", _noop)
+    monkeypatch.setattr(inc, "git_fetch", _noop)
+    monkeypatch.setattr(inc, "resolve_head", lambda *_args: "newhead")
+    monkeypatch.setattr(inc, "is_ancestor", lambda *_args: True)
+    monkeypatch.setattr(inc, "get_commit_list", lambda *_args: ["c1"])
+    monkeypatch.setattr(inc, "generate_run_id", lambda: "RUN_TRIAGE")
+
+    def fake_run_scan(
+        repo: Path,
+        base: str,
+        head: str,
+        model: str,
+        severity: str,
+        debug: bool,
+        output_path: Path,
+        timeout_seconds: int,
+        **kwargs: Any,
+    ) -> inc.ScanCommandResult:
+        scan_kwargs.update(kwargs)
+        return _valid_result(["securevibes"], output_path)
+
+    monkeypatch.setattr(inc, "run_scan", fake_run_scan)
+
+    exit_code = inc.run(args)
+    assert exit_code == 0
+    assert scan_kwargs.get("auto_triage") is True
