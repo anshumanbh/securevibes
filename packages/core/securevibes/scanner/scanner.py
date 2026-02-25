@@ -1124,7 +1124,7 @@ class Scanner:
         except (OSError, PermissionError) as e:
             raise RuntimeError(f"Failed to create output directory {securevibes_dir}: {e}")
 
-        # Resolve baseline PR-review budgets from explicit overrides + config
+        # Start with explicit overrides; _prepare_pr_review_context applies config fallback.
         effective_attempts = pr_review_attempts
         effective_timeout = pr_timeout_seconds
 
@@ -1136,20 +1136,35 @@ class Scanner:
 
             triage_result = triage_diff(diff_context, securevibes_dir)
             suggested = compute_triage_overrides(triage_result)
+            triage_applied_attempts = False
+            triage_applied_timeout = False
 
             if suggested is not None:
                 # Explicit user overrides win over triage suggestions
                 if effective_attempts is None:
                     effective_attempts = suggested.pr_review_attempts
+                    triage_applied_attempts = True
                 if effective_timeout is None:
                     effective_timeout = suggested.pr_timeout_seconds
+                    triage_applied_timeout = True
+
+            logged_attempts = (
+                effective_attempts
+                if effective_attempts is not None
+                else config.get_pr_review_attempts()
+            )
+            logged_timeout = (
+                effective_timeout
+                if effective_timeout is not None
+                else config.get_pr_review_timeout_seconds()
+            )
 
             logger.info(
                 "Triage classification=%s applied=%s effective_attempts=%s effective_timeout=%s",
                 triage_result.classification,
-                suggested is not None,
-                effective_attempts,
-                effective_timeout,
+                triage_applied_attempts or triage_applied_timeout,
+                logged_attempts,
+                logged_timeout,
             )
             if self.debug:
                 logger.debug(

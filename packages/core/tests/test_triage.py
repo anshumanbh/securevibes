@@ -69,7 +69,6 @@ def _empty_surface_map() -> SecuritySurfaceMap:
     return SecuritySurfaceMap(
         vuln_paths=frozenset(),
         affected_components=frozenset(),
-        static_tokens=frozenset(),
     )
 
 
@@ -215,7 +214,6 @@ class TestBaselineMatching:
         surface = SecuritySurfaceMap(
             vuln_paths=frozenset({"src/auth.py"}),
             affected_components=frozenset(),
-            static_tokens=frozenset(),
         )
         ctx = _make_diff_context(_make_diff_file("src/auth.py", hunk_content=["+ pass"]))
         result = triage_diff(ctx, surface_map=surface)
@@ -227,7 +225,6 @@ class TestBaselineMatching:
         surface = SecuritySurfaceMap(
             vuln_paths=frozenset(),
             affected_components=frozenset({"packages:py"}),
-            static_tokens=frozenset(),
         )
         # packages/core/main.py -> _derive_components returns ["packages:py"]
         ctx = _make_diff_context(
@@ -242,7 +239,6 @@ class TestBaselineMatching:
         surface = SecuritySurfaceMap(
             vuln_paths=frozenset(),
             affected_components=frozenset({"packages:python"}),  # not "packages:py"
-            static_tokens=frozenset(),
         )
         ctx = _make_diff_context(
             _make_diff_file("packages/core/main.py", hunk_content=["+ pass"])

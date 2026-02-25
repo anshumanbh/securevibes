@@ -358,7 +358,7 @@ def test_auto_triage_flag_reaches_run_pr_review(tmp_path: Path, monkeypatch):
 
     captured: dict = {}
 
-    def _capture_pr_review(*_args, **kwargs):
+    async def _capture_pr_review(*_args, **kwargs):
         captured.update(kwargs)
         raise RuntimeError("short-circuit")
 
@@ -394,7 +394,7 @@ def test_auto_triage_default_is_false(tmp_path: Path, monkeypatch):
 
     captured: dict = {}
 
-    def _capture_pr_review(*_args, **kwargs):
+    async def _capture_pr_review(*_args, **kwargs):
         captured.update(kwargs)
         raise RuntimeError("short-circuit")
 

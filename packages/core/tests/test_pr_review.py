@@ -3185,25 +3185,42 @@ class TestTriageWiring:
             changed_files=["docs/readme.md"],
         )
 
-    def test_auto_triage_false_preserves_existing_behavior(self, tmp_path, monkeypatch):
-        """auto_triage=False should not change attempts/timeout from explicit overrides."""
+    @staticmethod
+    def _make_pr_review_repo(tmp_path, *, include_vulns: bool = False):
         repo = tmp_path / "repo"
         repo.mkdir()
         securevibes_dir = repo / ".securevibes"
         securevibes_dir.mkdir()
         (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
         (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+        if include_vulns:
+            (securevibes_dir / "VULNERABILITIES.json").write_text("[]", encoding="utf-8")
+        return repo
 
-        captured = {}
-
-        original_prepare = Scanner._prepare_pr_review_context.__wrapped__ if hasattr(Scanner._prepare_pr_review_context, '__wrapped__') else Scanner._prepare_pr_review_context
-
-        async def mock_prepare(self_inner, repo_arg, securevibes_dir_arg, diff_context_arg, known_vulns_path_arg, severity_threshold_arg, pr_review_attempts_override=None, pr_timeout_seconds_override=None):
+    @staticmethod
+    def _patch_prepare_capture(monkeypatch, captured: dict):
+        async def mock_prepare(
+            self_inner,
+            repo_arg,
+            securevibes_dir_arg,
+            diff_context_arg,
+            known_vulns_path_arg,
+            severity_threshold_arg,
+            pr_review_attempts_override=None,
+            pr_timeout_seconds_override=None,
+        ):
             captured["attempts"] = pr_review_attempts_override
             captured["timeout"] = pr_timeout_seconds_override
             raise RuntimeError("short-circuit")
 
         monkeypatch.setattr(Scanner, "_prepare_pr_review_context", mock_prepare)
+
+    def test_auto_triage_false_preserves_existing_behavior(self, tmp_path, monkeypatch):
+        """auto_triage=False should not change attempts/timeout from explicit overrides."""
+        repo = self._make_pr_review_repo(tmp_path)
+
+        captured = {}
+        self._patch_prepare_capture(monkeypatch, captured)
 
         scanner = Scanner(model="sonnet", debug=False)
         with pytest.raises(RuntimeError, match="short-circuit"):
@@ -3222,22 +3239,10 @@ class TestTriageWiring:
 
     def test_auto_triage_low_risk_applies_reduced_budget(self, tmp_path, monkeypatch):
         """auto_triage=True on low_risk diff applies reduced attempts/timeout."""
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        securevibes_dir = repo / ".securevibes"
-        securevibes_dir.mkdir()
-        (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
-        (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
-        (securevibes_dir / "VULNERABILITIES.json").write_text("[]", encoding="utf-8")
+        repo = self._make_pr_review_repo(tmp_path, include_vulns=True)
 
         captured = {}
-
-        async def mock_prepare(self_inner, repo_arg, securevibes_dir_arg, diff_context_arg, known_vulns_path_arg, severity_threshold_arg, pr_review_attempts_override=None, pr_timeout_seconds_override=None):
-            captured["attempts"] = pr_review_attempts_override
-            captured["timeout"] = pr_timeout_seconds_override
-            raise RuntimeError("short-circuit")
-
-        monkeypatch.setattr(Scanner, "_prepare_pr_review_context", mock_prepare)
+        self._patch_prepare_capture(monkeypatch, captured)
 
         scanner = Scanner(model="sonnet", debug=False)
         with pytest.raises(RuntimeError, match="short-circuit"):
@@ -3254,22 +3259,10 @@ class TestTriageWiring:
 
     def test_explicit_attempts_preserved_with_triage(self, tmp_path, monkeypatch):
         """Explicit pr_review_attempts should win over triage suggestion."""
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        securevibes_dir = repo / ".securevibes"
-        securevibes_dir.mkdir()
-        (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
-        (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
-        (securevibes_dir / "VULNERABILITIES.json").write_text("[]", encoding="utf-8")
+        repo = self._make_pr_review_repo(tmp_path, include_vulns=True)
 
         captured = {}
-
-        async def mock_prepare(self_inner, repo_arg, securevibes_dir_arg, diff_context_arg, known_vulns_path_arg, severity_threshold_arg, pr_review_attempts_override=None, pr_timeout_seconds_override=None):
-            captured["attempts"] = pr_review_attempts_override
-            captured["timeout"] = pr_timeout_seconds_override
-            raise RuntimeError("short-circuit")
-
-        monkeypatch.setattr(Scanner, "_prepare_pr_review_context", mock_prepare)
+        self._patch_prepare_capture(monkeypatch, captured)
 
         scanner = Scanner(model="sonnet", debug=False)
         with pytest.raises(RuntimeError, match="short-circuit"):
@@ -3288,22 +3281,10 @@ class TestTriageWiring:
 
     def test_explicit_timeout_preserved_with_triage(self, tmp_path, monkeypatch):
         """Explicit pr_timeout_seconds should win over triage suggestion."""
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        securevibes_dir = repo / ".securevibes"
-        securevibes_dir.mkdir()
-        (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
-        (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
-        (securevibes_dir / "VULNERABILITIES.json").write_text("[]", encoding="utf-8")
+        repo = self._make_pr_review_repo(tmp_path, include_vulns=True)
 
         captured = {}
-
-        async def mock_prepare(self_inner, repo_arg, securevibes_dir_arg, diff_context_arg, known_vulns_path_arg, severity_threshold_arg, pr_review_attempts_override=None, pr_timeout_seconds_override=None):
-            captured["attempts"] = pr_review_attempts_override
-            captured["timeout"] = pr_timeout_seconds_override
-            raise RuntimeError("short-circuit")
-
-        monkeypatch.setattr(Scanner, "_prepare_pr_review_context", mock_prepare)
+        self._patch_prepare_capture(monkeypatch, captured)
 
         scanner = Scanner(model="sonnet", debug=False)
         with pytest.raises(RuntimeError, match="short-circuit"):

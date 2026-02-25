@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Literal
 
 from securevibes.diff.context import (
-    SECURITY_ADJACENT_TOKENS,
     normalize_repo_path,
     _load_threat_model,
 )
@@ -45,7 +44,6 @@ class TriageOverrides:
 class SecuritySurfaceMap:
     vuln_paths: frozenset[str]
     affected_components: frozenset[str]
-    static_tokens: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -129,15 +127,12 @@ def build_security_surface_map(securevibes_dir: Path) -> SecuritySurfaceMap:
                     normalized = components.strip().lower()
                     if normalized:
                         affected_components.add(normalized)
-        except Exception as exc:
+        except OSError as exc:
             logger.debug("Triage: could not load THREAT_MODEL.json: %s", exc)
-
-    static_tokens = frozenset(t.lower() for t in SECURITY_ADJACENT_TOKENS)
 
     return SecuritySurfaceMap(
         vuln_paths=frozenset(vuln_paths),
         affected_components=frozenset(affected_components),
-        static_tokens=static_tokens,
     )
 
 
@@ -161,7 +156,6 @@ def triage_diff(
             surface_map = SecuritySurfaceMap(
                 vuln_paths=frozenset(),
                 affected_components=frozenset(),
-                static_tokens=frozenset(),
             )
 
     reasons: list[str] = []
