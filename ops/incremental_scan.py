@@ -4,16 +4,19 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
 import secrets
+import signal
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -39,6 +42,90 @@ INFRA_FAILURE = "infra_failure"
 DIFF_TOO_LARGE = "diff_too_large"
 DEFAULT_GIT_TIMEOUT_SECONDS = 60
 DEFAULT_SCAN_TIMEOUT_SECONDS = 900
+
+
+@dataclass
+class RunContext:
+    """Mutable context shared with signal handlers for graceful cleanup."""
+
+    run_id: str | None = None
+    log_file: Path | None = None
+    state_path: Path | None = None
+    run_record_path: Path | None = None
+    run_record: dict[str, Any] = field(default_factory=dict)
+    state_snapshot: dict[str, Any] = field(default_factory=dict)
+    current_chunk_index: int = 0
+    last_successful_anchor: str | None = None
+    original_anchor: str | None = None
+    interrupted: bool = False
+    _child_process: subprocess.Popen | None = None  # type: ignore[type-arg]
+
+    def mark_interrupted(self) -> None:
+        """Mark run as interrupted and attempt cleanup."""
+        self.interrupted = True
+        # Kill child subprocess if running
+        if self._child_process is not None:
+            try:
+                self._child_process.kill()
+            except OSError:
+                pass
+        # Write partial state
+        self._write_cleanup()
+
+    def _write_cleanup(self) -> None:
+        """Best-effort write of partial run record and log entry on interrupt."""
+        now = utc_timestamp()
+        if self.run_record and self.run_record_path:
+            self.run_record["status"] = "interrupted"
+            self.run_record["interrupted_at_chunk"] = self.current_chunk_index
+            self.run_record["finished_utc"] = now
+            self.run_record["failure"] = {
+                "phase": "interrupted",
+                "reason": "process received termination signal",
+                "last_successful_anchor": self.last_successful_anchor,
+            }
+            try:
+                save_json(self.run_record_path, self.run_record)
+            except Exception:
+                pass
+        if self.log_file and self.run_id:
+            try:
+                append_log(
+                    self.log_file,
+                    f"run_id={self.run_id} status=interrupted "
+                    f"chunk={self.current_chunk_index} "
+                    f"anchor={self.last_successful_anchor or self.original_anchor}",
+                )
+            except Exception:
+                pass
+        # Advance anchor to last successful point if we made progress
+        if (
+            self.state_path
+            and self.last_successful_anchor
+            and self.last_successful_anchor != self.original_anchor
+            and self.state_snapshot
+        ):
+            try:
+                partial_state = dict(self.state_snapshot)
+                partial_state["last_seen_sha"] = self.last_successful_anchor
+                partial_state["last_run_utc"] = now
+                partial_state["last_status"] = "interrupted"
+                partial_state["last_run_id"] = self.run_id
+                save_state(self.state_path, partial_state)
+            except Exception:
+                pass
+
+
+# Global run context for signal handler access
+_run_ctx = RunContext()
+
+
+def _signal_handler(signum: int, frame: Any) -> None:
+    """Handle SIGTERM/SIGINT with graceful cleanup."""
+    sig_name = signal.Signals(signum).name if hasattr(signal, "Signals") else str(signum)
+    print(f"\n[incremental-scan] Received {sig_name}, cleaning up...", file=sys.stderr, flush=True)
+    _run_ctx.mark_interrupted()
+    sys.exit(128 + signum)
 
 
 @dataclass
@@ -566,6 +653,63 @@ def _stderr_tail(stderr: str, max_lines: int = 8) -> str:
     return "\n".join(lines[-max_lines:])
 
 
+def _run_subprocess_with_progress(
+    command: list[str],
+    timeout_seconds: int,
+    label: str = "",
+    **kwargs: Any,
+) -> subprocess.CompletedProcess[str]:
+    """Run subprocess with periodic progress heartbeats to stdout.
+
+    Prints a dot every 30 seconds so callers know the process is alive.
+    Stores the child process in _run_ctx so signal handlers can kill it.
+    """
+    start = time.monotonic()
+    proc = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        **kwargs,
+    )
+    _run_ctx._child_process = proc
+
+    # Heartbeat thread prints progress while subprocess runs
+    stop_event = threading.Event()
+
+    def _heartbeat() -> None:
+        interval = 30
+        while not stop_event.wait(interval):
+            elapsed = int(time.monotonic() - start)
+            print(
+                f"[incremental-scan] {label} still running ({elapsed}s elapsed)...",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    heartbeat_thread = threading.Thread(target=_heartbeat, daemon=True)
+    heartbeat_thread.start()
+
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, stderr = proc.communicate()
+        _run_ctx._child_process = None
+        stop_event.set()
+        raise
+    finally:
+        _run_ctx._child_process = None
+        stop_event.set()
+
+    return subprocess.CompletedProcess(
+        args=command,
+        returncode=proc.returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
 def run_scan(
     repo: Path,
     base: str,
@@ -607,15 +751,21 @@ def run_scan(
     if debug:
         command.append("--debug")
 
+    label = f"pr-review {base[:8]}..{head[:8]}"
+    print(f"[incremental-scan] Starting {label}", file=sys.stderr, flush=True)
+
     try:
-        result = subprocess.run(
+        result = _run_subprocess_with_progress(
             command,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False,
+            timeout_seconds,
+            label=label,
         )
     except subprocess.TimeoutExpired:
+        print(
+            f"[incremental-scan] TIMEOUT {label} after {timeout_seconds}s",
+            file=sys.stderr,
+            flush=True,
+        )
         return ScanCommandResult(
             command=command,
             exit_code=124,
@@ -623,11 +773,18 @@ def run_scan(
             stderr_tail=f"scan timed out after {timeout_seconds}s",
             output_path=output_path,
         )
+
     tail = _stderr_tail(result.stderr)
+    classification = classify_scan_result(result.returncode, output_path, tail)
+    print(
+        f"[incremental-scan] Finished {label} → {classification} (exit={result.returncode})",
+        file=sys.stderr,
+        flush=True,
+    )
     return ScanCommandResult(
         command=command,
         exit_code=result.returncode,
-        classification=classify_scan_result(result.returncode, output_path, tail),
+        classification=classification,
         stderr_tail=tail,
         output_path=output_path,
     )
@@ -673,15 +830,21 @@ def run_since_date_scan(
     if debug:
         command.append("--debug")
 
+    label = f"pr-review --since {since_date}"
+    print(f"[incremental-scan] Starting {label}", file=sys.stderr, flush=True)
+
     try:
-        result = subprocess.run(
+        result = _run_subprocess_with_progress(
             command,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False,
+            timeout_seconds,
+            label=label,
         )
     except subprocess.TimeoutExpired:
+        print(
+            f"[incremental-scan] TIMEOUT {label} after {timeout_seconds}s",
+            file=sys.stderr,
+            flush=True,
+        )
         return ScanCommandResult(
             command=command,
             exit_code=124,
@@ -689,11 +852,18 @@ def run_since_date_scan(
             stderr_tail=f"scan timed out after {timeout_seconds}s",
             output_path=output_path,
         )
+
     tail = _stderr_tail(result.stderr)
+    classification = classify_scan_result(result.returncode, output_path, tail)
+    print(
+        f"[incremental-scan] Finished {label} → {classification} (exit={result.returncode})",
+        file=sys.stderr,
+        flush=True,
+    )
     return ScanCommandResult(
         command=command,
         exit_code=result.returncode,
-        classification=classify_scan_result(result.returncode, output_path, tail),
+        classification=classification,
         stderr_tail=tail,
         output_path=output_path,
     )
@@ -777,6 +947,50 @@ def file_lock(lock_path: Path) -> Iterator[bool]:
         os.close(fd)
 
 
+def _recover_stale_runs(runs_dir: Path, log_file: Path) -> None:
+    """Detect and mark run records that lack finished_utc as stale.
+
+    This happens when a previous process was killed mid-run.
+    We don't delete anything — just annotate the record so it's clear what happened.
+    """
+    if not runs_dir.exists():
+        return
+    for path in runs_dir.glob("*.json"):
+        # Skip chunk files (they have -chunk- in the name)
+        if "-chunk-" in path.name or "-sub-" in path.name or "-rewrite-" in path.name:
+            continue
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        # If it has finished_utc or is already marked stale, skip
+        if record.get("finished_utc") or record.get("status") == "stale_recovered":
+            continue
+        # This is an unfinished run — mark it
+        record["status"] = "stale_recovered"
+        record["finished_utc"] = utc_timestamp()
+        record["failure"] = record.get("failure") or {
+            "phase": "unknown",
+            "reason": "process killed before completion (recovered on next run)",
+        }
+        try:
+            save_json(path, record)
+            run_id = record.get("run_id", path.stem)
+            append_log(
+                log_file,
+                f"run_id={run_id} status=stale_recovered (previous run did not complete)",
+            )
+            print(
+                f"[incremental-scan] Recovered stale run: {run_id}",
+                file=sys.stderr,
+                flush=True,
+            )
+        except Exception:
+            pass
+
+
 def _write_run_record(run_record_path: Path, run_record: dict[str, Any]) -> None:
     """Persist structured run record."""
     save_json(run_record_path, run_record)
@@ -823,6 +1037,9 @@ def run(args: argparse.Namespace) -> int:
             )
             return 0
 
+        # Detect stale/interrupted runs from previous invocations
+        _recover_stale_runs(runs_dir, log_file)
+
         run_id = generate_run_id()
         run_record_path = runs_dir / f"{run_id}.json"
         state = load_state(state_path)
@@ -846,6 +1063,23 @@ def run(args: argparse.Namespace) -> int:
             "chunks": [],
             "failure": None,
         }
+
+        # Wire up global run context for signal handler cleanup
+        _run_ctx.run_id = run_id
+        _run_ctx.log_file = log_file
+        _run_ctx.state_path = state_path
+        _run_ctx.run_record_path = run_record_path
+        _run_ctx.run_record = run_record
+        _run_ctx.state_snapshot = dict(state) if isinstance(state, dict) else {}
+        _run_ctx.original_anchor = (
+            state.get("last_seen_sha") if isinstance(state, dict) else None
+        )
+
+        print(
+            f"[incremental-scan] Run {run_id} started",
+            file=sys.stderr,
+            flush=True,
+        )
 
         try:
             git_fetch(repo, args.remote, args.branch, args.retry_network, git_timeout)
@@ -1092,9 +1326,41 @@ def run(args: argparse.Namespace) -> int:
                 run_record["max_diff_lines"] = max_diff_lines
 
             last_successful_anchor = current_anchor
+            _run_ctx.last_successful_anchor = current_anchor
             failed_chunk_index: int | None = None
             fallback_triggered = False
+
+            print(
+                f"[incremental-scan] Processing {len(commits)} commits in {len(chunks)} chunks "
+                f"(strategy={strategy})",
+                file=sys.stderr,
+                flush=True,
+            )
+            append_log(
+                log_file,
+                f"run_id={run_id} starting chunks={len(chunks)} commits={len(commits)} "
+                f"strategy={strategy}",
+            )
+
             for idx, (base, head) in enumerate(chunks, start=1):
+                if _run_ctx.interrupted:
+                    failed_chunk_index = idx
+                    break
+
+                _run_ctx.current_chunk_index = idx
+                fc, tl = get_diff_stats(repo, base, head, git_timeout)
+                print(
+                    f"[incremental-scan] Chunk {idx}/{len(chunks)}: "
+                    f"{base[:8]}..{head[:8]} ({fc} files, {tl} lines)",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                append_log(
+                    log_file,
+                    f"run_id={run_id} chunk={idx}/{len(chunks)} "
+                    f"range={base[:8]}..{head[:8]} files={fc} lines={tl}",
+                )
+
                 chunk_output = runs_dir / f"{run_id}-chunk-{idx}.json"
                 result = run_scan(
                     repo,
@@ -1123,6 +1389,7 @@ def run(args: argparse.Namespace) -> int:
                 )
                 if result.classification == COMPLETED:
                     last_successful_anchor = head
+                    _run_ctx.last_successful_anchor = head
                     continue
 
                 if result.classification == DIFF_TOO_LARGE and not no_fallback:
@@ -1163,6 +1430,7 @@ def run(args: argparse.Namespace) -> int:
                         )
                         if sub_result.classification == COMPLETED:
                             last_successful_anchor = sub_sha
+                            _run_ctx.last_successful_anchor = sub_sha
                         elif sub_result.classification == DIFF_TOO_LARGE:
                             append_log(
                                 log_file,
@@ -1260,11 +1528,18 @@ def run(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint."""
+    # Install signal handlers for graceful cleanup
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGINT, _signal_handler)
+
     args = parse_args(argv)
     try:
         return run(args)
+    except SystemExit as exc:
+        # Re-raise SystemExit (from signal handler) with its code
+        raise
     except Exception as exc:  # pragma: no cover - wrapper for user-facing CLI failures
-        print(f"[incremental-scan] ERROR: {exc}", file=sys.stderr)
+        print(f"[incremental-scan] ERROR: {exc}", file=sys.stderr, flush=True)
         return 1
 
 
