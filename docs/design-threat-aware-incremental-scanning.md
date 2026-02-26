@@ -180,7 +180,104 @@ Replace flat chunking with tiered processing:
 - Process Tier 1 chunks first (findings surface faster)
 - Tier 3 chunks are batched and skipped as a group
 
-### Phase 4: Context Injection via Claude Agent SDK Hooks
+### Phase 4: Security Design Decisions — Proactive Intent Declaration
+
+Decision traces (Phase 5) are reactive — they capture triage after a finding surfaces. Design decisions are proactive — they tell the scanner what's intentional **before** it runs, preventing false positives entirely.
+
+#### The Problem
+
+The scanner flagged "Scope Escalation via Self-Declared Scopes on Shared-Token Operator Connections" as HIGH. Investigation revealed this was an intentional fix (#27494) — shared gateway token holders are fully trusted operators, so preserving their scopes is by design. The scanner wasted time flagging it, a human wasted time investigating it, and on the next scan of a different repo with similar patterns, it'll happen again.
+
+#### Design Decision Schema
+
+Stored in `.securevibes/design_decisions.json`, version-controlled with the repo:
+
+```json
+[
+  {
+    "id": "DD-001",
+    "component": "gateway/auth",
+    "decision": "Shared gateway token holders are fully trusted operators. Self-declared scopes are preserved for token-authenticated connections.",
+    "rationale": "Gateway token is the operator-level shared secret. Restricting scopes for token holders broke headless API workflows (#27494). If an attacker has the gateway token, scope restrictions are meaningless.",
+    "references": [
+      "src/gateway/server/ws-connection/message-handler.ts",
+      "src/gateway/server/ws-connection/auth-context.ts"
+    ],
+    "accepted_behaviors": [
+      "Token-authenticated operators retain self-declared scopes",
+      "No scope clearing when sharedAuthOk is true"
+    ],
+    "invalidation_conditions": [
+      "Introduction of tiered/scoped gateway tokens with different trust levels",
+      "Gateway token shared with untrusted third parties"
+    ],
+    "decided_by": "kevin-shenghui",
+    "decided_at": "2026-02-26",
+    "issue_ref": "#27494"
+  }
+]
+```
+
+#### How It Works
+
+1. **Developers write design decisions** when they make intentional security trade-offs. This is the natural point — they already write commit messages explaining "why." This captures it in a structured, machine-readable format.
+
+2. **Indexed in qmd** alongside threat model and vulnerability data:
+   ```bash
+   qmd add securevibes-decisions .securevibes/design_decisions.json
+   qmd update && qmd embed
+   ```
+
+3. **Injected via `before_model_call`** for every review of the affected component:
+   ```
+   ## Design Decisions for [Gateway Auth]
+   
+   DD-001: Shared gateway token holders are fully trusted operators.
+   Self-declared scopes are preserved for token-authenticated connections.
+   Rationale: Gateway token is the operator-level shared secret.
+   
+   DO NOT flag behaviors listed as accepted unless invalidation
+   conditions are met:
+   - Introduction of tiered/scoped gateway tokens
+   - Gateway token shared with untrusted third parties
+   ```
+
+4. **Invalidation monitoring:** When files in `references` are changed, check whether the change affects any `invalidation_conditions`. If so, surface the design decision for re-review.
+
+#### Comparison with Other Layers
+
+| | Design Decisions | Decision Traces (Phase 5) | Threat Model Annotations |
+|---|---|---|---|
+| **When created** | Proactively by dev team | After first false positive | During baseline scan |
+| **Prevents first FP?** | ✅ Yes | ❌ No (reactive) | ✅ Yes |
+| **Granularity** | Per architectural decision | Per finding instance | Per component behavior |
+| **Who writes it** | Developer/architect | Security reviewer | Security + dev together |
+| **Lives where** | `.securevibes/design_decisions.json` | `.securevibes/decisions/` | `THREAT_MODEL.json` |
+| **Survives personnel changes** | ✅ Version-controlled | ✅ Indexed | ✅ Version-controlled |
+
+#### Threat Model Annotations (Lightweight Alternative)
+
+For teams that don't want to maintain a full design decisions file, the THREAT_MODEL.json can be extended with an `accepted_behaviors` field per component:
+
+```json
+{
+  "component": "Gateway Auth",
+  "risk": "HIGH",
+  "attack_surfaces": ["ws-connection", "http-api"],
+  "accepted_behaviors": [
+    "Token-authenticated operators retain self-declared scopes",
+    "V2 device signatures do not include platform/deviceFamily fields"
+  ]
+}
+```
+
+This is lighter weight — just a list of "this is not a bug" — but lacks the rationale, invalidation conditions, and traceability of full design decisions.
+
+#### Why This Matters for SecureVibes
+
+No other scanner lets developers declare design intent that the AI reviewer actually understands. Traditional SAST/DAST tools have suppression comments (`// nosec`, `@SuppressWarnings`) that silence findings blindly. Design decisions are the opposite — they explain *why* a behavior is intentional, under what conditions the decision should be revisited, and they feed the reviewer context that makes it smarter, not quieter.
+
+### Phase 5: Context Injection via Claude Agent SDK Hooks
 
 **In `securevibes pr-review` (packages/core change):**
 
@@ -213,7 +310,7 @@ Triage decisions (do not re-flag unless conditions changed):
 
 `after_model_call` hook logs which threats were surfaced vs findings generated — feedback loop for relevance tuning.
 
-### Phase 5: Decision Traces — Institutional Triage Memory
+### Phase 6: Decision Traces — Institutional Triage Memory
 
 When a finding is triaged (false positive, accepted risk, mitigated elsewhere), record a **decision trace**:
 
@@ -251,7 +348,7 @@ When a finding is triaged (false positive, accepted risk, mitigated elsewhere), 
 - Institutional knowledge survives personnel changes
 - Accepted risks automatically resurface when compensating controls change
 
-### Phase 6: Compounding Knowledge Loop
+### Phase 7: Compounding Knowledge Loop
 
 After each scan:
 1. New findings written to VULNERABILITIES.json (already happens with `--update-artifacts`)
@@ -274,16 +371,18 @@ Assuming a repo like OpenClaw (~5,300 files):
 
 1. **Phase 1-2** — biggest ROI, pure wrapper change. No changes to core securevibes needed.
 2. **Phase 3** — wrapper refactor, depends on Phase 2.
-3. **Phase 4** — requires Agent SDK hook support in securevibes core.
-4. **Phase 5** — needs a triage CLI flow + qmd integration.
-5. **Phase 6** — metrics collection, added incrementally.
+3. **Phase 4** — design decisions file schema + qmd indexing. Low effort, high impact on false positive reduction. Can be adopted incrementally per repo.
+4. **Phase 5** — requires Agent SDK hook support in securevibes core. Injects design decisions + threat context into reviews.
+5. **Phase 6** — decision traces for reactive triage. Needs a CLI flow + qmd integration.
+6. **Phase 7** — metrics collection, added incrementally.
 
 ## Dependencies
 
 - **qmd** — BM25 + vector search CLI
 - **THREAT_MODEL.json** — must exist from baseline scan
 - **Baseline artifacts** — SECURITY.md, VULNERABILITIES.json
-- **Claude Agent SDK** — `before_model_call` / `after_model_call` hooks (Phase 4)
+- **Claude Agent SDK** — `before_model_call` / `after_model_call` hooks (Phase 5)
+- **design_decisions.json** — optional, created by dev team (Phase 4)
 
 ## Open Questions
 
