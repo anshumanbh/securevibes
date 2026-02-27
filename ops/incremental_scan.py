@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 import argparse
-import atexit
 import json
 import os
+import re
 import secrets
 import signal
 import shutil
@@ -16,7 +16,7 @@ import tempfile
 import threading
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -42,6 +42,11 @@ INFRA_FAILURE = "infra_failure"
 DIFF_TOO_LARGE = "diff_too_large"
 DEFAULT_GIT_TIMEOUT_SECONDS = 60
 DEFAULT_SCAN_TIMEOUT_SECONDS = 900
+DIFF_TOO_LARGE_MARKERS = (
+    "exceeds safe analysis limits",
+    "diff context exceeds",
+)
+RUN_RECORD_NAME_RE = re.compile(r"^\d{8}T\d{6}Z-[0-9a-f]{6}\.json$")
 
 
 @dataclass
@@ -49,70 +54,29 @@ class RunContext:
     """Mutable context shared with signal handlers for graceful cleanup."""
 
     run_id: str | None = None
-    log_file: Path | None = None
-    state_path: Path | None = None
-    run_record_path: Path | None = None
-    run_record: dict[str, Any] = field(default_factory=dict)
-    state_snapshot: dict[str, Any] = field(default_factory=dict)
     current_chunk_index: int = 0
     last_successful_anchor: str | None = None
-    original_anchor: str | None = None
     interrupted: bool = False
+    interrupted_signal: int | None = None
     _child_process: subprocess.Popen | None = None  # type: ignore[type-arg]
 
-    def mark_interrupted(self) -> None:
-        """Mark run as interrupted and attempt cleanup."""
+    def reset(self) -> None:
+        """Reset context to avoid leakage between runs/tests."""
+        self.run_id = None
+        self.current_chunk_index = 0
+        self.last_successful_anchor = None
+        self.interrupted = False
+        self.interrupted_signal = None
+        self._child_process = None
+
+    def mark_interrupted(self, signum: int | None = None) -> None:
+        """Mark run as interrupted and terminate any active child process."""
         self.interrupted = True
-        # Kill child subprocess if running
+        self.interrupted_signal = signum
         if self._child_process is not None:
             try:
                 self._child_process.kill()
             except OSError:
-                pass
-        # Write partial state
-        self._write_cleanup()
-
-    def _write_cleanup(self) -> None:
-        """Best-effort write of partial run record and log entry on interrupt."""
-        now = utc_timestamp()
-        if self.run_record and self.run_record_path:
-            self.run_record["status"] = "interrupted"
-            self.run_record["interrupted_at_chunk"] = self.current_chunk_index
-            self.run_record["finished_utc"] = now
-            self.run_record["failure"] = {
-                "phase": "interrupted",
-                "reason": "process received termination signal",
-                "last_successful_anchor": self.last_successful_anchor,
-            }
-            try:
-                save_json(self.run_record_path, self.run_record)
-            except Exception:
-                pass
-        if self.log_file and self.run_id:
-            try:
-                append_log(
-                    self.log_file,
-                    f"run_id={self.run_id} status=interrupted "
-                    f"chunk={self.current_chunk_index} "
-                    f"anchor={self.last_successful_anchor or self.original_anchor}",
-                )
-            except Exception:
-                pass
-        # Advance anchor to last successful point if we made progress
-        if (
-            self.state_path
-            and self.last_successful_anchor
-            and self.last_successful_anchor != self.original_anchor
-            and self.state_snapshot
-        ):
-            try:
-                partial_state = dict(self.state_snapshot)
-                partial_state["last_seen_sha"] = self.last_successful_anchor
-                partial_state["last_run_utc"] = now
-                partial_state["last_status"] = "interrupted"
-                partial_state["last_run_id"] = self.run_id
-                save_state(self.state_path, partial_state)
-            except Exception:
                 pass
 
 
@@ -122,10 +86,16 @@ _run_ctx = RunContext()
 
 def _signal_handler(signum: int, frame: Any) -> None:
     """Handle SIGTERM/SIGINT with graceful cleanup."""
-    sig_name = signal.Signals(signum).name if hasattr(signal, "Signals") else str(signum)
-    print(f"\n[incremental-scan] Received {sig_name}, cleaning up...", file=sys.stderr, flush=True)
-    _run_ctx.mark_interrupted()
-    sys.exit(128 + signum)
+    del frame
+    sig_name = (
+        signal.Signals(signum).name if hasattr(signal, "Signals") else str(signum)
+    )
+    print(
+        f"\n[incremental-scan] Received {sig_name}, cleaning up...",
+        file=sys.stderr,
+        flush=True,
+    )
+    _run_ctx.mark_interrupted(signum)
 
 
 @dataclass
@@ -628,6 +598,12 @@ def _is_valid_report_json(path: Path) -> bool:
     return all(field in payload for field in REQUIRED_REPORT_FIELDS)
 
 
+def _stderr_indicates_diff_too_large(stderr: str) -> bool:
+    """Return True when stderr shows the fail-closed diff size guardrail."""
+    haystack = stderr.lower()
+    return any(marker in haystack for marker in DIFF_TOO_LARGE_MARKERS)
+
+
 def classify_scan_result(
     exit_code: int, output_path: Path | None, stderr: str = ""
 ) -> str:
@@ -635,11 +611,7 @@ def classify_scan_result(
     if exit_code not in {0, 1, 2}:
         return INFRA_FAILURE
     if output_path is None or not _is_valid_report_json(output_path):
-        if (
-            exit_code == 1
-            and ("exceeds safe analysis limits" in stderr
-                 or "diff context exceeds" in stderr)
-        ):
+        if exit_code == 1 and _stderr_indicates_diff_too_large(stderr):
             return DIFF_TOO_LARGE
         return INFRA_FAILURE
     return COMPLETED
@@ -775,7 +747,7 @@ def run_scan(
         )
 
     tail = _stderr_tail(result.stderr)
-    classification = classify_scan_result(result.returncode, output_path, tail)
+    classification = classify_scan_result(result.returncode, output_path, result.stderr)
     print(
         f"[incremental-scan] Finished {label} → {classification} (exit={result.returncode})",
         file=sys.stderr,
@@ -854,7 +826,7 @@ def run_since_date_scan(
         )
 
     tail = _stderr_tail(result.stderr)
-    classification = classify_scan_result(result.returncode, output_path, tail)
+    classification = classify_scan_result(result.returncode, output_path, result.stderr)
     print(
         f"[incremental-scan] Finished {label} → {classification} (exit={result.returncode})",
         file=sys.stderr,
@@ -947,6 +919,11 @@ def file_lock(lock_path: Path) -> Iterator[bool]:
         os.close(fd)
 
 
+def _is_primary_run_record(path: Path) -> bool:
+    """Return True for top-level run record files only."""
+    return bool(RUN_RECORD_NAME_RE.fullmatch(path.name))
+
+
 def _recover_stale_runs(runs_dir: Path, log_file: Path) -> None:
     """Detect and mark run records that lack finished_utc as stale.
 
@@ -956,8 +933,7 @@ def _recover_stale_runs(runs_dir: Path, log_file: Path) -> None:
     if not runs_dir.exists():
         return
     for path in runs_dir.glob("*.json"):
-        # Skip chunk files (they have -chunk- in the name)
-        if "-chunk-" in path.name or "-sub-" in path.name or "-rewrite-" in path.name:
+        if not _is_primary_run_record(path):
             continue
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
@@ -1037,6 +1013,8 @@ def run(args: argparse.Namespace) -> int:
             )
             return 0
 
+        _run_ctx.reset()
+
         # Detect stale/interrupted runs from previous invocations
         _recover_stale_runs(runs_dir, log_file)
 
@@ -1066,14 +1044,6 @@ def run(args: argparse.Namespace) -> int:
 
         # Wire up global run context for signal handler cleanup
         _run_ctx.run_id = run_id
-        _run_ctx.log_file = log_file
-        _run_ctx.state_path = state_path
-        _run_ctx.run_record_path = run_record_path
-        _run_ctx.run_record = run_record
-        _run_ctx.state_snapshot = dict(state) if isinstance(state, dict) else {}
-        _run_ctx.original_anchor = (
-            state.get("last_seen_sha") if isinstance(state, dict) else None
-        )
 
         print(
             f"[incremental-scan] Run {run_id} started",
@@ -1329,6 +1299,9 @@ def run(args: argparse.Namespace) -> int:
             _run_ctx.last_successful_anchor = current_anchor
             failed_chunk_index: int | None = None
             fallback_triggered = False
+            failure_reason = ""
+            failure_phase = "chunk_run"
+            oversized_commit_sha: str | None = None
 
             print(
                 f"[incremental-scan] Processing {len(commits)} commits in {len(chunks)} chunks "
@@ -1345,10 +1318,15 @@ def run(args: argparse.Namespace) -> int:
             for idx, (base, head) in enumerate(chunks, start=1):
                 if _run_ctx.interrupted:
                     failed_chunk_index = idx
+                    failure_phase = "interrupted"
+                    failure_reason = "process received termination signal"
                     break
 
                 _run_ctx.current_chunk_index = idx
-                fc, tl = get_diff_stats(repo, base, head, git_timeout)
+                if no_adaptive:
+                    fc, tl = (0, 0)
+                else:
+                    fc, tl = get_diff_stats(repo, base, head, git_timeout)
                 print(
                     f"[incremental-scan] Chunk {idx}/{len(chunks)}: "
                     f"{base[:8]}..{head[:8]} ({fc} files, {tl} lines)",
@@ -1392,15 +1370,27 @@ def run(args: argparse.Namespace) -> int:
                     _run_ctx.last_successful_anchor = head
                     continue
 
+                if _run_ctx.interrupted:
+                    failed_chunk_index = idx
+                    failure_phase = "interrupted"
+                    failure_reason = "process received termination signal"
+                    break
+
                 if result.classification == DIFF_TOO_LARGE and not no_fallback:
                     sub_commits = get_commit_list(repo, base, head, git_timeout)
                     if len(sub_commits) <= 1:
+                        oversized_commit_sha = head
+                        failure_reason = (
+                            "single commit exceeds safe diff analysis limits"
+                        )
                         failed_chunk_index = idx
                         break
                     fallback_triggered = True
                     for sub_idx, sub_sha in enumerate(sub_commits, start=1):
                         sub_base = base if sub_idx == 1 else sub_commits[sub_idx - 2]
-                        sub_output = runs_dir / f"{run_id}-chunk-{idx}-sub-{sub_idx}.json"
+                        sub_output = (
+                            runs_dir / f"{run_id}-chunk-{idx}-sub-{sub_idx}.json"
+                        )
                         sub_result = run_scan(
                             repo,
                             sub_base,
@@ -1432,17 +1422,32 @@ def run(args: argparse.Namespace) -> int:
                             last_successful_anchor = sub_sha
                             _run_ctx.last_successful_anchor = sub_sha
                         elif sub_result.classification == DIFF_TOO_LARGE:
+                            oversized_commit_sha = sub_sha
+                            failure_reason = (
+                                "single commit exceeds safe diff analysis limits"
+                            )
                             append_log(
                                 log_file,
-                                f"run_id={run_id} single commit too large, skipping {sub_sha}",
+                                f"run_id={run_id} single commit too large, stopping at {sub_sha}",
                             )
+                            failed_chunk_index = idx
+                            break
                         else:
+                            if _run_ctx.interrupted:
+                                failure_phase = "interrupted"
+                                failure_reason = "process received termination signal"
+                            else:
+                                failure_reason = "fallback per-commit scan failed"
                             failed_chunk_index = idx
                             break
                     if failed_chunk_index is not None:
                         break
                     continue
 
+                if result.classification == DIFF_TOO_LARGE and no_fallback:
+                    failure_reason = "chunk exceeds safe diff analysis limits and fallback is disabled"
+                elif not failure_reason:
+                    failure_reason = "chunk scan failed"
                 failed_chunk_index = idx
                 break
 
@@ -1451,22 +1456,38 @@ def run(args: argparse.Namespace) -> int:
                 status = "success"
                 anchor = new_head
                 failure: dict[str, Any] | None = None
+            elif _run_ctx.interrupted:
+                if last_successful_anchor != current_anchor:
+                    status = "partial"
+                    anchor = last_successful_anchor
+                else:
+                    status = "failed"
+                    anchor = current_anchor
+                failure = {
+                    "phase": "interrupted",
+                    "reason": "process received termination signal",
+                    "failed_chunk_index": failed_chunk_index,
+                    "last_successful_anchor": last_successful_anchor,
+                }
             elif last_successful_anchor != current_anchor:
                 status = "partial"
                 anchor = last_successful_anchor
                 failure = {
-                    "phase": "chunk_run",
-                    "reason": "chunk scan failed",
+                    "phase": failure_phase,
+                    "reason": failure_reason or "chunk scan failed",
                     "failed_chunk_index": failed_chunk_index,
                 }
             else:
                 status = "failed"
                 anchor = current_anchor
                 failure = {
-                    "phase": "chunk_run",
-                    "reason": "first chunk scan failed",
+                    "phase": failure_phase,
+                    "reason": failure_reason or "first chunk scan failed",
                     "failed_chunk_index": failed_chunk_index,
                 }
+            if failure is not None and oversized_commit_sha:
+                failure["oversized_commit_sha"] = oversized_commit_sha
+                failure["oversized_commit_action"] = "stopped_without_skipping"
 
             new_state = _build_state(
                 repo=repo,
@@ -1497,6 +1518,8 @@ def run(args: argparse.Namespace) -> int:
                     f"anchor={anchor}"
                 ),
             )
+            if _run_ctx.interrupted:
+                return 128 + int(_run_ctx.interrupted_signal or signal.SIGINT)
             return _strict_exit(status, args.strict)
 
         except Exception as exc:
@@ -1524,6 +1547,8 @@ def run(args: argparse.Namespace) -> int:
             _write_run_record(run_record_path, run_record)
             append_log(log_file, f"run_id={run_id} status=failed reason={exc}")
             raise
+        finally:
+            _run_ctx.reset()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1535,9 +1560,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         return run(args)
-    except SystemExit as exc:
-        # Re-raise SystemExit (from signal handler) with its code
-        raise
     except Exception as exc:  # pragma: no cover - wrapper for user-facing CLI failures
         print(f"[incremental-scan] ERROR: {exc}", file=sys.stderr, flush=True)
         return 1

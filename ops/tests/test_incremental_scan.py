@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import signal
 import subprocess
 from contextlib import contextmanager
 from pathlib import Path
@@ -33,6 +34,11 @@ def build_args(repo_dir: Path, **overrides: Any) -> argparse.Namespace:
         "rewrite_policy": "reset_warn",
         "git_timeout_seconds": 60,
         "scan_timeout_seconds": 900,
+        "auto_triage": False,
+        "no_fallback": False,
+        "max_diff_files": 15,
+        "max_diff_lines": 500,
+        "no_adaptive": True,
         "strict": False,
         "debug": False,
     }
@@ -186,7 +192,11 @@ def test_run_scan_builds_correct_command(
 ) -> None:
     seen: dict[str, Any] = {}
 
-    def fake_run(command: list[str], **_kwargs: Any) -> SimpleNamespace:
+    def fake_run_with_progress(
+        command: list[str],
+        _timeout_seconds: int,
+        **_kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
         seen["command"] = command
         output_idx = command.index("--output") + 1
         output_path = Path(command[output_idx])
@@ -201,9 +211,14 @@ def test_run_scan_builds_correct_command(
             ),
             encoding="utf-8",
         )
-        return SimpleNamespace(returncode=0, stderr="")
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
 
-    monkeypatch.setattr(inc.subprocess, "run", fake_run)
+    monkeypatch.setattr(inc, "_run_subprocess_with_progress", fake_run_with_progress)
     out = tmp_path / "result.json"
     result = inc.run_scan(Path("/repo"), "base", "head", "sonnet", "high", False, out)
 
@@ -220,7 +235,11 @@ def test_run_scan_includes_debug_flag(
 ) -> None:
     seen: dict[str, Any] = {}
 
-    def fake_run(command: list[str], **_kwargs: Any) -> SimpleNamespace:
+    def fake_run_with_progress(
+        command: list[str],
+        _timeout_seconds: int,
+        **_kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
         seen["command"] = command
         output_path = Path(command[command.index("--output") + 1])
         output_path.write_text(
@@ -234,9 +253,14 @@ def test_run_scan_includes_debug_flag(
             ),
             encoding="utf-8",
         )
-        return SimpleNamespace(returncode=0, stderr="")
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
 
-    monkeypatch.setattr(inc.subprocess, "run", fake_run)
+    monkeypatch.setattr(inc, "_run_subprocess_with_progress", fake_run_with_progress)
     out = tmp_path / "debug.json"
     inc.run_scan(Path("/repo"), "base", "head", "sonnet", "medium", True, out)
     assert "--debug" in seen["command"]
@@ -245,10 +269,10 @@ def test_run_scan_includes_debug_flag(
 def test_run_scan_timeout_returns_infra_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    def fake_run(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+    def fake_run(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(cmd=["securevibes"], timeout=3)
 
-    monkeypatch.setattr(inc.subprocess, "run", fake_run)
+    monkeypatch.setattr(inc, "_run_subprocess_with_progress", fake_run)
     out = tmp_path / "timeout.json"
     result = inc.run_scan(
         Path("/repo"),
@@ -268,10 +292,10 @@ def test_run_scan_timeout_returns_infra_failure(
 def test_run_since_date_scan_timeout_returns_infra_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    def fake_run(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+    def fake_run(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(cmd=["securevibes"], timeout=4)
 
-    monkeypatch.setattr(inc.subprocess, "run", fake_run)
+    monkeypatch.setattr(inc, "_run_subprocess_with_progress", fake_run)
     out = tmp_path / "since-timeout.json"
     result = inc.run_since_date_scan(
         Path("/repo"),
@@ -944,7 +968,11 @@ def test_run_scan_appends_auto_triage_flag(
     """run_scan with auto_triage=True should append --auto-triage to the command."""
     seen: dict[str, Any] = {}
 
-    def fake_run(command: list[str], **_kwargs: Any) -> SimpleNamespace:
+    def fake_run_with_progress(
+        command: list[str],
+        _timeout_seconds: int,
+        **_kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
         seen["command"] = command
         output_idx = command.index("--output") + 1
         output_path = Path(command[output_idx])
@@ -959,12 +987,23 @@ def test_run_scan_appends_auto_triage_flag(
             ),
             encoding="utf-8",
         )
-        return SimpleNamespace(returncode=0, stderr="")
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
 
-    monkeypatch.setattr(inc.subprocess, "run", fake_run)
+    monkeypatch.setattr(inc, "_run_subprocess_with_progress", fake_run_with_progress)
     out = tmp_path / "triage-scan.json"
     inc.run_scan(
-        Path("/repo"), "base", "head", "sonnet", "medium", False, out,
+        Path("/repo"),
+        "base",
+        "head",
+        "sonnet",
+        "medium",
+        False,
+        out,
         auto_triage=True,
     )
     assert "--auto-triage" in seen["command"]
@@ -976,7 +1015,11 @@ def test_run_since_date_scan_appends_auto_triage_flag(
     """run_since_date_scan with auto_triage=True should append --auto-triage."""
     seen: dict[str, Any] = {}
 
-    def fake_run(command: list[str], **_kwargs: Any) -> SimpleNamespace:
+    def fake_run_with_progress(
+        command: list[str],
+        _timeout_seconds: int,
+        **_kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
         seen["command"] = command
         output_idx = command.index("--output") + 1
         output_path = Path(command[output_idx])
@@ -991,12 +1034,22 @@ def test_run_since_date_scan_appends_auto_triage_flag(
             ),
             encoding="utf-8",
         )
-        return SimpleNamespace(returncode=0, stderr="")
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
 
-    monkeypatch.setattr(inc.subprocess, "run", fake_run)
+    monkeypatch.setattr(inc, "_run_subprocess_with_progress", fake_run_with_progress)
     out = tmp_path / "triage-since.json"
     inc.run_since_date_scan(
-        Path("/repo"), "2026-01-01", "sonnet", "medium", False, out,
+        Path("/repo"),
+        "2026-01-01",
+        "sonnet",
+        "medium",
+        False,
+        out,
         auto_triage=True,
     )
     assert "--auto-triage" in seen["command"]
@@ -1042,3 +1095,295 @@ def test_run_threads_auto_triage_to_run_scan(
     exit_code = inc.run(args)
     assert exit_code == 0
     assert scan_kwargs.get("auto_triage") is True
+
+
+def test_classify_scan_detects_diff_too_large_from_stderr(report_path: Path) -> None:
+    stderr = (
+        "PR review aborted: diff context exceeds safe analysis limits and would be truncated.\n"
+        + "\n".join(f"noise line {idx}" for idx in range(50))
+    )
+    assert inc.classify_scan_result(1, report_path, stderr) == inc.DIFF_TOO_LARGE
+
+
+def test_run_scan_classifies_diff_too_large_from_full_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    marker = "PR review aborted: diff context exceeds safe analysis limits and would be truncated.\n"
+    trailing_noise = "\n".join(f"trace line {idx}" for idx in range(25))
+
+    def fake_run_with_progress(
+        command: list[str],
+        _timeout_seconds: int,
+        **_kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=1,
+            stdout="",
+            stderr=marker + trailing_noise,
+        )
+
+    monkeypatch.setattr(inc, "_run_subprocess_with_progress", fake_run_with_progress)
+    output_path = tmp_path / "missing-report.json"
+    result = inc.run_scan(
+        Path("/repo"), "base", "head", "sonnet", "medium", False, output_path
+    )
+    assert result.classification == inc.DIFF_TOO_LARGE
+
+
+def test_get_diff_stats_parses_numstat_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    stdout = "10\t2\tsrc/app.py\n-\t-\tbin/blob.dat\njunk-row\n"
+
+    def fake_run(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(inc.subprocess, "run", fake_run)
+    file_count, total_lines = inc.get_diff_stats(Path("/repo"), "base", "head")
+    assert file_count == 2
+    assert total_lines == 12
+
+
+def test_compute_chunks_adaptive_full_range_fits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(inc, "get_diff_stats", lambda *_args, **_kwargs: (2, 40))
+    chunks = inc.compute_chunks_adaptive(
+        ["c1", "c2"], "base", Path("/repo"), max_files=15, max_lines=500
+    )
+    assert chunks == [("base", "c2")]
+
+
+def test_compute_chunks_adaptive_splits_on_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commits = ["c1", "c2", "c3"]
+    stats_map = {
+        ("base", "c3"): (20, 200),  # fast-path fail
+        ("base", "c1"): (3, 30),
+        ("base", "c2"): (16, 40),  # exceeds files limit
+        ("c1", "c3"): (4, 20),
+    }
+
+    def fake_get_diff_stats(
+        _repo: Path,
+        base: str,
+        head: str,
+        _timeout: int = inc.DEFAULT_GIT_TIMEOUT_SECONDS,
+    ) -> tuple[int, int]:
+        return stats_map[(base, head)]
+
+    monkeypatch.setattr(inc, "get_diff_stats", fake_get_diff_stats)
+    chunks = inc.compute_chunks_adaptive(
+        commits, "base", Path("/repo"), max_files=15, max_lines=500
+    )
+    assert chunks == [("base", "c1"), ("c1", "c3")]
+
+
+def test_compute_chunks_adaptive_handles_single_oversized_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(inc, "get_diff_stats", lambda *_args, **_kwargs: (500, 4000))
+    chunks = inc.compute_chunks_adaptive(
+        ["c1"], "base", Path("/repo"), max_files=15, max_lines=500
+    )
+    assert chunks == [("base", "c1")]
+
+
+def test_recover_stale_runs_only_updates_primary_run_records(tmp_path: Path) -> None:
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    log_file = tmp_path / "scan.log"
+
+    primary = runs_dir / "20260227T120000Z-a1b2c3.json"
+    primary.write_text(
+        json.dumps({"run_id": "RUN1", "status": "failed"}), encoding="utf-8"
+    )
+
+    chunk = runs_dir / "20260227T120000Z-a1b2c3-chunk-1.json"
+    chunk_payload = {"run_id": "RUN1", "status": "failed"}
+    chunk.write_text(json.dumps(chunk_payload), encoding="utf-8")
+
+    non_matching = runs_dir / "random.json"
+    non_matching_payload = {"run_id": "RUN2", "status": "failed"}
+    non_matching.write_text(json.dumps(non_matching_payload), encoding="utf-8")
+
+    inc._recover_stale_runs(runs_dir, log_file)
+
+    primary_payload = json.loads(primary.read_text(encoding="utf-8"))
+    assert primary_payload["status"] == "stale_recovered"
+    assert "finished_utc" in primary_payload
+
+    assert json.loads(chunk.read_text(encoding="utf-8")) == chunk_payload
+    assert json.loads(non_matching.read_text(encoding="utf-8")) == non_matching_payload
+
+
+def test_signal_handler_marks_interrupted_without_system_exit() -> None:
+    class DummyProc:
+        def __init__(self) -> None:
+            self.killed = False
+
+        def kill(self) -> None:
+            self.killed = True
+
+    proc = DummyProc()
+    inc._run_ctx.reset()
+    inc._run_ctx._child_process = proc  # type: ignore[assignment]
+
+    inc._signal_handler(int(signal.SIGINT), None)
+
+    assert inc._run_ctx.interrupted is True
+    assert inc._run_ctx.interrupted_signal == int(signal.SIGINT)
+    assert proc.killed is True
+    inc._run_ctx.reset()
+
+
+def test_run_stops_on_oversized_single_commit_during_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    repo_dir: Path,
+    state_path: Path,
+    write_state,
+    sample_state: dict[str, object],
+) -> None:
+    args = build_args(repo_dir)
+    write_state(sample_state)
+
+    monkeypatch.setattr(inc, "ensure_dependencies", _noop)
+    monkeypatch.setattr(inc, "ensure_repo", _noop)
+    monkeypatch.setattr(inc, "ensure_baseline_artifacts", _noop)
+    monkeypatch.setattr(inc, "git_fetch", _noop)
+    monkeypatch.setattr(inc, "resolve_head", lambda *_args: "newhead")
+    monkeypatch.setattr(inc, "is_ancestor", lambda *_args: True)
+    monkeypatch.setattr(inc, "generate_run_id", lambda: "RUN_FALLBACK_STOP")
+    monkeypatch.setattr(inc, "get_diff_stats", lambda *_args, **_kwargs: (2, 20))
+
+    def fake_get_commit_list(
+        _repo: Path,
+        base: str,
+        head: str,
+        _timeout_seconds: int = inc.DEFAULT_GIT_TIMEOUT_SECONDS,
+    ) -> list[str]:
+        if base == "abc123" and head == "newhead":
+            return ["c1", "c2"]
+        if base == "abc123" and head == "c2":
+            return ["c1", "c2"]
+        raise AssertionError((base, head))
+
+    monkeypatch.setattr(inc, "get_commit_list", fake_get_commit_list)
+
+    def fake_run_scan(
+        _repo: Path,
+        base: str,
+        head: str,
+        _model: str,
+        _severity: str,
+        _debug: bool,
+        output_path: Path,
+        _timeout_seconds: int,
+        **_kwargs: Any,
+    ) -> inc.ScanCommandResult:
+        if base == "abc123" and head == "c2":
+            return inc.ScanCommandResult(
+                command=["securevibes"],
+                exit_code=1,
+                classification=inc.DIFF_TOO_LARGE,
+                stderr_tail="diff too large",
+                output_path=output_path,
+            )
+        if base == "abc123" and head == "c1":
+            return _valid_result(["securevibes"], output_path)
+        if base == "c1" and head == "c2":
+            return inc.ScanCommandResult(
+                command=["securevibes"],
+                exit_code=1,
+                classification=inc.DIFF_TOO_LARGE,
+                stderr_tail="diff too large",
+                output_path=output_path,
+            )
+        raise AssertionError((base, head))
+
+    monkeypatch.setattr(inc, "run_scan", fake_run_scan)
+
+    exit_code = inc.run(args)
+    assert exit_code == 0
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["last_status"] == "partial"
+    assert state["last_seen_sha"] == "c1"
+
+    run_record_path = (
+        repo_dir / ".securevibes" / "incremental_runs" / "RUN_FALLBACK_STOP.json"
+    )
+    run_record = json.loads(run_record_path.read_text(encoding="utf-8"))
+    assert run_record["status"] == "partial"
+    assert run_record["failure"]["oversized_commit_sha"] == "c2"
+    assert (
+        run_record["failure"]["oversized_commit_action"] == "stopped_without_skipping"
+    )
+
+
+def test_run_diff_too_large_with_no_fallback_fails_without_progress(
+    monkeypatch: pytest.MonkeyPatch,
+    repo_dir: Path,
+    state_path: Path,
+    write_state,
+    sample_state: dict[str, object],
+) -> None:
+    args = build_args(repo_dir, no_fallback=True, strict=True)
+    write_state(sample_state)
+
+    monkeypatch.setattr(inc, "ensure_dependencies", _noop)
+    monkeypatch.setattr(inc, "ensure_repo", _noop)
+    monkeypatch.setattr(inc, "ensure_baseline_artifacts", _noop)
+    monkeypatch.setattr(inc, "git_fetch", _noop)
+    monkeypatch.setattr(inc, "resolve_head", lambda *_args: "newhead")
+    monkeypatch.setattr(inc, "is_ancestor", lambda *_args: True)
+    monkeypatch.setattr(inc, "generate_run_id", lambda: "RUN_NO_FALLBACK")
+    monkeypatch.setattr(inc, "get_diff_stats", lambda *_args, **_kwargs: (2, 20))
+    monkeypatch.setattr(inc, "get_commit_list", lambda *_args, **_kwargs: ["c1", "c2"])
+
+    def fake_run_scan(
+        _repo: Path,
+        _base: str,
+        _head: str,
+        _model: str,
+        _severity: str,
+        _debug: bool,
+        output_path: Path,
+        _timeout_seconds: int,
+        **_kwargs: Any,
+    ) -> inc.ScanCommandResult:
+        return inc.ScanCommandResult(
+            command=["securevibes"],
+            exit_code=1,
+            classification=inc.DIFF_TOO_LARGE,
+            stderr_tail="diff too large",
+            output_path=output_path,
+        )
+
+    monkeypatch.setattr(inc, "run_scan", fake_run_scan)
+
+    exit_code = inc.run(args)
+    assert exit_code == 1
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["last_status"] == "failed"
+    assert state["last_seen_sha"] == "abc123"
+    assert "fallback is disabled" in state["last_failure"]["reason"]
+
+
+def test_run_resets_global_context_after_completion(
+    monkeypatch: pytest.MonkeyPatch,
+    repo_dir: Path,
+) -> None:
+    args = build_args(repo_dir)
+    monkeypatch.setattr(inc, "ensure_dependencies", _noop)
+    monkeypatch.setattr(inc, "ensure_repo", _noop)
+    monkeypatch.setattr(inc, "ensure_baseline_artifacts", _noop)
+    monkeypatch.setattr(inc, "git_fetch", _noop)
+    monkeypatch.setattr(inc, "resolve_head", lambda *_args: "head123")
+    monkeypatch.setattr(inc, "generate_run_id", lambda: "RUN_RESET")
+
+    assert inc.run(args) == 0
+    assert inc._run_ctx.run_id is None
+    assert inc._run_ctx.interrupted is False
