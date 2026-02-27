@@ -59,8 +59,7 @@ Use baseline scan artifacts (THREAT_MODEL.json, SECURITY.md, VULNERABILITIES.jso
 Files touching security-critical components: auth, exec, sandbox, secrets, gateway, pairing, device-auth, credential handling, permission boundaries.
 
 - Full review with **Opus**
-- `before_model_call` hook injects relevant threats from qmd
-- Previous findings and decision traces injected as context
+- Threat context, design decisions, and decision traces injected during prompt assembly (see Phase 5)
 - ~600s per chunk, but these are the chunks that matter
 
 ### Tier 2 — Moderate (Sonnet, standard review)
@@ -75,7 +74,8 @@ Files touching config, routing, plugins, API handlers, session management, brows
 
 Docs, tests, CI config, changelog, package.json version bumps, README, comments-only changes.
 
-- Log the skip, advance anchor, move on
+- Log skip classification first, then advance anchor only after invariant checks pass (see Safety Invariants)
+- Skip tier remains no-LLM, but fail-closed safeguards can promote a chunk to Tier 2
 - ~0s
 
 ### Component Risk Mapping
@@ -171,14 +171,33 @@ This gives semantic search over components, threat models, known vulnerabilities
 - Map file paths to components using directory patterns + qmd semantic matching
 - Output: `list[FileRisk]` with file, component, tier, relevant_threats
 
+#### qmd Availability
+
+- Phases 1-3 MUST work without qmd using only `risk_map.json` glob pattern matching.
+- qmd is required starting Phase 4 for semantic search over design decisions and decision traces.
+- When qmd is configured but unavailable (process down or query timeout > 5s):
+  - Fall back to `risk_map.json` pattern matching only.
+  - Log a degradation warning: `"qmd unavailable, falling back to pattern-only triage"`.
+  - Do NOT fail the scan; degraded triage is better than no scan.
+- qmd query results are cached per scan run (keyed by file path) to avoid redundant queries.
+
+#### Component Mapping Quality
+
+- The existing `_derive_components_from_file_path()` in `packages/core/securevibes/scanner/artifacts.py` produces coarse mappings (for example, `src/auth/user.py -> src:py`) and is insufficient for tier decisions.
+- Tier classification MUST use `risk_map.json` glob patterns as the primary mechanism.
+- For unmapped files, default to Tier 2 and log for threat model update.
+- `_derive_components_from_file_path()` is NOT used for tier decisions in Phases 1-3.
+- Future improvement: enhance component derivation to use multi-level path segments; this is not a blocker for Phases 1-3.
+
 ### Phase 3: Risk-Weighted Chunking
 
 Replace flat chunking with tiered processing:
 
-- Group commits by dominant risk tier
-- Within each tier, apply existing adaptive chunking (max files / max lines)
-- Process Tier 1 chunks first (findings surface faster)
-- Tier 3 chunks are batched and skipped as a group
+- Chunks are processed in commit order (same anchor model as today); tier determines review depth, not processing sequence.
+- For Phases 1-3, model routing is chunk-level: the highest-risk file in the chunk chooses the model (`critical -> Opus`, `moderate -> Sonnet`, `skip -> no LLM`, subject to skip safeguards).
+- Mixed-tier chunks are processed as a single unit at the highest required depth to preserve anchor safety and avoid split-range gaps.
+- Skip-tier classification is recorded before anchor advancement (see Safety Invariants / Anchor Advancement Invariant).
+- Tier 3 batching: consecutive all-skip chunks can be batched for execution efficiency, but each constituent commit must be individually recorded as classified.
 
 ### Phase 4: Security Design Decisions — Proactive Intent Declaration
 
@@ -228,7 +247,7 @@ Stored in `.securevibes/design_decisions.json`, version-controlled with the repo
    qmd update && qmd embed
    ```
 
-3. **Injected via `before_model_call`** for every review of the affected component:
+3. **Injected during prompt assembly** for every review of the affected component:
    ```
    ## Design Decisions for [Gateway Auth]
    
@@ -277,38 +296,32 @@ This is lighter weight — just a list of "this is not a bug" — but lacks the 
 
 No other scanner lets developers declare design intent that the AI reviewer actually understands. Traditional SAST/DAST tools have suppression comments (`// nosec`, `@SuppressWarnings`) that silence findings blindly. Design decisions are the opposite — they explain *why* a behavior is intentional, under what conditions the decision should be revisited, and they feed the reviewer context that makes it smarter, not quieter.
 
-### Phase 5: Context Injection via Claude Agent SDK Hooks
+### Phase 5: Context Injection via Prompt Assembly
 
 **In `securevibes pr-review` (packages/core change):**
 
-Use `before_model_call` hook to inject threat context dynamically:
+Context injection extends the existing prompt assembly path in `scanner.py` (`pr_review()` and `_prepare_pr_review_context()`), which already injects:
 
-```python
-@agent.hook("before_model_call")
-def inject_threat_context(context):
-    changed_files = context.get("changed_files", [])
-    components = qmd_search(changed_files)
-    threats = get_threats_for_components(components)
-    findings_history = get_previous_findings(components)
-    decisions = get_decision_traces(components)
+- `architecture_context`
+- `threat_context_summary`
+- `vuln_context_summary`
+- `security_adjacent_files`
 
-    context["system_prompt"] += f"""
+No new SDK hooks are required for Phase 5.
 
-## Security Context for [{component_name}]
+Append new context sections to `contextualized_prompt`:
 
-Known threats:
-{threats}
+- `## Design Decisions for [{component}]`
+  - Source: `.securevibes/design_decisions.json`
+  - Filter: decisions matching affected component(s)
+- `## Decision Traces for [{component}]`
+  - Source: `.securevibes/decisions/`
+  - Filter: traces matching affected component(s), excluding `fixed` verdicts
+- `## Relevant Past Findings`
+  - Source: `VULNERABILITIES.json`
+  - Filter: findings matching affected component(s) and changed paths (extends existing `vuln_context_summary`)
 
-Previous findings:
-{findings_history}
-
-Triage decisions (do not re-flag unless conditions changed):
-{decisions}
-"""
-    return context
-```
-
-`after_model_call` hook logs which threats were surfaced vs findings generated — feedback loop for relevance tuning.
+Feedback loop happens after each scan run: log which design decisions/traces were injected and whether findings were produced for the same component(s). This replaces the prior hook-based relevance-tracking concept.
 
 ### Phase 6: Decision Traces — Institutional Triage Memory
 
@@ -353,7 +366,7 @@ When a finding is triaged (false positive, accepted risk, mitigated elsewhere), 
 After each scan:
 1. New findings written to VULNERABILITIES.json (already happens with `--update-artifacts`)
 2. Re-index: `qmd update && qmd embed`
-3. `after_model_call` tracks relevance: did injecting threat X lead to finding Y?
+3. Post-scan telemetry tracks relevance: did injected threat/decision context for component X lead to finding Y?
 4. Prune low-relevance threat context over time (keeps prompts lean)
 5. Flag decisions whose `mitigated_by` files changed for re-review
 
@@ -367,12 +380,43 @@ Assuming a repo like OpenClaw (~5,300 files):
 | 1 commit, 1 doc file | $0.45 (full review) | ~$0.05 (skip tier) |
 | 5 commits, 8 files all in sandbox | $4.50 (no extra context) | ~$3.50 (deep + injected threats, better findings) |
 
+## Safety Invariants
+
+### Policy File Trust Boundary
+
+- `risk_map.json`, `design_decisions.json`, and `THREAT_MODEL.json` MUST be loaded from merge-base or default-branch state, never from PR head state.
+- Any PR that modifies these files is auto-classified as Tier 1 (Critical), regardless of other file content.
+- The risk scorer loads policy via trusted git object reads (for example, `git show <merge-base>:.securevibes/risk_map.json`) rather than working-tree reads.
+- Decision traces under `.securevibes/decisions/` follow the same trust rule and are loaded from trusted base state.
+
+### Anchor Advancement Invariant
+
+- Hard invariant: anchor may only advance to commit `N` when every commit `<= N` has been classified, including Tier 3 skips.
+- Tiering controls review depth, not processing order; chunks are visited in commit order.
+- "Process Tier 1 first" applies only to parallel implementations. Sequential runs must preserve commit order.
+- Skip-tier chunks must record a classification entry (`tier=skip`, `files=[...]`, `reason="all files matched skip patterns"`) before anchor advances past them.
+- Reference point: current greedy anchor progression in `ops/incremental_scan.py` (around `last_successful_anchor`) requires explicit classification guarantees to prevent unclassified gaps.
+
+### Skip Tier Safeguards
+
+Tier 3 still means no LLM call, but these fail-closed checks run before any skip is accepted:
+
+| Check | Trigger | Action |
+|---|---|---|
+| New file in skip path | File status is Added (not Modified) | Bump to Tier 2 |
+| Dependency file change | `package.json`, `requirements.txt`, `*.lock`, `Cargo.toml` | Run lightweight supply-chain diff check (no LLM): flag newly added/changed dependencies |
+| Deleted security test | `*.test.*` or `*.spec.*` file deleted | Log warning and bump to Tier 2 |
+| Extensionless file | No extension outside `docs/` | Bump to Tier 2 (matches existing fail-closed triage behavior) |
+| Script with exec/eval | `scripts/*` contains `exec`, `eval`, or `child_process` patterns | Bump to Tier 2 |
+
+These safeguards are deterministic pattern/regex checks, not LLM-based checks.
+
 ## Migration Path
 
 1. **Phase 1-2** — biggest ROI, pure wrapper change. No changes to core securevibes needed.
 2. **Phase 3** — wrapper refactor, depends on Phase 2.
 3. **Phase 4** — design decisions file schema + qmd indexing. Low effort, high impact on false positive reduction. Can be adopted incrementally per repo.
-4. **Phase 5** — requires Agent SDK hook support in securevibes core. Injects design decisions + threat context into reviews.
+4. **Phase 5** — extends existing prompt assembly in securevibes core to inject design decisions + decision traces + past findings context.
 5. **Phase 6** — decision traces for reactive triage. Needs a CLI flow + qmd integration.
 6. **Phase 7** — metrics collection, added incrementally.
 
@@ -381,13 +425,13 @@ Assuming a repo like OpenClaw (~5,300 files):
 - **qmd** — BM25 + vector search CLI
 - **THREAT_MODEL.json** — must exist from baseline scan
 - **Baseline artifacts** — SECURITY.md, VULNERABILITIES.json
-- **Claude Agent SDK** — `before_model_call` / `after_model_call` hooks (Phase 5)
+- **Prompt assembly path** — `pr_review()` in `packages/core/securevibes/scanner/scanner.py` (Phase 5 extension point)
 - **design_decisions.json** — optional, created by dev team (Phase 4)
 
-## Open Questions
+## Resolved Decisions
 
-1. Should risk tiers be configurable per repo? E.g., some teams want docs reviewed if docs contain security guidance.
-2. How to handle new files not in the threat model? Default to Tier 2 and flag for threat model update.
-3. Should qmd be required or optional? If optional, fall back to file-path pattern matching only.
-4. Multi-repo support? Each repo gets its own qmd collection, but threat models could reference shared components.
-5. What's the right granularity for qmd queries — per-file or per-directory?
+1. **Risk tiers configurable per repo?** Yes. `risk_map.json` is per-repo; teams can promote paths (including `docs/*`) to moderate when docs carry security guidance.
+2. **How to handle new files not in threat model?** Default to Tier 2 and log for threat model update.
+3. **Is qmd required?** Optional with graceful degradation for triage (pattern-only fallback).
+4. **Multi-repo support?** Each repo has its own `risk_map.json` and qmd collection; cross-repo references are out of scope.
+5. **qmd query granularity?** Per-file for triage classification, per-component for context injection; cache results per scan run.
