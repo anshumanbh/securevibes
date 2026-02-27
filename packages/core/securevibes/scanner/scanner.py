@@ -432,10 +432,11 @@ ARCHITECTURE CONTEXT:
                     elif isinstance(message, ResultMessage):
                         break
 
-            # NOTE: 90s timeout covers the entire LLM exchange (query + stream).
-            # The Claude SDK cold-starts on the first call, and the hypothesis
-            # prompt includes substantial context, so 30s is insufficient.
-            await asyncio.wait_for(_run_llm_exchange(), timeout=90)
+            # 240s timeout covers the full LLM exchange (query + stream).
+            # Raised from 90s because prompt truncation limits were increased
+            # (NEW_FILE_HUNK_MAX_LINES=200, NEW_FILE_ANCHOR_MAX_LINES=120)
+            # producing larger prompts that need more time on big repos.
+            await asyncio.wait_for(_run_llm_exchange(), timeout=240)
     except (OSError, asyncio.TimeoutError, RuntimeError):
         logger.warning(
             "Hypothesis generation timed out or failed — downstream review passes may lack context",
@@ -541,10 +542,8 @@ CANDIDATE FINDINGS JSON:
                     elif isinstance(message, ResultMessage):
                         break
 
-            # NOTE: 90s timeout covers the entire LLM exchange (query + stream).
-            # The Claude SDK cold-starts on the first call, and the refinement
-            # prompt includes substantial context, so 30s is insufficient.
-            await asyncio.wait_for(_run_llm_exchange(), timeout=90)
+            # 240s timeout — matches hypothesis generation timeout.
+            await asyncio.wait_for(_run_llm_exchange(), timeout=240)
     except (OSError, asyncio.TimeoutError, RuntimeError):
         logger.warning(
             "PR finding refinement timed out or failed — unrefined findings will be retained",
