@@ -386,24 +386,39 @@ class PRReviewAttemptRunner:
             attempt_error: Optional[str] = None
             try:
                 async with self._claude_client_cls(options=options) as client:
-                    await asyncio.wait_for(
-                        self._run_attempt_messages(
-                            client=client,
-                            attempt_prompt=attempt_prompt,
-                            tracker=tracker,
-                        ),
-                        timeout=ctx.pr_timeout_seconds,
-                    )
+                    try:
+                        await asyncio.wait_for(
+                            self._run_attempt_messages(
+                                client=client,
+                                attempt_prompt=attempt_prompt,
+                                tracker=tracker,
+                            ),
+                            timeout=ctx.pr_timeout_seconds,
+                        )
+                    except asyncio.TimeoutError:
+                        attempt_error = (
+                            f"PR code review attempt {attempt_num}/{pr_review_attempts} timed out after "
+                            f"{ctx.pr_timeout_seconds}s."
+                        )
+                        # Force-close the client to kill any hung subprocess
+                        # before the context manager __aexit__ tries a graceful close.
+                        try:
+                            await asyncio.wait_for(client.close(), timeout=5.0)
+                        except Exception:
+                            pass
             except asyncio.TimeoutError:
-                attempt_error = (
-                    f"PR code review attempt {attempt_num}/{pr_review_attempts} timed out after "
-                    f"{ctx.pr_timeout_seconds}s."
-                )
+                # Context manager __aexit__ itself timed out during cleanup
+                if not attempt_error:
+                    attempt_error = (
+                        f"PR code review attempt {attempt_num}/{pr_review_attempts} timed out after "
+                        f"{ctx.pr_timeout_seconds}s (cleanup also timed out)."
+                    )
             except Exception as exc:
-                attempt_error = (
-                    f"PR code review attempt {attempt_num}/{pr_review_attempts} failed: "
-                    f"{type(exc).__name__}: {exc}"
-                )
+                if not attempt_error:
+                    attempt_error = (
+                        f"PR code review attempt {attempt_num}/{pr_review_attempts} failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
 
             if attempt_error:
                 state.warnings.append(attempt_error)

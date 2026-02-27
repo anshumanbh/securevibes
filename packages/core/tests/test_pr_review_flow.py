@@ -848,3 +848,52 @@ class TestRunAttemptLoop:
         assert state.collected_pr_vulns == []
         assert state.attempt_finding_counts == [0]
         assert not single_attempt_ctx.pr_vulns_path.exists()
+
+
+class TestTimeoutForceClose:
+    """Tests for the force-close behavior on pr_timeout."""
+
+    @pytest.mark.asyncio
+    async def test_timeout_calls_client_close(self, tmp_path):
+        """On timeout, client.close() should be called before context manager exit."""
+        ctx = _make_context(tmp_path)
+        ctx.pr_review_attempts = 1
+        ctx.pr_timeout_seconds = 0.05
+
+        close_called = False
+
+        class _HangingClient:
+            async def query(self, prompt):
+                await asyncio.sleep(10)  # hang forever
+
+            async def receive_messages(self):
+                if False:
+                    yield None
+
+            async def close(self):
+                nonlocal close_called
+                close_called = True
+
+        class _HangingClientCtx:
+            def __init__(self, **kwargs):
+                self._client = _HangingClient()
+
+            async def __aenter__(self):
+                return self._client
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        client_cls = MagicMock(return_value=_HangingClientCtx())
+
+        runner = PRReviewAttemptRunner(
+            _make_scanner(),
+            progress_tracker_cls=_FakeTracker,
+            claude_client_cls=client_cls,
+            hook_matcher_cls=MagicMock,
+        )
+        state = PRReviewState()
+        await runner.run_attempt_loop(ctx, state)
+
+        assert any("timed out" in w for w in state.warnings)
+        assert close_called, "client.close() should be called on timeout"
