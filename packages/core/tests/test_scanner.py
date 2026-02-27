@@ -1431,7 +1431,7 @@ class TestPrHypothesisTimeout:
     """Test hypothesis generation timeout and logging behaviour."""
 
     @pytest.mark.asyncio
-    async def test_hypothesis_uses_90s_timeout(self, tmp_path):
+    async def test_hypothesis_uses_240s_timeout(self, tmp_path):
         """Hypothesis generation should use a 90s timeout, not 30s."""
         import asyncio
         from securevibes.scanner.scanner import _generate_pr_hypotheses
@@ -1466,7 +1466,7 @@ class TestPrHypothesisTimeout:
                     architecture_context="none",
                 )
 
-        assert captured["timeout"] == 90
+        assert captured["timeout"] == 240
 
     @pytest.mark.asyncio
     async def test_hypothesis_timeout_logs_without_traceback(self, tmp_path):
@@ -1502,7 +1502,7 @@ class TestPrRefinementTimeout:
     """Test PR finding refinement timeout and logging behaviour."""
 
     @pytest.mark.asyncio
-    async def test_refinement_uses_90s_timeout(self, tmp_path):
+    async def test_refinement_uses_240s_timeout(self, tmp_path):
         """PR finding refinement should use a 90s timeout, not 30s."""
         import asyncio
         from securevibes.scanner.scanner import _refine_pr_findings_with_llm
@@ -1535,7 +1535,7 @@ class TestPrRefinementTimeout:
                     severity_threshold="medium",
                 )
 
-        assert captured["timeout"] == 90
+        assert captured["timeout"] == 240
 
     @pytest.mark.asyncio
     async def test_refinement_timeout_logs_without_traceback(self, tmp_path):
