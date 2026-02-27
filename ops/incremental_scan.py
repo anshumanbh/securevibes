@@ -6,11 +6,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
+import signal
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -36,8 +39,63 @@ REQUIRED_REPORT_FIELDS = (
 )
 COMPLETED = "completed"
 INFRA_FAILURE = "infra_failure"
+DIFF_TOO_LARGE = "diff_too_large"
 DEFAULT_GIT_TIMEOUT_SECONDS = 60
 DEFAULT_SCAN_TIMEOUT_SECONDS = 900
+DIFF_TOO_LARGE_MARKERS = (
+    "exceeds safe analysis limits",
+    "diff context exceeds",
+)
+RUN_RECORD_NAME_RE = re.compile(r"^\d{8}T\d{6}Z-[0-9a-f]{6}\.json$")
+
+
+@dataclass
+class RunContext:
+    """Mutable context shared with signal handlers for graceful cleanup."""
+
+    run_id: str | None = None
+    current_chunk_index: int = 0
+    last_successful_anchor: str | None = None
+    interrupted: bool = False
+    interrupted_signal: int | None = None
+    _child_process: subprocess.Popen | None = None  # type: ignore[type-arg]
+
+    def reset(self) -> None:
+        """Reset context to avoid leakage between runs/tests."""
+        self.run_id = None
+        self.current_chunk_index = 0
+        self.last_successful_anchor = None
+        self.interrupted = False
+        self.interrupted_signal = None
+        self._child_process = None
+
+    def mark_interrupted(self, signum: int | None = None) -> None:
+        """Mark run as interrupted and terminate any active child process."""
+        self.interrupted = True
+        self.interrupted_signal = signum
+        if self._child_process is not None:
+            try:
+                self._child_process.kill()
+            except OSError:
+                pass
+
+
+# Global run context for signal handler access
+_run_ctx = RunContext()
+
+
+def _signal_handler(signum: int, frame: Any) -> None:
+    """Handle SIGTERM/SIGINT with graceful cleanup."""
+    del frame
+    sig_name = (
+        signal.Signals(signum).name if hasattr(signal, "Signals") else str(signum)
+    )
+    print(
+        f"\n[incremental-scan] Received {sig_name}, cleaning up...",
+        file=sys.stderr,
+        flush=True,
+    )
+    _run_ctx.mark_interrupted(signum)
 
 
 @dataclass
@@ -150,6 +208,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Enable deterministic triage to reduce budget for low-risk diffs",
+    )
+    parser.add_argument(
+        "--no-fallback",
+        action="store_true",
+        default=False,
+        help="Disable per-commit fallback when a chunk exceeds diff size limits",
+    )
+    parser.add_argument(
+        "--max-diff-files",
+        type=positive_int,
+        default=15,
+        help="Max files per chunk before splitting (adaptive chunking)",
+    )
+    parser.add_argument(
+        "--max-diff-lines",
+        type=positive_int,
+        default=500,
+        help="Max total lines changed per chunk before splitting (adaptive chunking)",
+    )
+    parser.add_argument(
+        "--no-adaptive",
+        action="store_true",
+        default=False,
+        help="Disable adaptive diff-aware chunking; use count-based chunking instead",
     )
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--debug", action="store_true")
@@ -362,7 +444,48 @@ def get_commit_list(
     return [line for line in result.stdout.splitlines() if line.strip()]
 
 
-def compute_chunks(
+def get_diff_stats(
+    repo: Path,
+    base: str,
+    head: str,
+    timeout_seconds: int = DEFAULT_GIT_TIMEOUT_SECONDS,
+) -> tuple[int, int]:
+    """Return (file_count, total_lines_changed) for a range."""
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--numstat", f"{base}..{head}"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"git diff --numstat timed out after {timeout_seconds}s"
+        ) from exc
+    if result.returncode != 0:
+        stderr = result.stderr.strip() or "git diff --numstat failed"
+        raise RuntimeError(stderr)
+    file_count = 0
+    total_lines = 0
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        added, deleted = parts[0], parts[1]
+        file_count += 1
+        # Binary files show "-" for additions/deletions
+        if added == "-" or deleted == "-":
+            continue
+        try:
+            total_lines += int(added) + int(deleted)
+        except ValueError:
+            pass
+    return (file_count, total_lines)
+
+
+def compute_chunks_by_count(
     commits: list[str],
     base_sha: str,
     small_max: int,
@@ -395,10 +518,66 @@ def compute_chunks(
     ]
 
 
+# Backward-compatible alias
+compute_chunks = compute_chunks_by_count
+
+
+def compute_chunks_adaptive(
+    commits: list[str],
+    base_sha: str,
+    repo: Path,
+    max_files: int = 15,
+    max_lines: int = 500,
+    git_timeout: int = DEFAULT_GIT_TIMEOUT_SECONDS,
+) -> list[tuple[str, str]]:
+    """Compute chunks using diff-size awareness.
+
+    Splits commit ranges so each chunk stays within *max_files* and
+    *max_lines* thresholds measured via ``git diff --numstat``.
+    """
+    if not commits:
+        return []
+
+    # Fast path: full range fits within limits
+    fc, tl = get_diff_stats(repo, base_sha, commits[-1], git_timeout)
+    if fc <= max_files and tl <= max_lines:
+        return [(base_sha, commits[-1])]
+
+    # Greedy: walk commits, accumulate diff stats per chunk
+    chunks: list[tuple[str, str]] = []
+    chunk_base = base_sha
+    chunk_start_idx = 0
+
+    for i, commit in enumerate(commits):
+        fc, tl = get_diff_stats(repo, chunk_base, commit, git_timeout)
+        if fc > max_files or tl > max_lines:
+            if i > chunk_start_idx:
+                # Cut chunk at previous commit
+                chunks.append((chunk_base, commits[i - 1]))
+                chunk_base = commits[i - 1]
+                chunk_start_idx = i
+            else:
+                # Single commit exceeds limits; include as its own chunk
+                chunks.append((chunk_base, commit))
+                chunk_base = commit
+                chunk_start_idx = i + 1
+
+    # Remaining commits
+    if chunk_start_idx < len(commits):
+        chunks.append((chunk_base, commits[-1]))
+
+    return chunks
+
+
 def determine_chunk_strategy(
-    total_commits: int, small_max: int, medium_max: int
+    total_commits: int,
+    small_max: int,
+    medium_max: int,
+    adaptive: bool = False,
 ) -> str:
     """Describe selected adaptive chunk strategy for run summaries."""
+    if adaptive:
+        return "adaptive_diff_size"
     if total_commits <= small_max:
         return "single_range"
     if total_commits <= medium_max:
@@ -419,11 +598,21 @@ def _is_valid_report_json(path: Path) -> bool:
     return all(field in payload for field in REQUIRED_REPORT_FIELDS)
 
 
-def classify_scan_result(exit_code: int, output_path: Path | None) -> str:
-    """Classify command outcome into completed or infrastructure failure."""
+def _stderr_indicates_diff_too_large(stderr: str) -> bool:
+    """Return True when stderr shows the fail-closed diff size guardrail."""
+    haystack = stderr.lower()
+    return any(marker in haystack for marker in DIFF_TOO_LARGE_MARKERS)
+
+
+def classify_scan_result(
+    exit_code: int, output_path: Path | None, stderr: str = ""
+) -> str:
+    """Classify command outcome into completed, diff_too_large, or infrastructure failure."""
     if exit_code not in {0, 1, 2}:
         return INFRA_FAILURE
     if output_path is None or not _is_valid_report_json(output_path):
+        if exit_code == 1 and _stderr_indicates_diff_too_large(stderr):
+            return DIFF_TOO_LARGE
         return INFRA_FAILURE
     return COMPLETED
 
@@ -434,6 +623,63 @@ def _stderr_tail(stderr: str, max_lines: int = 8) -> str:
     if not lines:
         return ""
     return "\n".join(lines[-max_lines:])
+
+
+def _run_subprocess_with_progress(
+    command: list[str],
+    timeout_seconds: int,
+    label: str = "",
+    **kwargs: Any,
+) -> subprocess.CompletedProcess[str]:
+    """Run subprocess with periodic progress heartbeats to stdout.
+
+    Prints a dot every 30 seconds so callers know the process is alive.
+    Stores the child process in _run_ctx so signal handlers can kill it.
+    """
+    start = time.monotonic()
+    proc = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        **kwargs,
+    )
+    _run_ctx._child_process = proc
+
+    # Heartbeat thread prints progress while subprocess runs
+    stop_event = threading.Event()
+
+    def _heartbeat() -> None:
+        interval = 30
+        while not stop_event.wait(interval):
+            elapsed = int(time.monotonic() - start)
+            print(
+                f"[incremental-scan] {label} still running ({elapsed}s elapsed)...",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    heartbeat_thread = threading.Thread(target=_heartbeat, daemon=True)
+    heartbeat_thread.start()
+
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, stderr = proc.communicate()
+        _run_ctx._child_process = None
+        stop_event.set()
+        raise
+    finally:
+        _run_ctx._child_process = None
+        stop_event.set()
+
+    return subprocess.CompletedProcess(
+        args=command,
+        returncode=proc.returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
 
 
 def run_scan(
@@ -477,15 +723,21 @@ def run_scan(
     if debug:
         command.append("--debug")
 
+    label = f"pr-review {base[:8]}..{head[:8]}"
+    print(f"[incremental-scan] Starting {label}", file=sys.stderr, flush=True)
+
     try:
-        result = subprocess.run(
+        result = _run_subprocess_with_progress(
             command,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False,
+            timeout_seconds,
+            label=label,
         )
     except subprocess.TimeoutExpired:
+        print(
+            f"[incremental-scan] TIMEOUT {label} after {timeout_seconds}s",
+            file=sys.stderr,
+            flush=True,
+        )
         return ScanCommandResult(
             command=command,
             exit_code=124,
@@ -493,11 +745,19 @@ def run_scan(
             stderr_tail=f"scan timed out after {timeout_seconds}s",
             output_path=output_path,
         )
+
+    tail = _stderr_tail(result.stderr)
+    classification = classify_scan_result(result.returncode, output_path, result.stderr)
+    print(
+        f"[incremental-scan] Finished {label} → {classification} (exit={result.returncode})",
+        file=sys.stderr,
+        flush=True,
+    )
     return ScanCommandResult(
         command=command,
         exit_code=result.returncode,
-        classification=classify_scan_result(result.returncode, output_path),
-        stderr_tail=_stderr_tail(result.stderr),
+        classification=classification,
+        stderr_tail=tail,
         output_path=output_path,
     )
 
@@ -542,15 +802,21 @@ def run_since_date_scan(
     if debug:
         command.append("--debug")
 
+    label = f"pr-review --since {since_date}"
+    print(f"[incremental-scan] Starting {label}", file=sys.stderr, flush=True)
+
     try:
-        result = subprocess.run(
+        result = _run_subprocess_with_progress(
             command,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False,
+            timeout_seconds,
+            label=label,
         )
     except subprocess.TimeoutExpired:
+        print(
+            f"[incremental-scan] TIMEOUT {label} after {timeout_seconds}s",
+            file=sys.stderr,
+            flush=True,
+        )
         return ScanCommandResult(
             command=command,
             exit_code=124,
@@ -558,11 +824,19 @@ def run_since_date_scan(
             stderr_tail=f"scan timed out after {timeout_seconds}s",
             output_path=output_path,
         )
+
+    tail = _stderr_tail(result.stderr)
+    classification = classify_scan_result(result.returncode, output_path, result.stderr)
+    print(
+        f"[incremental-scan] Finished {label} → {classification} (exit={result.returncode})",
+        file=sys.stderr,
+        flush=True,
+    )
     return ScanCommandResult(
         command=command,
         exit_code=result.returncode,
-        classification=classify_scan_result(result.returncode, output_path),
-        stderr_tail=_stderr_tail(result.stderr),
+        classification=classification,
+        stderr_tail=tail,
         output_path=output_path,
     )
 
@@ -645,6 +919,54 @@ def file_lock(lock_path: Path) -> Iterator[bool]:
         os.close(fd)
 
 
+def _is_primary_run_record(path: Path) -> bool:
+    """Return True for top-level run record files only."""
+    return bool(RUN_RECORD_NAME_RE.fullmatch(path.name))
+
+
+def _recover_stale_runs(runs_dir: Path, log_file: Path) -> None:
+    """Detect and mark run records that lack finished_utc as stale.
+
+    This happens when a previous process was killed mid-run.
+    We don't delete anything — just annotate the record so it's clear what happened.
+    """
+    if not runs_dir.exists():
+        return
+    for path in runs_dir.glob("*.json"):
+        if not _is_primary_run_record(path):
+            continue
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        # If it has finished_utc or is already marked stale, skip
+        if record.get("finished_utc") or record.get("status") == "stale_recovered":
+            continue
+        # This is an unfinished run — mark it
+        record["status"] = "stale_recovered"
+        record["finished_utc"] = utc_timestamp()
+        record["failure"] = record.get("failure") or {
+            "phase": "unknown",
+            "reason": "process killed before completion (recovered on next run)",
+        }
+        try:
+            save_json(path, record)
+            run_id = record.get("run_id", path.stem)
+            append_log(
+                log_file,
+                f"run_id={run_id} status=stale_recovered (previous run did not complete)",
+            )
+            print(
+                f"[incremental-scan] Recovered stale run: {run_id}",
+                file=sys.stderr,
+                flush=True,
+            )
+        except Exception:
+            pass
+
+
 def _write_run_record(run_record_path: Path, run_record: dict[str, Any]) -> None:
     """Persist structured run record."""
     save_json(run_record_path, run_record)
@@ -669,6 +991,7 @@ def run(args: argparse.Namespace) -> int:
     pr_attempts: int | None = getattr(args, "pr_attempts", None)
     pr_timeout: int | None = getattr(args, "pr_timeout", None)
     auto_triage: bool = getattr(args, "auto_triage", False)
+    no_fallback: bool = getattr(args, "no_fallback", False)
 
     ensure_dependencies()
     ensure_repo(repo, git_timeout)
@@ -689,6 +1012,11 @@ def run(args: argparse.Namespace) -> int:
                 log_file, "overlap prevented: another incremental scan is in progress"
             )
             return 0
+
+        _run_ctx.reset()
+
+        # Detect stale/interrupted runs from previous invocations
+        _recover_stale_runs(runs_dir, log_file)
 
         run_id = generate_run_id()
         run_record_path = runs_dir / f"{run_id}.json"
@@ -713,6 +1041,15 @@ def run(args: argparse.Namespace) -> int:
             "chunks": [],
             "failure": None,
         }
+
+        # Wire up global run context for signal handler cleanup
+        _run_ctx.run_id = run_id
+
+        print(
+            f"[incremental-scan] Run {run_id} started",
+            file=sys.stderr,
+            flush=True,
+        )
 
         try:
             git_fetch(repo, args.remote, args.branch, args.retry_network, git_timeout)
@@ -920,23 +1257,88 @@ def run(args: argparse.Namespace) -> int:
                 )
                 return 0
 
-            strategy = determine_chunk_strategy(
-                len(commits),
-                args.chunk_small_max,
-                args.chunk_medium_max,
-            )
+            no_adaptive: bool = getattr(args, "no_adaptive", False)
+            max_diff_files: int = getattr(args, "max_diff_files", 15)
+            max_diff_lines: int = getattr(args, "max_diff_lines", 500)
+
+            if no_adaptive:
+                strategy = determine_chunk_strategy(
+                    len(commits),
+                    args.chunk_small_max,
+                    args.chunk_medium_max,
+                )
+                chunks = compute_chunks_by_count(
+                    commits,
+                    current_anchor,
+                    args.chunk_small_max,
+                    args.chunk_medium_max,
+                    args.chunk_medium_size,
+                )
+            else:
+                strategy = determine_chunk_strategy(
+                    len(commits),
+                    args.chunk_small_max,
+                    args.chunk_medium_max,
+                    adaptive=True,
+                )
+                chunks = compute_chunks_adaptive(
+                    commits,
+                    current_anchor,
+                    repo,
+                    max_files=max_diff_files,
+                    max_lines=max_diff_lines,
+                    git_timeout=git_timeout,
+                )
             run_record["strategy"] = strategy
-            chunks = compute_chunks(
-                commits,
-                current_anchor,
-                args.chunk_small_max,
-                args.chunk_medium_max,
-                args.chunk_medium_size,
-            )
+            run_record["chunk_count"] = len(chunks)
+            if not no_adaptive:
+                run_record["max_diff_files"] = max_diff_files
+                run_record["max_diff_lines"] = max_diff_lines
 
             last_successful_anchor = current_anchor
+            _run_ctx.last_successful_anchor = current_anchor
             failed_chunk_index: int | None = None
+            fallback_triggered = False
+            failure_reason = ""
+            failure_phase = "chunk_run"
+            oversized_commit_sha: str | None = None
+
+            print(
+                f"[incremental-scan] Processing {len(commits)} commits in {len(chunks)} chunks "
+                f"(strategy={strategy})",
+                file=sys.stderr,
+                flush=True,
+            )
+            append_log(
+                log_file,
+                f"run_id={run_id} starting chunks={len(chunks)} commits={len(commits)} "
+                f"strategy={strategy}",
+            )
+
             for idx, (base, head) in enumerate(chunks, start=1):
+                if _run_ctx.interrupted:
+                    failed_chunk_index = idx
+                    failure_phase = "interrupted"
+                    failure_reason = "process received termination signal"
+                    break
+
+                _run_ctx.current_chunk_index = idx
+                if no_adaptive:
+                    fc, tl = (0, 0)
+                else:
+                    fc, tl = get_diff_stats(repo, base, head, git_timeout)
+                print(
+                    f"[incremental-scan] Chunk {idx}/{len(chunks)}: "
+                    f"{base[:8]}..{head[:8]} ({fc} files, {tl} lines)",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                append_log(
+                    log_file,
+                    f"run_id={run_id} chunk={idx}/{len(chunks)} "
+                    f"range={base[:8]}..{head[:8]} files={fc} lines={tl}",
+                )
+
                 chunk_output = runs_dir / f"{run_id}-chunk-{idx}.json"
                 result = run_scan(
                     repo,
@@ -965,7 +1367,87 @@ def run(args: argparse.Namespace) -> int:
                 )
                 if result.classification == COMPLETED:
                     last_successful_anchor = head
+                    _run_ctx.last_successful_anchor = head
                     continue
+
+                if _run_ctx.interrupted:
+                    failed_chunk_index = idx
+                    failure_phase = "interrupted"
+                    failure_reason = "process received termination signal"
+                    break
+
+                if result.classification == DIFF_TOO_LARGE and not no_fallback:
+                    sub_commits = get_commit_list(repo, base, head, git_timeout)
+                    if len(sub_commits) <= 1:
+                        oversized_commit_sha = head
+                        failure_reason = (
+                            "single commit exceeds safe diff analysis limits"
+                        )
+                        failed_chunk_index = idx
+                        break
+                    fallback_triggered = True
+                    for sub_idx, sub_sha in enumerate(sub_commits, start=1):
+                        sub_base = base if sub_idx == 1 else sub_commits[sub_idx - 2]
+                        sub_output = (
+                            runs_dir / f"{run_id}-chunk-{idx}-sub-{sub_idx}.json"
+                        )
+                        sub_result = run_scan(
+                            repo,
+                            sub_base,
+                            sub_sha,
+                            args.model,
+                            args.severity,
+                            args.debug,
+                            sub_output,
+                            scan_timeout,
+                            pr_attempts=pr_attempts,
+                            pr_timeout=pr_timeout,
+                            auto_triage=auto_triage,
+                        )
+                        run_record["chunks"].append(
+                            {
+                                "index": idx,
+                                "sub_index": sub_idx,
+                                "mode": "fallback_per_commit",
+                                "base": sub_base,
+                                "head": sub_sha,
+                                "exit_code": sub_result.exit_code,
+                                "classification": sub_result.classification,
+                                "output_path": str(sub_output),
+                                "stderr_tail": sub_result.stderr_tail,
+                                "command": sub_result.command,
+                            }
+                        )
+                        if sub_result.classification == COMPLETED:
+                            last_successful_anchor = sub_sha
+                            _run_ctx.last_successful_anchor = sub_sha
+                        elif sub_result.classification == DIFF_TOO_LARGE:
+                            oversized_commit_sha = sub_sha
+                            failure_reason = (
+                                "single commit exceeds safe diff analysis limits"
+                            )
+                            append_log(
+                                log_file,
+                                f"run_id={run_id} single commit too large, stopping at {sub_sha}",
+                            )
+                            failed_chunk_index = idx
+                            break
+                        else:
+                            if _run_ctx.interrupted:
+                                failure_phase = "interrupted"
+                                failure_reason = "process received termination signal"
+                            else:
+                                failure_reason = "fallback per-commit scan failed"
+                            failed_chunk_index = idx
+                            break
+                    if failed_chunk_index is not None:
+                        break
+                    continue
+
+                if result.classification == DIFF_TOO_LARGE and no_fallback:
+                    failure_reason = "chunk exceeds safe diff analysis limits and fallback is disabled"
+                elif not failure_reason:
+                    failure_reason = "chunk scan failed"
                 failed_chunk_index = idx
                 break
 
@@ -974,22 +1456,38 @@ def run(args: argparse.Namespace) -> int:
                 status = "success"
                 anchor = new_head
                 failure: dict[str, Any] | None = None
+            elif _run_ctx.interrupted:
+                if last_successful_anchor != current_anchor:
+                    status = "partial"
+                    anchor = last_successful_anchor
+                else:
+                    status = "failed"
+                    anchor = current_anchor
+                failure = {
+                    "phase": "interrupted",
+                    "reason": "process received termination signal",
+                    "failed_chunk_index": failed_chunk_index,
+                    "last_successful_anchor": last_successful_anchor,
+                }
             elif last_successful_anchor != current_anchor:
                 status = "partial"
                 anchor = last_successful_anchor
                 failure = {
-                    "phase": "chunk_run",
-                    "reason": "chunk scan failed",
+                    "phase": failure_phase,
+                    "reason": failure_reason or "chunk scan failed",
                     "failed_chunk_index": failed_chunk_index,
                 }
             else:
                 status = "failed"
                 anchor = current_anchor
                 failure = {
-                    "phase": "chunk_run",
-                    "reason": "first chunk scan failed",
+                    "phase": failure_phase,
+                    "reason": failure_reason or "first chunk scan failed",
                     "failed_chunk_index": failed_chunk_index,
                 }
+            if failure is not None and oversized_commit_sha:
+                failure["oversized_commit_sha"] = oversized_commit_sha
+                failure["oversized_commit_action"] = "stopped_without_skipping"
 
             new_state = _build_state(
                 repo=repo,
@@ -1008,6 +1506,8 @@ def run(args: argparse.Namespace) -> int:
             run_record["status"] = status
             run_record["final_anchor"] = anchor
             run_record["failure"] = failure
+            if fallback_triggered:
+                run_record["fallback_triggered"] = True
             run_record["finished_utc"] = utc_timestamp()
             _write_run_record(run_record_path, run_record)
             append_log(
@@ -1018,6 +1518,8 @@ def run(args: argparse.Namespace) -> int:
                     f"anchor={anchor}"
                 ),
             )
+            if _run_ctx.interrupted:
+                return 128 + int(_run_ctx.interrupted_signal or signal.SIGINT)
             return _strict_exit(status, args.strict)
 
         except Exception as exc:
@@ -1045,15 +1547,21 @@ def run(args: argparse.Namespace) -> int:
             _write_run_record(run_record_path, run_record)
             append_log(log_file, f"run_id={run_id} status=failed reason={exc}")
             raise
+        finally:
+            _run_ctx.reset()
 
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint."""
+    # Install signal handlers for graceful cleanup
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGINT, _signal_handler)
+
     args = parse_args(argv)
     try:
         return run(args)
     except Exception as exc:  # pragma: no cover - wrapper for user-facing CLI failures
-        print(f"[incremental-scan] ERROR: {exc}", file=sys.stderr)
+        print(f"[incremental-scan] ERROR: {exc}", file=sys.stderr, flush=True)
         return 1
 
 
