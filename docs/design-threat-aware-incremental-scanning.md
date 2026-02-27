@@ -82,9 +82,19 @@ Files touching config, routing, plugins, API handlers, session management, brows
 
 This means the first review of a new attack surface is more expensive (threat modeling + code review), but all subsequent reviews are properly classified and contextualized.
 
+### Dependency Change Detection (cross-tier)
+
+Dependency manifest and lockfile changes (`package.json`, `requirements.txt`, `*.lock`, `Cargo.toml`, `pyproject.toml`) trigger a lightweight supply-chain diff check **regardless of tier**. This is not a skip-tier safeguard — it runs during Phase 2 risk scoring for any chunk containing manifest/lockfile changes:
+
+- Parse the diff to identify added, removed, and changed dependencies
+- Flag new or changed dependencies in the chunk metadata
+- If the chunk would otherwise be Tier 3 (all files match skip patterns), **promote to Tier 2** so the dependency change gets a Sonnet review
+- If the chunk contains **only** manifest/lockfile changes (no source code), it receives a **supply-chain summary** injected into the prompt instead of broad qmd threat/finding context. This avoids injecting irrelevant application-level threats for a pure dependency update.
+- If the chunk also contains source code, the dependency flags are appended to whatever context injection the tier already provides.
+
 ### Tier 3 — Skip (no LLM call)
 
-Docs, tests, CI config, changelog, package.json version bumps, README, comments-only changes.
+Docs, tests, CI config, changelog, README, comments-only changes.
 
 - Log skip classification first, then advance anchor only after invariant checks pass (see Safety Invariants)
 - Skip tier remains no-LLM, but fail-closed safeguards can promote a chunk to Tier 2
@@ -124,7 +134,6 @@ Example `risk_map.json` (generated from OpenClaw's threat model):
     "src/gateway/credentials*",
     "src/gateway/device-auth*",
     "src/gateway/server-http*",
-    "src/secrets/*",
     "src/security/*",
     "src/infra/exec*",
     "src/infra/boundary*"
@@ -157,7 +166,7 @@ Example `risk_map.json` (generated from OpenClaw's threat model):
 
 **Note:** If a commit touches both `sandbox.ts` and `sandbox.test.ts`, the non-test file drives the tier. The highest-risk file in a chunk determines the tier for the entire chunk.
 
-**Safeguard precedence:** `risk_map.json` provides the initial tier, but skip-tier safeguards can override it. Example: `package.json` may match `skip` initially, then be promoted to Tier 2 when dependency-change safeguards trigger.
+**Override precedence:** `risk_map.json` provides the initial tier, but two mechanisms can override it: (1) the cross-tier Dependency Change Detection promotes dep-containing chunks out of skip, and (2) skip-tier safeguards can bump individual files to Tier 2.
 
 **Unmapped files** default to Tier 2 (moderate) with context injection via qmd. If they introduce a new attack surface, they also trigger incremental threat modeling (see Tier 2 description).
 
@@ -347,6 +356,10 @@ qmd add securevibes-artifacts .securevibes/**/*.{json,md}
 qmd update && qmd embed
 ```
 
+#### Intra-Run qmd Freshness
+
+When a chunk produces artifact updates during a scan run (e.g., incremental threat modeling in chunk N appends new threats to `THREAT_MODEL.json`), qmd MUST be re-indexed before context retrieval for chunk N+1. This ensures later chunks see threats/findings produced by earlier chunks in the same run. The re-index is incremental (`qmd update && qmd embed` on changed files only) to minimize overhead.
+
 #### Context Sections
 
 Append new context sections to `contextualized_prompt`:
@@ -372,6 +385,7 @@ Append new context sections to `contextualized_prompt`:
 | Tier 1 (Critical) | Full: design decisions + decision traces + relevant threats + past findings via qmd |
 | Tier 2 (Mapped) | None — these are known moderate-risk paths with established threat coverage |
 | Tier 2 (Unmapped) | Relevant threats + past findings via qmd — the reviewer needs system context to assess how new code interacts with existing attack surfaces |
+| Tier 2 (Dep-only) | Supply-chain summary only (new/changed deps) — no broad qmd threat/finding injection |
 | Tier 3 (Skip) | None — no LLM call |
 
 Feedback loop happens after each scan run: log which context was injected and whether findings were produced for the same component(s).
@@ -462,12 +476,13 @@ Tier 3 still means no LLM call, but these fail-closed checks run before any skip
 | Check | Trigger | Action |
 |---|---|---|
 | New file in skip path | File status is Added (not Modified) | Bump to Tier 2 |
-| Dependency file change | `package.json`, `requirements.txt`, `*.lock`, `Cargo.toml` | Run lightweight supply-chain diff check (no LLM): flag newly added/changed dependencies |
 | Deleted security test | `*.test.*` or `*.spec.*` file deleted | Log warning and bump to Tier 2 |
 | Extensionless file | No extension outside `docs/` | Bump to Tier 2 (matches existing fail-closed triage behavior) |
 | Script with exec/eval | `scripts/*` contains `exec`, `eval`, or `child_process` patterns | Bump to Tier 2 |
 
 These safeguards are deterministic pattern/regex checks, not LLM-based checks.
+
+**Note:** Dependency file changes are handled by the cross-tier Dependency Change Detection (see Three-Tier Risk-Based Triage section), not by skip safeguards.
 
 ## Migration Path
 
