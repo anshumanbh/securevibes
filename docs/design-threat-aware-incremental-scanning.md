@@ -119,6 +119,8 @@ Seeded from THREAT_MODEL.json, with file pattern overrides per repo (stored in `
 
 **Note:** If a commit touches both `sandbox.ts` and `sandbox.test.ts`, the non-test file drives the tier. The highest-risk file in a chunk determines the tier for the entire chunk.
 
+**Safeguard precedence:** `risk_map.json` provides the initial tier, but skip-tier safeguards can override it. Example: `package.json` may match `skip` initially, then be promoted to Tier 2 when dependency-change safeguards trigger.
+
 **Unmapped files** default to Tier 2 (moderate) and get flagged for threat model update.
 
 ### Projected Impact
@@ -320,6 +322,7 @@ Append new context sections to `contextualized_prompt`:
 - `## Relevant Past Findings`
   - Source: `VULNERABILITIES.json`
   - Filter: findings matching affected component(s) and changed paths (extends existing `vuln_context_summary`)
+  - Trust rule: load from trusted base state when version-controlled; if local-only artifact, treat as advisory context and never use it to reduce review depth
 
 Feedback loop happens after each scan run: log which design decisions/traces were injected and whether findings were produced for the same component(s). This replaces the prior hook-based relevance-tracking concept.
 
@@ -384,14 +387,18 @@ Assuming a repo like OpenClaw (~5,300 files):
 
 ### Policy File Trust Boundary
 
-- `risk_map.json`, `design_decisions.json`, and `THREAT_MODEL.json` MUST be loaded from merge-base or default-branch state, never from PR head state.
-- Any PR that modifies these files is auto-classified as Tier 1 (Critical), regardless of other file content.
+- `risk_map.json`, `design_decisions.json`, `THREAT_MODEL.json`, and `VULNERABILITIES.json` (when version-controlled) MUST be loaded from merge-base or default-branch state, never from PR head state.
+- Any PR that modifies these version-controlled policy/context files is auto-classified as Tier 1 (Critical), regardless of other file content.
 - The risk scorer loads policy via trusted git object reads (for example, `git show <merge-base>:.securevibes/risk_map.json`) rather than working-tree reads.
 - Decision traces under `.securevibes/decisions/` follow the same trust rule and are loaded from trusted base state.
+- If `VULNERABILITIES.json` is local-only (not version-controlled), it may be used as advisory context but MUST NOT lower tiering decisions or suppress review depth.
 
 ### Anchor Advancement Invariant
 
 - Hard invariant: anchor may only advance to commit `N` when every commit `<= N` has been classified, including Tier 3 skips.
+- Failed classification does NOT count as classified.
+- If tier decision fails (for example, unreadable/corrupt trusted policy input) or review execution fails (timeout, LLM/infrastructure error), anchor remains at the last successfully classified commit.
+- The failed chunk/range is retried on the next run; no commit beyond the failure point is considered classified.
 - Tiering controls review depth, not processing order; chunks are visited in commit order.
 - "Process Tier 1 first" applies only to parallel implementations. Sequential runs must preserve commit order.
 - Skip-tier chunks must record a classification entry (`tier=skip`, `files=[...]`, `reason="all files matched skip patterns"`) before anchor advances past them.
