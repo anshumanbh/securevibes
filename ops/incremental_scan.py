@@ -42,6 +42,9 @@ INFRA_FAILURE = "infra_failure"
 DIFF_TOO_LARGE = "diff_too_large"
 DEFAULT_GIT_TIMEOUT_SECONDS = 60
 DEFAULT_SCAN_TIMEOUT_SECONDS = 900
+DEFAULT_PR_REVIEW_TIMEOUT_SECONDS = 240
+DEFAULT_PR_REVIEW_ATTEMPTS = 4
+DEFAULT_PER_CHUNK_TIMEOUT_CAP_SECONDS = 600
 DIFF_TOO_LARGE_MARKERS = (
     "exceeds safe analysis limits",
     "diff context exceeds",
@@ -979,6 +982,65 @@ def _strict_exit(status: str, strict: bool) -> int:
     return 0
 
 
+def _read_positive_env_int(name: str) -> int | None:
+    """Read a positive integer from environment, returning None when absent/invalid."""
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return None
+    if parsed < 1:
+        return None
+    return parsed
+
+
+def resolve_pr_review_budget(
+    pr_attempts_override: int | None,
+    pr_timeout_override: int | None,
+) -> tuple[int, int]:
+    """Resolve effective PR review attempts/timeout from override -> env -> defaults."""
+    effective_attempts = (
+        pr_attempts_override
+        if pr_attempts_override is not None
+        else _read_positive_env_int("SECUREVIBES_PR_REVIEW_ATTEMPTS")
+        or DEFAULT_PR_REVIEW_ATTEMPTS
+    )
+    effective_timeout = (
+        pr_timeout_override
+        if pr_timeout_override is not None
+        else _read_positive_env_int("SECUREVIBES_PR_REVIEW_TIMEOUT_SECONDS")
+        or DEFAULT_PR_REVIEW_TIMEOUT_SECONDS
+    )
+    return (effective_attempts, effective_timeout)
+
+
+def resolve_per_chunk_timeout(
+    *,
+    scan_timeout_seconds: int,
+    effective_pr_attempts: int,
+    effective_pr_timeout_seconds: int,
+    has_explicit_pr_overrides: bool,
+) -> tuple[int, int, int, str]:
+    """Resolve per-chunk timeout from effective PR review budget.
+
+    Returns:
+        Tuple of (resolved_timeout, raw_budget_timeout, applied_cap, reason)
+    """
+    raw_timeout = max(60, effective_pr_timeout_seconds * effective_pr_attempts * 2)
+    if has_explicit_pr_overrides:
+        return (raw_timeout, raw_timeout, raw_timeout, "explicit_pr_budget")
+
+    applied_cap = min(scan_timeout_seconds, DEFAULT_PER_CHUNK_TIMEOUT_CAP_SECONDS)
+    return (
+        min(raw_timeout, applied_cap),
+        raw_timeout,
+        applied_cap,
+        "derived_pr_budget_capped",
+    )
+
+
 def run(args: argparse.Namespace) -> int:
     """Run incremental scan wrapper end-to-end."""
     repo = Path(args.repo).resolve()
@@ -988,18 +1050,24 @@ def run(args: argparse.Namespace) -> int:
     scan_timeout = max(
         1, int(getattr(args, "scan_timeout_seconds", DEFAULT_SCAN_TIMEOUT_SECONDS))
     )
-    pr_attempts: int | None = getattr(args, "pr_attempts", None)
-    pr_timeout: int | None = getattr(args, "pr_timeout", None)
+    pr_attempts_override: int | None = getattr(args, "pr_attempts", None)
+    pr_timeout_override: int | None = getattr(args, "pr_timeout", None)
     auto_triage: bool = getattr(args, "auto_triage", False)
 
-    # Per-chunk timeout: cap individual chunk runs so one hung chunk can't
-    # consume the entire scan budget.  When pr_timeout and pr_attempts are
-    # known we allow 2x the expected max wall-clock per attempt; otherwise
-    # fall back to the lesser of scan_timeout and 600s (10 min).
-    if pr_timeout is not None and pr_attempts is not None:
-        per_chunk_timeout = max(60, pr_timeout * pr_attempts * 2)
-    else:
-        per_chunk_timeout = min(scan_timeout, 600)
+    effective_pr_attempts, effective_pr_timeout = resolve_pr_review_budget(
+        pr_attempts_override,
+        pr_timeout_override,
+    )
+    per_chunk_timeout, raw_budget_timeout, timeout_cap_seconds, timeout_reason = (
+        resolve_per_chunk_timeout(
+            scan_timeout_seconds=scan_timeout,
+            effective_pr_attempts=effective_pr_attempts,
+            effective_pr_timeout_seconds=effective_pr_timeout,
+            has_explicit_pr_overrides=(
+                pr_attempts_override is not None or pr_timeout_override is not None
+            ),
+        )
+    )
     no_fallback: bool = getattr(args, "no_fallback", False)
 
     ensure_dependencies()
@@ -1047,6 +1115,12 @@ def run(args: argparse.Namespace) -> int:
             "new_head": None,
             "strategy": None,
             "total_new_commits": 0,
+            "effective_pr_attempts": effective_pr_attempts,
+            "effective_pr_timeout_seconds": effective_pr_timeout,
+            "chunk_timeout_seconds": per_chunk_timeout,
+            "chunk_timeout_raw_seconds": raw_budget_timeout,
+            "chunk_timeout_cap_seconds": timeout_cap_seconds,
+            "chunk_timeout_reason": timeout_reason,
             "chunks": [],
             "failure": None,
         }
@@ -1058,6 +1132,25 @@ def run(args: argparse.Namespace) -> int:
             f"[incremental-scan] Run {run_id} started",
             file=sys.stderr,
             flush=True,
+        )
+        print(
+            (
+                "[incremental-scan] Timeout budget: "
+                f"attempts={effective_pr_attempts} "
+                f"pr_timeout={effective_pr_timeout}s "
+                f"chunk_timeout={per_chunk_timeout}s "
+                f"reason={timeout_reason}"
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+        append_log(
+            log_file,
+            (
+                f"run_id={run_id} timeout_budget attempts={effective_pr_attempts} "
+                f"pr_timeout={effective_pr_timeout}s chunk_timeout={per_chunk_timeout}s "
+                f"raw={raw_budget_timeout}s cap={timeout_cap_seconds}s reason={timeout_reason}"
+            ),
         )
 
         try:
@@ -1168,8 +1261,8 @@ def run(args: argparse.Namespace) -> int:
                     args.debug,
                     since_output,
                     scan_timeout,
-                    pr_attempts=pr_attempts,
-                    pr_timeout=pr_timeout,
+                    pr_attempts=effective_pr_attempts,
+                    pr_timeout=effective_pr_timeout,
                     auto_triage=auto_triage,
                 )
                 run_record["chunks"].append(
@@ -1358,8 +1451,8 @@ def run(args: argparse.Namespace) -> int:
                     args.debug,
                     chunk_output,
                     per_chunk_timeout,
-                    pr_attempts=pr_attempts,
-                    pr_timeout=pr_timeout,
+                    pr_attempts=effective_pr_attempts,
+                    pr_timeout=effective_pr_timeout,
                     auto_triage=auto_triage,
                 )
                 run_record["chunks"].append(
@@ -1367,6 +1460,9 @@ def run(args: argparse.Namespace) -> int:
                         "index": idx,
                         "base": base,
                         "head": head,
+                        "chunk_tier": None,
+                        "chunk_timeout_seconds": per_chunk_timeout,
+                        "timeout_reason": timeout_reason,
                         "exit_code": result.exit_code,
                         "classification": result.classification,
                         "output_path": str(chunk_output),
@@ -1409,8 +1505,8 @@ def run(args: argparse.Namespace) -> int:
                             args.debug,
                             sub_output,
                             per_chunk_timeout,
-                            pr_attempts=pr_attempts,
-                            pr_timeout=pr_timeout,
+                            pr_attempts=effective_pr_attempts,
+                            pr_timeout=effective_pr_timeout,
                             auto_triage=auto_triage,
                         )
                         run_record["chunks"].append(
@@ -1420,6 +1516,9 @@ def run(args: argparse.Namespace) -> int:
                                 "mode": "fallback_per_commit",
                                 "base": sub_base,
                                 "head": sub_sha,
+                                "chunk_tier": None,
+                                "chunk_timeout_seconds": per_chunk_timeout,
+                                "timeout_reason": timeout_reason,
                                 "exit_code": sub_result.exit_code,
                                 "classification": sub_result.classification,
                                 "output_path": str(sub_output),

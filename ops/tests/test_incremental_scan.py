@@ -1389,20 +1389,119 @@ def test_run_resets_global_context_after_completion(
     assert inc._run_ctx.interrupted is False
 
 
-def test_per_chunk_timeout_with_pr_params() -> None:
-    """per_chunk_timeout = pr_timeout * pr_attempts * 2 when both are set."""
-    pr_timeout = 300
-    pr_attempts = 2
-    scan_timeout = 900
-    # With both set: 300 * 2 * 2 = 1200, clamped to max(60, 1200) = 1200
-    expected = max(60, pr_timeout * pr_attempts * 2)
-    assert expected == 1200
-    # Smaller values still respect the floor
-    small_expected = max(60, 10 * 1 * 2)
-    assert small_expected == 60
+def test_resolve_pr_review_budget_prefers_cli_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SECUREVIBES_PR_REVIEW_ATTEMPTS", "9")
+    monkeypatch.setenv("SECUREVIBES_PR_REVIEW_TIMEOUT_SECONDS", "999")
+
+    attempts, timeout = inc.resolve_pr_review_budget(2, 180)
+    assert attempts == 2
+    assert timeout == 180
 
 
-def test_per_chunk_timeout_without_pr_params() -> None:
-    """per_chunk_timeout = min(scan_timeout, 600) when pr params missing."""
-    assert min(900, 600) == 600
-    assert min(300, 600) == 300
+def test_resolve_pr_review_budget_uses_env_when_no_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SECUREVIBES_PR_REVIEW_ATTEMPTS", "3")
+    monkeypatch.setenv("SECUREVIBES_PR_REVIEW_TIMEOUT_SECONDS", "120")
+
+    attempts, timeout = inc.resolve_pr_review_budget(None, None)
+    assert attempts == 3
+    assert timeout == 120
+
+
+def test_resolve_pr_review_budget_falls_back_to_defaults_on_invalid_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SECUREVIBES_PR_REVIEW_ATTEMPTS", "invalid")
+    monkeypatch.setenv("SECUREVIBES_PR_REVIEW_TIMEOUT_SECONDS", "0")
+
+    attempts, timeout = inc.resolve_pr_review_budget(None, None)
+    assert attempts == inc.DEFAULT_PR_REVIEW_ATTEMPTS
+    assert timeout == inc.DEFAULT_PR_REVIEW_TIMEOUT_SECONDS
+
+
+def test_resolve_per_chunk_timeout_uses_raw_budget_for_explicit_overrides() -> None:
+    resolved, raw, cap, reason = inc.resolve_per_chunk_timeout(
+        scan_timeout_seconds=900,
+        effective_pr_attempts=2,
+        effective_pr_timeout_seconds=300,
+        has_explicit_pr_overrides=True,
+    )
+    assert resolved == 1200
+    assert raw == 1200
+    assert cap == 1200
+    assert reason == "explicit_pr_budget"
+
+
+def test_resolve_per_chunk_timeout_applies_cap_without_explicit_overrides() -> None:
+    resolved, raw, cap, reason = inc.resolve_per_chunk_timeout(
+        scan_timeout_seconds=900,
+        effective_pr_attempts=4,
+        effective_pr_timeout_seconds=240,
+        has_explicit_pr_overrides=False,
+    )
+    assert raw == 1920
+    assert cap == 600
+    assert resolved == 600
+    assert reason == "derived_pr_budget_capped"
+
+
+def test_run_uses_effective_pr_budget_and_records_timeout_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    repo_dir: Path,
+    write_state,
+    sample_state: dict[str, object],
+) -> None:
+    args = build_args(repo_dir)
+    write_state(sample_state)
+    monkeypatch.setenv("SECUREVIBES_PR_REVIEW_ATTEMPTS", "2")
+    monkeypatch.setenv("SECUREVIBES_PR_REVIEW_TIMEOUT_SECONDS", "100")
+
+    seen_scan: dict[str, Any] = {}
+
+    monkeypatch.setattr(inc, "ensure_dependencies", _noop)
+    monkeypatch.setattr(inc, "ensure_repo", _noop)
+    monkeypatch.setattr(inc, "ensure_baseline_artifacts", _noop)
+    monkeypatch.setattr(inc, "git_fetch", _noop)
+    monkeypatch.setattr(inc, "resolve_head", lambda *_args: "newhead")
+    monkeypatch.setattr(inc, "is_ancestor", lambda *_args: True)
+    monkeypatch.setattr(inc, "get_commit_list", lambda *_args: ["c1"])
+    monkeypatch.setattr(inc, "generate_run_id", lambda: "RUN_TIMEOUT_META")
+
+    def fake_run_scan(
+        _repo: Path,
+        _base: str,
+        _head: str,
+        _model: str,
+        _severity: str,
+        _debug: bool,
+        output_path: Path,
+        timeout_seconds: int,
+        **kwargs: Any,
+    ) -> inc.ScanCommandResult:
+        seen_scan["timeout_seconds"] = timeout_seconds
+        seen_scan["kwargs"] = kwargs
+        return _valid_result(["securevibes", "pr-review"], output_path)
+
+    monkeypatch.setattr(inc, "run_scan", fake_run_scan)
+
+    exit_code = inc.run(args)
+    assert exit_code == 0
+    assert seen_scan["timeout_seconds"] == 400
+    assert seen_scan["kwargs"]["pr_attempts"] == 2
+    assert seen_scan["kwargs"]["pr_timeout"] == 100
+
+    run_record = (
+        repo_dir / ".securevibes" / "incremental_runs" / "RUN_TIMEOUT_META.json"
+    )
+    payload = json.loads(run_record.read_text(encoding="utf-8"))
+    assert payload["effective_pr_attempts"] == 2
+    assert payload["effective_pr_timeout_seconds"] == 100
+    assert payload["chunk_timeout_seconds"] == 400
+    assert payload["chunk_timeout_raw_seconds"] == 400
+    assert payload["chunk_timeout_cap_seconds"] == 600
+    assert payload["chunk_timeout_reason"] == "derived_pr_budget_capped"
+    assert payload["chunks"][0]["chunk_timeout_seconds"] == 400
+    assert payload["chunks"][0]["timeout_reason"] == "derived_pr_budget_capped"
