@@ -230,7 +230,7 @@ After a baseline scan produces `THREAT_MODEL.json`, generate `.securevibes/risk_
 Replace flat chunking with tiered processing:
 
 - Chunks are processed in commit order (same anchor model as today); tier determines review depth, not processing sequence.
-- For Phases 1-3, model routing is chunk-level: the highest-risk file in the chunk chooses the model (`critical -> Opus`, `moderate -> Sonnet`, `skip -> no LLM`, subject to skip safeguards).
+- For Phases 1-3, model routing is chunk-level: the highest-risk file in the chunk chooses the model (`critical -> Opus`, `moderate -> Sonnet`, `skip -> no LLM`), subject to cross-tier dependency-detection promotion and skip safeguards.
 - Mixed-tier chunks are processed as a single unit at the highest required depth to preserve anchor safety and avoid split-range gaps.
 - Skip-tier classification is recorded before anchor advancement (see Safety Invariants / Anchor Advancement Invariant).
 - Tier 3 batching: consecutive all-skip chunks can be batched for execution efficiency, but each constituent commit must be individually recorded as classified.
@@ -277,7 +277,7 @@ Stored in `.securevibes/design_decisions.json`, version-controlled with the repo
 
 1. **Developers write design decisions** when they make intentional security trade-offs. This is the natural point — they already write commit messages explaining "why." This captures it in a structured, machine-readable format.
 
-2. **Matched by component and file path.** During prompt assembly, design decisions are filtered by comparing their `component` and `references` fields against the files changed in the current chunk. This is exact matching — no search infrastructure needed.
+2. **Matched by exact + semantic relevance.** During prompt assembly, design decisions are first filtered by exact `component` and `references` matches against changed files. Then qmd semantic search supplements this by surfacing relevant decisions when relationships are not captured in explicit path/component fields. Exact matches take precedence; semantic matches are supplemental context.
 
 3. **Injected during prompt assembly** for every review of the affected component:
    ```
