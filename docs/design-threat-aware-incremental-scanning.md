@@ -19,7 +19,7 @@ Current incremental scanning treats all code changes equally. A 1-line change to
 
 ## Solution
 
-Use baseline scan artifacts (THREAT_MODEL.json, SECURITY.md, VULNERABILITIES.json) indexed in qmd as a **security-aware lens**. Before any LLM call, classify each chunk by what it touches and route to the appropriate model and review depth.
+Use baseline scan artifacts (THREAT_MODEL.json, SECURITY.md, VULNERABILITIES.json) as a **security-aware lens**. Before any LLM call, classify each chunk by what it touches and route to the appropriate model and review depth. Triage uses exact glob matching against `risk_map.json` (no external dependencies). Context injection uses qmd for semantic search to find relevant threats and findings for the code under review.
 
 ### Architecture
 
@@ -27,29 +27,31 @@ Use baseline scan artifacts (THREAT_MODEL.json, SECURITY.md, VULNERABILITIES.jso
 ┌─────────────────────────────────────────────────────────┐
 │                    Baseline Artifacts                     │
 │  SECURITY.md · THREAT_MODEL.json · VULNERABILITIES.json  │
+│  risk_map.json · design_decisions.json · decisions/      │
 └──────────────────────┬──────────────────────────────────┘
-                       │ qmd index + embed
-                       ▼
-              ┌─────────────────┐
-              │   qmd (memory)  │
-              │  BM25 + vectors │
-              └────────┬────────┘
                        │
-    ┌──────────────────┼──────────────────┐
-    │                  │                  │
-    ▼                  ▼                  ▼
-┌──────────┐   ┌──────────────┐   ┌─────────────┐
-│  File →   │   │  Threat ctx  │   │   Past       │
-│ Component │   │  injection   │   │  findings    │
-│  mapping  │   │  per chunk   │   │  retrieval   │
-└──────────┘   └──────────────┘   └─────────────┘
-    │                  │                  │
-    └──────────────────┼──────────────────┘
-                       ▼
-              ┌─────────────────┐
-              │ Risk-weighted   │
-              │ chunk pipeline  │
-              └─────────────────┘
+          ┌────────────┴────────────┐
+          ▼                         ▼
+  ┌──────────────┐         ┌──────────────┐
+  │   Triage     │         │   qmd index  │
+  │  (Phases 1-3)│         │  (Phase 5+7) │
+  │  glob match  │         │  BM25+vector │
+  └──────┬───────┘         └──────┬───────┘
+         │                        │
+         ▼                        ▼
+  ┌──────────────┐         ┌──────────────┐
+  │  File → Tier │         │  Semantic    │
+  │  assignment  │         │  context     │
+  │              │         │  retrieval   │
+  └──────┬───────┘         └──────┬───────┘
+         │                        │
+         └───────────┬────────────┘
+                     ▼
+            ┌─────────────────┐
+            │ Risk-weighted   │
+            │ chunk pipeline  │
+            │ (tier + context)│
+            └─────────────────┘
 ```
 
 ## Three-Tier Risk-Based Triage
@@ -62,13 +64,23 @@ Files touching security-critical components: auth, exec, sandbox, secrets, gatew
 - Threat context, design decisions, and decision traces injected during prompt assembly (see Phase 5)
 - ~600s per chunk, but these are the chunks that matter
 
-### Tier 2 — Moderate (Sonnet, standard review)
+### Tier 2 — Moderate (Sonnet, standard review + context injection for unmapped files)
 
-Files touching config, routing, plugins, API handlers, session management, browser relay, channels.
+Files touching config, routing, plugins, API handlers, session management, browser relay, channels. Also the default tier for unmapped files not in the risk map.
 
 - Standard review with **Sonnet**
-- No extra context injection
 - ~300s per chunk
+
+**Context injection for unmapped files:** When a chunk contains files not matched by any `risk_map.json` pattern, the reviewer receives existing threat model context via qmd so it can assess how the new code interacts with the system's known attack surfaces. This is critical for new attack surface detection — a new `src/secrets/` directory reviewed without knowing about existing credential handling threats produces a blind review.
+
+**New attack surface detection:** When unmapped files introduce an entirely new component (new top-level directory, new module with security-relevant patterns like auth, crypto, exec, secrets, network), the chunk is flagged for **incremental threat modeling** in addition to code review:
+
+1. The threat model subagent runs against the new component with the existing `THREAT_MODEL.json` as context
+2. New threats are appended to `THREAT_MODEL.json`
+3. `risk_map.json` is regenerated to include the new component
+4. Future scans classify the component at the correct tier
+
+This means the first review of a new attack surface is more expensive (threat modeling + code review), but all subsequent reviews are properly classified and contextualized.
 
 ### Tier 3 — Skip (no LLM call)
 
@@ -80,7 +92,28 @@ Docs, tests, CI config, changelog, package.json version bumps, README, comments-
 
 ### Component Risk Mapping
 
-Seeded from THREAT_MODEL.json, with file pattern overrides per repo (stored in `.securevibes/risk_map.json`):
+`risk_map.json` is **derived from THREAT_MODEL.json**, not hand-authored. The threat model is the source of truth for what is security-critical.
+
+#### Derivation from Threat Model
+
+Each threat in `THREAT_MODEL.json` has a `severity` (critical/high/medium/low) and `affected_components`. The risk map generation step:
+
+1. **Extracts components and severities** from all threats in the threat model.
+2. **Resolves components to file paths.** The threat model's `affected_components` field contains function/class names (e.g., `["process_request()", "LLMChain"]`), not file paths. Resolution uses:
+   - Grep/AST search to find which files define or contain those components
+   - Directory-level rollup: if multiple files in `src/gateway/credentials/` are matched, the glob becomes `src/gateway/credentials*`
+3. **Maps severity to tier:**
+   - `critical` or `high` severity threats → Tier 1 (critical)
+   - `medium` severity threats → Tier 2 (moderate)
+   - `low` severity threats → no entry (falls through to Tier 2 default for unmapped files)
+4. **Adds static skip patterns** for known non-security paths (docs, tests, CI config). These are not derived from the threat model — they're a fixed baseline.
+5. **Writes `.securevibes/risk_map.json`** with the merged result.
+
+Human overrides can be layered on top (promoting or demoting paths), but the base always comes from the threat model. When the threat model is updated (new baseline scan, new threats discovered), the risk map should be regenerated and overrides re-applied.
+
+#### Generated Output
+
+Example `risk_map.json` (generated from OpenClaw's threat model):
 
 ```json
 {
@@ -113,7 +146,12 @@ Seeded from THREAT_MODEL.json, with file pattern overrides per repo (stored in `
     "package.json",
     "README.md",
     "scripts/*"
-  ]
+  ],
+  "_meta": {
+    "generated_from": "THREAT_MODEL.json",
+    "generated_at": "2026-02-26T14:30:00Z",
+    "overrides_applied": false
+  }
 }
 ```
 
@@ -121,7 +159,7 @@ Seeded from THREAT_MODEL.json, with file pattern overrides per repo (stored in `
 
 **Safeguard precedence:** `risk_map.json` provides the initial tier, but skip-tier safeguards can override it. Example: `package.json` may match `skip` initially, then be promoted to Tier 2 when dependency-change safeguards trigger.
 
-**Unmapped files** default to Tier 2 (moderate) and get flagged for threat model update.
+**Unmapped files** default to Tier 2 (moderate) with context injection via qmd. If they introduce a new attack surface, they also trigger incremental threat modeling (see Tier 2 description).
 
 ### Projected Impact
 
@@ -140,16 +178,9 @@ Using OpenClaw's current commit distribution as a benchmark:
 
 ## Implementation Plan
 
-### Phase 1: Index Baseline Artifacts in qmd
+### Phase 1: Risk Map Generation
 
-After a full scan completes, index `.securevibes/` into qmd:
-
-```bash
-qmd add securevibes-artifacts .securevibes/**/*.{json,md}
-qmd update && qmd embed
-```
-
-This gives semantic search over components, threat models, known vulnerabilities, and architecture.
+After a baseline scan produces `THREAT_MODEL.json`, generate `.securevibes/risk_map.json` (see Component Risk Mapping / Derivation from Threat Model above). This is a one-time step per baseline scan, re-run when the threat model is updated.
 
 ### Phase 2: File → Component Mapping + Risk Scoring
 
@@ -157,31 +188,25 @@ This gives semantic search over components, threat models, known vulnerabilities
 
 1. On each run, before chunking:
    - Get changed files: `git diff --name-only base..head`
-   - Match against `.securevibes/risk_map.json` patterns (fast, no LLM)
-   - For unmapped files, query qmd: `qmd search "security relevance of <filepath>"` against indexed artifacts
-   - Score each file by matched component's risk level
+   - Match against `.securevibes/risk_map.json` glob patterns (fast, no LLM)
+   - Unmapped files default to Tier 2
+   - Score each file by matched tier
 
-2. Classify the chunk by highest-risk file:
+2. Detect new attack surfaces among unmapped files:
+   - If unmapped files introduce a new component (new top-level directory or module with security-relevant patterns: auth, crypto, exec, secrets, network, permissions), flag the chunk for incremental threat modeling (see Tier 2 description)
+   - Otherwise, log unmapped files for threat model update on next baseline scan
+
+3. Classify the chunk by highest-risk file:
    - Any file matches critical → Tier 1
    - Any file matches moderate → Tier 2
    - All files are skip-tier → Tier 3
 
-3. Route to appropriate model and depth.
+4. Route to appropriate model and depth.
 
 **New module: `ops/risk_scorer.py`**
-- Parse THREAT_MODEL.json for component definitions + risk levels
-- Map file paths to components using directory patterns + qmd semantic matching
+- Input: `risk_map.json` + list of changed files
+- Match file paths against glob patterns from the risk map
 - Output: `list[FileRisk]` with file, component, tier, relevant_threats
-
-#### qmd Availability
-
-- Phases 1-3 MUST work without qmd using only `risk_map.json` glob pattern matching.
-- qmd is required starting Phase 4 for semantic search over design decisions and decision traces.
-- When qmd is configured but unavailable (process down or query timeout > 5s):
-  - Fall back to `risk_map.json` pattern matching only.
-  - Log a degradation warning: `"qmd unavailable, falling back to pattern-only triage"`.
-  - Do NOT fail the scan; degraded triage is better than no scan.
-- qmd query results are cached per scan run (keyed by file path) to avoid redundant queries.
 
 #### Component Mapping Quality
 
@@ -243,11 +268,7 @@ Stored in `.securevibes/design_decisions.json`, version-controlled with the repo
 
 1. **Developers write design decisions** when they make intentional security trade-offs. This is the natural point — they already write commit messages explaining "why." This captures it in a structured, machine-readable format.
 
-2. **Indexed in qmd** alongside threat model and vulnerability data:
-   ```bash
-   qmd add securevibes-decisions .securevibes/design_decisions.json
-   qmd update && qmd embed
-   ```
+2. **Matched by component and file path.** During prompt assembly, design decisions are filtered by comparing their `component` and `references` fields against the files changed in the current chunk. This is exact matching — no search infrastructure needed.
 
 3. **Injected during prompt assembly** for every review of the affected component:
    ```
@@ -274,7 +295,7 @@ Stored in `.securevibes/design_decisions.json`, version-controlled with the repo
 | **Granularity** | Per architectural decision | Per finding instance | Per component behavior |
 | **Who writes it** | Developer/architect | Security reviewer | Security + dev together |
 | **Lives where** | `.securevibes/design_decisions.json` | `.securevibes/decisions/` | `THREAT_MODEL.json` |
-| **Survives personnel changes** | ✅ Version-controlled | ✅ Indexed | ✅ Version-controlled |
+| **Survives personnel changes** | ✅ Version-controlled | ✅ Version-controlled | ✅ Version-controlled |
 
 #### Threat Model Annotations (Lightweight Alternative)
 
@@ -298,7 +319,7 @@ This is lighter weight — just a list of "this is not a bug" — but lacks the 
 
 No other scanner lets developers declare design intent that the AI reviewer actually understands. Traditional SAST/DAST tools have suppression comments (`// nosec`, `@SuppressWarnings`) that silence findings blindly. Design decisions are the opposite — they explain *why* a behavior is intentional, under what conditions the decision should be revisited, and they feed the reviewer context that makes it smarter, not quieter.
 
-### Phase 5: Context Injection via Prompt Assembly
+### Phase 5: Context Injection via Prompt Assembly + qmd
 
 **In `securevibes pr-review` (packages/core change):**
 
@@ -311,20 +332,49 @@ Context injection extends the existing prompt assembly path in `scanner.py` (`pr
 
 No new SDK hooks are required for Phase 5.
 
+#### Matching: Exact + Semantic
+
+Context retrieval uses two mechanisms:
+
+1. **Exact matching** — design decisions are matched by their `references` (file paths) and `component` fields. Decision traces are matched by `component` and `mitigated_by` paths. This handles cases where the relationship between changed files and context is explicitly recorded.
+
+2. **qmd semantic search** — for finding relevant threats, past findings, and design decisions where the relationship is NOT captured in explicit path references. Example: a PR changes `src/gateway/server/http-handler.ts`, and the threat model has a threat about "API request smuggling via malformed headers" with `affected_components: ["HttpServer", "requestParser"]`. The file path doesn't appear in the threat entry. qmd bridges this gap by searching indexed artifacts for content relevant to the changed files.
+
+qmd is indexed after each baseline scan and re-indexed after artifact updates (see Phase 7):
+
+```bash
+qmd add securevibes-artifacts .securevibes/**/*.{json,md}
+qmd update && qmd embed
+```
+
+#### Context Sections
+
 Append new context sections to `contextualized_prompt`:
 
 - `## Design Decisions for [{component}]`
   - Source: `.securevibes/design_decisions.json`
-  - Filter: decisions matching affected component(s)
+  - Matching: exact path/component match + qmd semantic match against decision text
 - `## Decision Traces for [{component}]`
   - Source: `.securevibes/decisions/`
-  - Filter: traces matching affected component(s), excluding `fixed` verdicts
+  - Matching: exact component/path match, excluding `fixed` verdicts
+- `## Relevant Threats`
+  - Source: `THREAT_MODEL.json`
+  - Matching: qmd semantic search from changed file paths against indexed threats (extends existing `threat_context_summary`)
 - `## Relevant Past Findings`
   - Source: `VULNERABILITIES.json`
-  - Filter: findings matching affected component(s) and changed paths (extends existing `vuln_context_summary`)
+  - Matching: exact path match + qmd semantic match against indexed findings (extends existing `vuln_context_summary`)
   - Trust rule: load from trusted base state when version-controlled; if local-only artifact, treat as advisory context and never use it to reduce review depth
 
-Feedback loop happens after each scan run: log which design decisions/traces were injected and whether findings were produced for the same component(s). This replaces the prior hook-based relevance-tracking concept.
+#### Context Injection Scope by Tier
+
+| Tier | Context Injected |
+|------|-----------------|
+| Tier 1 (Critical) | Full: design decisions + decision traces + relevant threats + past findings via qmd |
+| Tier 2 (Mapped) | None — these are known moderate-risk paths with established threat coverage |
+| Tier 2 (Unmapped) | Relevant threats + past findings via qmd — the reviewer needs system context to assess how new code interacts with existing attack surfaces |
+| Tier 3 (Skip) | None — no LLM call |
+
+Feedback loop happens after each scan run: log which context was injected and whether findings were produced for the same component(s).
 
 ### Phase 6: Decision Traces — Institutional Triage Memory
 
@@ -368,10 +418,11 @@ When a finding is triaged (false positive, accepted risk, mitigated elsewhere), 
 
 After each scan:
 1. New findings written to VULNERABILITIES.json (already happens with `--update-artifacts`)
-2. Re-index: `qmd update && qmd embed`
-3. Post-scan telemetry tracks relevance: did injected threat/decision context for component X lead to finding Y?
-4. Prune low-relevance threat context over time (keeps prompts lean)
-5. Flag decisions whose `mitigated_by` files changed for re-review
+2. If threat model was updated (new attack surface detected in Phase 2), regenerate `risk_map.json`
+3. Re-index artifacts in qmd: `qmd update && qmd embed` — keeps Phase 5 context injection current
+4. Post-scan telemetry tracks relevance: did injected context for component X lead to finding Y?
+5. Prune low-relevance threat context over time (keeps prompts lean)
+6. Flag decisions whose `mitigated_by` files changed for re-review
 
 ## Cost Model
 
@@ -422,16 +473,16 @@ These safeguards are deterministic pattern/regex checks, not LLM-based checks.
 
 1. **Phase 1-2** — biggest ROI, pure wrapper change. No changes to core securevibes needed.
 2. **Phase 3** — wrapper refactor, depends on Phase 2.
-3. **Phase 4** — design decisions file schema + qmd indexing. Low effort, high impact on false positive reduction. Can be adopted incrementally per repo.
-4. **Phase 5** — extends existing prompt assembly in securevibes core to inject design decisions + decision traces + past findings context.
-5. **Phase 6** — decision traces for reactive triage. Needs a CLI flow + qmd integration.
+3. **Phase 4** — design decisions file schema. Low effort, high impact on false positive reduction. Can be adopted incrementally per repo.
+4. **Phase 5** — extends existing prompt assembly in securevibes core to inject design decisions + decision traces + past findings context. Requires qmd for semantic context retrieval.
+5. **Phase 6** — decision traces for reactive triage. Needs a CLI flow for recording triage decisions.
 6. **Phase 7** — metrics collection, added incrementally.
 
 ## Dependencies
 
-- **qmd** — BM25 + vector search CLI
-- **THREAT_MODEL.json** — must exist from baseline scan
+- **THREAT_MODEL.json** — must exist from baseline scan (source of truth for risk map generation)
 - **Baseline artifacts** — SECURITY.md, VULNERABILITIES.json
+- **qmd** — BM25 + vector search CLI (Phase 5 context injection, Phase 7 re-indexing). Not required for triage (Phases 1-3).
 - **Prompt assembly path** — `pr_review()` in `packages/core/securevibes/scanner/scanner.py` (Phase 5 extension point)
 - **design_decisions.json** — optional, created by dev team (Phase 4)
 
@@ -439,6 +490,5 @@ These safeguards are deterministic pattern/regex checks, not LLM-based checks.
 
 1. **Risk tiers configurable per repo?** Yes. `risk_map.json` is per-repo; teams can promote paths (including `docs/*`) to moderate when docs carry security guidance.
 2. **How to handle new files not in threat model?** Default to Tier 2 and log for threat model update.
-3. **Is qmd required?** Optional with graceful degradation for triage (pattern-only fallback).
-4. **Multi-repo support?** Each repo has its own `risk_map.json` and qmd collection; cross-repo references are out of scope.
-5. **qmd query granularity?** Per-file for triage classification, per-component for context injection; cache results per scan run.
+3. **Where is qmd used?** Phase 5 (context injection) and Phase 7 (re-indexing). qmd provides semantic search to find relevant threats, findings, and design decisions where the relationship between changed files and context is not captured in explicit path references. Not used for triage (Phases 1-3) — tier classification uses exact glob matching against `risk_map.json`.
+4. **Multi-repo support?** Each repo has its own `risk_map.json` and artifact set; cross-repo references are out of scope.
