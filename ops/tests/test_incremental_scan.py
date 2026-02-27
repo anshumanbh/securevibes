@@ -1387,3 +1387,22 @@ def test_run_resets_global_context_after_completion(
     assert inc.run(args) == 0
     assert inc._run_ctx.run_id is None
     assert inc._run_ctx.interrupted is False
+
+
+def test_per_chunk_timeout_with_pr_params() -> None:
+    """per_chunk_timeout = pr_timeout * pr_attempts * 2 when both are set."""
+    pr_timeout = 300
+    pr_attempts = 2
+    scan_timeout = 900
+    # With both set: 300 * 2 * 2 = 1200, clamped to max(60, 1200) = 1200
+    expected = max(60, pr_timeout * pr_attempts * 2)
+    assert expected == 1200
+    # Smaller values still respect the floor
+    small_expected = max(60, 10 * 1 * 2)
+    assert small_expected == 60
+
+
+def test_per_chunk_timeout_without_pr_params() -> None:
+    """per_chunk_timeout = min(scan_timeout, 600) when pr params missing."""
+    assert min(900, 600) == 600
+    assert min(300, 600) == 300

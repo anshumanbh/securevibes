@@ -991,6 +991,15 @@ def run(args: argparse.Namespace) -> int:
     pr_attempts: int | None = getattr(args, "pr_attempts", None)
     pr_timeout: int | None = getattr(args, "pr_timeout", None)
     auto_triage: bool = getattr(args, "auto_triage", False)
+
+    # Per-chunk timeout: cap individual chunk runs so one hung chunk can't
+    # consume the entire scan budget.  When pr_timeout and pr_attempts are
+    # known we allow 2x the expected max wall-clock per attempt; otherwise
+    # fall back to the lesser of scan_timeout and 600s (10 min).
+    if pr_timeout is not None and pr_attempts is not None:
+        per_chunk_timeout = max(60, pr_timeout * pr_attempts * 2)
+    else:
+        per_chunk_timeout = min(scan_timeout, 600)
     no_fallback: bool = getattr(args, "no_fallback", False)
 
     ensure_dependencies()
@@ -1348,7 +1357,7 @@ def run(args: argparse.Namespace) -> int:
                     args.severity,
                     args.debug,
                     chunk_output,
-                    scan_timeout,
+                    per_chunk_timeout,
                     pr_attempts=pr_attempts,
                     pr_timeout=pr_timeout,
                     auto_triage=auto_triage,
@@ -1399,7 +1408,7 @@ def run(args: argparse.Namespace) -> int:
                             args.severity,
                             args.debug,
                             sub_output,
-                            scan_timeout,
+                            per_chunk_timeout,
                             pr_attempts=pr_attempts,
                             pr_timeout=pr_timeout,
                             auto_triage=auto_triage,
