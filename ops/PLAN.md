@@ -18,6 +18,16 @@ and writes structured run records under `.securevibes/incremental_runs/`.
   - `--pr-attempts` — override PR review retry count (default from env or `4`)
   - `--pr-timeout` — override per-attempt timeout in seconds (default from env or `240`)
   - `--auto-triage` — deterministic triage pre-filter to reduce budget for low-risk diffs (docs, tests, config-only changes)
+- Maintains a threat-aware `risk_map.json`:
+  - Loads `.securevibes/risk_map.json` when present.
+  - Generates it from `THREAT_MODEL.json` when missing.
+- Scores each chunk by risk tier before invoking `securevibes pr-review`:
+  - `critical` → routes to `opus`
+  - `moderate` → routes to `sonnet`
+  - `skip` → records classification and advances anchor without an LLM call
+- Applies deterministic safeguards:
+  - dependency manifest/lockfile changes promote skip chunks to moderate
+  - policy/context file edits under `.securevibes/` force critical tier
 
 ## Rewrite policy behavior
 

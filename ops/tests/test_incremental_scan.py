@@ -79,6 +79,17 @@ def test_load_state_returns_none_when_missing(state_path: Path) -> None:
     assert inc.load_state(state_path) is None
 
 
+def test_ensure_baseline_artifacts_requires_vulnerabilities(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir(parents=True)
+    (securevibes_dir / "SECURITY.md").write_text("# security", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="VULNERABILITIES.json"):
+        inc.ensure_baseline_artifacts(repo)
+
+
 def test_load_state_returns_dict(
     state_path: Path, sample_state: dict[str, object]
 ) -> None:
@@ -1505,3 +1516,111 @@ def test_run_uses_effective_pr_budget_and_records_timeout_metadata(
     assert payload["chunk_timeout_reason"] == "derived_pr_budget_capped"
     assert payload["chunks"][0]["chunk_timeout_seconds"] == 400
     assert payload["chunks"][0]["timeout_reason"] == "derived_pr_budget_capped"
+
+
+def test_run_skip_tier_chunk_advances_anchor_without_pr_review(
+    monkeypatch: pytest.MonkeyPatch,
+    repo_dir: Path,
+    state_path: Path,
+    write_state,
+    sample_state: dict[str, object],
+) -> None:
+    args = build_args(repo_dir)
+    write_state(sample_state)
+
+    monkeypatch.setattr(inc, "ensure_dependencies", _noop)
+    monkeypatch.setattr(inc, "ensure_repo", _noop)
+    monkeypatch.setattr(inc, "ensure_baseline_artifacts", _noop)
+    monkeypatch.setattr(inc, "git_fetch", _noop)
+    monkeypatch.setattr(inc, "resolve_head", lambda *_args: "newhead")
+    monkeypatch.setattr(inc, "is_ancestor", lambda *_args: True)
+    monkeypatch.setattr(inc, "get_commit_list", lambda *_args: ["c1"])
+    monkeypatch.setattr(inc, "generate_run_id", lambda: "RUN_SKIP_TIER")
+    monkeypatch.setattr(inc, "load_or_generate_risk_map", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        inc,
+        "determine_chunk_risk",
+        lambda *_args, **_kwargs: inc.ChunkRiskDecision(
+            tier="skip",
+            model=None,
+            reasons=("all_files_matched_skip_patterns",),
+            dependency_only=False,
+            dependency_files=(),
+            unmapped_files=(),
+            new_attack_surface=False,
+        ),
+    )
+
+    def fail_if_called(*_args: Any, **_kwargs: Any) -> None:
+        pytest.fail("run_scan should not be called for skip-tier chunks")
+
+    monkeypatch.setattr(inc, "run_scan", fail_if_called)
+
+    exit_code = inc.run(args)
+    assert exit_code == 0
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["last_status"] == "success"
+    assert state["last_seen_sha"] == "newhead"
+
+    run_record_path = (
+        repo_dir / ".securevibes" / "incremental_runs" / "RUN_SKIP_TIER.json"
+    )
+    run_record = json.loads(run_record_path.read_text(encoding="utf-8"))
+    assert run_record["status"] == "success"
+    assert run_record["chunks"][0]["chunk_tier"] == "skip"
+    assert run_record["chunks"][0]["mode"] == "skip_no_llm"
+
+
+def test_run_critical_tier_routes_chunk_to_opus_model(
+    monkeypatch: pytest.MonkeyPatch,
+    repo_dir: Path,
+    write_state,
+    sample_state: dict[str, object],
+) -> None:
+    args = build_args(repo_dir)
+    write_state(sample_state)
+    seen: dict[str, Any] = {}
+
+    monkeypatch.setattr(inc, "ensure_dependencies", _noop)
+    monkeypatch.setattr(inc, "ensure_repo", _noop)
+    monkeypatch.setattr(inc, "ensure_baseline_artifacts", _noop)
+    monkeypatch.setattr(inc, "git_fetch", _noop)
+    monkeypatch.setattr(inc, "resolve_head", lambda *_args: "newhead")
+    monkeypatch.setattr(inc, "is_ancestor", lambda *_args: True)
+    monkeypatch.setattr(inc, "get_commit_list", lambda *_args: ["c1"])
+    monkeypatch.setattr(inc, "generate_run_id", lambda: "RUN_CRITICAL_TIER")
+    monkeypatch.setattr(inc, "load_or_generate_risk_map", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        inc,
+        "determine_chunk_risk",
+        lambda *_args, **_kwargs: inc.ChunkRiskDecision(
+            tier="critical",
+            model="opus",
+            reasons=("critical_pattern_match",),
+            dependency_only=False,
+            dependency_files=(),
+            unmapped_files=(),
+            new_attack_surface=False,
+        ),
+    )
+
+    def fake_run_scan(
+        _repo: Path,
+        _base: str,
+        _head: str,
+        model: str,
+        _severity: str,
+        _debug: bool,
+        output_path: Path,
+        _timeout_seconds: int,
+        **_kwargs: Any,
+    ) -> inc.ScanCommandResult:
+        seen["model"] = model
+        return _valid_result(["securevibes"], output_path)
+
+    monkeypatch.setattr(inc, "run_scan", fake_run_scan)
+
+    exit_code = inc.run(args)
+    assert exit_code == 0
+    assert seen["model"] == "opus"

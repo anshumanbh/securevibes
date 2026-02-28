@@ -19,7 +19,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
 
 try:
     import fcntl
@@ -50,6 +50,21 @@ DIFF_TOO_LARGE_MARKERS = (
     "diff context exceeds",
 )
 RUN_RECORD_NAME_RE = re.compile(r"^\d{8}T\d{6}Z-[0-9a-f]{6}\.json$")
+DEFAULT_CRITICAL_MODEL = "opus"
+DEFAULT_MODERATE_MODEL = "sonnet"
+
+
+@dataclass(frozen=True)
+class ChunkRiskDecision:
+    """Chunk-level risk routing metadata."""
+
+    tier: str
+    model: str | None
+    reasons: tuple[str, ...]
+    dependency_only: bool
+    dependency_files: tuple[str, ...]
+    unmapped_files: tuple[str, ...]
+    new_attack_surface: bool
 
 
 @dataclass
@@ -328,6 +343,7 @@ def ensure_baseline_artifacts(repo: Path) -> None:
     required = [
         securevibes_dir / "SECURITY.md",
         securevibes_dir / "THREAT_MODEL.json",
+        securevibes_dir / "VULNERABILITIES.json",
     ]
     missing = [str(path) for path in required if not path.exists()]
     if missing:
@@ -486,6 +502,224 @@ def get_diff_stats(
         except ValueError:
             pass
     return (file_count, total_lines)
+
+
+def get_diff_patch(
+    repo: Path,
+    base: str,
+    head: str,
+    timeout_seconds: int = DEFAULT_GIT_TIMEOUT_SECONDS,
+) -> str:
+    """Return unified diff patch for a commit range."""
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--no-color", f"{base}..{head}"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"git diff timed out after {timeout_seconds}s") from exc
+    if result.returncode != 0:
+        stderr = result.stderr.strip() or "git diff failed"
+        raise RuntimeError(stderr)
+    return result.stdout
+
+
+def _normalize_repo_path(path: str) -> str:
+    normalized = path.strip().replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    normalized = re.sub(r"/+", "/", normalized)
+    return normalized.strip("/")
+
+
+def _parse_changed_files_from_patch(patch: str) -> list[dict[str, Any]]:
+    """Parse changed file metadata from unified patch text."""
+    changed: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+
+    for raw_line in patch.splitlines():
+        line = raw_line.rstrip("\n")
+        if line.startswith("diff --git "):
+            if current and current.get("path"):
+                changed.append(current)
+            parts = line.split()
+            old_path = ""
+            new_path = ""
+            if len(parts) >= 4:
+                old_path = _normalize_repo_path(
+                    parts[2][2:] if parts[2].startswith("a/") else parts[2]
+                )
+                new_path = _normalize_repo_path(
+                    parts[3][2:] if parts[3].startswith("b/") else parts[3]
+                )
+            current = {
+                "old_path": old_path,
+                "new_path": new_path,
+                "path": new_path or old_path,
+                "is_new": False,
+                "is_deleted": False,
+                "is_renamed": False,
+                "added_lines": [],
+            }
+            continue
+
+        if current is None:
+            continue
+
+        if line.startswith("new file mode"):
+            current["is_new"] = True
+            continue
+        if line.startswith("deleted file mode"):
+            current["is_deleted"] = True
+            continue
+        if line.startswith("rename from "):
+            current["is_renamed"] = True
+            current["old_path"] = _normalize_repo_path(line[len("rename from ") :])
+            continue
+        if line.startswith("rename to "):
+            current["is_renamed"] = True
+            new_path = _normalize_repo_path(line[len("rename to ") :])
+            current["new_path"] = new_path
+            current["path"] = new_path or current.get("old_path", "")
+            continue
+        if line.startswith("+++ "):
+            raw_path = line[4:].strip()
+            if raw_path.startswith("b/"):
+                raw_path = raw_path[2:]
+            if raw_path not in {"/dev/null", "dev/null"}:
+                new_path = _normalize_repo_path(raw_path)
+                if new_path:
+                    current["new_path"] = new_path
+                    current["path"] = new_path
+            continue
+        if line.startswith("--- "):
+            raw_path = line[4:].strip()
+            if raw_path.startswith("a/"):
+                raw_path = raw_path[2:]
+            if raw_path not in {"/dev/null", "dev/null"}:
+                old_path = _normalize_repo_path(raw_path)
+                if old_path:
+                    current["old_path"] = old_path
+                    if not current.get("path"):
+                        current["path"] = old_path
+            continue
+        if line.startswith("+") and not line.startswith("+++"):
+            current["added_lines"].append(line[1:])
+
+    if current and current.get("path"):
+        changed.append(current)
+    return changed
+
+
+def _resolve_component_patterns(repo: Path, component: str) -> list[str]:
+    """Resolve non-path component names into file globs."""
+    from securevibes.scanner.risk_scorer import resolve_component_globs
+
+    try:
+        return resolve_component_globs(repo, component)
+    except OSError:
+        return []
+
+
+def load_or_generate_risk_map(
+    repo: Path,
+    securevibes_dir: Path,
+) -> dict[str, object]:
+    """Load ``risk_map.json`` or generate it from THREAT_MODEL.json."""
+    from securevibes.scanner.risk_scorer import (
+        build_risk_map_from_threat_model,
+        load_risk_map,
+        load_threat_model_entries,
+        save_risk_map,
+    )
+
+    risk_map_path = securevibes_dir / "risk_map.json"
+    if risk_map_path.exists():
+        try:
+            return load_risk_map(risk_map_path)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            raise RuntimeError(f"Invalid risk map at {risk_map_path}: {exc}") from exc
+
+    threat_model_path = securevibes_dir / "THREAT_MODEL.json"
+    try:
+        threats = load_threat_model_entries(threat_model_path)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeError(
+            f"Unable to read THREAT_MODEL.json for risk map generation: {exc}"
+        ) from exc
+
+    risk_map = build_risk_map_from_threat_model(
+        threats,
+        component_resolver=lambda component: _resolve_component_patterns(
+            repo, component
+        ),
+    )
+    save_risk_map(risk_map_path, risk_map)
+    return risk_map
+
+
+def determine_chunk_risk(
+    repo: Path,
+    base: str,
+    head: str,
+    risk_map: Mapping[str, object],
+    timeout_seconds: int = DEFAULT_GIT_TIMEOUT_SECONDS,
+) -> ChunkRiskDecision:
+    """Classify a chunk risk tier using deterministic file/path signals."""
+    from securevibes.scanner.risk_scorer import ChangedFile, classify_chunk
+
+    try:
+        patch = get_diff_patch(repo, base, head, timeout_seconds)
+    except RuntimeError:
+        return ChunkRiskDecision(
+            tier="moderate",
+            model=DEFAULT_MODERATE_MODEL,
+            reasons=("risk_classification_unavailable",),
+            dependency_only=False,
+            dependency_files=(),
+            unmapped_files=(),
+            new_attack_surface=False,
+        )
+
+    changed_files: list[ChangedFile] = []
+    for item in _parse_changed_files_from_patch(patch):
+        path = item.get("path")
+        if not isinstance(path, str) or not path:
+            continue
+
+        status = "M"
+        if item.get("is_new"):
+            status = "A"
+        elif item.get("is_deleted"):
+            status = "D"
+        elif item.get("is_renamed"):
+            status = "R"
+        added_lines_raw = item.get("added_lines", [])
+        added_lines = tuple(line for line in added_lines_raw if isinstance(line, str))
+        changed_files.append(
+            ChangedFile(path=path, status=status, added_lines=added_lines)
+        )
+
+    chunk_risk = classify_chunk(changed_files, risk_map)
+    model = chunk_risk.model
+    if chunk_risk.tier == "critical":
+        model = DEFAULT_CRITICAL_MODEL
+    elif chunk_risk.tier == "moderate":
+        model = DEFAULT_MODERATE_MODEL
+
+    return ChunkRiskDecision(
+        tier=chunk_risk.tier,
+        model=model,
+        reasons=chunk_risk.reasons,
+        dependency_only=chunk_risk.dependency_only,
+        dependency_files=chunk_risk.dependency_files,
+        unmapped_files=chunk_risk.unmapped_files,
+        new_attack_surface=chunk_risk.new_attack_surface,
+    )
 
 
 def compute_chunks_by_count(
@@ -1076,6 +1310,7 @@ def run(args: argparse.Namespace) -> int:
 
     securevibes_dir = repo / ".securevibes"
     securevibes_dir.mkdir(parents=True, exist_ok=True)
+    risk_map: dict[str, object] = {}
 
     state_path = resolve_repo_path(repo, args.state_file)
     log_file = resolve_repo_path(repo, args.log_file)
@@ -1094,6 +1329,8 @@ def run(args: argparse.Namespace) -> int:
 
         # Detect stale/interrupted runs from previous invocations
         _recover_stale_runs(runs_dir, log_file)
+
+        risk_map = load_or_generate_risk_map(repo, securevibes_dir)
 
         run_id = generate_run_id()
         run_record_path = runs_dir / f"{run_id}.json"
@@ -1441,12 +1678,59 @@ def run(args: argparse.Namespace) -> int:
                     f"range={base[:8]}..{head[:8]} files={fc} lines={tl}",
                 )
 
+                chunk_risk = determine_chunk_risk(
+                    repo,
+                    base,
+                    head,
+                    risk_map,
+                    timeout_seconds=git_timeout,
+                )
+                effective_model = chunk_risk.model or args.model
+                print(
+                    f"[incremental-scan] Chunk {idx}/{len(chunks)} tier={chunk_risk.tier} "
+                    f"model={effective_model if chunk_risk.tier != 'skip' else 'none'}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                append_log(
+                    log_file,
+                    f"run_id={run_id} chunk={idx}/{len(chunks)} tier={chunk_risk.tier} "
+                    f"reasons={','.join(chunk_risk.reasons)}",
+                )
+
+                if chunk_risk.tier == "skip":
+                    run_record["chunks"].append(
+                        {
+                            "index": idx,
+                            "base": base,
+                            "head": head,
+                            "mode": "skip_no_llm",
+                            "chunk_tier": "skip",
+                            "chunk_model": None,
+                            "tier_reasons": list(chunk_risk.reasons),
+                            "dependency_only": chunk_risk.dependency_only,
+                            "dependency_files": list(chunk_risk.dependency_files),
+                            "unmapped_files": list(chunk_risk.unmapped_files),
+                            "new_attack_surface": chunk_risk.new_attack_surface,
+                            "chunk_timeout_seconds": per_chunk_timeout,
+                            "timeout_reason": timeout_reason,
+                            "exit_code": 0,
+                            "classification": COMPLETED,
+                            "output_path": None,
+                            "stderr_tail": "",
+                            "command": [],
+                        }
+                    )
+                    last_successful_anchor = head
+                    _run_ctx.last_successful_anchor = head
+                    continue
+
                 chunk_output = runs_dir / f"{run_id}-chunk-{idx}.json"
                 result = run_scan(
                     repo,
                     base,
                     head,
-                    args.model,
+                    effective_model,
                     args.severity,
                     args.debug,
                     chunk_output,
@@ -1460,7 +1744,13 @@ def run(args: argparse.Namespace) -> int:
                         "index": idx,
                         "base": base,
                         "head": head,
-                        "chunk_tier": None,
+                        "chunk_tier": chunk_risk.tier,
+                        "chunk_model": effective_model,
+                        "tier_reasons": list(chunk_risk.reasons),
+                        "dependency_only": chunk_risk.dependency_only,
+                        "dependency_files": list(chunk_risk.dependency_files),
+                        "unmapped_files": list(chunk_risk.unmapped_files),
+                        "new_attack_surface": chunk_risk.new_attack_surface,
                         "chunk_timeout_seconds": per_chunk_timeout,
                         "timeout_reason": timeout_reason,
                         "exit_code": result.exit_code,
@@ -1493,6 +1783,43 @@ def run(args: argparse.Namespace) -> int:
                     fallback_triggered = True
                     for sub_idx, sub_sha in enumerate(sub_commits, start=1):
                         sub_base = base if sub_idx == 1 else sub_commits[sub_idx - 2]
+                        sub_risk = determine_chunk_risk(
+                            repo,
+                            sub_base,
+                            sub_sha,
+                            risk_map,
+                            timeout_seconds=git_timeout,
+                        )
+                        sub_model = sub_risk.model or args.model
+
+                        if sub_risk.tier == "skip":
+                            run_record["chunks"].append(
+                                {
+                                    "index": idx,
+                                    "sub_index": sub_idx,
+                                    "mode": "fallback_per_commit_skip_no_llm",
+                                    "base": sub_base,
+                                    "head": sub_sha,
+                                    "chunk_tier": "skip",
+                                    "chunk_model": None,
+                                    "tier_reasons": list(sub_risk.reasons),
+                                    "dependency_only": sub_risk.dependency_only,
+                                    "dependency_files": list(sub_risk.dependency_files),
+                                    "unmapped_files": list(sub_risk.unmapped_files),
+                                    "new_attack_surface": sub_risk.new_attack_surface,
+                                    "chunk_timeout_seconds": per_chunk_timeout,
+                                    "timeout_reason": timeout_reason,
+                                    "exit_code": 0,
+                                    "classification": COMPLETED,
+                                    "output_path": None,
+                                    "stderr_tail": "",
+                                    "command": [],
+                                }
+                            )
+                            last_successful_anchor = sub_sha
+                            _run_ctx.last_successful_anchor = sub_sha
+                            continue
+
                         sub_output = (
                             runs_dir / f"{run_id}-chunk-{idx}-sub-{sub_idx}.json"
                         )
@@ -1500,7 +1827,7 @@ def run(args: argparse.Namespace) -> int:
                             repo,
                             sub_base,
                             sub_sha,
-                            args.model,
+                            sub_model,
                             args.severity,
                             args.debug,
                             sub_output,
@@ -1516,7 +1843,13 @@ def run(args: argparse.Namespace) -> int:
                                 "mode": "fallback_per_commit",
                                 "base": sub_base,
                                 "head": sub_sha,
-                                "chunk_tier": None,
+                                "chunk_tier": sub_risk.tier,
+                                "chunk_model": sub_model,
+                                "tier_reasons": list(sub_risk.reasons),
+                                "dependency_only": sub_risk.dependency_only,
+                                "dependency_files": list(sub_risk.dependency_files),
+                                "unmapped_files": list(sub_risk.unmapped_files),
+                                "new_attack_surface": sub_risk.new_attack_surface,
                                 "chunk_timeout_seconds": per_chunk_timeout,
                                 "timeout_reason": timeout_reason,
                                 "exit_code": sub_result.exit_code,
