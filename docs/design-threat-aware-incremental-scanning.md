@@ -39,14 +39,19 @@ Threat-aware incremental scanning is only valid after a baseline scan has been c
    - each threat is marked `validated`, `invalidated`, or `needs_followup`
    - each status includes code evidence (file paths and rationale) captured during the baseline run
 
-### Baseline Quality Expectations (Non-Blocking)
+### Baseline Quality Contract (Blocking)
 
-These are quality targets for baseline fidelity. They are not hard gates for incremental eligibility.
+Baseline quality is a hard gate because baseline artifacts are the source of truth for incremental learning, tiering, and memory.
 
-- Architecture assessment should capture core components, key data flows, trust boundaries, authn/authz paths, and external integrations relevant to security.
-- Threat modeling should be in-depth for the repository domain and include agentic-specific threats when the app is agentic.
-- Baseline code-review should explicitly validate/invalidate modeled threats against real code and carry unresolved items as `needs_followup`.
+Incremental mode is allowed only when baseline outputs satisfy all checks:
+
+- Architecture assessment captures core components, key data flows, trust boundaries, authn/authz paths, and external integrations relevant to security.
+- Architecture assessment completion is phase-complete (no omitted SecureVibes assessment phases for that repository profile).
+- Threat modeling is in-depth for the repository domain and includes agentic-specific threats when the app is agentic.
+- Baseline code-review explicitly validates/invalidates modeled threats against real code and carries unresolved items as `needs_followup`.
 - `VULNERABILITIES.json` remains the canonical findings artifact name (not `volunteers.json`).
+
+If quality checks fail, incremental mode fails closed with explicit remediation guidance to rerun baseline.
 
 ### Architecture
 
@@ -430,7 +435,15 @@ Feedback loop happens after each scan run: log which context was injected and wh
 
 ### Phase 6: Decision Traces — Institutional Triage Memory
 
-When a finding is triaged (false positive, accepted risk, mitigated elsewhere), record a **decision trace**:
+When a finding is triaged (false positive, accepted risk, mitigated elsewhere), record a **decision trace**.
+
+Decision traces use **Agent Trace** for provenance and attribution (conversation/model/code-range lineage), while SecureVibes-specific fields remain canonical for security triage semantics.
+
+Reference standard:
+- https://agent-trace.dev/
+- https://github.com/cursor/agent-trace
+
+Decision trace record (SecureVibes schema + Agent Trace envelope):
 
 ```json
 {
@@ -444,9 +457,25 @@ When a finding is triaged (false positive, accepted risk, mitigated elsewhere), 
   "mitigated_by": ["src/agents/pi-tools.safe-bins.ts", "src/agents/sandbox-tool-policy.ts"],
   "decided_by": "anshuman",
   "decided_at": "2026-02-26",
-  "related_findings": ["sv-2026-0225-004"]
+  "related_findings": ["sv-2026-0225-004"],
+  "agent_trace": {
+    "id": "at_01HXYZ...",
+    "standard_version": "1.0",
+    "vcs_revision": "abc1234",
+    "conversation_url": "https://example.ai/c/123",
+    "contributor": "codex",
+    "model": "claude-sonnet-4.5",
+    "files": [
+      {
+        "path": "src/agents/sandbox-tool-policy.ts",
+        "ranges": [{"start": 42, "end": 73}]
+      }
+    ]
+  }
 }
 ```
+
+**Mapping rule:** Agent Trace fields capture provenance (`who/what/where`); SecureVibes fields capture security decision behavior (`verdict/conditions/mitigated_by`). Agent Trace does not replace verdict semantics.
 
 **Verdict types:**
 
@@ -476,6 +505,23 @@ After each scan:
 5. Prune low-relevance threat context over time (keeps prompts lean)
 6. Flag decisions whose `mitigated_by` files changed for re-review
 
+### Phase 8: Post-Baseline Findings Review + User Feedback Loop
+
+After baseline (and on each incremental run), findings are presented to the user with default visibility filtering:
+
+- Surface only `high` and `critical` findings by default.
+- Keep `medium`/`low` persisted and queryable for longitudinal risk tracking.
+
+Interactive review flow:
+
+1. User opens a finding (or set of findings) in conversational mode.
+2. System provides supporting context: threat entry, code evidence, prior decisions, and related artifacts.
+3. User can submit feedback (confirm issue, dispute issue, accepted risk, request more evidence, defer).
+4. Feedback updates decision traces and triage state for future runs.
+5. If user feedback invalidates prior assumptions, mark affected threat/finding context for re-validation on next scan.
+
+Feedback outcomes are written to decision traces with Agent Trace provenance so future reviewers can audit why a verdict changed and which conversation/code context drove the change.
+
 ## Cost Model
 
 Assuming a repo like OpenClaw (~5,300 files):
@@ -494,6 +540,7 @@ Assuming a repo like OpenClaw (~5,300 files):
 - Any PR that modifies these version-controlled policy/context files is auto-classified as Tier 1 (Critical), regardless of other file content.
 - The risk scorer loads policy via trusted git object reads (for example, `git show <merge-base>:.securevibes/risk_map.json`) rather than working-tree reads.
 - Decision traces under `.securevibes/decisions/` follow the same trust rule and are loaded from trusted base state.
+- Agent Trace metadata linked from decision traces follows the same trust rule; provenance references from untrusted PR head state are advisory-only and cannot suppress review depth.
 - If `VULNERABILITIES.json` is local-only (not version-controlled), it may be used as advisory context but MUST NOT lower tiering decisions or suppress review depth.
 
 ### Anchor Advancement Invariant
@@ -527,7 +574,7 @@ These safeguards are deterministic pattern/regex checks, not LLM-based checks.
 1. **Step 1 (core orchestrator)** — implement `securevibes incremental` in core with deterministic state/anchor/chunk invariants and tier-aware subagent routing.
 2. **Step 2 (compatibility shim)** — keep `ops/incremental_scan.py` as a thin delegating shim to preserve existing cron/ops entrypoints while parity tests run.
 3. **Step 3 (deprecation)** — remove wrapper-owned orchestration after parity and soak period; keep behavior contract and logs in the core command.
-4. **Step 4 (context + memory layers)** — roll out Phases 4-7 (design decisions, context injection, decision traces, compounding telemetry) incrementally.
+4. **Step 4 (context + memory layers)** — roll out Phases 4-8 (design decisions, context injection, decision traces, compounding telemetry, user feedback loop) incrementally.
 
 ## Dependencies
 
@@ -537,6 +584,7 @@ These safeguards are deterministic pattern/regex checks, not LLM-based checks.
 - **qmd** — BM25 + vector search CLI (Phase 5 context injection, Phase 7 re-indexing). Not required for triage (Phases 1-3).
 - **Prompt assembly path** — `pr_review()` in `packages/core/securevibes/scanner/scanner.py` (Phase 5 extension point)
 - **design_decisions.json** — optional, created by dev team (Phase 4)
+- **Agent Trace metadata** — provenance envelope for decision traces (Phase 6); SecureVibes verdict semantics remain canonical
 
 ## Resolved Decisions
 
@@ -548,6 +596,7 @@ These safeguards are deterministic pattern/regex checks, not LLM-based checks.
 6. **Wrapper future?** Wrapper-owned orchestration is being deprecated in favor of a core command; wrapper remains temporary compatibility shim.
 7. **Severity visibility policy?** Track all severities in artifacts; default user-facing output shows only high/critical.
 8. **Multi-repo support?** Each repo has its own `risk_map.json` and artifact set; cross-repo references are out of scope.
-9. **Do baseline quality expectations block incremental eligibility?** No. Baseline quality expectations are explicit but non-blocking.
-10. **Is post-baseline interactive user conversation/feedback flow included in this design?** No. Deferred for a separate design.
+9. **Does baseline quality block incremental eligibility?** Yes. Baseline quality contract is an explicit hard gate.
+10. **Is post-baseline interactive user conversation/feedback flow included in this design?** Yes. Included as Phase 8.
 11. **Canonical findings artifact name?** `VULNERABILITIES.json` (not `volunteers.json`).
+12. **Should Agent Trace be used for decision traces?** Yes. Agent Trace is the provenance standard; SecureVibes retains canonical security verdict fields.
