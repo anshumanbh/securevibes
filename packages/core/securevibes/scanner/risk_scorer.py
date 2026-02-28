@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -340,19 +341,46 @@ def resolve_component_globs(
     component: str,
     *,
     max_matches: int = 24,
+    max_depth: int = 6,
 ) -> list[str]:
     """Resolve non-path component names to file globs using lightweight path matching."""
     token = component.strip().lower().replace("()", "")
     if not token:
         return []
 
+    # Keep traversal bounded for large repositories.
+    excluded_dirs = {
+        ".git",
+        ".svn",
+        ".hg",
+        ".idea",
+        ".vscode",
+        ".venv",
+        "venv",
+        "node_modules",
+        "dist",
+        "build",
+        "__pycache__",
+    }
+
     matches: list[str] = []
-    for candidate in repo_root.rglob("*"):
-        if not candidate.is_file():
+    for root, dirs, files in os.walk(repo_root):
+        rel_root = Path(root).relative_to(repo_root)
+        depth = len(rel_root.parts)
+        dirs[:] = [
+            name
+            for name in dirs
+            if name not in excluded_dirs and (depth + 1) <= max_depth
+        ]
+        if depth > max_depth:
             continue
-        rel_path = normalize_path(str(candidate.relative_to(repo_root)))
-        if token in rel_path.lower():
-            matches.append(rel_path)
+
+        for filename in files:
+            rel_path = normalize_path(str(rel_root / filename))
+            if token in rel_path.lower():
+                matches.append(rel_path)
+            if len(matches) >= max_matches:
+                break
         if len(matches) >= max_matches:
             break
 
@@ -443,7 +471,9 @@ def load_risk_map(risk_map_path: Path) -> dict[str, object]:
         raise ValueError("risk_map.json must be a JSON object.")
 
     for bucket in ("critical", "moderate", "skip"):
-        value = parsed.get(bucket, [])
+        if bucket not in parsed:
+            raise ValueError(f"risk_map.json missing required field '{bucket}'.")
+        value = parsed[bucket]
         if not isinstance(value, list) or not all(
             isinstance(item, str) for item in value
         ):

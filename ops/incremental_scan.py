@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import signal
 import shutil
 import subprocess
@@ -50,8 +51,6 @@ DIFF_TOO_LARGE_MARKERS = (
     "diff context exceeds",
 )
 RUN_RECORD_NAME_RE = re.compile(r"^\d{8}T\d{6}Z-[0-9a-f]{6}\.json$")
-DEFAULT_CRITICAL_MODEL = "opus"
-DEFAULT_MODERATE_MODEL = "sonnet"
 
 
 @dataclass(frozen=True)
@@ -536,6 +535,20 @@ def _normalize_repo_path(path: str) -> str:
     return normalized.strip("/")
 
 
+def _decode_diff_path(raw_path: str) -> str:
+    """Decode a git diff path token that may be shell-quoted."""
+    candidate = raw_path.strip()
+    if not candidate:
+        return ""
+    try:
+        split_parts = shlex.split(candidate)
+        if len(split_parts) == 1:
+            candidate = split_parts[0]
+    except ValueError:
+        pass
+    return candidate.strip()
+
+
 def _parse_changed_files_from_patch(patch: str) -> list[dict[str, Any]]:
     """Parse changed file metadata from unified patch text."""
     changed: list[dict[str, Any]] = []
@@ -546,7 +559,10 @@ def _parse_changed_files_from_patch(patch: str) -> list[dict[str, Any]]:
         if line.startswith("diff --git "):
             if current and current.get("path"):
                 changed.append(current)
-            parts = line.split()
+            try:
+                parts = shlex.split(line)
+            except ValueError:
+                parts = line.split()
             old_path = ""
             new_path = ""
             if len(parts) >= 4:
@@ -578,16 +594,20 @@ def _parse_changed_files_from_patch(patch: str) -> list[dict[str, Any]]:
             continue
         if line.startswith("rename from "):
             current["is_renamed"] = True
-            current["old_path"] = _normalize_repo_path(line[len("rename from ") :])
+            current["old_path"] = _normalize_repo_path(
+                _decode_diff_path(line[len("rename from ") :])
+            )
             continue
         if line.startswith("rename to "):
             current["is_renamed"] = True
-            new_path = _normalize_repo_path(line[len("rename to ") :])
+            new_path = _normalize_repo_path(
+                _decode_diff_path(line[len("rename to ") :])
+            )
             current["new_path"] = new_path
             current["path"] = new_path or current.get("old_path", "")
             continue
         if line.startswith("+++ "):
-            raw_path = line[4:].strip()
+            raw_path = _decode_diff_path(line[4:])
             if raw_path.startswith("b/"):
                 raw_path = raw_path[2:]
             if raw_path not in {"/dev/null", "dev/null"}:
@@ -597,7 +617,7 @@ def _parse_changed_files_from_patch(patch: str) -> list[dict[str, Any]]:
                     current["path"] = new_path
             continue
         if line.startswith("--- "):
-            raw_path = line[4:].strip()
+            raw_path = _decode_diff_path(line[4:])
             if raw_path.startswith("a/"):
                 raw_path = raw_path[2:]
             if raw_path not in {"/dev/null", "dev/null"}:
@@ -623,6 +643,14 @@ def _resolve_component_patterns(repo: Path, component: str) -> list[str]:
         return resolve_component_globs(repo, component)
     except OSError:
         return []
+
+
+def _default_model_for_tier(tier: str) -> str | None:
+    from securevibes.scanner.risk_scorer import RISK_MODEL_BY_TIER
+
+    if tier in RISK_MODEL_BY_TIER:
+        return RISK_MODEL_BY_TIER[tier]
+    return None
 
 
 def load_or_generate_risk_map(
@@ -677,7 +705,7 @@ def determine_chunk_risk(
     except RuntimeError:
         return ChunkRiskDecision(
             tier="moderate",
-            model=DEFAULT_MODERATE_MODEL,
+            model=_default_model_for_tier("moderate"),
             reasons=("risk_classification_unavailable",),
             dependency_only=False,
             dependency_files=(),
@@ -705,11 +733,7 @@ def determine_chunk_risk(
         )
 
     chunk_risk = classify_chunk(changed_files, risk_map)
-    model = chunk_risk.model
-    if chunk_risk.tier == "critical":
-        model = DEFAULT_CRITICAL_MODEL
-    elif chunk_risk.tier == "moderate":
-        model = DEFAULT_MODERATE_MODEL
+    model = chunk_risk.model or _default_model_for_tier(chunk_risk.tier)
 
     return ChunkRiskDecision(
         tier=chunk_risk.tier,

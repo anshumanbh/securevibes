@@ -1201,6 +1201,93 @@ def test_compute_chunks_adaptive_handles_single_oversized_commit(
     assert chunks == [("base", "c1")]
 
 
+def test_parse_changed_files_from_patch_handles_quoted_paths_with_spaces() -> None:
+    patch = """diff --git "a/src/old name.py" "b/src/new name.py"
+similarity index 100%
+rename from src/old name.py
+rename to src/new name.py
+index 1111111..2222222 100644
+--- "a/src/old name.py"
++++ "b/src/new name.py"
+@@ -1 +1 @@
+-print("old")
++print("new")
+"""
+    changed = inc._parse_changed_files_from_patch(patch)
+
+    assert len(changed) == 1
+    assert changed[0]["is_renamed"] is True
+    assert changed[0]["old_path"] == "src/old name.py"
+    assert changed[0]["new_path"] == "src/new name.py"
+    assert changed[0]["path"] == "src/new name.py"
+
+
+def test_determine_chunk_risk_uses_parsed_patch_classification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch = """diff --git a/docs/readme.md b/docs/readme.md
+index 1111111..2222222 100644
+--- a/docs/readme.md
++++ b/docs/readme.md
+@@ -1 +1 @@
+-old
++new
+diff --git "a/src/security/auth service.py" "b/src/security/auth service.py"
+index 3333333..4444444 100644
+--- "a/src/security/auth service.py"
++++ "b/src/security/auth service.py"
+@@ -1 +1 @@
+-allow = False
++allow = True
+"""
+    monkeypatch.setattr(inc, "get_diff_patch", lambda *_args, **_kwargs: patch)
+    risk_map = {
+        "critical": ["src/security/*"],
+        "moderate": [],
+        "skip": ["docs/*"],
+    }
+
+    result = inc.determine_chunk_risk(
+        Path("/repo"),
+        "base",
+        "head",
+        risk_map,
+    )
+
+    assert result.tier == "critical"
+    assert result.model == "opus"
+    assert "critical_pattern_match" in result.reasons
+
+
+def test_determine_chunk_risk_extensionless_skip_safeguard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch = """diff --git a/Makefile b/Makefile
+index 1111111..2222222 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1 +1 @@
+-all:
++all: build
+"""
+    monkeypatch.setattr(inc, "get_diff_patch", lambda *_args, **_kwargs: patch)
+    risk_map = {
+        "critical": [],
+        "moderate": [],
+        "skip": ["Makefile"],
+    }
+
+    result = inc.determine_chunk_risk(
+        Path("/repo"),
+        "base",
+        "head",
+        risk_map,
+    )
+
+    assert result.tier == "moderate"
+    assert "skip_safeguard:extensionless_file" in result.reasons
+
+
 def test_recover_stale_runs_only_updates_primary_run_records(tmp_path: Path) -> None:
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()
