@@ -31,10 +31,22 @@ Threat-aware incremental scanning is only valid after a baseline scan has been c
    - `.securevibes/SECURITY.md`
    - `.securevibes/THREAT_MODEL.json`
    - `.securevibes/VULNERABILITIES.json`
-3. Threat modeling is produced by the **`threat-modeling` subagent**.
-4. For agentic applications, threat modeling must include OWASP ASI threats (via agentic threat-modeling skills).
+3. Threat modeling is produced by the **`threat-modeling` subagent** (fixed subagent contract, even when invoked ad hoc per chunk).
+4. For agentic applications, threat modeling must include OWASP ASI threats (via agentic threat-modeling skills); orchestration must pass repository/app profile so this path is auto-applied by the subagent.
 5. If prerequisites are missing or invalid, incremental mode fails closed and instructs the operator to run baseline scan.
 6. Canonical finding artifact name is `VULNERABILITIES.json`.
+7. Baseline threat outputs must include code-grounded validation status from baseline code-review:
+   - each threat is marked `validated`, `invalidated`, or `needs_followup`
+   - each status includes code evidence (file paths and rationale) captured during the baseline run
+
+### Baseline Quality Expectations (Non-Blocking)
+
+These are quality targets for baseline fidelity. They are not hard gates for incremental eligibility.
+
+- Architecture assessment should capture core components, key data flows, trust boundaries, authn/authz paths, and external integrations relevant to security.
+- Threat modeling should be in-depth for the repository domain and include agentic-specific threats when the app is agentic.
+- Baseline code-review should explicitly validate/invalidate modeled threats against real code and carry unresolved items as `needs_followup`.
+- `VULNERABILITIES.json` remains the canonical findings artifact name (not `volunteers.json`).
 
 ### Architecture
 
@@ -536,3 +548,6 @@ These safeguards are deterministic pattern/regex checks, not LLM-based checks.
 6. **Wrapper future?** Wrapper-owned orchestration is being deprecated in favor of a core command; wrapper remains temporary compatibility shim.
 7. **Severity visibility policy?** Track all severities in artifacts; default user-facing output shows only high/critical.
 8. **Multi-repo support?** Each repo has its own `risk_map.json` and artifact set; cross-repo references are out of scope.
+9. **Do baseline quality expectations block incremental eligibility?** No. Baseline quality expectations are explicit but non-blocking.
+10. **Is post-baseline interactive user conversation/feedback flow included in this design?** No. Deferred for a separate design.
+11. **Canonical findings artifact name?** `VULNERABILITIES.json` (not `volunteers.json`).
