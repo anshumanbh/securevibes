@@ -1,0 +1,36 @@
+{
+  "id": "GHSA-g8p2-7wf7-98mq",
+  "verification_pass": true,
+  "confidence": "high",
+  "checks": [
+    {
+      "name": "baseline_is_parent_of_earliest_intro",
+      "pass": true,
+      "details": "baseline=51dfd6efdb013cfc7e269e0bedf3a9bef0ed7023 earliest_intro=c74551c2ae0611f3ef0e691dc93a38372f366765"
+    },
+    {
+      "name": "baseline_ancestor_of_all_intro",
+      "pass": true,
+      "details": "baseline should precede introducing commits"
+    },
+    {
+      "name": "baseline_ancestor_of_all_fix",
+      "pass": true,
+      "details": "baseline should precede fix commits"
+    },
+    {
+      "name": "intro_precedes_patched_release",
+      "pass": true,
+      "details": "intro=c74551c2ae0611f3ef0e691dc93a38372f366765 patched_tag_commit=77e703c69b07a236c2f0962bd195e03aae1b8da0"
+    },
+    {
+      "name": "fix_at_or_before_patched_release",
+      "pass": true,
+      "details": "fix_head=a7534dc22382c42465f3676724536a014ce0cbf7 patched_tag_commit=77e703c69b07a236c2f0962bd195e03aae1b8da0"
+    }
+  ],
+  "range_commits": {
+    "affected_upper_commit": null,
+    "patched_lower_commit": "77e703c69b07a236c2f0962bd195e03aae1b8da0"
+  }
+}

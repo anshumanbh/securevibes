@@ -1,0 +1,31 @@
+{
+  "id": "GHSA-qrq5-wjgg-rvqw",
+  "severity": "critical",
+  "published_at": "2026-02-14T21:48:57Z",
+  "updated_at": "2026-02-14T21:56:15Z",
+  "summary": "Path Traversal in Plugin Installation",
+  "description": "### Summary\n\nA path traversal issue in OpenClaw plugin installation could allow a malicious plugin package name to escape the intended extensions directory and write files outside of it.\n\n### Affected Packages / Versions\n\n- Package: `openclaw` (npm)\n- Affected: `>= 2026.1.29-beta.1, < 2026.2.1`\n- Patched: `>= 2026.2.1`\n\n### Details\n\nWhen installing plugins, OpenClaw derives an installation directory name from the plugin's `package.json` `name`. In affected versions, crafted scoped names could result in path segments like `..`, which allowed the computed install target to resolve outside the extensions directory.\n\nExploitation requires the victim to run `openclaw plugins install` on attacker-controlled plugin content.\n\n### Fix\n\nThe install path is now validated and reserved/traversal-like plugin ids are rejected.\n\n#### Fix Commit(s)\n\n- `d03eca8450dc493b198a88b105fd180895238e57`\n\n### Mitigation\n\nUpgrade to `openclaw >= 2026.2.1`.\n\nThanks @logicx24 for reporting.\n",
+  "url": "https://github.com/openclaw/openclaw/security/advisories/GHSA-qrq5-wjgg-rvqw",
+  "cwe_ids": [
+    "CWE-22"
+  ],
+  "cvss_v3": {
+    "vector_string": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:N/I:H/A:H",
+    "score": 9.3
+  },
+  "affected_packages": [
+    {
+      "package": {
+        "ecosystem": "npm",
+        "name": "openclaw"
+      },
+      "vulnerable_version_range": ">= 2026.1.29-beta.1, < 2026.2.1",
+      "patched_versions": ">= 2026.2.1",
+      "vulnerable_functions": []
+    }
+  ],
+  "extracted_shas": [
+    "d03eca8450dc493b198a88b105fd180895238e57"
+  ],
+  "unresolved_fix_refs": []
+}

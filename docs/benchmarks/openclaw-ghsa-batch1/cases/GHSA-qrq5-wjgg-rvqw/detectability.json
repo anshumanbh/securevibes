@@ -1,0 +1,12 @@
+{
+  "id": "GHSA-qrq5-wjgg-rvqw",
+  "status": "not_run",
+  "model": "sonnet",
+  "baseline_scan": null,
+  "intro_pr_review": null,
+  "fix_pr_review": null,
+  "detected_from_new_commits": null,
+  "could_propose_fix": null,
+  "post_fix_regression_status": null,
+  "notes": "Populate with scripts/run_case.py after empirical run."
+}

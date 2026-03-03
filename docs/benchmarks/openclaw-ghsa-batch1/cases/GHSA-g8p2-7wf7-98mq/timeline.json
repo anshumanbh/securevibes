@@ -1,0 +1,27 @@
+{
+  "id": "GHSA-g8p2-7wf7-98mq",
+  "baseline_commit": "51dfd6efdb013cfc7e269e0bedf3a9bef0ed7023",
+  "introducing_commits": [
+    {
+      "sha": "c74551c2ae0611f3ef0e691dc93a38372f366765",
+      "short": "c74551c2a",
+      "authored_at": "2026-01-20T16:35:02-08:00",
+      "subject": "fix(ui): parse gatewayUrl from URL params for remote gateway access"
+    }
+  ],
+  "vulnerable_head": "c74551c2ae0611f3ef0e691dc93a38372f366765",
+  "fix_commits": [
+    {
+      "sha": "a7534dc22382c42465f3676724536a014ce0cbf7",
+      "short": "a7534dc22",
+      "authored_at": "2026-01-28T13:32:10-08:00",
+      "subject": "fix(ui): gateway URL confirmation modal (based on #2880) (#3578)"
+    }
+  ],
+  "fix_head": "a7534dc22382c42465f3676724536a014ce0cbf7",
+  "scan_ranges": {
+    "introduction_range": "51dfd6efdb013cfc7e269e0bedf3a9bef0ed7023..c74551c2ae0611f3ef0e691dc93a38372f366765",
+    "fix_range": "c74551c2ae0611f3ef0e691dc93a38372f366765..a7534dc22382c42465f3676724536a014ce0cbf7"
+  },
+  "notes": "UI auto-connect trust boundary issue is introduced by query-param based gatewayUrl parsing."
+}

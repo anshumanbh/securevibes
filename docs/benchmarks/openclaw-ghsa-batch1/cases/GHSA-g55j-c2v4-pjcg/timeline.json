@@ -1,0 +1,27 @@
+{
+  "id": "GHSA-g55j-c2v4-pjcg",
+  "baseline_commit": "47d1f23d5552c6ae186249e61d845e4b955486ff",
+  "introducing_commits": [
+    {
+      "sha": "73e9e787b4df7705556f199f5f3e00580fab38c3",
+      "short": "73e9e787b",
+      "authored_at": "2026-01-19T10:07:56Z",
+      "subject": "feat: unify device auth + pairing"
+    }
+  ],
+  "vulnerable_head": "73e9e787b4df7705556f199f5f3e00580fab38c3",
+  "fix_commits": [
+    {
+      "sha": "9dbc1435a6cac576d5fd71f4e4bff11a5d9d43ba",
+      "short": "9dbc1435a",
+      "authored_at": "2026-01-20T09:24:01Z",
+      "subject": "fix: enforce ws3 roles + node allowlist"
+    }
+  ],
+  "fix_head": "9dbc1435a6cac576d5fd71f4e4bff11a5d9d43ba",
+  "scan_ranges": {
+    "introduction_range": "47d1f23d5552c6ae186249e61d845e4b955486ff..73e9e787b4df7705556f199f5f3e00580fab38c3",
+    "fix_range": "73e9e787b4df7705556f199f5f3e00580fab38c3..9dbc1435a6cac576d5fd71f4e4bff11a5d9d43ba"
+  },
+  "notes": "Gateway ws config.apply + unsafe cliPath flow is introduced in the device-auth/pairing unification and fixed by role and allowlist hardening."
+}

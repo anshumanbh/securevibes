@@ -1,0 +1,32 @@
+{
+  "id": "GHSA-3c6h-g97w-fg78",
+  "severity": "high",
+  "published_at": "2026-02-24T05:27:20Z",
+  "updated_at": "2026-02-24T05:27:20Z",
+  "summary": "tools.exec.safeBins sort long-option abbreviation bypass can skip exec approval in allowlist mode",
+  "description": "### Summary\nIn OpenClaw, `tools.exec.safeBins` validation for `sort` could be bypassed via GNU long-option abbreviations in allowlist mode, allowing approval-free execution paths that should require approval.\n\n### Affected Packages / Versions\n- Ecosystem: npm\n- Package: `openclaw`\n- Latest published version checked: `2026.2.22-2`\n- Affected range: `<= 2026.2.22-2`\n- Fixed version: `2026.2.23`\n\n### Impact\nWhen all of the following are true:\n- `tools.exec.security=allowlist`\n- `tools.exec.ask=on-miss`\n- `tools.exec.safeBins` includes `sort`\n\nabbreviated GNU long options (for example `--compress-prog`) could bypass denied-flag checks and be treated as allowlist-satisfied safe-bin usage, skipping approval.\n\n### Root Cause\nLong-option handling matched denied flags by exact string and accepted unknown long options with inline values instead of failing closed.\n\n### Fix Commit(s)\n- `3b8e33037ae2e12af7beb56fcf0346f1f8cbde6f`\n\n### Release Process Note\n`patched_versions` is pre-set to the released version (`2026.2.23`). This advisory now reflects released fix version `2026.2.23`.\n\nThanks @tdjackey for reporting.",
+  "url": "https://github.com/openclaw/openclaw/security/advisories/GHSA-3c6h-g97w-fg78",
+  "cwe_ids": [
+    "CWE-184",
+    "CWE-863"
+  ],
+  "cvss_v3": {
+    "vector_string": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",
+    "score": 8.8
+  },
+  "affected_packages": [
+    {
+      "package": {
+        "ecosystem": "npm",
+        "name": "openclaw"
+      },
+      "vulnerable_version_range": "<= 2026.2.22-2",
+      "patched_versions": ">=2026.2.23",
+      "vulnerable_functions": []
+    }
+  ],
+  "extracted_shas": [
+    "3b8e33037ae2e12af7beb56fcf0346f1f8cbde6f"
+  ],
+  "unresolved_fix_refs": []
+}

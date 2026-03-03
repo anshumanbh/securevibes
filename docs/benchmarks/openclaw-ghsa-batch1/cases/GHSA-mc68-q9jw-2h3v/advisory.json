@@ -1,0 +1,31 @@
+{
+  "id": "GHSA-mc68-q9jw-2h3v",
+  "severity": "high",
+  "published_at": "2026-01-31T08:52:50Z",
+  "updated_at": "2026-02-21T14:11:06Z",
+  "summary": "Command Injection in Clawdbot Docker Execution via PATH Environment Variable",
+  "description": "### Summary\nA command injection vulnerability existed in Clawdbot\u2019s Docker sandbox execution mechanism due to unsafe handling of the PATH environment variable when constructing shell commands.\n\nAn authenticated user able to control environment variables could influence command execution within the container context.\nThis issue has been fixed and regression tests have been added to prevent reintroduction.\n\n### Impact\nIn environments where Docker sandbox mode was enabled, authenticated users capable of supplying environment variables could affect the behavior of commands executed inside the container.\n\nThis could lead to:\n1. Execution of unintended commands inside the container\n2. Access to the container filesystem and environment variables\n3. Exposure of sensitive data\n4. Increased risk in misconfigured or privileged container environments\n\n## Fix Commit(s)\n- `771f23d36b95ec2204cc9a0054045f5d8439ea75`\n",
+  "url": "https://github.com/openclaw/openclaw/security/advisories/GHSA-mc68-q9jw-2h3v",
+  "cwe_ids": [
+    "CWE-78"
+  ],
+  "cvss_v3": {
+    "vector_string": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",
+    "score": 8.8
+  },
+  "affected_packages": [
+    {
+      "package": {
+        "ecosystem": "npm",
+        "name": "clawdbot"
+      },
+      "vulnerable_version_range": "<= 2026.1.24",
+      "patched_versions": "v2026.1.29",
+      "vulnerable_functions": []
+    }
+  ],
+  "extracted_shas": [
+    "771f23d36b95ec2204cc9a0054045f5d8439ea75"
+  ],
+  "unresolved_fix_refs": []
+}

@@ -1,0 +1,149 @@
+{
+  "snapshot": {
+    "fetched_at": "2026-03-03T21:18:05.489741Z",
+    "source": "/private/tmp/openclaw_advisories_all.json",
+    "repository": "openclaw/openclaw",
+    "counts": {
+      "critical": 3,
+      "high": 70,
+      "medium": 144,
+      "low": 28
+    }
+  },
+  "policy": {
+    "ordering": "all critical first, then high",
+    "high_selection": "highest CVSSv3 first, tie-break by published_at desc",
+    "cap": 10
+  },
+  "selected_ids": [
+    "GHSA-qrq5-wjgg-rvqw",
+    "GHSA-4rj2-gpmh-qq5x",
+    "GHSA-gv46-4xfq-jv58",
+    "GHSA-3c6h-g97w-fg78",
+    "GHSA-r5fq-947m-xm57",
+    "GHSA-943q-mwmv-hhvh",
+    "GHSA-g8p2-7wf7-98mq",
+    "GHSA-mc68-q9jw-2h3v",
+    "GHSA-x22m-j5qq-j49m",
+    "GHSA-g55j-c2v4-pjcg"
+  ],
+  "critical_candidates": [
+    {
+      "id": "GHSA-qrq5-wjgg-rvqw",
+      "published_at": "2026-02-14T21:48:57Z",
+      "cvss_v3": 9.3
+    },
+    {
+      "id": "GHSA-4rj2-gpmh-qq5x",
+      "published_at": "2026-02-14T21:29:05Z",
+      "cvss_v3": 9.4
+    },
+    {
+      "id": "GHSA-gv46-4xfq-jv58",
+      "published_at": "2026-02-14T12:06:43Z",
+      "cvss_v3": 10.0
+    }
+  ],
+  "high_ranked_top_20": [
+    {
+      "id": "GHSA-3c6h-g97w-fg78",
+      "published_at": "2026-02-24T05:27:20Z",
+      "cvss_v3": 8.8
+    },
+    {
+      "id": "GHSA-r5fq-947m-xm57",
+      "published_at": "2026-02-19T11:23:58Z",
+      "cvss_v3": 8.8
+    },
+    {
+      "id": "GHSA-943q-mwmv-hhvh",
+      "published_at": "2026-02-14T11:55:07Z",
+      "cvss_v3": 8.8
+    },
+    {
+      "id": "GHSA-g8p2-7wf7-98mq",
+      "published_at": "2026-01-31T10:04:35Z",
+      "cvss_v3": 8.8
+    },
+    {
+      "id": "GHSA-mc68-q9jw-2h3v",
+      "published_at": "2026-01-31T08:52:50Z",
+      "cvss_v3": 8.8
+    },
+    {
+      "id": "GHSA-x22m-j5qq-j49m",
+      "published_at": "2026-02-16T01:41:07Z",
+      "cvss_v3": 8.6
+    },
+    {
+      "id": "GHSA-g55j-c2v4-pjcg",
+      "published_at": "2026-02-04T06:29:36Z",
+      "cvss_v3": 8.4
+    },
+    {
+      "id": "GHSA-474h-prjg-mmw3",
+      "published_at": "2026-03-03T04:14:22Z",
+      "cvss_v3": 8.1
+    },
+    {
+      "id": "GHSA-p25h-9q54-ffvw",
+      "published_at": "2026-02-16T01:36:51Z",
+      "cvss_v3": 8.1
+    },
+    {
+      "id": "GHSA-r65x-2hqr-j5hf",
+      "published_at": "2026-02-26T22:40:36Z",
+      "cvss_v3": 8.0
+    },
+    {
+      "id": "GHSA-qpjj-47vm-64pj",
+      "published_at": "2026-02-16T00:31:46Z",
+      "cvss_v3": 8.0
+    },
+    {
+      "id": "GHSA-q284-4pvr-m585",
+      "published_at": "2026-01-31T20:03:22Z",
+      "cvss_v3": 7.8
+    },
+    {
+      "id": "GHSA-8mvx-p2r9-r375",
+      "published_at": "2026-03-03T04:14:20Z",
+      "cvss_v3": 7.6
+    },
+    {
+      "id": "GHSA-mgrq-9f93-wpp5",
+      "published_at": "2026-02-26T22:40:37Z",
+      "cvss_v3": 7.6
+    },
+    {
+      "id": "GHSA-4564-pvr2-qq4h",
+      "published_at": "2026-02-16T01:40:11Z",
+      "cvss_v3": 7.6
+    },
+    {
+      "id": "GHSA-56f2-hvwg-5743",
+      "published_at": "2026-02-14T17:21:19Z",
+      "cvss_v3": 7.6
+    },
+    {
+      "id": "GHSA-mfg5-7q5g-f37j",
+      "published_at": "2026-02-23T00:51:59Z",
+      "cvss_v3": 7.5
+    },
+    {
+      "id": "GHSA-rwj8-p9vq-25gv",
+      "published_at": "2026-02-16T01:40:55Z",
+      "cvss_v3": 7.5
+    },
+    {
+      "id": "GHSA-gq9c-wg68-gwj2",
+      "published_at": "2026-02-16T01:40:00Z",
+      "cvss_v3": 7.5
+    },
+    {
+      "id": "GHSA-q447-rj3r-2cgh",
+      "published_at": "2026-02-15T14:30:52Z",
+      "cvss_v3": 7.5
+    }
+  ]
+}

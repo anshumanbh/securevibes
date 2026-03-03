@@ -1,0 +1,41 @@
+{
+  "id": "GHSA-4rj2-gpmh-qq5x",
+  "verification_pass": true,
+  "confidence": "high",
+  "checks": [
+    {
+      "name": "baseline_is_parent_of_earliest_intro",
+      "pass": true,
+      "details": "baseline=3467b0ba074cba456cf20d2178faff96bacaeafb earliest_intro=42c17adb5e4d3ea1f9b1d2fd921b9abc183b79df"
+    },
+    {
+      "name": "baseline_ancestor_of_all_intro",
+      "pass": true,
+      "details": "baseline should precede introducing commits"
+    },
+    {
+      "name": "baseline_ancestor_of_all_fix",
+      "pass": true,
+      "details": "baseline should precede fix commits"
+    },
+    {
+      "name": "intro_precedes_patched_release",
+      "pass": true,
+      "details": "intro=42c17adb5e4d3ea1f9b1d2fd921b9abc183b79df patched_tag_commit=95cd2210f93d6ab2acc5e29dbad6065294365863"
+    },
+    {
+      "name": "fix_at_or_before_patched_release",
+      "pass": true,
+      "details": "fix_head=f8dfd034f5d9235c5485f492a9e4ccc114e97fdb patched_tag_commit=95cd2210f93d6ab2acc5e29dbad6065294365863"
+    },
+    {
+      "name": "intro_at_or_before_affected_upper",
+      "pass": true,
+      "details": "intro=42c17adb5e4d3ea1f9b1d2fd921b9abc183b79df affected_upper_commit=d842b28a1517f95aae2a5bcd97f2f726e42b93d8"
+    }
+  ],
+  "range_commits": {
+    "affected_upper_commit": "d842b28a1517f95aae2a5bcd97f2f726e42b93d8",
+    "patched_lower_commit": "95cd2210f93d6ab2acc5e29dbad6065294365863"
+  }
+}

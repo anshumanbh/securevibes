@@ -1,0 +1,31 @@
+{
+  "id": "GHSA-4rj2-gpmh-qq5x",
+  "severity": "critical",
+  "published_at": "2026-02-14T21:29:05Z",
+  "updated_at": "2026-02-14T21:34:19Z",
+  "summary": "Inbound allowlist policy bypass in voice-call extension (empty caller ID + suffix matching)",
+  "description": "### Summary\n\nAn authentication bypass in the optional `voice-call` extension/plugin allowed unapproved or anonymous callers to reach the voice-call agent when inbound policy was set to `allowlist` or `pairing`.\n\nDeployments that do not install/enable the `voice-call` extension are not affected.\n\n### Affected Packages / Versions\n\n- `openclaw` (npm): `<= 2026.2.1`\n- Fixed in: `>= 2026.2.2`\n\n### Details\n\nIn affected versions (for example `2026.2.1`), the inbound allowlist check in `extensions/voice-call/src/manager.ts` used suffix-based matching and accepted empty caller IDs after normalization.\n\nThis allowed two bypasses:\n\n1. Missing/empty `from` values normalized to an empty string, which caused the allowlist predicate to evaluate as allowed.\n2. Suffix-based matching meant any caller number whose digits ended with an allowlisted number would be accepted.\n\n### Proof Of Concept\n\n1. Configure the voice-call extension with `inboundPolicy: allowlist` and `allowFrom: [\"+15550001234\"]`.\n2. Place/trigger an inbound call with missing/empty caller ID (provider-dependent; for example anonymous/restricted caller). The call is accepted.\n3. Place a call from a number whose E.164 digits end with `15550001234` (for example `+99915550001234`). The call is accepted.\n\n### Impact\n\nOnly operators who install/enable the optional `voice-call` extension and use `inboundPolicy=allowlist` or `pairing` could have inbound access controls bypassed, potentially allowing unauthorized callers to reach auto-response and tool execution.\n\n### Fix\n\nThe fix hardens inbound policy handling:\n\n- Reject inbound calls when caller ID is missing.\n- Require strict equality when comparing normalized caller IDs against the allowlist (no suffix/prefix matching).\n- Add regression tests for missing caller ID, anonymous caller ID, and suffix-collision cases.\n\nFix commit(s):\n\n- `f8dfd034f5d9235c5485f492a9e4ccc114e97fdb`\n\nCredits:\n\n- Reporter: @simecek\n- Reporter: @MegaManSec\n- Analyst: @stanislavfortaisle\n\nThanks @simecek and @MegaManSec for reporting.\n",
+  "url": "https://github.com/openclaw/openclaw/security/advisories/GHSA-4rj2-gpmh-qq5x",
+  "cwe_ids": [
+    "CWE-287"
+  ],
+  "cvss_v3": {
+    "vector_string": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:L",
+    "score": 9.4
+  },
+  "affected_packages": [
+    {
+      "package": {
+        "ecosystem": "npm",
+        "name": "openclaw"
+      },
+      "vulnerable_version_range": "<= 2026.2.1",
+      "patched_versions": ">= 2026.2.2",
+      "vulnerable_functions": []
+    }
+  ],
+  "extracted_shas": [
+    "f8dfd034f5d9235c5485f492a9e4ccc114e97fdb"
+  ],
+  "unresolved_fix_refs": []
+}

@@ -1,0 +1,33 @@
+{
+  "id": "GHSA-g55j-c2v4-pjcg",
+  "severity": "high",
+  "published_at": "2026-02-04T06:29:36Z",
+  "updated_at": "2026-02-21T14:11:02Z",
+  "summary": "Unauthenticated Local RCE via WebSocket config.apply",
+  "description": "### Summary\n\nAn unauthenticated local client could use the Gateway WebSocket API to write config via `config.apply` and set unsafe `cliPath` values that were later used for command discovery, enabling command injection as the gateway user.\n\n### Impact\n\nA local process on the same machine could execute arbitrary commands as the gateway process user.\n\n### Details\n\n- `config.apply` accepted raw JSON and wrote it to disk after schema validation.\n- `cliPath` values were not constrained to safe executable names/paths.\n- Command discovery used a shell invocation when resolving executables.\n\n### Mitigation\n\nUpgrade to a patched release. If you cannot upgrade immediately, set `gateway.auth` and avoid custom `cliPath` values.\n\n## Fix Commit(s)\n- `9dbc1435a6cac576d5fd71f4e4bff11a5d9d43ba`\n",
+  "url": "https://github.com/openclaw/openclaw/security/advisories/GHSA-g55j-c2v4-pjcg",
+  "cwe_ids": [
+    "CWE-20",
+    "CWE-78",
+    "CWE-306"
+  ],
+  "cvss_v3": {
+    "vector_string": "CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+    "score": 8.4
+  },
+  "affected_packages": [
+    {
+      "package": {
+        "ecosystem": "npm",
+        "name": "openclaw"
+      },
+      "vulnerable_version_range": "< 2026.1.20",
+      "patched_versions": ">= 2026.1.20",
+      "vulnerable_functions": []
+    }
+  ],
+  "extracted_shas": [
+    "9dbc1435a6cac576d5fd71f4e4bff11a5d9d43ba"
+  ],
+  "unresolved_fix_refs": []
+}

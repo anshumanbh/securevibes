@@ -1,0 +1,27 @@
+{
+  "id": "GHSA-x22m-j5qq-j49m",
+  "baseline_commit": "02842bef9179e65ac3c8174091a4facfcd0a4083",
+  "introducing_commits": [
+    {
+      "sha": "2267d58afcc70fe19408b8f0dce108c340f3426d",
+      "short": "2267d58af",
+      "authored_at": "2026-02-06T09:32:10+09:00",
+      "subject": "feat(feishu): replace built-in SDK with community plugin"
+    }
+  ],
+  "vulnerable_head": "2267d58afcc70fe19408b8f0dce108c340f3426d",
+  "fix_commits": [
+    {
+      "sha": "5b4121d6011a48c71e747e3c18197f180b872c5d",
+      "short": "5b4121d60",
+      "authored_at": "2026-02-14T16:42:35+01:00",
+      "subject": "fix: harden Feishu media URL fetching (#16285) (thanks @mbelinky)"
+    }
+  ],
+  "fix_head": "5b4121d6011a48c71e747e3c18197f180b872c5d",
+  "scan_ranges": {
+    "introduction_range": "02842bef9179e65ac3c8174091a4facfcd0a4083..2267d58afcc70fe19408b8f0dce108c340f3426d",
+    "fix_range": "2267d58afcc70fe19408b8f0dce108c340f3426d..5b4121d6011a48c71e747e3c18197f180b872c5d"
+  },
+  "notes": "SSRF surface appears when Feishu media/docx paths start fetching remote URLs without hardened fetch guards."
+}

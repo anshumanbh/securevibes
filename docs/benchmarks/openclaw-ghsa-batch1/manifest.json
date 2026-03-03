@@ -1,0 +1,109 @@
+{
+  "name": "openclaw-ghsa-batch1",
+  "generated_at": "2026-03-03T21:18:05.489979Z",
+  "advisory_source": "/private/tmp/openclaw_advisories_all.json",
+  "openclaw_repo": "/Users/anshumanbhartiya/repos/openclaw",
+  "case_count": 10,
+  "cases": [
+    {
+      "id": "GHSA-qrq5-wjgg-rvqw",
+      "severity": "critical",
+      "summary": "Path Traversal in Plugin Installation",
+      "confidence": "high",
+      "baseline": "a6ea74f8e6ffae13f1de88736b0d47a004b98e54",
+      "vulnerable_head": "3a6ee5ee00176c88aee32bb8bfd543780014c079",
+      "fix_head": "d03eca8450dc493b198a88b105fd180895238e57",
+      "verification_pass": true
+    },
+    {
+      "id": "GHSA-4rj2-gpmh-qq5x",
+      "severity": "critical",
+      "summary": "Inbound allowlist policy bypass in voice-call extension (empty caller ID + suffix matching)",
+      "confidence": "high",
+      "baseline": "3467b0ba074cba456cf20d2178faff96bacaeafb",
+      "vulnerable_head": "42c17adb5e4d3ea1f9b1d2fd921b9abc183b79df",
+      "fix_head": "f8dfd034f5d9235c5485f492a9e4ccc114e97fdb",
+      "verification_pass": true
+    },
+    {
+      "id": "GHSA-gv46-4xfq-jv58",
+      "severity": "critical",
+      "summary": "Remote Code Execution via Node Invoke Approval Bypass in Gateway",
+      "confidence": "medium",
+      "baseline": "b347d5d9ccbb8ccf008c887fc03cdc3410710afd",
+      "vulnerable_head": "2f8206862a684d14f7ca92e9fe0dbce627c5d82b",
+      "fix_head": "01b3226ecbea6f5aa2a433237dae87d181d8790f",
+      "verification_pass": true
+    },
+    {
+      "id": "GHSA-3c6h-g97w-fg78",
+      "severity": "high",
+      "summary": "tools.exec.safeBins sort long-option abbreviation bypass can skip exec approval in allowlist mode",
+      "confidence": "high",
+      "baseline": "0e85380e56345d21bab8242d09674c77ea8ad5ea",
+      "vulnerable_head": "89aad7b922835e40b4df54a9e6195a5f8ee2e5b6",
+      "fix_head": "3b8e33037ae2e12af7beb56fcf0346f1f8cbde6f",
+      "verification_pass": true
+    },
+    {
+      "id": "GHSA-r5fq-947m-xm57",
+      "severity": "high",
+      "summary": "Path traversal in apply_patch could write/delete files outside the workspace",
+      "confidence": "high",
+      "baseline": "221c0b4cf8410261e5424dde4cbf7de88805a4bd",
+      "vulnerable_head": "8b4bdaa8a473e6e14cab866a916a407e86ab861a",
+      "fix_head": "5544646a09c0121fca7d7093812dc2de8437c7f1",
+      "verification_pass": true
+    },
+    {
+      "id": "GHSA-943q-mwmv-hhvh",
+      "severity": "high",
+      "summary": "OC-02: Gateway /tools/invoke tool escalation + ACP permission auto-approval",
+      "confidence": "high",
+      "baseline": "68d79e56c2ef91555ccd596cf520a85dd34c83fb",
+      "vulnerable_head": "f1083cd52cf43c7312ae09cf0aa696ba9c95282c",
+      "fix_head": "153a7644eabc5f0214c9e51dd42cba5276e9bc3e",
+      "verification_pass": true
+    },
+    {
+      "id": "GHSA-g8p2-7wf7-98mq",
+      "severity": "high",
+      "summary": "1-Click RCE via Authentication Token Exfiltration From gatewayUrl",
+      "confidence": "high",
+      "baseline": "51dfd6efdb013cfc7e269e0bedf3a9bef0ed7023",
+      "vulnerable_head": "c74551c2ae0611f3ef0e691dc93a38372f366765",
+      "fix_head": "a7534dc22382c42465f3676724536a014ce0cbf7",
+      "verification_pass": true
+    },
+    {
+      "id": "GHSA-mc68-q9jw-2h3v",
+      "severity": "high",
+      "summary": "Command Injection in Clawdbot Docker Execution via PATH Environment Variable",
+      "confidence": "high",
+      "baseline": "7a839e7eb62b9711188cadc88f90b1d8a9a29113",
+      "vulnerable_head": "eaace34233fdf454c526d23cd2fd49de3be8eb32",
+      "fix_head": "771f23d36b95ec2204cc9a0054045f5d8439ea75",
+      "verification_pass": true
+    },
+    {
+      "id": "GHSA-x22m-j5qq-j49m",
+      "severity": "high",
+      "summary": "Two SSRF via sendMediaFeishu and markdown image fetching in Feishu extension",
+      "confidence": "high",
+      "baseline": "02842bef9179e65ac3c8174091a4facfcd0a4083",
+      "vulnerable_head": "2267d58afcc70fe19408b8f0dce108c340f3426d",
+      "fix_head": "5b4121d6011a48c71e747e3c18197f180b872c5d",
+      "verification_pass": true
+    },
+    {
+      "id": "GHSA-g55j-c2v4-pjcg",
+      "severity": "high",
+      "summary": "Unauthenticated Local RCE via WebSocket config.apply",
+      "confidence": "high",
+      "baseline": "47d1f23d5552c6ae186249e61d845e4b955486ff",
+      "vulnerable_head": "73e9e787b4df7705556f199f5f3e00580fab38c3",
+      "fix_head": "9dbc1435a6cac576d5fd71f4e4bff11a5d9d43ba",
+      "verification_pass": true
+    }
+  ]
+}

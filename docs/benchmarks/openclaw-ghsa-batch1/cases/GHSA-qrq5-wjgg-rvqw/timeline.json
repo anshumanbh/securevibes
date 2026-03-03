@@ -1,0 +1,33 @@
+{
+  "id": "GHSA-qrq5-wjgg-rvqw",
+  "baseline_commit": "a6ea74f8e6ffae13f1de88736b0d47a004b98e54",
+  "introducing_commits": [
+    {
+      "sha": "2f4a248314fdd754b8344d955842fdd47f828fab",
+      "short": "2f4a24831",
+      "authored_at": "2026-01-12T01:16:39Z",
+      "subject": "feat: plugin system + voice-call"
+    },
+    {
+      "sha": "3a6ee5ee00176c88aee32bb8bfd543780014c079",
+      "short": "3a6ee5ee0",
+      "authored_at": "2026-01-17T07:08:04Z",
+      "subject": "feat: unify hooks installs and webhooks"
+    }
+  ],
+  "vulnerable_head": "3a6ee5ee00176c88aee32bb8bfd543780014c079",
+  "fix_commits": [
+    {
+      "sha": "d03eca8450dc493b198a88b105fd180895238e57",
+      "short": "d03eca845",
+      "authored_at": "2026-02-02T02:07:47-08:00",
+      "subject": "fix: harden plugin and hook install paths"
+    }
+  ],
+  "fix_head": "d03eca8450dc493b198a88b105fd180895238e57",
+  "scan_ranges": {
+    "introduction_range": "a6ea74f8e6ffae13f1de88736b0d47a004b98e54..3a6ee5ee00176c88aee32bb8bfd543780014c079",
+    "fix_range": "3a6ee5ee00176c88aee32bb8bfd543780014c079..d03eca8450dc493b198a88b105fd180895238e57"
+  },
+  "notes": "Plugin install path logic introduced during plugin system bootstrap and hook/plugin install unification."
+}

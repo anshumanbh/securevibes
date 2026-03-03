@@ -1,0 +1,27 @@
+{
+  "id": "GHSA-4rj2-gpmh-qq5x",
+  "baseline_commit": "3467b0ba074cba456cf20d2178faff96bacaeafb",
+  "introducing_commits": [
+    {
+      "sha": "42c17adb5e4d3ea1f9b1d2fd921b9abc183b79df",
+      "short": "42c17adb5",
+      "authored_at": "2026-01-12T21:44:19Z",
+      "subject": "feat: restore voice-call plugin parity"
+    }
+  ],
+  "vulnerable_head": "42c17adb5e4d3ea1f9b1d2fd921b9abc183b79df",
+  "fix_commits": [
+    {
+      "sha": "f8dfd034f5d9235c5485f492a9e4ccc114e97fdb",
+      "short": "f8dfd034f",
+      "authored_at": "2026-02-03T09:33:25-08:00",
+      "subject": "fix(voice-call): harden inbound policy"
+    }
+  ],
+  "fix_head": "f8dfd034f5d9235c5485f492a9e4ccc114e97fdb",
+  "scan_ranges": {
+    "introduction_range": "3467b0ba074cba456cf20d2178faff96bacaeafb..42c17adb5e4d3ea1f9b1d2fd921b9abc183b79df",
+    "fix_range": "42c17adb5e4d3ea1f9b1d2fd921b9abc183b79df..f8dfd034f5d9235c5485f492a9e4ccc114e97fdb"
+  },
+  "notes": "Inbound allowlist logic is introduced in the voice-call manager parity commit and hardened in the fix commit."
+}
