@@ -41,6 +41,12 @@ REQUIRED_REPORT_FIELDS = (
 COMPLETED = "completed"
 INFRA_FAILURE = "infra_failure"
 DIFF_TOO_LARGE = "diff_too_large"
+FAILURE_REASON_TIMEOUT = "timeout"
+FAILURE_REASON_UNEXPECTED_EXIT = "unexpected_exit_code"
+FAILURE_REASON_MISSING_OUTPUT = "missing_output_report"
+FAILURE_REASON_INVALID_OUTPUT_JSON = "invalid_output_json"
+FAILURE_REASON_INVALID_OUTPUT_SCHEMA = "invalid_output_schema"
+FAILURE_REASON_DIFF_TOO_LARGE = "diff_too_large"
 DEFAULT_GIT_TIMEOUT_SECONDS = 60
 DEFAULT_SCAN_TIMEOUT_SECONDS = 900
 DEFAULT_PR_REVIEW_TIMEOUT_SECONDS = 240
@@ -91,10 +97,7 @@ class RunContext:
         self.interrupted = True
         self.interrupted_signal = signum
         if self._child_process is not None:
-            try:
-                self._child_process.kill()
-            except OSError:
-                pass
+            _terminate_child_process(self._child_process, grace_seconds=1.0)
 
 
 # Global run context for signal handler access
@@ -124,6 +127,8 @@ class ScanCommandResult:
     classification: str
     stderr_tail: str
     output_path: Path
+    stdout_tail: str = ""
+    failure_reason: str | None = None
 
 
 @dataclass
@@ -846,17 +851,25 @@ def determine_chunk_strategy(
     return "per_commit"
 
 
-def _is_valid_report_json(path: Path) -> bool:
-    """Check that a securevibes JSON output file is present and minimally valid."""
-    if not path.exists() or not path.is_file():
-        return False
+def _validate_report_json(path: Path | None) -> tuple[bool, str | None]:
+    """Validate securevibes JSON output and return (is_valid, failure_reason)."""
+    if path is None or not path.exists() or not path.is_file():
+        return (False, FAILURE_REASON_MISSING_OUTPUT)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return False
+        return (False, FAILURE_REASON_INVALID_OUTPUT_JSON)
     if not isinstance(payload, dict):
-        return False
-    return all(field in payload for field in REQUIRED_REPORT_FIELDS)
+        return (False, FAILURE_REASON_INVALID_OUTPUT_SCHEMA)
+    if not all(field in payload for field in REQUIRED_REPORT_FIELDS):
+        return (False, FAILURE_REASON_INVALID_OUTPUT_SCHEMA)
+    return (True, None)
+
+
+def _is_valid_report_json(path: Path) -> bool:
+    """Backward-compatible wrapper for tests/helpers that only need a boolean."""
+    is_valid, _ = _validate_report_json(path)
+    return is_valid
 
 
 def _stderr_indicates_diff_too_large(stderr: str) -> bool:
@@ -869,13 +882,23 @@ def classify_scan_result(
     exit_code: int, output_path: Path | None, stderr: str = ""
 ) -> str:
     """Classify command outcome into completed, diff_too_large, or infrastructure failure."""
+    classification, _ = classify_scan_result_with_reason(exit_code, output_path, stderr)
+    return classification
+
+
+def classify_scan_result_with_reason(
+    exit_code: int, output_path: Path | None, stderr: str = ""
+) -> tuple[str, str | None]:
+    """Classify command outcome and provide a stable failure reason code."""
     if exit_code not in {0, 1, 2}:
-        return INFRA_FAILURE
-    if output_path is None or not _is_valid_report_json(output_path):
+        return (INFRA_FAILURE, FAILURE_REASON_UNEXPECTED_EXIT)
+
+    is_valid_report, report_reason = _validate_report_json(output_path)
+    if not is_valid_report:
         if exit_code == 1 and _stderr_indicates_diff_too_large(stderr):
-            return DIFF_TOO_LARGE
-        return INFRA_FAILURE
-    return COMPLETED
+            return (DIFF_TOO_LARGE, FAILURE_REASON_DIFF_TOO_LARGE)
+        return (INFRA_FAILURE, report_reason)
+    return (COMPLETED, None)
 
 
 def _stderr_tail(stderr: str, max_lines: int = 8) -> str:
@@ -884,6 +907,61 @@ def _stderr_tail(stderr: str, max_lines: int = 8) -> str:
     if not lines:
         return ""
     return "\n".join(lines[-max_lines:])
+
+
+def _stdout_tail(stdout: str, max_lines: int = 8) -> str:
+    """Trim stdout to a short diagnostic snippet."""
+    lines = [line for line in stdout.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    return "\n".join(lines[-max_lines:])
+
+
+def _terminate_child_process(
+    proc: subprocess.Popen[Any],
+    grace_seconds: float = 5.0,
+) -> None:
+    """Terminate a child process with best-effort descendant cleanup."""
+    if proc.returncode is not None:
+        return
+
+    supports_process_groups = hasattr(os, "killpg") and os.name != "nt"
+    pid = proc.pid
+
+    if supports_process_groups and pid is not None:
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass
+    else:
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+
+    try:
+        proc.wait(timeout=grace_seconds)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    except OSError:
+        return
+
+    if supports_process_groups and pid is not None:
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+    else:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+    try:
+        proc.wait(timeout=1.0)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
 
 
 def _run_subprocess_with_progress(
@@ -898,12 +976,16 @@ def _run_subprocess_with_progress(
     Stores the child process in _run_ctx so signal handlers can kill it.
     """
     start = time.monotonic()
+    popen_kwargs = dict(kwargs)
+    # Child process runs in a separate session so terminal Ctrl-C does not auto-propagate.
+    # Wrapper signal handlers explicitly terminate this process group.
+    popen_kwargs.setdefault("start_new_session", True)
     proc = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        **kwargs,
+        **popen_kwargs,
     )
     _run_ctx._child_process = proc
 
@@ -926,10 +1008,7 @@ def _run_subprocess_with_progress(
     try:
         stdout, stderr = proc.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
-        proc.kill()
-        stdout, stderr = proc.communicate()
-        _run_ctx._child_process = None
-        stop_event.set()
+        _terminate_child_process(proc)
         raise
     finally:
         _run_ctx._child_process = None
@@ -1004,11 +1083,20 @@ def run_scan(
             exit_code=124,
             classification=INFRA_FAILURE,
             stderr_tail=f"scan timed out after {timeout_seconds}s",
+            stdout_tail="",
+            failure_reason=FAILURE_REASON_TIMEOUT,
             output_path=output_path,
         )
 
-    tail = _stderr_tail(result.stderr)
-    classification = classify_scan_result(result.returncode, output_path, result.stderr)
+    stderr_tail = _stderr_tail(result.stderr)
+    stdout_tail = _stdout_tail(result.stdout)
+    classification, failure_reason = classify_scan_result_with_reason(
+        result.returncode,
+        output_path,
+        result.stderr,
+    )
+    if classification != INFRA_FAILURE:
+        stdout_tail = ""
     print(
         f"[incremental-scan] Finished {label} → {classification} (exit={result.returncode})",
         file=sys.stderr,
@@ -1018,7 +1106,9 @@ def run_scan(
         command=command,
         exit_code=result.returncode,
         classification=classification,
-        stderr_tail=tail,
+        stderr_tail=stderr_tail,
+        stdout_tail=stdout_tail,
+        failure_reason=failure_reason,
         output_path=output_path,
     )
 
@@ -1083,11 +1173,20 @@ def run_since_date_scan(
             exit_code=124,
             classification=INFRA_FAILURE,
             stderr_tail=f"scan timed out after {timeout_seconds}s",
+            stdout_tail="",
+            failure_reason=FAILURE_REASON_TIMEOUT,
             output_path=output_path,
         )
 
-    tail = _stderr_tail(result.stderr)
-    classification = classify_scan_result(result.returncode, output_path, result.stderr)
+    stderr_tail = _stderr_tail(result.stderr)
+    stdout_tail = _stdout_tail(result.stdout)
+    classification, failure_reason = classify_scan_result_with_reason(
+        result.returncode,
+        output_path,
+        result.stderr,
+    )
+    if classification != INFRA_FAILURE:
+        stdout_tail = ""
     print(
         f"[incremental-scan] Finished {label} → {classification} (exit={result.returncode})",
         file=sys.stderr,
@@ -1097,7 +1196,9 @@ def run_since_date_scan(
         command=command,
         exit_code=result.returncode,
         classification=classification,
-        stderr_tail=tail,
+        stderr_tail=stderr_tail,
+        stdout_tail=stdout_tail,
+        failure_reason=failure_reason,
         output_path=output_path,
     )
 
@@ -1535,9 +1636,19 @@ def run(args: argparse.Namespace) -> int:
                         "classification": since_result.classification,
                         "output_path": str(since_output),
                         "stderr_tail": since_result.stderr_tail,
+                        "stdout_tail": since_result.stdout_tail,
+                        "failure_reason": since_result.failure_reason,
                         "command": since_result.command,
                     }
                 )
+                if since_result.classification == INFRA_FAILURE:
+                    append_log(
+                        log_file,
+                        (
+                            f"run_id={run_id} mode=since_date infra_failure "
+                            f"reason={since_result.failure_reason or 'unspecified'}"
+                        ),
+                    )
                 if since_result.classification == COMPLETED:
                     failure = {
                         "phase": "history_validation",
@@ -1742,6 +1853,8 @@ def run(args: argparse.Namespace) -> int:
                             "classification": COMPLETED,
                             "output_path": None,
                             "stderr_tail": "",
+                            "stdout_tail": "",
+                            "failure_reason": None,
                             "command": [],
                         }
                     )
@@ -1781,9 +1894,19 @@ def run(args: argparse.Namespace) -> int:
                         "classification": result.classification,
                         "output_path": str(chunk_output),
                         "stderr_tail": result.stderr_tail,
+                        "stdout_tail": result.stdout_tail,
+                        "failure_reason": result.failure_reason,
                         "command": result.command,
                     }
                 )
+                if result.classification == INFRA_FAILURE:
+                    append_log(
+                        log_file,
+                        (
+                            f"run_id={run_id} chunk={idx}/{len(chunks)} infra_failure "
+                            f"reason={result.failure_reason or 'unspecified'}"
+                        ),
+                    )
                 if result.classification == COMPLETED:
                     last_successful_anchor = head
                     _run_ctx.last_successful_anchor = head
@@ -1837,6 +1960,8 @@ def run(args: argparse.Namespace) -> int:
                                     "classification": COMPLETED,
                                     "output_path": None,
                                     "stderr_tail": "",
+                                    "stdout_tail": "",
+                                    "failure_reason": None,
                                     "command": [],
                                 }
                             )
@@ -1880,9 +2005,20 @@ def run(args: argparse.Namespace) -> int:
                                 "classification": sub_result.classification,
                                 "output_path": str(sub_output),
                                 "stderr_tail": sub_result.stderr_tail,
+                                "stdout_tail": sub_result.stdout_tail,
+                                "failure_reason": sub_result.failure_reason,
                                 "command": sub_result.command,
                             }
                         )
+                        if sub_result.classification == INFRA_FAILURE:
+                            append_log(
+                                log_file,
+                                (
+                                    f"run_id={run_id} chunk={idx}/{len(chunks)} "
+                                    f"sub={sub_idx}/{len(sub_commits)} infra_failure "
+                                    f"reason={sub_result.failure_reason or 'unspecified'}"
+                                ),
+                            )
                         if sub_result.classification == COMPLETED:
                             last_successful_anchor = sub_sha
                             _run_ctx.last_successful_anchor = sub_sha

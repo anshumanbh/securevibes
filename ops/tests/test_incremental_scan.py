@@ -298,6 +298,61 @@ def test_run_scan_timeout_returns_infra_failure(
     assert result.classification == inc.INFRA_FAILURE
     assert result.exit_code == 124
     assert "timed out" in result.stderr_tail
+    assert result.stdout_tail == ""
+    assert result.failure_reason == "timeout"
+
+
+def test_run_subprocess_with_progress_timeout_does_not_recommunicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyProc:
+        def __init__(self) -> None:
+            self.pid = 12345
+            self.returncode = -9
+            self.communicate_calls: list[int | None] = []
+
+        def communicate(self, timeout: int | None = None) -> tuple[str, str]:
+            self.communicate_calls.append(timeout)
+            if timeout is not None:
+                raise subprocess.TimeoutExpired(cmd=["securevibes"], timeout=timeout)
+            raise AssertionError("timeout path must not call unbounded communicate()")
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.returncode = -9
+            return self.returncode
+
+    proc = DummyProc()
+    monkeypatch.setattr(inc.subprocess, "Popen", lambda *_args, **_kwargs: proc)
+    monkeypatch.setattr(inc, "_terminate_child_process", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        inc._run_subprocess_with_progress(["securevibes", "pr-review"], timeout_seconds=3)
+
+    assert proc.communicate_calls == [3]
+
+
+def test_run_subprocess_with_progress_starts_new_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    class DummyProc:
+        def __init__(self) -> None:
+            self.pid = 123
+            self.returncode = 0
+
+        def communicate(self, timeout: int | None = None) -> tuple[str, str]:
+            return ("", "")
+
+    def fake_popen(*_args: Any, **kwargs: Any) -> DummyProc:
+        seen["kwargs"] = kwargs
+        return DummyProc()
+
+    monkeypatch.setattr(inc.subprocess, "Popen", fake_popen)
+    result = inc._run_subprocess_with_progress(["securevibes", "pr-review"], timeout_seconds=3)
+
+    assert seen["kwargs"]["start_new_session"] is True
+    assert result.returncode == 0
 
 
 def test_run_since_date_scan_timeout_returns_infra_failure(
@@ -320,6 +375,8 @@ def test_run_since_date_scan_timeout_returns_infra_failure(
     assert result.classification == inc.INFRA_FAILURE
     assert result.exit_code == 124
     assert "timed out" in result.stderr_tail
+    assert result.stdout_tail == ""
+    assert result.failure_reason == "timeout"
 
 
 def test_git_fetch_retries_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -868,6 +925,7 @@ def test_exit_1_without_output_halts_pipeline(
             exit_code=1,
             classification=inc.INFRA_FAILURE,
             stderr_tail="missing output",
+            failure_reason="missing_output_report",
             output_path=output_path,
         )
 
@@ -878,6 +936,9 @@ def test_exit_1_without_output_halts_pipeline(
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["last_status"] == "failed"
     assert state["last_seen_sha"] == "abc123"
+    log_path = repo_dir / ".securevibes" / "incremental_scan.log"
+    log_body = log_path.read_text(encoding="utf-8")
+    assert "infra_failure reason=missing_output_report" in log_body
 
 
 def test_run_record_written_with_chunk_results(
@@ -919,6 +980,8 @@ def test_run_record_written_with_chunk_results(
     payload = json.loads(run_record.read_text(encoding="utf-8"))
     assert payload["status"] == "success"
     assert len(payload["chunks"]) == 1
+    assert payload["chunks"][0]["stdout_tail"] == ""
+    assert payload["chunks"][0]["failure_reason"] is None
 
 
 def test_corrupt_state_triggers_bootstrap(
@@ -1141,6 +1204,97 @@ def test_run_scan_classifies_diff_too_large_from_full_stderr(
         Path("/repo"), "base", "head", "sonnet", "medium", False, output_path
     )
     assert result.classification == inc.DIFF_TOO_LARGE
+    assert result.stdout_tail == ""
+    assert result.failure_reason == "diff_too_large"
+
+
+def test_classify_scan_result_with_reason_missing_output(report_path: Path) -> None:
+    classification, reason = inc.classify_scan_result_with_reason(1, report_path)
+    assert classification == inc.INFRA_FAILURE
+    assert reason == "missing_output_report"
+
+
+def test_classify_scan_result_with_reason_invalid_json(report_path: Path) -> None:
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("{bad-json", encoding="utf-8")
+    classification, reason = inc.classify_scan_result_with_reason(1, report_path)
+    assert classification == inc.INFRA_FAILURE
+    assert reason == "invalid_output_json"
+
+
+def test_classify_scan_result_with_reason_invalid_schema(report_path: Path) -> None:
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps({"repository_path": "/tmp/repo", "issues": []}), encoding="utf-8"
+    )
+    classification, reason = inc.classify_scan_result_with_reason(1, report_path)
+    assert classification == inc.INFRA_FAILURE
+    assert reason == "invalid_output_schema"
+
+
+def test_run_scan_infra_failure_keeps_stdout_tail_and_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run_with_progress(
+        command: list[str],
+        _timeout_seconds: int,
+        **_kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=1,
+            stdout="line1\nline2\nline3",
+            stderr="stderr1\nstderr2",
+        )
+
+    monkeypatch.setattr(inc, "_run_subprocess_with_progress", fake_run_with_progress)
+    output_path = tmp_path / "missing-report.json"
+    result = inc.run_scan(
+        Path("/repo"), "base", "head", "sonnet", "medium", False, output_path
+    )
+    assert result.classification == inc.INFRA_FAILURE
+    assert result.failure_reason == "missing_output_report"
+    assert result.stdout_tail.endswith("line3")
+
+
+def test_run_scan_completed_drops_stdout_tail(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run_with_progress(
+        command: list[str],
+        _timeout_seconds: int,
+        **_kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
+        output_idx = command.index("--output") + 1
+        output_path = Path(command[output_idx])
+        output_path.write_text(
+            json.dumps(
+                {
+                    "repository_path": "/tmp/repo",
+                    "files_scanned": 1,
+                    "scan_time_seconds": 1,
+                    "issues": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout="diagnostic line",
+            stderr="",
+        )
+
+    monkeypatch.setattr(inc, "_run_subprocess_with_progress", fake_run_with_progress)
+    output_path = tmp_path / "valid-report.json"
+    result = inc.run_scan(
+        Path("/repo"), "base", "head", "sonnet", "medium", False, output_path
+    )
+    assert result.classification == inc.COMPLETED
+    assert result.failure_reason is None
+    assert result.stdout_tail == ""
 
 
 def test_get_diff_stats_parses_numstat_rows(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1316,23 +1470,24 @@ def test_recover_stale_runs_only_updates_primary_run_records(tmp_path: Path) -> 
     assert json.loads(non_matching.read_text(encoding="utf-8")) == non_matching_payload
 
 
-def test_signal_handler_marks_interrupted_without_system_exit() -> None:
-    class DummyProc:
-        def __init__(self) -> None:
-            self.killed = False
-
-        def kill(self) -> None:
-            self.killed = True
-
-    proc = DummyProc()
+def test_signal_handler_marks_interrupted_without_system_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called: dict[str, bool] = {"terminated": False}
+    proc = object()
     inc._run_ctx.reset()
     inc._run_ctx._child_process = proc  # type: ignore[assignment]
+    monkeypatch.setattr(
+        inc,
+        "_terminate_child_process",
+        lambda *_args, **_kwargs: called.__setitem__("terminated", True),
+    )
 
     inc._signal_handler(int(signal.SIGINT), None)
 
     assert inc._run_ctx.interrupted is True
     assert inc._run_ctx.interrupted_signal == int(signal.SIGINT)
-    assert proc.killed is True
+    assert called["terminated"] is True
     inc._run_ctx.reset()
 
 
