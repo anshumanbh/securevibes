@@ -42,3 +42,14 @@ def test_selection_policy_is_pinned() -> None:
     policy = selection.get("policy", {})
     assert policy.get("ordering") == "all critical first, then high"
     assert policy.get("cap") == 10
+
+
+def test_debug_workflow_files_exist() -> None:
+    required = [
+        CORPUS / "debug" / "README.md",
+        CORPUS / "debug" / "misses_analysis.md",
+        CORPUS / "debug" / "tuning_log.md",
+        CORPUS / "scripts" / "run_sweep.py",
+    ]
+    for path in required:
+        assert path.exists(), f"missing expected debug workflow file: {path}"

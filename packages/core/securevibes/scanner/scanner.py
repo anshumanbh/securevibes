@@ -22,8 +22,15 @@ from securevibes.models.result import ScanResult
 from securevibes.models.issue import SecurityIssue
 from securevibes.prompts.loader import load_prompt
 from securevibes.config import config, LanguageConfig, ScanConfig
-from securevibes.scanner.subagent_manager import SubAgentManager, ScanMode, SUBAGENT_ORDER
-from securevibes.scanner.detection import collect_agentic_detection_files, detect_agentic_patterns
+from securevibes.scanner.subagent_manager import (
+    SubAgentManager,
+    ScanMode,
+    SUBAGENT_ORDER,
+)
+from securevibes.scanner.detection import (
+    collect_agentic_detection_files,
+    detect_agentic_patterns,
+)
 from securevibes.diff.context import (
     extract_relevant_architecture,
     filter_relevant_threats,
@@ -85,6 +92,7 @@ from securevibes.scanner.pr_review_flow import (
     PRReviewContext,
     PRReviewState,
 )
+from securevibes.scanner.permissions import resolve_permission_mode
 
 __all__ = [
     "Scanner",
@@ -106,7 +114,7 @@ _PROMPT_HUNK_MAX_LINES_PER_HUNK = 80
 _NEW_FILE_HUNK_MAX_LINES = 200  # New files can't be Read from disk; show more in prompt
 _NEW_FILE_ANCHOR_MAX_LINES = 120  # Same rationale — new files need higher anchor limit
 DIFF_FILES_DIR = "DIFF_FILES"  # Subdirectory for agent-readable diff content
-_SAFE_PERMISSION_MODE = "default"
+_SAFE_PERMISSION_MODE = resolve_permission_mode()
 _BASE_ALLOWED_TOOLS = ("Task", "Skill", "Read", "Write", "Grep", "Glob", "LS")
 SECURITY_PATH_HINTS = (
     "auth",
@@ -159,14 +167,21 @@ def _summarize_diff_line_anchors(
             (int(line.new_line_num or 0), line.content.strip())
             for hunk in diff_file.hunks
             for line in hunk.lines
-            if line.type == "add" and isinstance(line.content, str) and line.content.strip()
+            if line.type == "add"
+            and isinstance(line.content, str)
+            and line.content.strip()
         ]
         removed_count = sum(
-            1 for hunk in diff_file.hunks for line in hunk.lines if line.type == "remove"
+            1
+            for hunk in diff_file.hunks
+            for line in hunk.lines
+            if line.type == "remove"
         )
         lines.append(f"- {path}")
         # New files can't be Read from disk — use a higher anchor limit
-        effective_max = _NEW_FILE_ANCHOR_MAX_LINES if diff_file.is_new else max_lines_per_file
+        effective_max = (
+            _NEW_FILE_ANCHOR_MAX_LINES if diff_file.is_new else max_lines_per_file
+        )
         for line_no, content in added[:effective_max]:
             snippet = content.replace("\t", " ").strip()
             if len(snippet) > 180:
@@ -231,7 +246,9 @@ def _summarize_diff_hunk_snippets(
                 output.append(f"{prefix}{content}")
 
             if len(hunk.lines) > effective_max_lines:
-                output.append(f"... [truncated {len(hunk.lines) - effective_max_lines} hunk lines]")
+                output.append(
+                    f"... [truncated {len(hunk.lines) - effective_max_lines} hunk lines]"
+                )
 
         if len(diff_file.hunks) > max_hunks_per_file:
             output.append(
@@ -297,7 +314,9 @@ def _format_diff_file_hints(diff_file_paths: list[str]) -> str:
     ]
     for rel_path in diff_file_paths:
         lines.append(f"  - .securevibes/{rel_path}")
-    lines.append("Use the Read tool on these files when the snippets above seem incomplete.")
+    lines.append(
+        "Use the Read tool on these files when the snippets above seem incomplete."
+    )
     return "\n".join(lines)
 
 
@@ -464,7 +483,9 @@ async def _refine_pr_findings_with_llm(
         return None
 
     focus_area_lines = (
-        "\n".join(f"- {focus_area_label(focus_area)}" for focus_area in (focus_areas or [])).strip()
+        "\n".join(
+            f"- {focus_area_label(focus_area)}" for focus_area in (focus_areas or [])
+        ).strip()
         or "- General exploit-chain verification"
     )
     verification_mode = "verifier" if mode == "verifier" else "quality"
@@ -641,7 +662,9 @@ def _build_focused_diff_context(diff_context: DiffContext) -> DiffContext:
             )
         )
 
-    changed_files = [path for path in (diff_file_path(file) for file in focused_files) if path]
+    changed_files = [
+        path for path in (diff_file_path(file) for file in focused_files) if path
+    ]
     added_lines = sum(
         1
         for file in focused_files
@@ -785,10 +808,18 @@ class Scanner:
         run_only_value = single_subagent or "none"
         resume_value = resume_from or "none"
         skip_value = ",".join(skip_subagents) if skip_subagents else "none"
-        dast_url = self.dast_config.get("target_url") if dast_enabled_for_run else "none"
-        dast_timeout = str(self.dast_config.get("timeout", 120)) if dast_enabled_for_run else "none"
+        dast_url = (
+            self.dast_config.get("target_url") if dast_enabled_for_run else "none"
+        )
+        dast_timeout = (
+            str(self.dast_config.get("timeout", 120))
+            if dast_enabled_for_run
+            else "none"
+        )
         dast_accounts = (
-            str(self.dast_config.get("accounts_path") or "none") if dast_enabled_for_run else "none"
+            str(self.dast_config.get("accounts_path") or "none")
+            if dast_enabled_for_run
+            else "none"
         )
 
         return (
@@ -806,7 +837,12 @@ class Scanner:
         )
 
     def _require_repo_scoped_path(
-        self, repo: Path, candidate: Path, *, operation: str, return_resolved: bool = False
+        self,
+        repo: Path,
+        candidate: Path,
+        *,
+        operation: str,
+        return_resolved: bool = False,
     ) -> Path:
         """Ensure a candidate path resolves within repository root."""
         repo_root = repo.resolve(strict=False)
@@ -820,7 +856,12 @@ class Scanner:
         )
 
     def _repo_output_path(
-        self, repo: Path, path: Path | str, *, operation: str, return_resolved: bool = False
+        self,
+        repo: Path,
+        path: Path | str,
+        *,
+        operation: str,
+        return_resolved: bool = False,
     ) -> Path:
         """Resolve a path relative to repo and enforce repository boundary."""
         candidate = Path(path)
@@ -854,7 +895,9 @@ class Scanner:
             Path(SECUREVIBES_DIR) / "DAST_TEST_ACCOUNTS.json",
             operation="DAST accounts output file",
         )
-        target_accounts.write_text(accounts_file.read_text(encoding="utf-8"), encoding="utf-8")
+        target_accounts.write_text(
+            accounts_file.read_text(encoding="utf-8"), encoding="utf-8"
+        )
 
     def _setup_skills(self, repo: Path, skill_type: str, *, required: bool = True):
         """
@@ -931,7 +974,11 @@ class Scanner:
         self._setup_skills(repo, "threat-modeling", required=False)
 
     async def scan_subagent(
-        self, repo_path: str, subagent: str, force: bool = False, skip_checks: bool = False
+        self,
+        repo_path: str,
+        subagent: str,
+        force: bool = False,
+        skip_checks: bool = False,
     ) -> ScanResult:
         """
         Run a single sub-agent with artifact validation.
@@ -964,13 +1011,17 @@ class Scanner:
 
                 # Offer to run prerequisites
                 self.console.print("Options:")
-                self.console.print(f"  1. Run from prerequisite sub-agents (includes {subagent})")
+                self.console.print(
+                    f"  1. Run from prerequisite sub-agents (includes {subagent})"
+                )
                 self.console.print("  2. Run full scan (all sub-agents)")
                 self.console.print("  3. Cancel")
 
                 import click
 
-                choice = click.prompt("\nChoice", type=int, default=3, show_default=False)
+                choice = click.prompt(
+                    "\nChoice", type=int, default=3, show_default=False
+                )
 
                 if choice == 1:
                     # Find which sub-agent creates the required artifact
@@ -978,8 +1029,12 @@ class Scanner:
 
                     for sa_name in SUBAGENT_ORDER:
                         if SUBAGENT_ARTIFACTS[sa_name]["creates"] == required:
-                            return await self.scan_resume(repo_path, sa_name, force, skip_checks)
-                    raise RuntimeError(f"Could not find sub-agent that creates {required}")
+                            return await self.scan_resume(
+                                repo_path, sa_name, force, skip_checks
+                            )
+                    raise RuntimeError(
+                        f"Could not find sub-agent that creates {required}"
+                    )
                 elif choice == 2:
                     return await self.scan(repo_path)
                 else:
@@ -1011,7 +1066,11 @@ class Scanner:
         return await self._execute_scan(repo, single_subagent=subagent)
 
     async def scan_resume(
-        self, repo_path: str, from_subagent: str, force: bool = False, skip_checks: bool = False
+        self,
+        repo_path: str,
+        from_subagent: str,
+        force: bool = False,
+        skip_checks: bool = False,
     ) -> ScanResult:
         """
         Resume scan from a specific sub-agent onwards.
@@ -1053,7 +1112,9 @@ class Scanner:
 
             self.console.print(f"\nWill run: {' → '.join(subagents_to_run)}")
             if "dast" not in subagents_to_run and not self.dast_enabled:
-                self.console.print("(DAST not enabled - use --dast --target-url to include)")
+                self.console.print(
+                    "(DAST not enabled - use --dast --target-url to include)"
+                )
 
             if not force:
                 import click
@@ -1121,7 +1182,9 @@ class Scanner:
         try:
             securevibes_dir.mkdir(exist_ok=True)
         except (OSError, PermissionError) as e:
-            raise RuntimeError(f"Failed to create output directory {securevibes_dir}: {e}")
+            raise RuntimeError(
+                f"Failed to create output directory {securevibes_dir}: {e}"
+            )
 
         # Start with explicit overrides; _prepare_pr_review_context applies config fallback.
         effective_attempts = pr_review_attempts
@@ -1204,7 +1267,9 @@ class Scanner:
 
         await self._run_pr_refinement_and_verification(ctx, state)
 
-        return self._build_pr_review_result(ctx, state, update_artifacts, severity_threshold)
+        return self._build_pr_review_result(
+            ctx, state, update_artifacts, severity_threshold
+        )
 
     async def _prepare_pr_review_context(
         self,
@@ -1226,11 +1291,15 @@ class Scanner:
             Path(SECUREVIBES_DIR) / DIFF_CONTEXT_FILE,
             operation="PR diff context artifact",
         )
-        diff_context_path.write_text(json.dumps(focused_diff_context.to_json(), indent=2))
+        diff_context_path.write_text(
+            json.dumps(focused_diff_context.to_json(), indent=2)
+        )
 
         # Write individual diff files so the LLM agent can Read them when
         # prompt snippets are truncated (especially for large new files).
-        diff_file_paths = _write_diff_files_for_agent(securevibes_dir, focused_diff_context)
+        diff_file_paths = _write_diff_files_for_agent(
+            securevibes_dir, focused_diff_context
+        )
 
         architecture_context = extract_relevant_architecture(
             securevibes_dir / SECURITY_FILE,
@@ -1258,7 +1327,9 @@ class Scanner:
             focused_diff_context.changed_files,
         )
         threat_context_summary = summarize_threats_for_prompt(relevant_threats)
-        vuln_context_summary = summarize_vulnerabilities_for_prompt(relevant_baseline_vulns)
+        vuln_context_summary = summarize_vulnerabilities_for_prompt(
+            relevant_baseline_vulns
+        )
         security_adjacent_files = suggest_security_adjacent_files(
             repo,
             focused_diff_context.changed_files,
@@ -1275,7 +1346,11 @@ class Scanner:
         path_parser_signals = diff_has_path_parser_signals(focused_diff_context)
         auth_privilege_signals = diff_has_auth_privilege_signals(focused_diff_context)
         pr_grep_default_scope = _derive_pr_default_grep_scope(focused_diff_context)
-        pr_review_attempts = pr_review_attempts_override if pr_review_attempts_override is not None else config.get_pr_review_attempts()
+        pr_review_attempts = (
+            pr_review_attempts_override
+            if pr_review_attempts_override is not None
+            else config.get_pr_review_attempts()
+        )
         retry_focus_plan = build_pr_retry_focus_plan(
             pr_review_attempts,
             command_builder_signals=command_builder_signals,
@@ -1351,7 +1426,11 @@ You may output [] only if every hypothesis is disproved with concrete code evide
 Only report findings at or above: {severity_threshold}
 """
 
-        pr_timeout_seconds = pr_timeout_seconds_override if pr_timeout_seconds_override is not None else config.get_pr_review_timeout_seconds()
+        pr_timeout_seconds = (
+            pr_timeout_seconds_override
+            if pr_timeout_seconds_override is not None
+            else config.get_pr_review_timeout_seconds()
+        )
         pr_vulns_path = securevibes_dir / PR_VULNERABILITIES_FILE
         detected_languages = LanguageConfig.detect_languages(repo) if repo else set()
 
@@ -1407,10 +1486,16 @@ Only report findings at or above: {severity_threshold}
             total_attempts=len(state.attempt_chain_ids),
         )
 
-        attempt_outcome_counts = state.attempt_observed_counts or state.attempt_finding_counts
+        attempt_outcome_counts = (
+            state.attempt_observed_counts or state.attempt_finding_counts
+        )
         attempt_disagreement = attempts_show_pr_disagreement(attempt_outcome_counts)
         high_risk_signal_count = sum(
-            [ctx.command_builder_signals, ctx.path_parser_signals, ctx.auth_privilege_signals]
+            [
+                ctx.command_builder_signals,
+                ctx.path_parser_signals,
+                ctx.auth_privilege_signals,
+            ]
         )
         initial_core_exact_ids = collect_chain_exact_ids(state.pr_vulns)
         initial_core_family_ids = collect_chain_family_ids(state.pr_vulns)
@@ -1432,7 +1517,9 @@ Only report findings at or above: {severity_threshold}
         )
         if weak_consensus and detected_reason and not state.weak_consensus_reason:
             state.weak_consensus_reason = detected_reason
-        state.weak_consensus_triggered = state.weak_consensus_triggered or weak_consensus
+        state.weak_consensus_triggered = (
+            state.weak_consensus_triggered or weak_consensus
+        )
         passes_with_core_chain_exact = support_counts_snapshot.get("exact", 0)
         passes_with_core_chain_family = support_counts_snapshot.get("family", 0)
         passes_with_core_chain_flow = support_counts_snapshot.get("flow", 0)
@@ -1537,7 +1624,9 @@ Only report findings at or above: {severity_threshold}
         )
         if weak_consensus and detected_reason:
             state.weak_consensus_reason = detected_reason
-        state.weak_consensus_triggered = state.weak_consensus_triggered or weak_consensus
+        state.weak_consensus_triggered = (
+            state.weak_consensus_triggered or weak_consensus
+        )
         passes_with_core_chain_exact = support_counts_snapshot.get("exact", 0)
         passes_with_core_chain_family = support_counts_snapshot.get("family", 0)
         passes_with_core_chain_flow = support_counts_snapshot.get("flow", 0)
@@ -1613,7 +1702,9 @@ Only report findings at or above: {severity_threshold}
         )
         if weak_consensus and detected_reason:
             state.weak_consensus_reason = detected_reason
-        state.weak_consensus_triggered = state.weak_consensus_triggered or weak_consensus
+        state.weak_consensus_triggered = (
+            state.weak_consensus_triggered or weak_consensus
+        )
 
         # Store final values needed by _build_pr_review_result into state attributes
         # that are used for debug logging.
@@ -1646,7 +1737,9 @@ Only report findings at or above: {severity_threshold}
                     ctx.pr_vulns_path,
                     operation="deduped PR findings artifact",
                 )
-                safe_pr_vulns_path.write_text(json.dumps(pr_vulns, indent=2), encoding="utf-8")
+                safe_pr_vulns_path.write_text(
+                    json.dumps(pr_vulns, indent=2), encoding="utf-8"
+                )
             except OSError as e:
                 state.warnings.append(
                     f"Unable to persist deduped PR findings to {ctx.pr_vulns_path}: {e}"
@@ -1658,7 +1751,9 @@ Only report findings at or above: {severity_threshold}
             speculative_dropped = merge_stats.get("speculative_dropped", 0)
             subchain_collapsed = merge_stats.get("subchain_collapsed", 0)
             low_support_dropped = merge_stats.get("low_support_dropped", 0)
-            dropped_as_secondary_chain = merge_stats.get("dropped_as_secondary_chain", 0)
+            dropped_as_secondary_chain = merge_stats.get(
+                "dropped_as_secondary_chain", 0
+            )
             canonical_chain_count = merge_stats.get(
                 "canonical_chain_count", merged_pr_finding_count
             )
@@ -1670,7 +1765,9 @@ Only report findings at or above: {severity_threshold}
             )
             passes_with_core_chain = state.passes_with_core_chain
             passes_with_core_chain_exact = state.support_counts_snapshot.get("exact", 0)
-            passes_with_core_chain_family = state.support_counts_snapshot.get("family", 0)
+            passes_with_core_chain_family = state.support_counts_snapshot.get(
+                "family", 0
+            )
             passes_with_core_chain_flow = state.support_counts_snapshot.get("flow", 0)
             consensus_score = (
                 passes_with_core_chain / len(state.attempt_chain_ids)
@@ -1712,7 +1809,9 @@ Only report findings at or above: {severity_threshold}
 
         if update_artifacts and isinstance(pr_vulns, list):
             try:
-                update_result = update_pr_review_artifacts(ctx.securevibes_dir, pr_vulns)
+                update_result = update_pr_review_artifacts(
+                    ctx.securevibes_dir, pr_vulns
+                )
             except ArtifactLoadError as exc:
                 raise RuntimeError(
                     "Failed to update PR-review artifacts due to malformed baseline data: "
@@ -1734,7 +1833,10 @@ Only report findings at or above: {severity_threshold}
         )
 
     async def _execute_scan(
-        self, repo: Path, single_subagent: Optional[str] = None, resume_from: Optional[str] = None
+        self,
+        repo: Path,
+        single_subagent: Optional[str] = None,
+        resume_from: Optional[str] = None,
     ) -> ScanResult:
         """
         Internal method to execute scan with optional sub-agent filtering.
@@ -1756,7 +1858,9 @@ Only report findings at or above: {severity_threshold}
         try:
             securevibes_dir.mkdir(exist_ok=True)
         except (OSError, PermissionError) as e:
-            raise RuntimeError(f"Failed to create output directory {securevibes_dir}: {e}")
+            raise RuntimeError(
+                f"Failed to create output directory {securevibes_dir}: {e}"
+            )
 
         # Track scan timing
         scan_start_time = time.time()
@@ -1795,7 +1899,9 @@ Only report findings at or above: {severity_threshold}
         if self.agentic_override is not None:
             is_agentic = self.agentic_override
 
-        signals_preview = "\n".join(f"- {s}" for s in detection_result.signals[:8]) or "- (none)"
+        signals_preview = (
+            "\n".join(f"- {s}" for s in detection_result.signals[:8]) or "- (none)"
+        )
         if is_agentic:
             threat_modeling_context = (
                 "<deterministic_agentic_detection>\n"
@@ -1872,12 +1978,16 @@ Only report findings at or above: {severity_threshold}
         self.console.print("=" * 60)
 
         # Initialize progress tracker
-        tracker = ProgressTracker(self.console, debug=self.debug, single_subagent=single_subagent)
+        tracker = ProgressTracker(
+            self.console, debug=self.debug, single_subagent=single_subagent
+        )
 
         # Reuse detected_languages from earlier in this method
 
         # Create hooks using hook creator functions
-        dast_security_hook = create_dast_security_hook(tracker, self.console, self.debug)
+        dast_security_hook = create_dast_security_hook(
+            tracker, self.console, self.debug
+        )
         pre_tool_hook = create_pre_tool_hook(
             tracker,
             self.console,
@@ -1899,7 +2009,9 @@ Only report findings at or above: {severity_threshold}
         # This allows --model flag to cascade to all agents while respecting env vars
         # The DAST target URL is passed to substitute {target_url} placeholders in the prompt
         dast_url = (
-            self.dast_config.get("target_url") if (needs_dast and self.dast_enabled) else None
+            self.dast_config.get("target_url")
+            if (needs_dast and self.dast_enabled)
+            else None
         )
         agents = create_agent_definitions(
             cli_model=self.model,
@@ -1986,7 +2098,8 @@ Only report findings at or above: {severity_threshold}
                             self.total_cost = message.total_cost_usd
                             if self.debug:
                                 self.console.print(
-                                    f"  💰 Cost update: ${self.total_cost:.4f}", style="cyan"
+                                    f"  💰 Cost update: ${self.total_cost:.4f}",
+                                    style="cyan",
                                 )
                         # ResultMessage indicates scan completion - exit the loop
                         break
@@ -2001,7 +2114,11 @@ Only report findings at or above: {severity_threshold}
         try:
             if single_subagent:
                 return self._load_subagent_results(
-                    securevibes_dir, repo, files_scanned, scan_start_time, single_subagent
+                    securevibes_dir,
+                    repo,
+                    files_scanned,
+                    scan_start_time,
+                    single_subagent,
                 )
             else:
                 return self._load_scan_results(
@@ -2066,12 +2183,16 @@ Only report findings at or above: {severity_threshold}
             return None
 
         except Exception as e:
-            warning_msg = f"Failed to regenerate scan artifacts with DAST validation data: {e}"
+            warning_msg = (
+                f"Failed to regenerate scan artifacts with DAST validation data: {e}"
+            )
             if self.debug:
                 self.console.print(f"⚠️  Warning: {warning_msg}", style="yellow")
             return warning_msg
 
-    def _merge_dast_results(self, scan_result: ScanResult, securevibes_dir: Path) -> ScanResult:
+    def _merge_dast_results(
+        self, scan_result: ScanResult, securevibes_dir: Path
+    ) -> ScanResult:
         """
         Merge DAST validation data into scan results.
 
@@ -2115,7 +2236,9 @@ Only report findings at or above: {severity_threshold}
                     )
                 return scan_result
 
-            validations = [entry for entry in validations_raw if isinstance(entry, dict)]
+            validations = [
+                entry for entry in validations_raw if isinstance(entry, dict)
+            ]
 
             if not validations:
                 return scan_result
@@ -2184,12 +2307,18 @@ Only report findings at or above: {severity_threshold}
             scan_result.issues = updated_issues
 
             # Update DAST metrics
-            total_tested = metadata.get("total_vulnerabilities_tested", len(validations))
+            total_tested = metadata.get(
+                "total_vulnerabilities_tested", len(validations)
+            )
             if total_tested > 0:
                 scan_result.dast_enabled = True
                 scan_result.dast_validation_rate = validated_count / total_tested
-                scan_result.dast_false_positive_rate = false_positive_count / total_tested
-                scan_result.dast_scan_time_seconds = metadata.get("scan_duration_seconds", 0)
+                scan_result.dast_false_positive_rate = (
+                    false_positive_count / total_tested
+                )
+                scan_result.dast_scan_time_seconds = metadata.get(
+                    "scan_duration_seconds", 0
+                )
 
             if self.debug:
                 self.console.print(
@@ -2202,7 +2331,9 @@ Only report findings at or above: {severity_threshold}
 
         except (OSError, json.JSONDecodeError) as e:
             if self.debug:
-                self.console.print(f"⚠️  Warning: Failed to merge DAST results: {e}", style="yellow")
+                self.console.print(
+                    f"⚠️  Warning: Failed to merge DAST results: {e}", style="yellow"
+                )
             return scan_result
 
     def _load_subagent_results(
@@ -2261,10 +2392,12 @@ Only report findings at or above: {severity_threshold}
         # For assessment and threat-modeling, return partial result
         if subagent == "assessment":
             self.console.print(
-                f"\n✅ Assessment complete. Created {expected_artifact}", style="bold green"
+                f"\n✅ Assessment complete. Created {expected_artifact}",
+                style="bold green",
             )
             self.console.print(
-                "   Run 'securevibes scan . --subagent threat-modeling' to continue.", style="dim"
+                "   Run 'securevibes scan . --subagent threat-modeling' to continue.",
+                style="dim",
             )
         elif subagent == "threat-modeling":
             # Count threats from THREAT_MODEL.json
@@ -2285,7 +2418,8 @@ Only report findings at or above: {severity_threshold}
                 style="bold green",
             )
             self.console.print(
-                "   Run 'securevibes scan . --subagent code-review' to continue.", style="dim"
+                "   Run 'securevibes scan . --subagent code-review' to continue.",
+                style="dim",
             )
         elif subagent == "dast":
             # Count validations from DAST_VALIDATION.json
@@ -2396,7 +2530,9 @@ Only report findings at or above: {severity_threshold}
                         code_snippet=code_snippet or "",
                         cwe_id=vuln.cwe_id,
                         recommendation=vuln.recommendation,
-                        evidence=str(vuln.evidence) if vuln.evidence is not None else None,
+                        evidence=(
+                            str(vuln.evidence) if vuln.evidence is not None else None
+                        ),
                     )
                 )
 

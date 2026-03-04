@@ -9,7 +9,12 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Type
 
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
-from claude_agent_sdk.types import AssistantMessage, HookMatcher, ResultMessage, TextBlock
+from claude_agent_sdk.types import (
+    AssistantMessage,
+    HookMatcher,
+    ResultMessage,
+    TextBlock,
+)
 
 from securevibes.agents.definitions import create_agent_definitions
 from securevibes.config import config
@@ -27,6 +32,7 @@ from securevibes.scanner.hooks import (
     create_pre_tool_hook,
     create_subagent_hook,
 )
+from securevibes.scanner.permissions import resolve_permission_mode
 from securevibes.scanner.pr_review_merge import (
     build_pr_review_retry_suffix,
     extract_observed_pr_findings,
@@ -36,6 +42,7 @@ from securevibes.scanner.pr_review_merge import (
 )
 
 logger = logging.getLogger(__name__)
+_SAFE_PERMISSION_MODE = resolve_permission_mode()
 
 
 @dataclass
@@ -161,9 +168,13 @@ class PRReviewAttemptRunner:
         # Backward-compatible alias used by existing code paths.
         state.attempt_chain_ids.append(family_ids)
         for chain_id in family_ids:
-            state.chain_support_counts[chain_id] = state.chain_support_counts.get(chain_id, 0) + 1
+            state.chain_support_counts[chain_id] = (
+                state.chain_support_counts.get(chain_id, 0) + 1
+            )
         for chain_id in flow_ids:
-            state.flow_support_counts[chain_id] = state.flow_support_counts.get(chain_id, 0) + 1
+            state.flow_support_counts[chain_id] = (
+                state.flow_support_counts.get(chain_id, 0) + 1
+            )
 
     def _refresh_carry_forward_candidates(
         self,
@@ -175,17 +186,19 @@ class PRReviewAttemptRunner:
             chain_support_counts=state.chain_support_counts,
             total_attempts=len(state.attempt_chain_ids),
         )
-        state.attempt_state.carry_forward_candidate_family_ids = collect_chain_family_ids(
-            cumulative_candidates
+        state.attempt_state.carry_forward_candidate_family_ids = (
+            collect_chain_family_ids(cumulative_candidates)
         )
         state.attempt_state.carry_forward_candidate_flow_ids = collect_chain_flow_ids(
             cumulative_candidates
         )
-        state.attempt_state.carry_forward_candidate_summary = summarize_chain_candidates_for_prompt(
-            cumulative_candidates,
-            state.chain_support_counts,
-            len(state.attempt_chain_ids),
-            flow_support_counts=state.flow_support_counts,
+        state.attempt_state.carry_forward_candidate_summary = (
+            summarize_chain_candidates_for_prompt(
+                cumulative_candidates,
+                state.chain_support_counts,
+                len(state.attempt_chain_ids),
+                flow_support_counts=state.flow_support_counts,
+            )
         )
 
     def _record_attempt_revalidation_observability(
@@ -206,7 +219,9 @@ class PRReviewAttemptRunner:
         state.attempt_revalidation_attempted.append(revalidation_attempted)
         state.attempt_core_evidence_present.append(core_evidence_present)
         if self.debug and revalidation_attempted and not core_evidence_present:
-            logger.debug("Revalidation pass did not reproduce carried core-chain evidence")
+            logger.debug(
+                "Revalidation pass did not reproduce carried core-chain evidence"
+            )
         return core_evidence_present
 
     def _process_attempt_outcome(
@@ -245,7 +260,9 @@ class PRReviewAttemptRunner:
                     attempt_finding_count,
                 )
         effective_attempt_vulns = (
-            observed_vulns if len(observed_vulns) > attempt_finding_count else loaded_vulns
+            observed_vulns
+            if len(observed_vulns) > attempt_finding_count
+            else loaded_vulns
         )
         self._record_attempt_chains(state, effective_attempt_vulns)
         core_evidence_present = self._record_attempt_revalidation_observability(
@@ -283,7 +300,9 @@ class PRReviewAttemptRunner:
                         current_total = float(current_total_raw)
                     else:
                         current_total = 0.0
-                    self._scanner.total_cost = current_total + float(message.total_cost_usd)
+                    self._scanner.total_cost = current_total + float(
+                        message.total_cost_usd
+                    )
                 break
 
     async def run_attempt_loop(
@@ -371,7 +390,7 @@ class PRReviewAttemptRunner:
                 setting_sources=["project"],
                 allowed_tools=["Read", "Write", "Grep", "Glob", "LS"],
                 max_turns=config.get_max_turns(),
-                permission_mode="default",
+                permission_mode=_SAFE_PERMISSION_MODE,
                 model=self.model,
                 hooks={
                     "PreToolUse": [
@@ -422,7 +441,9 @@ class PRReviewAttemptRunner:
 
             if attempt_error:
                 state.warnings.append(attempt_error)
-                self.console.print(f"\n[bold yellow]WARNING:[/bold yellow] {attempt_error}\n")
+                self.console.print(
+                    f"\n[bold yellow]WARNING:[/bold yellow] {attempt_error}\n"
+                )
 
             loaded_vulns, load_warning = load_pr_vulnerabilities_artifact(
                 pr_vulns_path=ctx.pr_vulns_path,
@@ -469,14 +490,18 @@ class PRReviewAttemptRunner:
                         len(state.collected_pr_vulns),
                     )
                 if attempt_num < pr_review_attempts and self.debug:
-                    logger.debug("Running additional focused PR pass for broader chain coverage")
+                    logger.debug(
+                        "Running additional focused PR pass for broader chain coverage"
+                    )
                 continue
 
             # No findings in this attempt — track consecutive clean passes for early exit.
             consecutive_clean_passes += 1
 
             if attempt_num < pr_review_attempts:
-                cumulative_findings = len(state.collected_pr_vulns) + len(state.ephemeral_pr_vulns)
+                cumulative_findings = len(state.collected_pr_vulns) + len(
+                    state.ephemeral_pr_vulns
+                )
                 if cumulative_findings > 0:
                     if self.debug:
                         last_observed = (
@@ -512,4 +537,6 @@ class PRReviewAttemptRunner:
                         "yet; retrying with chain-focused prompt."
                     )
                     state.warnings.append(retry_warning)
-                    self.console.print(f"\n[bold yellow]WARNING:[/bold yellow] {retry_warning}\n")
+                    self.console.print(
+                        f"\n[bold yellow]WARNING:[/bold yellow] {retry_warning}\n"
+                    )
