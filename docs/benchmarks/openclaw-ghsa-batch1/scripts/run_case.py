@@ -132,6 +132,7 @@ def securevibes_command(
     permission_mode: str,
     subcommand: str,
     *args: str,
+    runtime_home: Path | None = None,
 ) -> tuple[list[str], dict[str, str]]:
     """Build a commit-pinned SecureVibes command and env."""
     env = os.environ.copy()
@@ -139,6 +140,14 @@ def securevibes_command(
     existing = env.get("PYTHONPATH")
     env["PYTHONPATH"] = py_path if not existing else f"{py_path}{os.pathsep}{existing}"
     env["SECUREVIBES_PERMISSION_MODE"] = permission_mode
+    if runtime_home is not None:
+        # Keep Claude/SecureVibes runtime state in a writable directory during benchmark runs.
+        runtime_home = runtime_home.resolve()
+        runtime_home.mkdir(parents=True, exist_ok=True)
+        env["HOME"] = str(runtime_home)
+        env["XDG_CONFIG_HOME"] = str(runtime_home / ".config")
+        env["XDG_CACHE_HOME"] = str(runtime_home / ".cache")
+        env["CLAUDE_CONFIG_DIR"] = str(runtime_home / ".claude")
 
     cmd = [python_executable, "-m", "securevibes.cli.main", subcommand, *args]
     return cmd, env
@@ -207,6 +216,17 @@ def copy_report_if_present(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 
+def report_indicates_success(report_path: Path) -> bool:
+    """Treat report existence as success for flaky non-zero CLI exits."""
+    return report_path.exists()
+
+
+def command_hit_rate_limit(stdout: str, stderr: str) -> bool:
+    """Detect Claude quota/rate-limit messaging in command output."""
+    haystack = f"{stdout}\n{stderr}"
+    return "You've hit your limit" in haystack
+
+
 def _sanitize_cache_token(value: str) -> str:
     """Convert arbitrary strings to filesystem-safe cache tokens."""
     safe_chars = []
@@ -239,6 +259,23 @@ def baseline_cache_key(
 
 def _cache_meta_path(cache_entry: Path) -> Path:
     return cache_entry / "metadata.json"
+
+
+def commit_window_from_entries(entries: Any) -> str | None:
+    """Build a commit-window range from timeline commit entries."""
+    if not isinstance(entries, list):
+        return None
+
+    shas: list[str] = []
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        sha = item.get("sha")
+        if isinstance(sha, str) and sha:
+            shas.append(sha)
+    if not shas:
+        return None
+    return f"{shas[0]}^..{shas[-1]}"
 
 
 def baseline_cache_is_usable(cache_entry: Path) -> bool:
@@ -337,6 +374,14 @@ def main() -> None:
         action="store_true",
         help="Only run/prime baseline scan cache, skip PR-review scans",
     )
+    parser.add_argument(
+        "--isolate-runtime-home",
+        action="store_true",
+        help=(
+            "Run SecureVibes subprocesses with an isolated HOME directory under "
+            "the temporary run folder."
+        ),
+    )
     parser.add_argument("--keep-temp", action="store_true")
     parser.add_argument(
         "--dry-run",
@@ -359,6 +404,14 @@ def main() -> None:
 
     intro_range = f"{baseline}..{intro_head}"
     fix_range = f"{intro_head}..{fix_head}"
+    intro_commit_window = commit_window_from_entries(
+        timeline.get("introducing_commits")
+    )
+    fix_commit_window = commit_window_from_entries(timeline.get("fix_commits"))
+    if intro_commit_window:
+        intro_range = intro_commit_window
+    if fix_commit_window:
+        fix_range = fix_commit_window
 
     baseline_cache_enabled = not args.no_baseline_cache
     baseline_cache_dir = args.baseline_cache_dir.resolve()
@@ -369,10 +422,16 @@ def main() -> None:
 
     intro_exit: int | None = None
     fix_exit: int | None = None
+    intro_effective_success = False
+    fix_effective_success = False
+    baseline_rate_limited = False
+    intro_rate_limited = False
+    fix_rate_limited = False
 
     with tempfile.TemporaryDirectory(prefix=f"securevibes-{args.ghsa}-") as tmp:
         tmp_path = Path(tmp)
         work_repo = tmp_path / "openclaw"
+        runtime_home = tmp_path / "runtime-home" if args.isolate_runtime_home else None
 
         sv_ctx, sv_worktree = resolve_securevibes_context(
             securevibes_repo=args.securevibes_repo,
@@ -405,6 +464,7 @@ def main() -> None:
                 work_repo / ".securevibes" / "benchmark-reports" / "baseline_scan.json"
             ),
             "--force",
+            runtime_home=runtime_home,
         )
         intro_cmd, intro_env = securevibes_command(
             sv_ctx,
@@ -428,6 +488,7 @@ def main() -> None:
                 / "intro_pr_review.json"
             ),
             "--clean-pr-artifacts",
+            runtime_home=runtime_home,
         )
         fix_cmd, fix_env = securevibes_command(
             sv_ctx,
@@ -448,6 +509,7 @@ def main() -> None:
                 work_repo / ".securevibes" / "benchmark-reports" / "fix_pr_review.json"
             ),
             "--clean-pr-artifacts",
+            runtime_home=runtime_home,
         )
 
         if args.dry_run:
@@ -529,6 +591,7 @@ def main() -> None:
             )
         else:
             code, out, err = run(baseline_cmd, env=baseline_env)
+            baseline_rate_limited = command_hit_rate_limit(out, err)
             persist_command_log(
                 run_dir / "baseline_scan.log.json", baseline_cmd, code, out, err
             )
@@ -536,11 +599,13 @@ def main() -> None:
             baseline_exit = code
 
         artifact_validation = validate_baseline_artifacts(work_repo)
+        baseline_effective_success = baseline_cache_hit or (
+            report_indicates_success(baseline_report) and artifact_validation["valid"]
+        )
         if (
-            baseline_exit == 0
+            baseline_effective_success
             and baseline_cache_enabled
             and baseline_cache_entry is not None
-            and artifact_validation["valid"]
             and baseline_report.exists()
             and not baseline_cache_hit
         ):
@@ -564,20 +629,25 @@ def main() -> None:
             baseline_cache_saved = True
 
         if not args.baseline_only:
-            run(["git", "checkout", fix_head], cwd=work_repo)
+            run(["git", "checkout", intro_head], cwd=work_repo)
             code, out, err = run(intro_cmd, env=intro_env)
+            intro_rate_limited = command_hit_rate_limit(out, err)
             persist_command_log(
                 run_dir / "intro_pr_review.log.json", intro_cmd, code, out, err
             )
             copy_report_if_present(intro_repo_report, intro_report)
             intro_exit = code
+            intro_effective_success = report_indicates_success(intro_report)
 
+            run(["git", "checkout", fix_head], cwd=work_repo)
             code, out, err = run(fix_cmd, env=fix_env)
+            fix_rate_limited = command_hit_rate_limit(out, err)
             persist_command_log(
                 run_dir / "fix_pr_review.log.json", fix_cmd, code, out, err
             )
             copy_report_if_present(fix_repo_report, fix_report)
             fix_exit = code
+            fix_effective_success = report_indicates_success(fix_report)
         else:
             persist_command_log(
                 run_dir / "intro_pr_review.log.json",
@@ -598,7 +668,17 @@ def main() -> None:
             preserved = run_dir / "work_repo"
             if preserved.exists():
                 shutil.rmtree(preserved)
-            shutil.copytree(work_repo, preserved)
+            try:
+                shutil.copytree(work_repo, preserved)
+            except (FileNotFoundError, shutil.Error) as exc:
+                warning = (
+                    "Could not fully preserve temporary work repository.\n"
+                    f"Reason: {exc}\n"
+                )
+                (run_dir / "keep_temp.warning.txt").write_text(
+                    warning,
+                    encoding="utf-8",
+                )
 
         if sv_worktree is not None:
             run(
@@ -616,15 +696,29 @@ def main() -> None:
     baseline_summary = summarize_issues(run_dir / "baseline_scan.json")
     intro_summary = summarize_issues(run_dir / "intro_pr_review.json")
     fix_summary = summarize_issues(run_dir / "fix_pr_review.json")
+    baseline_effective_success = baseline_cache_hit or (
+        report_indicates_success(run_dir / "baseline_scan.json")
+        and artifact_validation["valid"]
+    )
+    if intro_exit is not None and not intro_effective_success:
+        intro_effective_success = report_indicates_success(
+            run_dir / "intro_pr_review.json"
+        )
+    if fix_exit is not None and not fix_effective_success:
+        fix_effective_success = report_indicates_success(run_dir / "fix_pr_review.json")
 
     if args.baseline_only:
         status = (
-            "baseline_only_completed" if baseline_exit == 0 else "baseline_only_failed"
+            "baseline_only_completed"
+            if baseline_effective_success
+            else "baseline_only_failed"
         )
     else:
         status = (
             "completed"
-            if all(code == 0 for code in [baseline_exit, intro_exit, fix_exit])
+            if baseline_effective_success
+            and intro_effective_success
+            and fix_effective_success
             else "partial_or_failed"
         )
 
@@ -646,6 +740,8 @@ def main() -> None:
         },
         "baseline_scan": {
             "command_exit": baseline_exit,
+            "effective_success": baseline_effective_success,
+            "rate_limited": baseline_rate_limited,
             "report": str((run_dir / "baseline_scan.json").resolve()),
             "summary": baseline_summary,
             "artifact_validation": artifact_validation,
@@ -653,19 +749,27 @@ def main() -> None:
         },
         "intro_pr_review": {
             "command_exit": intro_exit,
+            "effective_success": (
+                intro_effective_success if intro_exit is not None else None
+            ),
+            "rate_limited": intro_rate_limited if intro_exit is not None else None,
             "range": intro_range,
             "report": str((run_dir / "intro_pr_review.json").resolve()),
             "summary": intro_summary,
         },
         "fix_pr_review": {
             "command_exit": fix_exit,
+            "effective_success": (
+                fix_effective_success if fix_exit is not None else None
+            ),
+            "rate_limited": fix_rate_limited if fix_exit is not None else None,
             "range": fix_range,
             "report": str((run_dir / "fix_pr_review.json").resolve()),
             "summary": fix_summary,
         },
         "tier1_detected_from_new_commits": (
             (intro_summary.get("issue_count") or 0) > 0
-            if intro_exit is not None and intro_summary["exists"]
+            if intro_effective_success and intro_summary["exists"]
             else None
         ),
         "tier2_root_cause_match": None,
