@@ -1,0 +1,119 @@
+{
+  "snapshot_id": "20260304T225813Z",
+  "created_at": "2026-03-04T22:58:13.893967Z",
+  "source_cache_dir": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache",
+  "securevibes_commit": "2f357fb39bae",
+  "case_count": 10,
+  "cases": [
+    {
+      "ghsa": "GHSA-qrq5-wjgg-rvqw",
+      "severity": "critical",
+      "baseline_commit": "a6ea74f8e6ffae13f1de88736b0d47a004b98e54",
+      "baseline_cache_key": "baseline-a6ea74f8e6ff__sv-2f357fb39bae__model-sonnet__sev-medium",
+      "baseline_run_id": "20260304T205725Z",
+      "baseline_effective_success": true,
+      "artifact_validation_valid": true,
+      "cache_saved": true,
+      "cache_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-a6ea74f8e6ff__sv-2f357fb39bae__model-sonnet__sev-medium"
+    },
+    {
+      "ghsa": "GHSA-4rj2-gpmh-qq5x",
+      "severity": "critical",
+      "baseline_commit": "3467b0ba074cba456cf20d2178faff96bacaeafb",
+      "baseline_cache_key": "baseline-3467b0ba074c__sv-2f357fb39bae__model-sonnet__sev-medium",
+      "baseline_run_id": "20260304T205725Z",
+      "baseline_effective_success": true,
+      "artifact_validation_valid": true,
+      "cache_saved": true,
+      "cache_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-3467b0ba074c__sv-2f357fb39bae__model-sonnet__sev-medium"
+    },
+    {
+      "ghsa": "GHSA-gv46-4xfq-jv58",
+      "severity": "critical",
+      "baseline_commit": "b347d5d9ccbb8ccf008c887fc03cdc3410710afd",
+      "baseline_cache_key": "baseline-b347d5d9ccbb__sv-2f357fb39bae__model-sonnet__sev-medium",
+      "baseline_run_id": "20260304T205725Z",
+      "baseline_effective_success": true,
+      "artifact_validation_valid": true,
+      "cache_saved": true,
+      "cache_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-b347d5d9ccbb__sv-2f357fb39bae__model-sonnet__sev-medium"
+    },
+    {
+      "ghsa": "GHSA-3c6h-g97w-fg78",
+      "severity": "high",
+      "baseline_commit": "0e85380e56345d21bab8242d09674c77ea8ad5ea",
+      "baseline_cache_key": "baseline-0e85380e5634__sv-2f357fb39bae__model-sonnet__sev-medium",
+      "baseline_run_id": "20260304T211657Z",
+      "baseline_effective_success": true,
+      "artifact_validation_valid": true,
+      "cache_saved": true,
+      "cache_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-0e85380e5634__sv-2f357fb39bae__model-sonnet__sev-medium"
+    },
+    {
+      "ghsa": "GHSA-r5fq-947m-xm57",
+      "severity": "high",
+      "baseline_commit": "221c0b4cf8410261e5424dde4cbf7de88805a4bd",
+      "baseline_cache_key": "baseline-221c0b4cf841__sv-2f357fb39bae__model-sonnet__sev-medium",
+      "baseline_run_id": "20260304T211657Z",
+      "baseline_effective_success": true,
+      "artifact_validation_valid": true,
+      "cache_saved": true,
+      "cache_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-221c0b4cf841__sv-2f357fb39bae__model-sonnet__sev-medium"
+    },
+    {
+      "ghsa": "GHSA-943q-mwmv-hhvh",
+      "severity": "high",
+      "baseline_commit": "68d79e56c2ef91555ccd596cf520a85dd34c83fb",
+      "baseline_cache_key": "baseline-68d79e56c2ef__sv-2f357fb39bae__model-sonnet__sev-medium",
+      "baseline_run_id": "20260304T211657Z",
+      "baseline_effective_success": true,
+      "artifact_validation_valid": true,
+      "cache_saved": true,
+      "cache_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-68d79e56c2ef__sv-2f357fb39bae__model-sonnet__sev-medium"
+    },
+    {
+      "ghsa": "GHSA-g8p2-7wf7-98mq",
+      "severity": "high",
+      "baseline_commit": "51dfd6efdb013cfc7e269e0bedf3a9bef0ed7023",
+      "baseline_cache_key": "baseline-51dfd6efdb01__sv-2f357fb39bae__model-sonnet__sev-medium",
+      "baseline_run_id": "20260304T213654Z",
+      "baseline_effective_success": true,
+      "artifact_validation_valid": true,
+      "cache_saved": true,
+      "cache_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-51dfd6efdb01__sv-2f357fb39bae__model-sonnet__sev-medium"
+    },
+    {
+      "ghsa": "GHSA-mc68-q9jw-2h3v",
+      "severity": "high",
+      "baseline_commit": "7a839e7eb62b9711188cadc88f90b1d8a9a29113",
+      "baseline_cache_key": "baseline-7a839e7eb62b__sv-2f357fb39bae__model-sonnet__sev-medium",
+      "baseline_run_id": "20260304T213654Z",
+      "baseline_effective_success": true,
+      "artifact_validation_valid": true,
+      "cache_saved": true,
+      "cache_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-7a839e7eb62b__sv-2f357fb39bae__model-sonnet__sev-medium"
+    },
+    {
+      "ghsa": "GHSA-x22m-j5qq-j49m",
+      "severity": "high",
+      "baseline_commit": "02842bef9179e65ac3c8174091a4facfcd0a4083",
+      "baseline_cache_key": "baseline-02842bef9179__sv-2f357fb39bae__model-sonnet__sev-medium",
+      "baseline_run_id": "20260304T213654Z",
+      "baseline_effective_success": true,
+      "artifact_validation_valid": true,
+      "cache_saved": true,
+      "cache_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-02842bef9179__sv-2f357fb39bae__model-sonnet__sev-medium"
+    },
+    {
+      "ghsa": "GHSA-g55j-c2v4-pjcg",
+      "severity": "high",
+      "baseline_commit": "47d1f23d5552c6ae186249e61d845e4b955486ff",
+      "baseline_cache_key": "baseline-47d1f23d5552__sv-2f357fb39bae__model-sonnet__sev-medium",
+      "baseline_run_id": "20260304T213654Z",
+      "baseline_effective_success": true,
+      "artifact_validation_valid": true,
+      "cache_saved": true,
+      "cache_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-47d1f23d5552__sv-2f357fb39bae__model-sonnet__sev-medium"
+    }
+  ]
+}

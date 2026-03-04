@@ -1,12 +1,71 @@
 {
   "id": "GHSA-x22m-j5qq-j49m",
-  "status": "not_run",
+  "status": "baseline_only_completed",
   "model": "sonnet",
-  "baseline_scan": null,
-  "intro_pr_review": null,
-  "fix_pr_review": null,
-  "detected_from_new_commits": null,
+  "severity_filter": "medium",
+  "run_id": "20260304T213654Z",
+  "securevibes_repo": "/Users/anshumanbhartiya/repos/securevibes",
+  "securevibes_commit": "2f357fb39bae76d8beab78bad628a91e9c3d3041",
+  "baseline_cache": {
+    "enabled": true,
+    "refresh_requested": true,
+    "entry_key": "baseline-02842bef9179__sv-2f357fb39bae__model-sonnet__sev-medium",
+    "entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-02842bef9179__sv-2f357fb39bae__model-sonnet__sev-medium",
+    "hit": false,
+    "saved": true
+  },
+  "baseline_scan": {
+    "command_exit": 1,
+    "effective_success": true,
+    "rate_limited": false,
+    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-x22m-j5qq-j49m/runs/20260304T213654Z/baseline_scan.json",
+    "summary": {
+      "exists": true,
+      "issue_count": 13,
+      "severities": {
+        "medium": 7,
+        "high": 6
+      }
+    },
+    "artifact_validation": {
+      "security_md_exists": true,
+      "threat_model_exists": true,
+      "vulnerabilities_exists": true,
+      "threat_model_json_valid": true,
+      "vulnerabilities_json_valid": true,
+      "valid": true
+    },
+    "used_cache": false
+  },
+  "intro_pr_review": {
+    "command_exit": null,
+    "effective_success": null,
+    "rate_limited": null,
+    "range": "2267d58afcc70fe19408b8f0dce108c340f3426d^..2267d58afcc70fe19408b8f0dce108c340f3426d",
+    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-x22m-j5qq-j49m/runs/20260304T213654Z/intro_pr_review.json",
+    "summary": {
+      "exists": false,
+      "issue_count": null,
+      "severities": {}
+    }
+  },
+  "fix_pr_review": {
+    "command_exit": null,
+    "effective_success": null,
+    "rate_limited": null,
+    "range": "5b4121d6011a48c71e747e3c18197f180b872c5d^..5b4121d6011a48c71e747e3c18197f180b872c5d",
+    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-x22m-j5qq-j49m/runs/20260304T213654Z/fix_pr_review.json",
+    "summary": {
+      "exists": false,
+      "issue_count": null,
+      "severities": {}
+    }
+  },
+  "tier1_detected_from_new_commits": null,
+  "tier2_root_cause_match": null,
+  "tier2_match_basis": null,
+  "tier2_notes": null,
   "could_propose_fix": null,
   "post_fix_regression_status": null,
-  "notes": "Populate with scripts/run_case.py after empirical run."
+  "notes": "Tier-2 adjudication is manual: compare intro_pr_review findings against cases/<GHSA>/analysis.md root cause."
 }

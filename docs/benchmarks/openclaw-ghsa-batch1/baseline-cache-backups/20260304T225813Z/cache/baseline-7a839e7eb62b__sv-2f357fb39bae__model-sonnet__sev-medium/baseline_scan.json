@@ -1,0 +1,75 @@
+{
+  "repository_path": "/private/var/folders/gw/14xtk_2n21q2jfw80ymcy4_r0000gn/T/securevibes-GHSA-mc68-q9jw-2h3v-w4s68bjt/openclaw",
+  "issues": [
+    {
+      "id": "THREAT-001",
+      "severity": "high",
+      "title": "Tailscale Proxy Header Spoofing for Authentication Bypass",
+      "description": "The gateway's Tailscale passthrough authentication in src/gateway/auth.ts can be bypassed by any local process. The isTailscaleProxyRequest function (line 84-87) grants full Tailscale-authenticated access when: (1) the TCP connection originates from a loopback address (127.x.x.x or ::1), AND (2) the headers 'x-forwarded-for', 'x-forwarded-proto', and 'x-forwarded-host' are all present, AND (3) the 'tailscale-user-login' header is set. Any process running on the gateway host can open a TCP connection to 127.0.0.1:18789 and craft these headers without possessing any gateway token or password. The isLocalDirectRequest check (lines 45-58) correctly rejects purely-local requests that include forwarded headers, but this only applies to the 'local direct' path; the Tailscale path (lines 129-148) is evaluated first and accepts the spoofed headers.",
+      "file_path": "src/gateway/auth.ts",
+      "line_number": 84,
+      "code_snippet": "function isTailscaleProxyRequest(req?: IncomingMessage): boolean {\n  if (!req) return false;\n  return isLoopbackAddress(req.socket?.remoteAddress) && hasTailscaleProxyHeaders(req);\n}\n\n// ...\nif (auth.allowTailscale && !localDirect) {\n  const tailscaleUser = getTailscaleUser(req);\n  const tailscaleProxy = isTailscaleProxyRequest(req);\n  if (tailscaleUser && tailscaleProxy) {\n    return { ok: true, method: 'tailscale', user: tailscaleUser.login };\n  }",
+      "recommendation": "Verify Tailscale proxy requests through a mechanism that cannot be spoofed by local processes. Options include: (1) Listening on the Tailscale-assigned IPv4 address only (100.64.0.0/10) instead of loopback when in Tailscale serve mode; (2) Using a mutual-TLS or Tailscale-specific socket path that only the Tailscale daemon can connect to; (3) Requiring a shared secret between the Tailscale proxy and the gateway; (4) Binding to a UNIX socket with filesystem permissions restricting access. At minimum, add a configuration warning that Tailscale mode is unsafe when 'bind=loopback' is set with 'allowTailscale=true'.",
+      "cwe_id": "CWE-290",
+      "evidence": "The test in src/gateway/auth.test.ts line 96-116 confirms the exact exploit: connecting from 127.0.0.1 with x-forwarded-for, x-forwarded-proto, x-forwarded-host, and tailscale-user-login headers passes authentication as a Tailscale user without any token. The hasTailscaleProxyHeaders function (lines 75-82) only checks header presence, not origin authenticity. isTailscaleProxyRequest (lines 84-87) uses socket.remoteAddress \u2014 attacker-controlled from a loopback TCP connection."
+    },
+    {
+      "id": "THREAT-002",
+      "severity": "medium",
+      "title": "Timing Side-Channel in Gateway Token Authentication (Non-constant-time Comparison)",
+      "description": "In src/gateway/auth.ts, the 'token' authentication mode compares the provided token against the configured token using JavaScript's strict equality operator ('!==') at line 162, which is NOT timing-safe. This allows a remote attacker to measure response latency differences and perform a timing attack to recover the token character by character. The password mode correctly uses the timingSafeEqual wrapper (safeEqual function at lines 31-34), but the token mode does not use it. This inconsistency means token-mode gateways are vulnerable to timing oracle attacks that password-mode gateways are not.",
+      "file_path": "src/gateway/auth.ts",
+      "line_number": 162,
+      "code_snippet": "if (auth.mode === \"token\") {\n  if (!auth.token) {\n    return { ok: false, reason: \"token_missing_config\" };\n  }\n  if (!connectAuth?.token) {\n    return { ok: false, reason: \"token_missing\" };\n  }\n  if (connectAuth.token !== auth.token) {  // <-- NOT timing-safe\n    return { ok: false, reason: \"token_mismatch\" };\n  }\n  return { ok: true, method: \"token\" };\n}\n\n// Password mode correctly uses:\nfunction safeEqual(a: string, b: string): boolean {\n  if (a.length !== b.length) return false;\n  return timingSafeEqual(Buffer.from(a), Buffer.from(b));\n}",
+      "recommendation": "Replace the direct string comparison on line 162 with the existing safeEqual function: change 'if (connectAuth.token !== auth.token)' to 'if (!safeEqual(connectAuth.token, auth.token))'. The safeEqual helper already exists in the same file and is correctly used for password comparison.",
+      "cwe_id": "CWE-208",
+      "evidence": "safeEqual using crypto.timingSafeEqual is defined at lines 31-34 and called for password comparison at line 176. The token comparison at line 162 uses the '!==' operator which short-circuits on the first differing byte, leaking timing information. Over the WebSocket handshake over a local or Tailscale network, an attacker who can make many requests can measure response time differences to determine token length and content incrementally."
+    },
+    {
+      "id": "THREAT-003",
+      "severity": "high",
+      "title": "Arbitrary Code Execution via Dynamic Import of Hook Transform Modules",
+      "description": "The hooks-mapping system in src/gateway/hooks-mapping.ts loads arbitrary JavaScript/TypeScript module files specified in the gateway configuration (hooks.mappings[].transform.module). At line 284, the code dynamically imports modules using await import(url) where the path is resolved from the config file. While this requires write access to the gateway config file (~/.clawdbot/config.json5), the transform module path is not sandboxed: it can point to any absolute file path on the system (line 299: if (path.isAbsolute(target)) return target). The loaded module is executed with full Node.js privileges in the gateway process. Any attacker who can write the config file or who can place a file at a path referenced in the config can achieve arbitrary code execution inside the gateway process.",
+      "file_path": "src/gateway/hooks-mapping.ts",
+      "line_number": 280,
+      "code_snippet": "async function loadTransform(transform: HookMappingTransformResolved): Promise<HookTransformFn> {\n  const cached = transformCache.get(transform.modulePath);\n  if (cached) return cached;\n  const url = pathToFileURL(transform.modulePath).href;\n  const mod = (await import(url)) as Record<string, unknown>;\n  const fn = resolveTransformFn(mod, transform.exportName);\n  transformCache.set(transform.modulePath, fn);\n  return fn;\n}\n\nfunction resolvePath(baseDir: string, target: string): string {\n  if (!target) return baseDir;\n  if (path.isAbsolute(target)) return target;  // absolute paths allowed\n  return path.join(baseDir, target);\n}",
+      "recommendation": "Apply path sandboxing to restrict module paths to the transforms directory: reject absolute paths that escape the configured transformsDir, and verify the resolved path starts with the allowed base directory. Consider maintaining a registry of allowlisted transforms rather than loading arbitrary file paths. At minimum, log and warn loudly when a transform with an absolute path outside the config directory is loaded.",
+      "cwe_id": "CWE-94",
+      "evidence": "Line 299: 'if (path.isAbsolute(target)) return target' \u2014 absolute paths are passed through without restriction. Line 284: 'const mod = (await import(url)) as Record<string, unknown>' \u2014 the file is dynamically imported and executed. An operator can configure 'transform.module: /tmp/malicious.js' and any incoming webhook that matches the mapping will execute that file with full gateway process privileges."
+    },
+    {
+      "id": "THREAT-004",
+      "severity": "medium",
+      "title": "Hooks Token Transmitted in URL Query Parameter (Cleartext Secret in Logs)",
+      "description": "The hooks token authentication in src/gateway/hooks.ts (lines 44-58) accepts the secret token via three channels: Authorization header (Bearer), custom X-Clawdbot-Token header, and a 'token' URL query parameter. When the token is passed as a query parameter, it is included in the full request URL which is typically written to access logs, reverse-proxy logs, server-side request logs, and browser history. This causes the secret hook token to leak in plaintext to anyone with access to any log files.",
+      "file_path": "src/gateway/hooks.ts",
+      "line_number": 56,
+      "code_snippet": "export function extractHookToken(req: IncomingMessage, url: URL): string | undefined {\n  const auth = typeof req.headers.authorization === 'string' ? req.headers.authorization.trim() : '';\n  if (auth.toLowerCase().startsWith('bearer ')) {\n    const token = auth.slice(7).trim();\n    if (token) return token;\n  }\n  const headerToken = typeof req.headers['x-clawdbot-token'] === 'string'\n    ? req.headers['x-clawdbot-token'].trim() : '';\n  if (headerToken) return headerToken;\n  const queryToken = url.searchParams.get('token');  // <-- token in URL\n  if (queryToken) return queryToken.trim();\n  return undefined;\n}",
+      "recommendation": "Remove support for the 'token' URL query parameter in extractHookToken. Tokens should only be accepted via headers (Authorization: Bearer or X-Clawdbot-Token) which are not included in server access logs. If query parameter support must be retained for compatibility, document the security risk clearly and consider deprecating it.",
+      "cwe_id": "CWE-598",
+      "evidence": "Line 56 in src/gateway/hooks.ts: 'const queryToken = url.searchParams.get(\"token\")' \u2014 the full URL including query string is visible in any HTTP access log, proxy log, or Nginx/Caddy access log. If the hooks endpoint is configured behind a reverse proxy (a common deployment), the proxy will log the full URL including the token."
+    },
+    {
+      "id": "THREAT-006",
+      "severity": "medium",
+      "title": "Uncontrolled Resource Consumption \u2014 No Rate Limiting on Hook Endpoints or WebSocket Connections",
+      "description": "The HTTP hook endpoints (/hooks/wake, /hooks/agent, and mapped paths) and the WebSocket gateway server have no rate-limiting applied. The hooks endpoints, when authenticated, trigger agent execution (full LLM inference) for every POST request. The /hooks/agent endpoint spawns an agent run with no debounce or concurrency limit per token. The WebSocket gateway server accepts an unlimited number of connections; each connection that passes the handshake registers presence and can immediately submit agent.send or chat.send requests. A valid token holder (or an attacker who has compromised a token) can flood the gateway with agent requests, exhausting system resources, API quota, and response budgets.",
+      "file_path": "src/gateway/server-http.ts",
+      "line_number": 116,
+      "code_snippet": "if (subPath === 'agent') {\n  const normalized = normalizeAgentPayload(payload as Record<string, unknown>);\n  if (!normalized.ok) {\n    sendJson(res, 400, { ok: false, error: normalized.error });\n    return true;\n  }\n  const runId = dispatchAgentHook(normalized.value);  // <-- no rate limit check\n  sendJson(res, 202, { ok: true, runId });\n  return true;\n}",
+      "recommendation": "Implement per-token rate limiting for hook endpoints (e.g., max N agent dispatches per minute per token). For WebSocket connections, add a maximum concurrent-connection limit. Consider adding a configurable 'hooks.rateLimit' option in the gateway config that sets per-endpoint limits. The existing dedupe mechanism (src/gateway/server-http.ts uses idempotencyKey checks) partially mitigates re-dispatch for the same request, but does not limit distinct requests.",
+      "cwe_id": "CWE-770",
+      "evidence": "src/gateway/server-http.ts lines 116-124: dispatchAgentHook is called directly after token validation with no rate limit check. The /hooks/agent endpoint returns HTTP 202 immediately and fires an async agent run. An attacker with a valid token can submit thousands of distinct agent requests in rapid succession, each spawning a separate LLM inference job."
+    }
+  ],
+  "files_scanned": 2628,
+  "scan_time_seconds": 1001.14,
+  "total_cost_usd": 5.65204075,
+  "summary": {
+    "total": 5,
+    "critical": 0,
+    "high": 2,
+    "medium": 3,
+    "low": 0
+  }
+}

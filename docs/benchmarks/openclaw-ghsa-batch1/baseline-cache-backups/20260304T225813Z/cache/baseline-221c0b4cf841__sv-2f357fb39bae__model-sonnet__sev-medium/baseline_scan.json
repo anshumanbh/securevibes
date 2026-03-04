@@ -1,0 +1,75 @@
+{
+  "repository_path": "/private/var/folders/gw/14xtk_2n21q2jfw80ymcy4_r0000gn/T/securevibes-GHSA-r5fq-947m-xm57-wx_tx705/openclaw",
+  "issues": [
+    {
+      "id": "THREAT-001",
+      "severity": "medium",
+      "title": "Gateway Token Authentication Bypass via Timing Side-Channel",
+      "description": "The gateway WebSocket server uses a non-constant-time string comparison for token-mode authentication at src/gateway/auth.ts line 174: `if (connectAuth.token !== auth.token)`. JavaScript's `!==` operator short-circuits on the first differing character, creating a measurable timing side-channel. An attacker who can reach the gateway (e.g. when bind=lan/0.0.0.0 or via Tailscale funnel) can send thousands of connection attempts with crafted token prefixes and statistically recover the token character by character. The `safeEqual()` function using `timingSafeEqual` is already present in the same file and is correctly used for password mode (line 188), but is NOT applied to token mode.",
+      "file_path": "N/A",
+      "line_number": 0,
+      "code_snippet": "",
+      "recommendation": "Replace `connectAuth.token !== auth.token` with the existing `safeEqual(connectAuth.token, auth.token)` helper that uses `timingSafeEqual`. This is the same fix already applied to password mode at line 188.",
+      "cwe_id": null,
+      "evidence": "At auth.ts:34-37, `safeEqual()` is defined using `timingSafeEqual`. At auth.ts:188, password mode correctly uses `!safeEqual(password, auth.password)`. At auth.ts:174, token mode uses the vulnerable `!==` comparison. The default bind is loopback (reducing risk), but LAN/Tailscale funnel deployments are explicitly supported and documented."
+    },
+    {
+      "id": "THREAT-002",
+      "severity": "medium",
+      "title": "Shell Injection via Keychain Credential Write using OAuth Token Values",
+      "description": "In src/agents/cli-credentials.ts at line 280-282, the function `writeClaudeCliKeychainCredentials` constructs a shell command string for the macOS `security` CLI by interpolating `newValue` (the full JSON-serialized credential object) using a single-quote escaping heuristic: `newValue.replace(/'/g, \"'\\\"'\\\"'\")`. This escaping is applied within a shell command invoked via `execSync()`. If the JSON serialization of the existing keychain data already contains shell metacharacters (e.g. a backslash at the end of a string value, or ANSI escape sequences that interact with the shell), the escaping may be insufficient. More critically, the CLAUDE_CLI_KEYCHAIN_SERVICE constant is interpolated without any quoting at line 261: `security find-generic-password -s \"${CLAUDE_CLI_KEYCHAIN_SERVICE}\" -w 2>/dev/null`. If a future code path allows the service name to be attacker-influenced, injection becomes trivially achievable. The underlying root cause is constructing shell commands via string interpolation rather than using execFile/spawn with an argv array.",
+      "file_path": "N/A",
+      "line_number": 0,
+      "code_snippet": "",
+      "recommendation": "Replace all `execSync` shell-string invocations in this file with `execFileSync` (or spawn) using an argv array to pass arguments, eliminating the need for any shell quoting or escaping. For example: `execFileSync('security', ['add-generic-password', '-U', '-s', CLAUDE_CLI_KEYCHAIN_SERVICE, '-a', CLAUDE_CLI_KEYCHAIN_ACCOUNT, '-w', newValue], { encoding: 'utf8', timeout: 5000 })`. This pattern should also be applied to the `readClaudeCliKeychainCredentials` and `readCodexKeychainCredentials` functions at lines 101, 142, and 260.",
+      "cwe_id": null,
+      "evidence": "Lines 101, 142, 260, and 280 in src/agents/cli-credentials.ts all use `execSync` with template literal shell command strings. The escape sequence used (`'\"'\"'`) is the standard POSIX shell single-quote escape but relies on the JSON content not containing edge cases. The function is called during OAuth token refresh from externally-obtained tokens."
+    },
+    {
+      "id": "THREAT-004",
+      "severity": "medium",
+      "title": "Timing Side-Channel in HTTP Webhook Hook Token Comparison",
+      "description": "In src/gateway/server-http.ts at line 85, the HTTP hooks handler compares the supplied token against the configured secret using a plain `!==` operator: `if (!token || token !== hooksConfig.token)`. This is the same category of timing vulnerability as the WebSocket token comparison (THREAT-001). The hooks endpoint is an HTTP server endpoint that can receive unauthenticated requests from any network source reachable by the gateway HTTP server. An attacker making rapid parallel HTTP requests can statistically measure response time differences to recover the hook token character by character.",
+      "file_path": "N/A",
+      "line_number": 0,
+      "code_snippet": "",
+      "recommendation": "Replace `token !== hooksConfig.token` with a constant-time comparison using Node.js `crypto.timingSafeEqual`. Ensure both buffers are the same length before comparison (use a constant-time length check or pad to fixed length). Example: `!timingSafeEqual(Buffer.from(token), Buffer.from(hooksConfig.token))` after checking lengths are equal.",
+      "cwe_id": null,
+      "evidence": "The `extractHookToken` function returns the raw token from the Authorization header, x-clawdbot-token header, or query parameter. The comparison at line 85 uses `!==` with no constant-time protection. The gateway auth module already defines a `safeEqual()` helper using `timingSafeEqual` but it is not imported or used in server-http.ts."
+    },
+    {
+      "id": "THREAT-005",
+      "severity": "high",
+      "title": "Arbitrary Plugin Code Execution via Admin-Controlled Load Paths",
+      "description": "The plugin loader in src/plugins/loader.ts dynamically loads JavaScript/TypeScript files from arbitrary filesystem paths. Config key `plugins.load.paths` (an array of strings) allows the operator to specify additional filesystem directories from which plugins are loaded and executed via `jiti`. Any authenticated gateway client that can write to the configuration (via the `config.set` or `config.apply` WebSocket methods in src/gateway/server-methods/config.ts) can inject a `plugins.load.paths` entry pointing to an attacker-controlled script path, which will be executed with full Node.js process privileges on the next gateway restart. Since authenticated gateway clients include any client holding a valid token/password, this represents an escalation path from gateway authentication to arbitrary code execution.",
+      "file_path": "N/A",
+      "line_number": 0,
+      "code_snippet": "",
+      "recommendation": "This is partly by design (plugins are an intentional extension mechanism), but the attack surface should be limited: (1) Restrict `config.set`/`config.apply` to a separate elevated permission level beyond standard gateway auth. (2) Validate that `plugins.load.paths` entries resolve to paths within expected directories (e.g. user's home or workspace). (3) Consider signing plugin manifests or requiring explicit opt-in per-plugin path.",
+      "cwe_id": null,
+      "evidence": "discovery.ts line 300-313: `extraPaths` from config are passed directly to `discoverFromPath()` which resolves arbitrary filesystem paths. loader.ts line 281: `jiti(candidate.source)` executes the resolved path. config.ts (server-methods) lines 109-129 and 164-184: `config.set` and `config.apply` accept arbitrary JSON5 config objects and write them to disk. Any config mutation triggers a reload that picks up new plugin paths."
+    },
+    {
+      "id": "THREAT-006",
+      "severity": "high",
+      "title": "Prompt Injection via Inbound Messaging Pipeline into Agent System Prompt",
+      "description": "The gateway ingests messages from external messaging providers (WhatsApp, Telegram, iMessage, Discord, Signal, Slack) and routes them directly into the embedded Pi agent as the user prompt. There is no sanitization layer that removes or neutralizes prompt injection sequences before the content reaches the LLM. A malicious actor who can send a message to the monitored phone number or channel can craft a message containing instructions such as 'Ignore all previous instructions and...' or embed system-prompt override directives. Because the agent has tools (exec, process, file read/write) and can send outbound messages, a successful prompt injection could direct the agent to exfiltrate data, execute commands, or exfiltrate credentials. This is an inherent challenge in AI-assistant architectures, but the lack of any explicit defense-in-depth (e.g. XML-tagged input sandboxing, tool call confirmation for destructive operations triggered by external messages) increases the practical risk.",
+      "file_path": "N/A",
+      "line_number": 0,
+      "code_snippet": "",
+      "recommendation": "Implement defense-in-depth against prompt injection: (1) Wrap inbound user messages in XML tags (e.g. <user_message>...</user_message>) and instruct the system prompt to treat content within those tags as untrusted user data. (2) For destructive tool calls (exec with write operations, file deletion, outbound messaging to non-owner numbers) triggered during an externally-initiated session, require a secondary confirmation step. (3) Implement an allowlist of tool names that external messages are permitted to trigger.",
+      "cwe_id": null,
+      "evidence": "The Pi embedded runner (pi-embedded-runner.ts) takes the prompt string directly from the inbound message content and places it as the human turn in the Claude API call. No prompt injection filtering, XML sandboxing, or content sanitization occurs before the message enters the LLM context. Tools available to the agent include exec (shell command execution), file write, and outbound message delivery."
+    }
+  ],
+  "files_scanned": 1736,
+  "scan_time_seconds": 1112.09,
+  "total_cost_usd": 5.95790475,
+  "summary": {
+    "total": 5,
+    "critical": 0,
+    "high": 2,
+    "medium": 3,
+    "low": 0
+  }
+}
