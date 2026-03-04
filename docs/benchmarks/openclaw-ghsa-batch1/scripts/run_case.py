@@ -321,7 +321,80 @@ def save_baseline_cache(
     )
 
 
-def main() -> None:
+def determine_run_status(
+    *,
+    baseline_only: bool,
+    intro_only: bool,
+    baseline_effective_success: bool,
+    intro_effective_success: bool,
+    fix_effective_success: bool,
+) -> str:
+    """Resolve detectability status for the selected run mode."""
+    if baseline_only:
+        return (
+            "baseline_only_completed"
+            if baseline_effective_success
+            else "baseline_only_failed"
+        )
+    if intro_only:
+        return (
+            "intro_only_completed"
+            if baseline_effective_success and intro_effective_success
+            else "intro_only_failed"
+        )
+    return (
+        "completed"
+        if baseline_effective_success
+        and intro_effective_success
+        and fix_effective_success
+        else "partial_or_failed"
+    )
+
+
+def build_dry_run_payload(
+    *,
+    ghsa: str,
+    securevibes_repo: Path,
+    securevibes_commit: str,
+    openclaw_repo: Path,
+    baseline: str,
+    intro_range: str,
+    fix_range: str,
+    baseline_only: bool,
+    intro_only: bool,
+    baseline_cache_enabled: bool,
+    refresh_baseline_cache: bool,
+    baseline_cache_entry: Path | None,
+    baseline_cmd: list[str],
+    intro_cmd: list[str],
+    fix_cmd: list[str],
+) -> dict[str, Any]:
+    """Build stable dry-run payload emitted by this script."""
+    return {
+        "ghsa": ghsa,
+        "securevibes_repo": str(securevibes_repo),
+        "securevibes_commit": securevibes_commit,
+        "openclaw_repo": str(openclaw_repo),
+        "baseline": baseline,
+        "intro_range": intro_range,
+        "fix_range": fix_range,
+        "baseline_only": baseline_only,
+        "intro_only": intro_only,
+        "baseline_cache": {
+            "enabled": baseline_cache_enabled,
+            "refresh": refresh_baseline_cache,
+            "entry": str(baseline_cache_entry) if baseline_cache_entry else None,
+        },
+        "commands": {
+            "baseline_scan": baseline_cmd,
+            "intro_pr_review": intro_cmd,
+            "fix_pr_review": fix_cmd,
+        },
+    }
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build command-line parser for benchmark case execution."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ghsa", required=True)
     parser.add_argument("--openclaw-repo", type=Path, default=Path("../openclaw"))
@@ -369,10 +442,16 @@ def main() -> None:
         action="store_true",
         help="Force rerun baseline scan and overwrite cache entry",
     )
-    parser.add_argument(
+    run_mode_group = parser.add_mutually_exclusive_group()
+    run_mode_group.add_argument(
         "--baseline-only",
         action="store_true",
         help="Only run/prime baseline scan cache, skip PR-review scans",
+    )
+    run_mode_group.add_argument(
+        "--intro-only",
+        action="store_true",
+        help="Run baseline + intro PR review only, skip fix PR review",
     )
     parser.add_argument(
         "--isolate-runtime-home",
@@ -388,7 +467,16 @@ def main() -> None:
         action="store_true",
         help="Print resolved commands and exit without executing scans",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse CLI arguments for benchmark case execution."""
+    return build_parser().parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
 
     case_dir = CASES_DIR / args.ghsa
     timeline = load_json(case_dir / "timeline.json")
@@ -513,26 +601,23 @@ def main() -> None:
         )
 
         if args.dry_run:
-            dry = {
-                "ghsa": args.ghsa,
-                "securevibes_repo": str(sv_ctx.repo_path),
-                "securevibes_commit": sv_ctx.commit_sha,
-                "openclaw_repo": str(args.openclaw_repo.resolve()),
-                "baseline": baseline,
-                "intro_range": intro_range,
-                "fix_range": fix_range,
-                "baseline_only": args.baseline_only,
-                "baseline_cache": {
-                    "enabled": baseline_cache_enabled,
-                    "refresh": args.refresh_baseline_cache,
-                    "entry": str(baseline_cache_entry),
-                },
-                "commands": {
-                    "baseline_scan": baseline_cmd,
-                    "intro_pr_review": intro_cmd,
-                    "fix_pr_review": fix_cmd,
-                },
-            }
+            dry = build_dry_run_payload(
+                ghsa=args.ghsa,
+                securevibes_repo=sv_ctx.repo_path,
+                securevibes_commit=sv_ctx.commit_sha,
+                openclaw_repo=args.openclaw_repo.resolve(),
+                baseline=baseline,
+                intro_range=intro_range,
+                fix_range=fix_range,
+                baseline_only=args.baseline_only,
+                intro_only=args.intro_only,
+                baseline_cache_enabled=baseline_cache_enabled,
+                refresh_baseline_cache=args.refresh_baseline_cache,
+                baseline_cache_entry=baseline_cache_entry,
+                baseline_cmd=baseline_cmd,
+                intro_cmd=intro_cmd,
+                fix_cmd=fix_cmd,
+            )
             (run_dir / "dry_run.json").write_text(
                 json.dumps(dry, indent=2) + "\n", encoding="utf-8"
             )
@@ -628,27 +713,7 @@ def main() -> None:
             )
             baseline_cache_saved = True
 
-        if not args.baseline_only:
-            run(["git", "checkout", intro_head], cwd=work_repo)
-            code, out, err = run(intro_cmd, env=intro_env)
-            intro_rate_limited = command_hit_rate_limit(out, err)
-            persist_command_log(
-                run_dir / "intro_pr_review.log.json", intro_cmd, code, out, err
-            )
-            copy_report_if_present(intro_repo_report, intro_report)
-            intro_exit = code
-            intro_effective_success = report_indicates_success(intro_report)
-
-            run(["git", "checkout", fix_head], cwd=work_repo)
-            code, out, err = run(fix_cmd, env=fix_env)
-            fix_rate_limited = command_hit_rate_limit(out, err)
-            persist_command_log(
-                run_dir / "fix_pr_review.log.json", fix_cmd, code, out, err
-            )
-            copy_report_if_present(fix_repo_report, fix_report)
-            fix_exit = code
-            fix_effective_success = report_indicates_success(fix_report)
-        else:
+        if args.baseline_only:
             persist_command_log(
                 run_dir / "intro_pr_review.log.json",
                 ["baseline-only-skip"],
@@ -663,6 +728,35 @@ def main() -> None:
                 "Skipped fix PR review because --baseline-only was set.",
                 "",
             )
+        else:
+            run(["git", "checkout", intro_head], cwd=work_repo)
+            code, out, err = run(intro_cmd, env=intro_env)
+            intro_rate_limited = command_hit_rate_limit(out, err)
+            persist_command_log(
+                run_dir / "intro_pr_review.log.json", intro_cmd, code, out, err
+            )
+            copy_report_if_present(intro_repo_report, intro_report)
+            intro_exit = code
+            intro_effective_success = report_indicates_success(intro_report)
+
+            if args.intro_only:
+                persist_command_log(
+                    run_dir / "fix_pr_review.log.json",
+                    ["intro-only-skip"],
+                    0,
+                    "Skipped fix PR review because --intro-only was set.",
+                    "",
+                )
+            else:
+                run(["git", "checkout", fix_head], cwd=work_repo)
+                code, out, err = run(fix_cmd, env=fix_env)
+                fix_rate_limited = command_hit_rate_limit(out, err)
+                persist_command_log(
+                    run_dir / "fix_pr_review.log.json", fix_cmd, code, out, err
+                )
+                copy_report_if_present(fix_repo_report, fix_report)
+                fix_exit = code
+                fix_effective_success = report_indicates_success(fix_report)
 
         if args.keep_temp:
             preserved = run_dir / "work_repo"
@@ -707,20 +801,13 @@ def main() -> None:
     if fix_exit is not None and not fix_effective_success:
         fix_effective_success = report_indicates_success(run_dir / "fix_pr_review.json")
 
-    if args.baseline_only:
-        status = (
-            "baseline_only_completed"
-            if baseline_effective_success
-            else "baseline_only_failed"
-        )
-    else:
-        status = (
-            "completed"
-            if baseline_effective_success
-            and intro_effective_success
-            and fix_effective_success
-            else "partial_or_failed"
-        )
+    status = determine_run_status(
+        baseline_only=args.baseline_only,
+        intro_only=args.intro_only,
+        baseline_effective_success=baseline_effective_success,
+        intro_effective_success=intro_effective_success,
+        fix_effective_success=fix_effective_success,
+    )
 
     detectability = {
         "id": args.ghsa,

@@ -46,6 +46,21 @@ python3 docs/benchmarks/openclaw-ghsa-batch1/scripts/run_sweep.py \
 Output summary:
 - `docs/benchmarks/openclaw-ghsa-batch1/debug/sweeps/<timestamp>.json`
 
+For intro-only campaign runs (baseline + intro PR review, skip fix PR review):
+
+```bash
+python3 docs/benchmarks/openclaw-ghsa-batch1/scripts/run_case.py \
+  --ghsa GHSA-qrq5-wjgg-rvqw \
+  --openclaw-repo ../openclaw \
+  --securevibes-repo . \
+  --model sonnet \
+  --severity medium \
+  --permission-mode bypassPermissions \
+  --intro-only
+```
+
+`--baseline-only` and `--intro-only` are mutually exclusive.
+
 Per-case artifacts:
 - `docs/benchmarks/openclaw-ghsa-batch1/cases/<GHSA>/runs/<timestamp>/...`
 - `docs/benchmarks/openclaw-ghsa-batch1/cases/<GHSA>/detectability.json`

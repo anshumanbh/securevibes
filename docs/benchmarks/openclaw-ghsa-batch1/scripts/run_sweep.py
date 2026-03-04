@@ -95,6 +95,8 @@ def run_case_subprocess(case_id: str, args: argparse.Namespace) -> dict[str, Any
         cmd.append("--refresh-baseline-cache")
     if args.baseline_only:
         cmd.append("--baseline-only")
+    if args.intro_only:
+        cmd.append("--intro-only")
 
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     detect = load_detectability(case_id)
@@ -109,7 +111,8 @@ def run_case_subprocess(case_id: str, args: argparse.Namespace) -> dict[str, Any
     }
 
 
-def parse_args() -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
+    """Build command-line parser for benchmark sweeps."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--openclaw-repo", type=Path, default=Path("../openclaw"))
     parser.add_argument(
@@ -135,7 +138,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--no-baseline-cache", action="store_true")
     parser.add_argument("--refresh-baseline-cache", action="store_true")
-    parser.add_argument("--baseline-only", action="store_true")
+    run_mode_group = parser.add_mutually_exclusive_group()
+    run_mode_group.add_argument("--baseline-only", action="store_true")
+    run_mode_group.add_argument("--intro-only", action="store_true")
     parser.add_argument("--parallel", type=int, default=2)
     parser.add_argument("--keep-temp", action="store_true")
     parser.add_argument(
@@ -144,31 +149,49 @@ def parse_args() -> argparse.Namespace:
         default=[],
         help="Repeatable GHSA id. If omitted, runs all manifest cases.",
     )
-    return parser.parse_args()
+    return parser
 
 
-def main() -> None:
-    args = parse_args()
-    requested_case_ids = args.ghsa or load_manifest_case_ids()
-    if not requested_case_ids:
-        raise RuntimeError("No benchmark cases selected.")
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse CLI arguments for benchmark sweeps."""
+    return build_parser().parse_args(argv)
 
+
+def select_cases_for_execution(
+    requested_case_ids: list[str],
+    *,
+    baseline_only: bool,
+) -> tuple[list[str], dict[str, Any]]:
+    """Select execution case IDs and dedupe metadata for sweep mode."""
     baseline_dedupe: dict[str, Any] = {
-        "enabled": bool(args.baseline_only),
+        "enabled": baseline_only,
         "requested_case_count": len(requested_case_ids),
         "executed_case_count": len(requested_case_ids),
         "skipped_cases": {},
     }
-    if args.baseline_only:
-        case_ids, baseline_to_case, skipped = dedupe_cases_for_baseline_prime(
-            requested_case_ids
-        )
-        baseline_dedupe["executed_case_count"] = len(case_ids)
-        baseline_dedupe["unique_baseline_count"] = len(baseline_to_case)
-        baseline_dedupe["skipped_cases"] = skipped
-        baseline_dedupe["baseline_to_case"] = baseline_to_case
-    else:
-        case_ids = requested_case_ids
+    if not baseline_only:
+        return requested_case_ids, baseline_dedupe
+
+    case_ids, baseline_to_case, skipped = dedupe_cases_for_baseline_prime(
+        requested_case_ids
+    )
+    baseline_dedupe["executed_case_count"] = len(case_ids)
+    baseline_dedupe["unique_baseline_count"] = len(baseline_to_case)
+    baseline_dedupe["skipped_cases"] = skipped
+    baseline_dedupe["baseline_to_case"] = baseline_to_case
+    return case_ids, baseline_dedupe
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    requested_case_ids = args.ghsa or load_manifest_case_ids()
+    if not requested_case_ids:
+        raise RuntimeError("No benchmark cases selected.")
+
+    case_ids, baseline_dedupe = select_cases_for_execution(
+        requested_case_ids,
+        baseline_only=bool(args.baseline_only),
+    )
 
     DEBUG_DIR.mkdir(parents=True, exist_ok=True)
     sweep_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -220,6 +243,7 @@ def main() -> None:
         "severity": args.severity,
         "permission_mode": args.permission_mode,
         "baseline_only": args.baseline_only,
+        "intro_only": args.intro_only,
         "baseline_cache_dir": str(args.baseline_cache_dir.resolve()),
         "baseline_cache_disabled": bool(args.no_baseline_cache),
         "baseline_cache_refresh": bool(args.refresh_baseline_cache),

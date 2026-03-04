@@ -95,6 +95,22 @@ Baseline cache is stored under:
 - In `--baseline-only` mode, `run_sweep.py` automatically dedupes by `baseline_commit`
   so each unique baseline is scanned once.
 
+Run intro-only PR review mode (baseline + introducing PR review, skip fix PR review):
+
+```bash
+python3 docs/benchmarks/openclaw-ghsa-batch1/scripts/run_case.py \
+  --ghsa GHSA-g55j-c2v4-pjcg \
+  --openclaw-repo ../openclaw \
+  --securevibes-repo . \
+  --model sonnet \
+  --severity medium \
+  --permission-mode bypassPermissions \
+  --intro-only
+```
+
+`--baseline-only` and `--intro-only` are mutually exclusive in both `run_case.py`
+and `run_sweep.py`.
+
 Replay only missed cases on an older SecureVibes commit:
 
 ```bash
