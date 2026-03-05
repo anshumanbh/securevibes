@@ -106,12 +106,12 @@ SECUREVIBES_DIR = ".securevibes"
 DIFF_CONTEXT_FILE = "DIFF_CONTEXT.json"
 SCAN_STATE_FILE = "scan_state.json"
 
-_FOCUSED_DIFF_MAX_FILES = 16
-_FOCUSED_DIFF_MAX_HUNK_LINES = 200
+_FOCUSED_DIFF_MAX_FILES = 24
+_FOCUSED_DIFF_MAX_HUNK_LINES = 500
 _PROMPT_HUNK_MAX_FILES = 12
 _PROMPT_HUNK_MAX_HUNKS_PER_FILE = 4
 _PROMPT_HUNK_MAX_LINES_PER_HUNK = 80
-_NEW_FILE_HUNK_MAX_LINES = 200  # New files can't be Read from disk; show more in prompt
+_NEW_FILE_HUNK_MAX_LINES = 500  # New files can't be Read from disk; show more in prompt
 _NEW_FILE_ANCHOR_MAX_LINES = 120  # Same rationale — new files need higher anchor limit
 DIFF_FILES_DIR = "DIFF_FILES"  # Subdirectory for agent-readable diff content
 _SAFE_PERMISSION_MODE = resolve_permission_mode()

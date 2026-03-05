@@ -32,6 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 VALID_PERMISSION_MODES = ("default", "acceptEdits", "bypassPermissions")
 BASELINE_ARTIFACTS = ("SECURITY.md", "THREAT_MODEL.json", "VULNERABILITIES.json")
 SPLIT_DIFF_GROUP_SIZE = 4
+PREEMPTIVE_SPLIT_FILE_THRESHOLD = 8
 LOW_SIGNAL_SPLIT_PATH_PREFIXES = ("docs/",)
 LOW_SIGNAL_SPLIT_SUFFIXES = (
     ".md",
@@ -277,6 +278,33 @@ def baseline_cache_key(
     )
 
 
+def find_compatible_baseline_cache_entry(
+    *,
+    cache_dir: Path,
+    baseline_commit: str,
+    model: str,
+    severity: str,
+) -> Path | None:
+    """Find latest usable baseline cache entry for same baseline/model/severity."""
+    if not cache_dir.exists():
+        return None
+    pattern = (
+        f"baseline-{baseline_commit[:12]}"
+        "__sv-*"
+        f"__model-{_sanitize_cache_token(model)}"
+        f"__sev-{_sanitize_cache_token(severity)}"
+    )
+    candidates = sorted(
+        (entry for entry in cache_dir.glob(pattern) if entry.is_dir()),
+        key=lambda entry: entry.stat().st_mtime,
+        reverse=True,
+    )
+    for entry in candidates:
+        if baseline_cache_is_usable(entry):
+            return entry
+    return None
+
+
 def _cache_meta_path(cache_entry: Path) -> Path:
     return cache_entry / "metadata.json"
 
@@ -383,6 +411,17 @@ def chunk_paths(paths: list[str], chunk_size: int) -> list[list[str]]:
     return [paths[i : i + chunk_size] for i in range(0, len(paths), chunk_size)]
 
 
+def should_preemptively_split_commit(
+    changed_paths: list[str],
+    *,
+    group_size: int = SPLIT_DIFF_GROUP_SIZE,
+    threshold: int = PREEMPTIVE_SPLIT_FILE_THRESHOLD,
+) -> bool:
+    """Return True when commit should be split into focused diff groups."""
+    review_paths = filter_split_review_files(changed_paths)
+    return len(review_paths) >= max(group_size + 1, threshold)
+
+
 def run_commit_split_diff_reviews(
     *,
     work_repo: Path,
@@ -391,17 +430,21 @@ def run_commit_split_diff_reviews(
     repo_report_path: Path,
     run_dir: Path,
     sha: str,
+    review_paths: list[str] | None = None,
     group_size: int = SPLIT_DIFF_GROUP_SIZE,
 ) -> tuple[list[Path], bool]:
     """Run PR-review using per-file-group diffs for one oversized commit."""
     commit_range = f"{sha}^..{sha}"
-    changed_paths = list_changed_files_for_commit(work_repo, sha)
-    review_paths = filter_split_review_files(changed_paths)
+    effective_paths = (
+        filter_split_review_files(review_paths)
+        if review_paths is not None
+        else filter_split_review_files(list_changed_files_for_commit(work_repo, sha))
+    )
     short = sha[:12]
     reports: list[Path] = []
     rate_limited = False
 
-    for index, group in enumerate(chunk_paths(review_paths, group_size), start=1):
+    for index, group in enumerate(chunk_paths(effective_paths, group_size), start=1):
         patch_path = run_dir / f"intro_pr_review.commit_{short}.part_{index:02d}.patch"
         patch = run_checked(["git", "diff", commit_range, "--", *group], cwd=work_repo)
         if not patch.strip():
@@ -640,6 +683,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--pr-attempts",
+        type=int,
+        default=None,
+        help="Optional override for `pr-review --pr-attempts`.",
+    )
+    parser.add_argument(
+        "--pr-timeout",
+        type=int,
+        default=None,
+        help="Optional override for `pr-review --pr-timeout` (seconds).",
+    )
+    parser.add_argument(
         "--isolate-runtime-home",
         action="store_true",
         help=(
@@ -694,6 +749,9 @@ def main(argv: list[str] | None = None) -> None:
     baseline_cache_saved = False
     baseline_cache_entry: Path | None = None
     baseline_cache_id: str | None = None
+    baseline_cache_requested_id: str | None = None
+    baseline_cache_requested_entry: Path | None = None
+    baseline_cache_compat_fallback_used = False
 
     intro_exit: int | None = None
     fix_exit: int | None = None
@@ -716,13 +774,35 @@ def main(argv: list[str] | None = None) -> None:
             temp_root=tmp_path,
         )
 
-        baseline_cache_id = baseline_cache_key(
+        baseline_cache_requested_id = baseline_cache_key(
             baseline_commit=baseline,
             securevibes_commit=sv_ctx.commit_sha,
             model=args.model,
             severity=args.severity,
         )
-        baseline_cache_entry = baseline_cache_dir / baseline_cache_id
+        baseline_cache_requested_entry = (
+            baseline_cache_dir / baseline_cache_requested_id
+        )
+        baseline_cache_entry = baseline_cache_requested_entry
+        if (
+            baseline_cache_enabled
+            and not args.refresh_baseline_cache
+            and not baseline_cache_is_usable(baseline_cache_requested_entry)
+        ):
+            compatible_entry = find_compatible_baseline_cache_entry(
+                cache_dir=baseline_cache_dir,
+                baseline_commit=baseline,
+                model=args.model,
+                severity=args.severity,
+            )
+            if compatible_entry is not None:
+                baseline_cache_entry = compatible_entry
+                baseline_cache_compat_fallback_used = (
+                    compatible_entry != baseline_cache_requested_entry
+                )
+        baseline_cache_id = (
+            baseline_cache_entry.name if baseline_cache_entry is not None else None
+        )
 
         baseline_cmd, baseline_env = securevibes_command(
             sv_ctx,
@@ -743,6 +823,11 @@ def main(argv: list[str] | None = None) -> None:
             "--force",
             runtime_home=runtime_home,
         )
+        pr_budget_args: list[str] = []
+        if args.pr_attempts is not None:
+            pr_budget_args.extend(["--pr-attempts", str(args.pr_attempts)])
+        if args.pr_timeout is not None:
+            pr_budget_args.extend(["--pr-timeout", str(args.pr_timeout)])
         intro_cmd, intro_env = securevibes_command(
             sv_ctx,
             args.python_executable,
@@ -765,6 +850,7 @@ def main(argv: list[str] | None = None) -> None:
                 / "intro_pr_review.json"
             ),
             "--clean-pr-artifacts",
+            *pr_budget_args,
             runtime_home=runtime_home,
         )
         intro_threat_model_cmd, intro_threat_model_env = securevibes_command(
@@ -801,6 +887,7 @@ def main(argv: list[str] | None = None) -> None:
                 work_repo / ".securevibes" / "benchmark-reports" / "fix_pr_review.json"
             ),
             "--clean-pr-artifacts",
+            *pr_budget_args,
             runtime_home=runtime_home,
         )
 
@@ -895,7 +982,7 @@ def main(argv: list[str] | None = None) -> None:
         if (
             baseline_effective_success
             and baseline_cache_enabled
-            and baseline_cache_entry is not None
+            and baseline_cache_requested_entry is not None
             and baseline_report.exists()
             and not baseline_cache_hit
         ):
@@ -911,7 +998,7 @@ def main(argv: list[str] | None = None) -> None:
                 "source_ghsa": args.ghsa,
             }
             save_baseline_cache(
-                baseline_cache_entry,
+                baseline_cache_requested_entry,
                 baseline_report=baseline_report,
                 work_repo=work_repo,
                 meta=meta,
@@ -969,6 +1056,27 @@ def main(argv: list[str] | None = None) -> None:
                 for sha in intro_commit_shas:
                     commit_range = f"{sha}^..{sha}"
                     commit_cmd = replace_range_arg(intro_cmd, commit_range)
+                    commit_paths = list_changed_files_for_commit(work_repo, sha)
+                    if should_preemptively_split_commit(commit_paths):
+                        split_reports, split_rate_limited = (
+                            run_commit_split_diff_reviews(
+                                work_repo=work_repo,
+                                base_cmd=intro_cmd,
+                                env=intro_env,
+                                repo_report_path=intro_repo_report,
+                                run_dir=run_dir,
+                                sha=sha,
+                                review_paths=commit_paths,
+                            )
+                        )
+                        intro_rate_limited = intro_rate_limited or split_rate_limited
+                        short = sha[:12]
+                        commit_report = run_dir / f"intro_pr_review.commit_{short}.json"
+                        if split_reports:
+                            merge_pr_review_reports(split_reports, commit_report)
+                            intro_attempt_reports.append(commit_report)
+                            intro_attempt_ranges.append(commit_range)
+                            continue
                     if intro_repo_report.exists():
                         intro_repo_report.unlink()
                     code, out, err = run(commit_cmd, env=intro_env)
@@ -1088,8 +1196,17 @@ def main(argv: list[str] | None = None) -> None:
         "baseline_cache": {
             "enabled": baseline_cache_enabled,
             "refresh_requested": bool(args.refresh_baseline_cache),
-            "entry_key": baseline_cache_id,
-            "entry_path": str(baseline_cache_entry) if baseline_cache_entry else None,
+            "requested_entry_key": baseline_cache_requested_id,
+            "requested_entry_path": (
+                str(baseline_cache_requested_entry)
+                if baseline_cache_requested_entry
+                else None
+            ),
+            "resolved_entry_key": baseline_cache_id,
+            "resolved_entry_path": (
+                str(baseline_cache_entry) if baseline_cache_entry else None
+            ),
+            "compatible_fallback_used": baseline_cache_compat_fallback_used,
             "hit": baseline_cache_hit,
             "saved": baseline_cache_saved,
         },

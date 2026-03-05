@@ -50,6 +50,22 @@ def test_run_case_intro_threat_model_refresh_flag_is_supported(
     assert args.intro_threat_model_refresh is True
 
 
+def test_run_case_pr_budget_flags_are_supported(run_case_module: ModuleType) -> None:
+    args = run_case_module.parse_args(
+        [
+            "--ghsa",
+            "GHSA-test",
+            "--intro-only",
+            "--pr-attempts",
+            "2",
+            "--pr-timeout",
+            "120",
+        ]
+    )
+    assert args.pr_attempts == 2
+    assert args.pr_timeout == 120
+
+
 def test_run_case_rejects_intro_and_baseline_together(
     run_case_module: ModuleType,
 ) -> None:
@@ -202,6 +218,28 @@ def test_run_case_chunk_paths(run_case_module: ModuleType) -> None:
     assert chunks == [["a", "b"], ["c", "d"], ["e"]]
 
 
+def test_run_case_should_preemptively_split_commit(run_case_module: ModuleType) -> None:
+    changed_paths = [
+        "src/a.ts",
+        "src/b.ts",
+        "src/c.ts",
+        "src/d.ts",
+        "src/e.ts",
+        "src/f.ts",
+        "src/g.ts",
+        "src/h.ts",
+        "src/i.ts",
+    ]
+    assert run_case_module.should_preemptively_split_commit(changed_paths) is True
+
+
+def test_run_case_should_not_preemptively_split_small_commit(
+    run_case_module: ModuleType,
+) -> None:
+    changed_paths = ["src/a.ts", "src/b.ts", "src/c.ts"]
+    assert run_case_module.should_preemptively_split_commit(changed_paths) is False
+
+
 def test_run_case_context_limit_detection(run_case_module: ModuleType) -> None:
     stdout = "Error: PR review aborted: diff context exceeds safe analysis limits."
     assert run_case_module.pr_review_hit_context_limits(stdout, "") is True
@@ -247,6 +285,58 @@ def test_run_case_merge_pr_review_reports(
     assert len(issues) == 2
     assert shared_issue in issues
     assert issue_b in issues
+
+
+def test_run_case_find_compatible_baseline_cache_entry_prefers_latest(
+    run_case_module: ModuleType, tmp_path: Path
+) -> None:
+    cache_dir = tmp_path / "baseline-cache"
+    cache_dir.mkdir()
+
+    older = (
+        cache_dir / "baseline-a6ea74f8e6ff__sv-111111111111__model-sonnet__sev-medium"
+    )
+    newer = (
+        cache_dir / "baseline-a6ea74f8e6ff__sv-222222222222__model-sonnet__sev-medium"
+    )
+    older.mkdir()
+    newer.mkdir()
+
+    for entry in (older, newer):
+        (entry / "baseline_scan.json").write_text("{}", encoding="utf-8")
+        for artifact in run_case_module.BASELINE_ARTIFACTS:
+            (entry / artifact).write_text("x", encoding="utf-8")
+
+    older.touch()
+    newer.touch()
+
+    selected = run_case_module.find_compatible_baseline_cache_entry(
+        cache_dir=cache_dir,
+        baseline_commit="a6ea74f8e6ffae13f1de88736b0d47a004b98e54",
+        model="sonnet",
+        severity="medium",
+    )
+    assert selected == newer
+
+
+def test_run_case_find_compatible_baseline_cache_entry_returns_none_when_unusable(
+    run_case_module: ModuleType, tmp_path: Path
+) -> None:
+    cache_dir = tmp_path / "baseline-cache"
+    cache_dir.mkdir()
+    unusable = (
+        cache_dir / "baseline-a6ea74f8e6ff__sv-333333333333__model-sonnet__sev-medium"
+    )
+    unusable.mkdir()
+    # Missing baseline_scan.json and required artifacts => unusable.
+
+    selected = run_case_module.find_compatible_baseline_cache_entry(
+        cache_dir=cache_dir,
+        baseline_commit="a6ea74f8e6ffae13f1de88736b0d47a004b98e54",
+        model="sonnet",
+        severity="medium",
+    )
+    assert selected is None
 
 
 def test_run_sweep_intro_only_flag_is_supported(run_sweep_module: ModuleType) -> None:
