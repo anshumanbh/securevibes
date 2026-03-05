@@ -271,6 +271,16 @@ def test_run_case_command_hit_rate_limit_detects_unreadable_pr_artifact_failure(
     assert run_case_module.command_hit_rate_limit(stdout, "") is True
 
 
+def test_run_case_command_hit_rate_limit_detects_wrapped_unreadable_pr_artifact_failure(
+    run_case_module: ModuleType,
+) -> None:
+    stdout = (
+        "ERROR: PR code review agent did not produce a readable PR_VULNERABILITIES.json \n"
+        "after 4 attempt(s). Refusing fail-open PR review result."
+    )
+    assert run_case_module.command_hit_rate_limit(stdout, "") is True
+
+
 def test_run_case_command_hit_rate_limit_ignores_non_rate_limit_errors(
     run_case_module: ModuleType,
 ) -> None:

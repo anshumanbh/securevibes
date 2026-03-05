@@ -54,8 +54,9 @@ LOW_SIGNAL_SPLIT_BASENAMES = (
     "yarn.lock",
 )
 LOW_SIGNAL_SPLIT_SKIP_REASON = "non_baseline_and_no_new_surface"
-UNREADABLE_PR_ARTIFACT_FAILURE = (
-    "pr code review agent did not produce a readable " "pr_vulnerabilities.json after"
+UNREADABLE_PR_ARTIFACT_FAILURE_PATTERN = re.compile(
+    r"pr code review agent did not produce a readable\s+pr_vulnerabilities\.json\s+after",
+    re.IGNORECASE,
 )
 NEW_CONNECTION_SIGNAL_PATTERNS = (
     re.compile(
@@ -284,7 +285,7 @@ def command_hit_rate_limit(stdout: str, stderr: str) -> bool:
         return True
 
     # Claude sometimes hides quota errors behind repeated unreadable artifact retries.
-    if UNREADABLE_PR_ARTIFACT_FAILURE in haystack_lower:
+    if UNREADABLE_PR_ARTIFACT_FAILURE_PATTERN.search(haystack):
         return True
 
     return False
