@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -66,6 +67,24 @@ def test_run_case_pr_budget_flags_are_supported(run_case_module: ModuleType) -> 
     assert args.pr_timeout == 120
 
 
+def test_run_case_auto_intro_threat_model_refresh_flag_is_supported(
+    run_case_module: ModuleType,
+) -> None:
+    args = run_case_module.parse_args(
+        ["--ghsa", "GHSA-test", "--intro-only", "--auto-intro-threat-model-refresh"]
+    )
+    assert args.auto_intro_threat_model_refresh is True
+
+
+def test_run_case_skip_low_signal_split_shards_flag_is_supported(
+    run_case_module: ModuleType,
+) -> None:
+    args = run_case_module.parse_args(
+        ["--ghsa", "GHSA-test", "--intro-only", "--skip-low-signal-split-shards"]
+    )
+    assert args.skip_low_signal_split_shards is True
+
+
 def test_run_case_rejects_intro_and_baseline_together(
     run_case_module: ModuleType,
 ) -> None:
@@ -89,6 +108,7 @@ def test_run_case_dry_run_payload_includes_intro_only(
         fix_range="intro456..fix789",
         baseline_only=False,
         intro_only=True,
+        skip_low_signal_split_shards=True,
         baseline_cache_enabled=True,
         refresh_baseline_cache=False,
         baseline_cache_entry=Path("/tmp/cache-entry"),
@@ -99,6 +119,7 @@ def test_run_case_dry_run_payload_includes_intro_only(
     )
     assert payload["intro_only"] is True
     assert payload["baseline_only"] is False
+    assert payload["skip_low_signal_split_shards"] is True
     assert payload["commands"]["intro_threat_modeling"] == [
         "securevibes",
         "scan",
@@ -212,10 +233,111 @@ def test_run_case_filter_split_review_files(run_case_module: ModuleType) -> None
     assert filtered == ["src/plugins/install.ts", "src/config/schema.ts"]
 
 
+def test_run_case_patch_has_new_connection_signals(run_case_module: ModuleType) -> None:
+    patch = """diff --git a/src/a.ts b/src/a.ts
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -1,1 +1,2 @@
++import { install } from './plugins/install'
+ const x = 1
+"""
+    assert run_case_module.patch_has_new_connection_signals(patch) is True
+    assert (
+        run_case_module.patch_has_new_connection_signals(
+            "diff --git a/a b/a\n@@ -1 +1 @@\n+const value = 1\n"
+        )
+        is False
+    )
+
+
+def test_run_case_command_hit_rate_limit_detects_explicit_message(
+    run_case_module: ModuleType,
+) -> None:
+    assert (
+        run_case_module.command_hit_rate_limit(
+            "You've hit your limit · resets 2am (America/Los_Angeles)", ""
+        )
+        is True
+    )
+
+
+def test_run_case_command_hit_rate_limit_detects_unreadable_pr_artifact_failure(
+    run_case_module: ModuleType,
+) -> None:
+    stdout = (
+        "ERROR: PR code review agent did not produce a readable "
+        "PR_VULNERABILITIES.json after 4 attempt(s). Refusing fail-open PR review result."
+    )
+    assert run_case_module.command_hit_rate_limit(stdout, "") is True
+
+
+def test_run_case_command_hit_rate_limit_ignores_non_rate_limit_errors(
+    run_case_module: ModuleType,
+) -> None:
+    stdout = "ERROR: PR review aborted: diff context exceeds safe analysis limits."
+    assert run_case_module.command_hit_rate_limit(stdout, "") is False
+
+
+def test_run_case_group_touches_baseline_risk(run_case_module: ModuleType) -> None:
+    group = ["src/plugins/install.ts", "src/plugins/loader.ts"]
+    assert run_case_module.group_touches_baseline_risk(group, {"src/plugins"}) is True
+    assert run_case_module.group_touches_baseline_risk(group, {"src/hooks"}) is False
+
+
+def test_run_case_group_introduces_component_novel_to_baseline(
+    run_case_module: ModuleType,
+) -> None:
+    group = ["src/plugins/install.ts", "src/plugins/loader.ts"]
+    assert (
+        run_case_module.group_introduces_component_novel_to_baseline(
+            group, {"src/plugins"}
+        )
+        is False
+    )
+    assert (
+        run_case_module.group_introduces_component_novel_to_baseline(
+            group, {"src/hooks"}
+        )
+        is True
+    )
+    assert (
+        run_case_module.group_introduces_component_novel_to_baseline(group, set())
+        is True
+    )
+
+
 def test_run_case_chunk_paths(run_case_module: ModuleType) -> None:
     paths = ["a", "b", "c", "d", "e"]
     chunks = run_case_module.chunk_paths(paths, 2)
     assert chunks == [["a", "b"], ["c", "d"], ["e"]]
+
+
+def test_run_case_split_component_key(run_case_module: ModuleType) -> None:
+    assert (
+        run_case_module.split_component_key("src/plugins/install.ts") == "src/plugins"
+    )
+    assert (
+        run_case_module.split_component_key("extensions/foo/index.ts")
+        == "extensions/foo"
+    )
+    assert run_case_module.split_component_key("README.md") == "readme.md"
+
+
+def test_run_case_build_component_split_groups_prioritizes_risk_components(
+    run_case_module: ModuleType,
+) -> None:
+    groups = run_case_module.build_component_split_groups(
+        [
+            "src/hooks/install.ts",
+            "src/hooks/loader.ts",
+            "src/plugins/install.ts",
+            "src/plugins/loader.ts",
+        ],
+        group_size=4,
+        prioritized_components={"src/plugins"},
+    )
+    assert groups
+    assert groups[0] == ["src/plugins/install.ts", "src/plugins/loader.ts"]
 
 
 def test_run_case_should_preemptively_split_commit(run_case_module: ModuleType) -> None:
@@ -339,10 +461,47 @@ def test_run_case_find_compatible_baseline_cache_entry_returns_none_when_unusabl
     assert selected is None
 
 
+def test_run_case_derives_risk_components_from_baseline_artifacts(
+    run_case_module: ModuleType, tmp_path: Path
+) -> None:
+    securevibes_dir = tmp_path / ".securevibes"
+    securevibes_dir.mkdir()
+    threat_model = [
+        {
+            "id": "THREAT-001",
+            "affected_files": [{"file_path": "src/plugins/install.ts"}],
+        }
+    ]
+    vulnerabilities = [
+        {"file_path": "src/hooks/install.ts"},
+        {"location": "extensions/voice-call/index.ts"},
+    ]
+    (securevibes_dir / "THREAT_MODEL.json").write_text(
+        json.dumps(threat_model), encoding="utf-8"
+    )
+    (securevibes_dir / "VULNERABILITIES.json").write_text(
+        json.dumps(vulnerabilities), encoding="utf-8"
+    )
+
+    risk_components = run_case_module.derive_risk_components_from_baseline_artifacts(
+        securevibes_dir
+    )
+    assert "src/plugins" in risk_components
+    assert "src/hooks" in risk_components
+    assert "extensions/voice-call" in risk_components
+
+
 def test_run_sweep_intro_only_flag_is_supported(run_sweep_module: ModuleType) -> None:
     args = run_sweep_module.parse_args(["--intro-only"])
     assert args.intro_only is True
     assert args.baseline_only is False
+
+
+def test_run_sweep_skip_low_signal_split_shards_flag_is_supported(
+    run_sweep_module: ModuleType,
+) -> None:
+    args = run_sweep_module.parse_args(["--skip-low-signal-split-shards"])
+    assert args.skip_low_signal_split_shards is True
 
 
 def test_run_sweep_rejects_intro_and_baseline_together(

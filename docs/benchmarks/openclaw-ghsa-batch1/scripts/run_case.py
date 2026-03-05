@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -51,6 +52,32 @@ LOW_SIGNAL_SPLIT_BASENAMES = (
     "pnpm-lock.yaml",
     "package-lock.json",
     "yarn.lock",
+)
+LOW_SIGNAL_SPLIT_SKIP_REASON = "non_baseline_and_no_new_surface"
+UNREADABLE_PR_ARTIFACT_FAILURE = (
+    "pr code review agent did not produce a readable " "pr_vulnerabilities.json after"
+)
+NEW_CONNECTION_SIGNAL_PATTERNS = (
+    re.compile(
+        r"^\+\s*(import\s+.+\s+from\s+['\"][^'\"]+['\"])\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\+\s*(from\s+[\w\./]+\s+import\s+.+)\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\+\s*.*require\(\s*['\"][^'\"]+['\"]\s*\)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\+\s*.*\.(?:connect|register|mount|attach|subscribe|publish|route|use)\(",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\+\s*.*(?:https?://|wss?://|postgres://|mongodb://|redis://|amqps?://)",
+        re.IGNORECASE,
+    ),
 )
 
 
@@ -243,9 +270,24 @@ def report_indicates_success(report_path: Path) -> bool:
 
 
 def command_hit_rate_limit(stdout: str, stderr: str) -> bool:
-    """Detect Claude quota/rate-limit messaging in command output."""
+    """Detect explicit and fallback rate-limit signals in command output."""
     haystack = f"{stdout}\n{stderr}"
-    return "You've hit your limit" in haystack
+    haystack_lower = haystack.lower()
+    explicit_markers = (
+        "you've hit your limit",
+        "rate limit exceeded",
+        "too many requests",
+        "resource_exhausted",
+        "429",
+    )
+    if any(marker in haystack_lower for marker in explicit_markers):
+        return True
+
+    # Claude sometimes hides quota errors behind repeated unreadable artifact retries.
+    if UNREADABLE_PR_ARTIFACT_FAILURE in haystack_lower:
+        return True
+
+    return False
 
 
 def _sanitize_cache_token(value: str) -> str:
@@ -404,11 +446,181 @@ def filter_split_review_files(paths: list[str]) -> list[str]:
     return filtered if filtered else paths
 
 
+def patch_has_new_connection_signals(patch: str) -> bool:
+    """Return True when diff adds lines that likely introduce new component connections."""
+    for raw_line in patch.splitlines():
+        if not raw_line.startswith("+") or raw_line.startswith("+++"):
+            continue
+        for pattern in NEW_CONNECTION_SIGNAL_PATTERNS:
+            if pattern.search(raw_line):
+                return True
+    return False
+
+
+def group_touches_baseline_risk(
+    group: list[str], baseline_risk_components: set[str]
+) -> bool:
+    """Return True when any path in group overlaps baseline risk components."""
+    for path in group:
+        if component_matches_priority(
+            split_component_key(path), baseline_risk_components
+        ):
+            return True
+    return False
+
+
+def group_introduces_component_novel_to_baseline(
+    group: list[str], baseline_risk_components: set[str]
+) -> bool:
+    """Return True when group changes a component absent from baseline artifacts."""
+    if not baseline_risk_components:
+        # No baseline component signal means every changed component is new surface.
+        return True
+
+    for path in group:
+        if not component_matches_priority(
+            split_component_key(path), baseline_risk_components
+        ):
+            return True
+    return False
+
+
 def chunk_paths(paths: list[str], chunk_size: int) -> list[list[str]]:
     """Chunk path list into fixed-size groups."""
     if chunk_size <= 0:
         raise ValueError("chunk_size must be > 0")
     return [paths[i : i + chunk_size] for i in range(0, len(paths), chunk_size)]
+
+
+def split_component_key(path: str) -> str:
+    """Map a path to a stable component key for focused split grouping."""
+    normalized = path.strip().lstrip("./")
+    parts = Path(normalized).parts
+    if not parts:
+        return "_root"
+    head = parts[0].lower()
+    if head in {"src", "packages", "apps", "services", "extensions", "lib", "internal"}:
+        if len(parts) >= 2:
+            return f"{head}/{parts[1].lower()}"
+        return head
+    return head
+
+
+def _looks_like_repo_path(value: str) -> bool:
+    """Return True when a string resembles a repository path."""
+    text = value.strip()
+    if not text or len(text) > 240:
+        return False
+    if "://" in text or text.startswith("http:") or text.startswith("https:"):
+        return False
+    if " " in text:
+        return False
+    if "/" not in text:
+        return False
+    return True
+
+
+def _collect_path_candidates_from_payload(payload: Any, out: set[str]) -> None:
+    """Collect path-like strings from nested JSON artifacts."""
+    if isinstance(payload, str):
+        if _looks_like_repo_path(payload):
+            out.add(payload)
+        return
+
+    if isinstance(payload, list):
+        for item in payload:
+            _collect_path_candidates_from_payload(item, out)
+        return
+
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            lower_key = str(key).lower()
+            if lower_key in {
+                "file",
+                "file_path",
+                "path",
+                "location",
+                "source",
+                "sink",
+                "affected_components",
+                "affected_files",
+            }:
+                _collect_path_candidates_from_payload(value, out)
+                continue
+            # Continue recursive scan for nested structures.
+            _collect_path_candidates_from_payload(value, out)
+
+
+def derive_risk_components_from_baseline_artifacts(securevibes_dir: Path) -> set[str]:
+    """Derive component keys from baseline threat/vulnerability artifacts."""
+    risk_components: set[str] = set()
+    path_candidates: set[str] = set()
+    for artifact in ("THREAT_MODEL.json", "VULNERABILITIES.json"):
+        artifact_path = securevibes_dir / artifact
+        if not artifact_path.exists():
+            continue
+        try:
+            payload = load_json(artifact_path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        _collect_path_candidates_from_payload(payload, path_candidates)
+
+    for path in path_candidates:
+        risk_components.add(split_component_key(path))
+    return risk_components
+
+
+def component_matches_priority(
+    component_key: str, prioritized_components: set[str]
+) -> bool:
+    """Return True when component overlaps with baseline-derived risk components."""
+    for base in prioritized_components:
+        if component_key == base:
+            return True
+        if component_key.startswith(f"{base}/"):
+            return True
+        if base.startswith(f"{component_key}/"):
+            return True
+    return False
+
+
+def component_group_priority(
+    component_key: str,
+    paths: list[str],
+    prioritized_components: set[str],
+) -> tuple[int, int]:
+    """Score component groups so baseline-risk components are reviewed first."""
+    return (
+        1 if component_matches_priority(component_key, prioritized_components) else 0,
+        len(paths),
+    )
+
+
+def build_component_split_groups(
+    paths: list[str],
+    *,
+    group_size: int = SPLIT_DIFF_GROUP_SIZE,
+    prioritized_components: set[str] | None = None,
+) -> list[list[str]]:
+    """Create split groups by component, then chunk each component group."""
+    prioritized = prioritized_components or set()
+    grouped: dict[str, list[str]] = {}
+    for path in sorted(paths):
+        component = split_component_key(path)
+        grouped.setdefault(component, []).append(path)
+
+    ordered_groups = sorted(
+        grouped.items(),
+        key=lambda item: (
+            component_group_priority(item[0], item[1], prioritized),
+            item[0],
+        ),
+        reverse=True,
+    )
+    chunks: list[list[str]] = []
+    for _, component_paths in ordered_groups:
+        chunks.extend(chunk_paths(component_paths, group_size))
+    return chunks
 
 
 def should_preemptively_split_commit(
@@ -432,7 +644,9 @@ def run_commit_split_diff_reviews(
     sha: str,
     review_paths: list[str] | None = None,
     group_size: int = SPLIT_DIFF_GROUP_SIZE,
-) -> tuple[list[Path], bool]:
+    prioritized_components: set[str] | None = None,
+    skip_low_signal_shards: bool = False,
+) -> tuple[list[Path], bool, dict[str, Any]]:
     """Run PR-review using per-file-group diffs for one oversized commit."""
     commit_range = f"{sha}^..{sha}"
     effective_paths = (
@@ -444,17 +658,69 @@ def run_commit_split_diff_reviews(
     reports: list[Path] = []
     rate_limited = False
 
-    for index, group in enumerate(chunk_paths(effective_paths, group_size), start=1):
+    split_groups = build_component_split_groups(
+        effective_paths,
+        group_size=group_size,
+        prioritized_components=prioritized_components,
+    )
+    baseline_components = prioritized_components or set()
+    split_stats: dict[str, Any] = {
+        "total_groups": len(split_groups),
+        "executed_groups": 0,
+        "skipped_groups": 0,
+        "baseline_touch_groups": 0,
+        "new_surface_groups": 0,
+        "skipped_reasons": {},
+    }
+    for index, group in enumerate(split_groups, start=1):
         patch_path = run_dir / f"intro_pr_review.commit_{short}.part_{index:02d}.patch"
         patch = run_checked(["git", "diff", commit_range, "--", *group], cwd=work_repo)
         if not patch.strip():
             continue
         patch_path.write_text(patch, encoding="utf-8")
 
+        touches_baseline = group_touches_baseline_risk(group, baseline_components)
+        if touches_baseline:
+            split_stats["baseline_touch_groups"] += 1
+
+        introduces_new_component = group_introduces_component_novel_to_baseline(
+            group, baseline_components
+        )
+        introduces_new_connection = patch_has_new_connection_signals(patch)
+        introduces_new_surface = introduces_new_component or introduces_new_connection
+        if introduces_new_surface:
+            split_stats["new_surface_groups"] += 1
+
+        if (
+            skip_low_signal_shards
+            and not touches_baseline
+            and not introduces_new_surface
+        ):
+            split_stats["skipped_groups"] += 1
+            skipped_reasons = split_stats["skipped_reasons"]
+            skipped_reasons[LOW_SIGNAL_SPLIT_SKIP_REASON] = (
+                skipped_reasons.get(LOW_SIGNAL_SPLIT_SKIP_REASON, 0) + 1
+            )
+            log_path = (
+                run_dir / f"intro_pr_review.commit_{short}.part_{index:02d}.log.json"
+            )
+            persist_command_log(
+                log_path,
+                ["split-shard-skip", f"{commit_range}", *group],
+                0,
+                (
+                    "Skipped low-signal split shard: no baseline-risk overlap and "
+                    "no baseline-novel component/connection signals detected."
+                ),
+                "",
+            )
+            continue
+
         diff_cmd = replace_range_with_diff_arg(base_cmd, patch_path)
         if repo_report_path.exists():
             repo_report_path.unlink()
         code, out, err = run(diff_cmd, env=env)
+        split_stats["executed_groups"] += 1
         rate_limited = rate_limited or command_hit_rate_limit(out, err)
 
         log_path = run_dir / f"intro_pr_review.commit_{short}.part_{index:02d}.log.json"
@@ -464,7 +730,7 @@ def run_commit_split_diff_reviews(
         if report_indicates_success(report_path):
             reports.append(report_path)
 
-    return reports, rate_limited
+    return reports, rate_limited, split_stats
 
 
 def merge_pr_review_reports(report_paths: list[Path], output_path: Path) -> None:
@@ -581,6 +847,7 @@ def build_dry_run_payload(
     fix_range: str,
     baseline_only: bool,
     intro_only: bool,
+    skip_low_signal_split_shards: bool,
     baseline_cache_enabled: bool,
     refresh_baseline_cache: bool,
     baseline_cache_entry: Path | None,
@@ -600,6 +867,7 @@ def build_dry_run_payload(
         "fix_range": fix_range,
         "baseline_only": baseline_only,
         "intro_only": intro_only,
+        "skip_low_signal_split_shards": skip_low_signal_split_shards,
         "baseline_cache": {
             "enabled": baseline_cache_enabled,
             "refresh": refresh_baseline_cache,
@@ -683,6 +951,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--auto-intro-threat-model-refresh",
+        action="store_true",
+        help=(
+            "Automatically run intro threat-model refresh when broad introducing "
+            "commits are preemptively split."
+        ),
+    )
+    parser.add_argument(
         "--pr-attempts",
         type=int,
         default=None,
@@ -693,6 +969,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Optional override for `pr-review --pr-timeout` (seconds).",
+    )
+    parser.add_argument(
+        "--skip-low-signal-split-shards",
+        action="store_true",
+        help=(
+            "When split diff fallback is active, skip shard groups that do not "
+            "touch baseline-risk components and do not introduce new "
+            "component/connection signals."
+        ),
     )
     parser.add_argument(
         "--isolate-runtime-home",
@@ -757,11 +1042,23 @@ def main(argv: list[str] | None = None) -> None:
     fix_exit: int | None = None
     intro_tm_exit: int | None = None
     intro_tm_effective_success = False
+    intro_tm_auto_triggered = False
     intro_effective_success = False
     fix_effective_success = False
     baseline_rate_limited = False
     intro_rate_limited = False
     fix_rate_limited = False
+    baseline_risk_components: set[str] = set()
+    intro_commit_paths: dict[str, list[str]] = {}
+    intro_split_summary: dict[str, Any] = {
+        "enabled": bool(args.skip_low_signal_split_shards),
+        "total_groups": 0,
+        "executed_groups": 0,
+        "skipped_groups": 0,
+        "baseline_touch_groups": 0,
+        "new_surface_groups": 0,
+        "skipped_reasons": {},
+    }
 
     with tempfile.TemporaryDirectory(prefix=f"securevibes-{args.ghsa}-") as tmp:
         tmp_path = Path(tmp)
@@ -902,6 +1199,7 @@ def main(argv: list[str] | None = None) -> None:
                 fix_range=fix_range,
                 baseline_only=args.baseline_only,
                 intro_only=args.intro_only,
+                skip_low_signal_split_shards=args.skip_low_signal_split_shards,
                 baseline_cache_enabled=baseline_cache_enabled,
                 refresh_baseline_cache=args.refresh_baseline_cache,
                 baseline_cache_entry=baseline_cache_entry,
@@ -949,6 +1247,12 @@ def main(argv: list[str] | None = None) -> None:
         intro_report = run_dir / "intro_pr_review.json"
         fix_report = run_dir / "fix_pr_review.json"
 
+        if intro_commit_shas:
+            intro_commit_paths = {
+                sha: list_changed_files_for_commit(work_repo, sha)
+                for sha in intro_commit_shas
+            }
+
         run(["git", "checkout", baseline], cwd=work_repo)
         if (
             baseline_cache_enabled
@@ -979,6 +1283,10 @@ def main(argv: list[str] | None = None) -> None:
         baseline_effective_success = baseline_cache_hit or (
             report_indicates_success(baseline_report) and artifact_validation["valid"]
         )
+        if baseline_effective_success:
+            baseline_risk_components = derive_risk_components_from_baseline_artifacts(
+                work_repo / ".securevibes"
+            )
         if (
             baseline_effective_success
             and baseline_cache_enabled
@@ -1022,7 +1330,18 @@ def main(argv: list[str] | None = None) -> None:
             )
         else:
             run(["git", "checkout", intro_head], cwd=work_repo)
-            if args.intro_threat_model_refresh:
+            preemptive_split_present = any(
+                should_preemptively_split_commit(paths)
+                for paths in intro_commit_paths.values()
+            )
+            should_refresh_intro_threat_model = args.intro_threat_model_refresh or (
+                args.auto_intro_threat_model_refresh and preemptive_split_present
+            )
+            intro_tm_auto_triggered = (
+                should_refresh_intro_threat_model
+                and not args.intro_threat_model_refresh
+            )
+            if should_refresh_intro_threat_model:
                 code, out, err = run(
                     intro_threat_model_cmd,
                     env=intro_threat_model_env,
@@ -1056,9 +1375,11 @@ def main(argv: list[str] | None = None) -> None:
                 for sha in intro_commit_shas:
                     commit_range = f"{sha}^..{sha}"
                     commit_cmd = replace_range_arg(intro_cmd, commit_range)
-                    commit_paths = list_changed_files_for_commit(work_repo, sha)
+                    commit_paths = intro_commit_paths.get(sha, [])
+                    if not commit_paths:
+                        commit_paths = list_changed_files_for_commit(work_repo, sha)
                     if should_preemptively_split_commit(commit_paths):
-                        split_reports, split_rate_limited = (
+                        split_reports, split_rate_limited, split_stats = (
                             run_commit_split_diff_reviews(
                                 work_repo=work_repo,
                                 base_cmd=intro_cmd,
@@ -1067,8 +1388,32 @@ def main(argv: list[str] | None = None) -> None:
                                 run_dir=run_dir,
                                 sha=sha,
                                 review_paths=commit_paths,
+                                prioritized_components=baseline_risk_components,
+                                skip_low_signal_shards=args.skip_low_signal_split_shards,
                             )
                         )
+                        intro_split_summary["total_groups"] += split_stats.get(
+                            "total_groups", 0
+                        )
+                        intro_split_summary["executed_groups"] += split_stats.get(
+                            "executed_groups", 0
+                        )
+                        intro_split_summary["skipped_groups"] += split_stats.get(
+                            "skipped_groups", 0
+                        )
+                        intro_split_summary["baseline_touch_groups"] += split_stats.get(
+                            "baseline_touch_groups", 0
+                        )
+                        intro_split_summary["new_surface_groups"] += split_stats.get(
+                            "new_surface_groups", 0
+                        )
+                        for reason, count in split_stats.get(
+                            "skipped_reasons", {}
+                        ).items():
+                            intro_split_summary["skipped_reasons"][reason] = (
+                                intro_split_summary["skipped_reasons"].get(reason, 0)
+                                + count
+                            )
                         intro_rate_limited = intro_rate_limited or split_rate_limited
                         short = sha[:12]
                         commit_report = run_dir / f"intro_pr_review.commit_{short}.json"
@@ -1091,7 +1436,7 @@ def main(argv: list[str] | None = None) -> None:
                     if report_indicates_success(commit_report):
                         intro_attempt_reports.append(commit_report)
                     elif pr_review_hit_context_limits(out, err):
-                        split_reports, split_rate_limited = (
+                        split_reports, split_rate_limited, split_stats = (
                             run_commit_split_diff_reviews(
                                 work_repo=work_repo,
                                 base_cmd=intro_cmd,
@@ -1099,8 +1444,32 @@ def main(argv: list[str] | None = None) -> None:
                                 repo_report_path=intro_repo_report,
                                 run_dir=run_dir,
                                 sha=sha,
+                                prioritized_components=baseline_risk_components,
+                                skip_low_signal_shards=args.skip_low_signal_split_shards,
                             )
                         )
+                        intro_split_summary["total_groups"] += split_stats.get(
+                            "total_groups", 0
+                        )
+                        intro_split_summary["executed_groups"] += split_stats.get(
+                            "executed_groups", 0
+                        )
+                        intro_split_summary["skipped_groups"] += split_stats.get(
+                            "skipped_groups", 0
+                        )
+                        intro_split_summary["baseline_touch_groups"] += split_stats.get(
+                            "baseline_touch_groups", 0
+                        )
+                        intro_split_summary["new_surface_groups"] += split_stats.get(
+                            "new_surface_groups", 0
+                        )
+                        for reason, count in split_stats.get(
+                            "skipped_reasons", {}
+                        ).items():
+                            intro_split_summary["skipped_reasons"][reason] = (
+                                intro_split_summary["skipped_reasons"].get(reason, 0)
+                                + count
+                            )
                         intro_rate_limited = intro_rate_limited or split_rate_limited
                         intro_attempt_reports.extend(split_reports)
                     intro_attempt_ranges.append(commit_range)
@@ -1218,6 +1587,7 @@ def main(argv: list[str] | None = None) -> None:
             "summary": baseline_summary,
             "artifact_validation": artifact_validation,
             "used_cache": baseline_cache_hit,
+            "risk_component_count": len(baseline_risk_components),
         },
         "intro_pr_review": {
             "command_exit": intro_exit,
@@ -1228,12 +1598,14 @@ def main(argv: list[str] | None = None) -> None:
             "range": intro_range,
             "report": str((run_dir / "intro_pr_review.json").resolve()),
             "summary": intro_summary,
+            "split_shard_filtering": intro_split_summary,
         },
         "intro_threat_modeling": {
             "command_exit": intro_tm_exit,
             "effective_success": (
                 intro_tm_effective_success if intro_tm_exit is not None else None
             ),
+            "auto_triggered": intro_tm_auto_triggered,
             "log": str((run_dir / "intro_threat_modeling.log.json").resolve()),
         },
         "fix_pr_review": {
