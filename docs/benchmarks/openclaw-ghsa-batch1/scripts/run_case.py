@@ -31,6 +31,26 @@ CASES_DIR = ROOT / "cases"
 REPO_ROOT = Path(__file__).resolve().parents[4]
 VALID_PERMISSION_MODES = ("default", "acceptEdits", "bypassPermissions")
 BASELINE_ARTIFACTS = ("SECURITY.md", "THREAT_MODEL.json", "VULNERABILITIES.json")
+SPLIT_DIFF_GROUP_SIZE = 4
+LOW_SIGNAL_SPLIT_PATH_PREFIXES = ("docs/",)
+LOW_SIGNAL_SPLIT_SUFFIXES = (
+    ".md",
+    ".rst",
+    ".txt",
+    ".adoc",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".svg",
+    ".ico",
+)
+LOW_SIGNAL_SPLIT_BASENAMES = (
+    "changelog.md",
+    "pnpm-lock.yaml",
+    "package-lock.json",
+    "yarn.lock",
+)
 
 
 @dataclass(frozen=True)
@@ -278,6 +298,162 @@ def commit_window_from_entries(entries: Any) -> str | None:
     return f"{shas[0]}^..{shas[-1]}"
 
 
+def commit_shas_from_entries(entries: Any) -> list[str]:
+    """Extract ordered commit SHAs from timeline entries."""
+    if not isinstance(entries, list):
+        return []
+    shas: list[str] = []
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        sha = item.get("sha")
+        if isinstance(sha, str) and sha:
+            shas.append(sha)
+    return shas
+
+
+def replace_range_arg(cmd: list[str], new_range: str) -> list[str]:
+    """Return command with --range argument value replaced."""
+    updated = cmd[:]
+    if "--range" not in updated:
+        raise ValueError("Expected --range argument in command.")
+    idx = updated.index("--range")
+    if idx + 1 >= len(updated):
+        raise ValueError("Expected value after --range.")
+    updated[idx + 1] = new_range
+    return updated
+
+
+def pr_review_hit_context_limits(stdout: str, stderr: str) -> bool:
+    """Detect fail-fast abort due oversized PR diff context."""
+    haystack = f"{stdout}\n{stderr}".lower()
+    return "diff context exceeds safe analysis limits" in haystack
+
+
+def replace_range_with_diff_arg(cmd: list[str], diff_path: Path) -> list[str]:
+    """Return command with --range replaced by --diff <patch>."""
+    updated: list[str] = []
+    found_range = False
+    i = 0
+    while i < len(cmd):
+        arg = cmd[i]
+        if arg == "--range":
+            if i + 1 >= len(cmd):
+                raise ValueError("Expected value after --range.")
+            found_range = True
+            i += 2
+            continue
+        updated.append(arg)
+        i += 1
+    if not found_range:
+        raise ValueError("Expected --range argument in command.")
+    updated.extend(["--diff", str(diff_path)])
+    return updated
+
+
+def list_changed_files_for_commit(repo: Path, sha: str) -> list[str]:
+    """List changed files for one commit (sha^..sha)."""
+    diff_range = f"{sha}^..{sha}"
+    out = run_checked(["git", "diff", "--name-only", diff_range], cwd=repo)
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def is_low_signal_split_path(path: str) -> bool:
+    """Heuristic for files unlikely to add security signal in split PR-review."""
+    lowered = path.lower()
+    if lowered.startswith(LOW_SIGNAL_SPLIT_PATH_PREFIXES):
+        return True
+    if lowered.endswith(LOW_SIGNAL_SPLIT_SUFFIXES):
+        return True
+    if Path(lowered).name in LOW_SIGNAL_SPLIT_BASENAMES:
+        return True
+    return False
+
+
+def filter_split_review_files(paths: list[str]) -> list[str]:
+    """Prefer code/config paths for split-diff fallback; keep all as final fallback."""
+    filtered = [path for path in paths if not is_low_signal_split_path(path)]
+    return filtered if filtered else paths
+
+
+def chunk_paths(paths: list[str], chunk_size: int) -> list[list[str]]:
+    """Chunk path list into fixed-size groups."""
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be > 0")
+    return [paths[i : i + chunk_size] for i in range(0, len(paths), chunk_size)]
+
+
+def run_commit_split_diff_reviews(
+    *,
+    work_repo: Path,
+    base_cmd: list[str],
+    env: dict[str, str],
+    repo_report_path: Path,
+    run_dir: Path,
+    sha: str,
+    group_size: int = SPLIT_DIFF_GROUP_SIZE,
+) -> tuple[list[Path], bool]:
+    """Run PR-review using per-file-group diffs for one oversized commit."""
+    commit_range = f"{sha}^..{sha}"
+    changed_paths = list_changed_files_for_commit(work_repo, sha)
+    review_paths = filter_split_review_files(changed_paths)
+    short = sha[:12]
+    reports: list[Path] = []
+    rate_limited = False
+
+    for index, group in enumerate(chunk_paths(review_paths, group_size), start=1):
+        patch_path = run_dir / f"intro_pr_review.commit_{short}.part_{index:02d}.patch"
+        patch = run_checked(["git", "diff", commit_range, "--", *group], cwd=work_repo)
+        if not patch.strip():
+            continue
+        patch_path.write_text(patch, encoding="utf-8")
+
+        diff_cmd = replace_range_with_diff_arg(base_cmd, patch_path)
+        if repo_report_path.exists():
+            repo_report_path.unlink()
+        code, out, err = run(diff_cmd, env=env)
+        rate_limited = rate_limited or command_hit_rate_limit(out, err)
+
+        log_path = run_dir / f"intro_pr_review.commit_{short}.part_{index:02d}.log.json"
+        report_path = run_dir / f"intro_pr_review.commit_{short}.part_{index:02d}.json"
+        persist_command_log(log_path, diff_cmd, code, out, err)
+        copy_report_if_present(repo_report_path, report_path)
+        if report_indicates_success(report_path):
+            reports.append(report_path)
+
+    return reports, rate_limited
+
+
+def merge_pr_review_reports(report_paths: list[Path], output_path: Path) -> None:
+    """Merge multiple PR-review reports into one report with deduped issues."""
+    combined_issues: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for report_path in report_paths:
+        payload = load_json(report_path)
+        issues = payload.get("issues") if isinstance(payload, dict) else None
+        if not isinstance(issues, list):
+            continue
+        for issue in issues:
+            if not isinstance(issue, dict):
+                continue
+            key = json.dumps(issue, sort_keys=True, default=str)
+            if key in seen:
+                continue
+            seen.add(key)
+            combined_issues.append(issue)
+
+    merged_payload = {
+        "issues": combined_issues,
+        "meta": {
+            "merge_strategy": "per-introducing-commit",
+            "source_reports": [str(path.resolve()) for path in report_paths],
+        },
+    }
+    output_path.write_text(
+        json.dumps(merged_payload, indent=2) + "\n", encoding="utf-8"
+    )
+
+
 def baseline_cache_is_usable(cache_entry: Path) -> bool:
     """Return True when a baseline cache entry contains required files."""
     if not cache_entry.exists():
@@ -366,6 +542,7 @@ def build_dry_run_payload(
     refresh_baseline_cache: bool,
     baseline_cache_entry: Path | None,
     baseline_cmd: list[str],
+    intro_threat_model_cmd: list[str],
     intro_cmd: list[str],
     fix_cmd: list[str],
 ) -> dict[str, Any]:
@@ -387,6 +564,7 @@ def build_dry_run_payload(
         },
         "commands": {
             "baseline_scan": baseline_cmd,
+            "intro_threat_modeling": intro_threat_model_cmd,
             "intro_pr_review": intro_cmd,
             "fix_pr_review": fix_cmd,
         },
@@ -454,6 +632,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run baseline + intro PR review only, skip fix PR review",
     )
     parser.add_argument(
+        "--intro-threat-model-refresh",
+        action="store_true",
+        help=(
+            "Before intro PR review, refresh THREAT_MODEL.json at intro head via "
+            "`scan --subagent threat-modeling`."
+        ),
+    )
+    parser.add_argument(
         "--isolate-runtime-home",
         action="store_true",
         help=(
@@ -495,6 +681,7 @@ def main(argv: list[str] | None = None) -> None:
     intro_commit_window = commit_window_from_entries(
         timeline.get("introducing_commits")
     )
+    intro_commit_shas = commit_shas_from_entries(timeline.get("introducing_commits"))
     fix_commit_window = commit_window_from_entries(timeline.get("fix_commits"))
     if intro_commit_window:
         intro_range = intro_commit_window
@@ -510,6 +697,8 @@ def main(argv: list[str] | None = None) -> None:
 
     intro_exit: int | None = None
     fix_exit: int | None = None
+    intro_tm_exit: int | None = None
+    intro_tm_effective_success = False
     intro_effective_success = False
     fix_effective_success = False
     baseline_rate_limited = False
@@ -578,6 +767,21 @@ def main(argv: list[str] | None = None) -> None:
             "--clean-pr-artifacts",
             runtime_home=runtime_home,
         )
+        intro_threat_model_cmd, intro_threat_model_env = securevibes_command(
+            sv_ctx,
+            args.python_executable,
+            args.permission_mode,
+            "scan",
+            str(work_repo),
+            "--subagent",
+            "threat-modeling",
+            "--model",
+            args.model,
+            "--severity",
+            args.severity,
+            "--force",
+            runtime_home=runtime_home,
+        )
         fix_cmd, fix_env = securevibes_command(
             sv_ctx,
             args.python_executable,
@@ -615,6 +819,7 @@ def main(argv: list[str] | None = None) -> None:
                 refresh_baseline_cache=args.refresh_baseline_cache,
                 baseline_cache_entry=baseline_cache_entry,
                 baseline_cmd=baseline_cmd,
+                intro_threat_model_cmd=intro_threat_model_cmd,
                 intro_cmd=intro_cmd,
                 fix_cmd=fix_cmd,
             )
@@ -730,6 +935,22 @@ def main(argv: list[str] | None = None) -> None:
             )
         else:
             run(["git", "checkout", intro_head], cwd=work_repo)
+            if args.intro_threat_model_refresh:
+                code, out, err = run(
+                    intro_threat_model_cmd,
+                    env=intro_threat_model_env,
+                )
+                persist_command_log(
+                    run_dir / "intro_threat_modeling.log.json",
+                    intro_threat_model_cmd,
+                    code,
+                    out,
+                    err,
+                )
+                intro_tm_exit = code
+                intro_tm_effective_success = code == 0
+            if intro_repo_report.exists():
+                intro_repo_report.unlink()
             code, out, err = run(intro_cmd, env=intro_env)
             intro_rate_limited = command_hit_rate_limit(out, err)
             persist_command_log(
@@ -738,6 +959,51 @@ def main(argv: list[str] | None = None) -> None:
             copy_report_if_present(intro_repo_report, intro_report)
             intro_exit = code
             intro_effective_success = report_indicates_success(intro_report)
+            if (
+                not intro_effective_success
+                and pr_review_hit_context_limits(out, err)
+                and intro_commit_shas
+            ):
+                intro_attempt_reports: list[Path] = []
+                intro_attempt_ranges: list[str] = []
+                for sha in intro_commit_shas:
+                    commit_range = f"{sha}^..{sha}"
+                    commit_cmd = replace_range_arg(intro_cmd, commit_range)
+                    if intro_repo_report.exists():
+                        intro_repo_report.unlink()
+                    code, out, err = run(commit_cmd, env=intro_env)
+                    intro_rate_limited = intro_rate_limited or command_hit_rate_limit(
+                        out, err
+                    )
+                    short = sha[:12]
+                    commit_log = run_dir / f"intro_pr_review.commit_{short}.log.json"
+                    commit_report = run_dir / f"intro_pr_review.commit_{short}.json"
+                    persist_command_log(commit_log, commit_cmd, code, out, err)
+                    copy_report_if_present(intro_repo_report, commit_report)
+                    if report_indicates_success(commit_report):
+                        intro_attempt_reports.append(commit_report)
+                    elif pr_review_hit_context_limits(out, err):
+                        split_reports, split_rate_limited = (
+                            run_commit_split_diff_reviews(
+                                work_repo=work_repo,
+                                base_cmd=intro_cmd,
+                                env=intro_env,
+                                repo_report_path=intro_repo_report,
+                                run_dir=run_dir,
+                                sha=sha,
+                            )
+                        )
+                        intro_rate_limited = intro_rate_limited or split_rate_limited
+                        intro_attempt_reports.extend(split_reports)
+                    intro_attempt_ranges.append(commit_range)
+
+                if intro_attempt_reports:
+                    merge_pr_review_reports(intro_attempt_reports, intro_report)
+                    intro_effective_success = True
+                    intro_exit = 0
+                    intro_range = ",".join(intro_attempt_ranges)
+                else:
+                    intro_exit = 1
 
             if args.intro_only:
                 persist_command_log(
@@ -749,6 +1015,8 @@ def main(argv: list[str] | None = None) -> None:
                 )
             else:
                 run(["git", "checkout", fix_head], cwd=work_repo)
+                if fix_repo_report.exists():
+                    fix_repo_report.unlink()
                 code, out, err = run(fix_cmd, env=fix_env)
                 fix_rate_limited = command_hit_rate_limit(out, err)
                 persist_command_log(
@@ -843,6 +1111,13 @@ def main(argv: list[str] | None = None) -> None:
             "range": intro_range,
             "report": str((run_dir / "intro_pr_review.json").resolve()),
             "summary": intro_summary,
+        },
+        "intro_threat_modeling": {
+            "command_exit": intro_tm_exit,
+            "effective_success": (
+                intro_tm_effective_success if intro_tm_exit is not None else None
+            ),
+            "log": str((run_dir / "intro_threat_modeling.log.json").resolve()),
         },
         "fix_pr_review": {
             "command_exit": fix_exit,

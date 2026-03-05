@@ -41,6 +41,15 @@ def test_run_case_intro_only_flag_is_supported(run_case_module: ModuleType) -> N
     assert args.baseline_only is False
 
 
+def test_run_case_intro_threat_model_refresh_flag_is_supported(
+    run_case_module: ModuleType,
+) -> None:
+    args = run_case_module.parse_args(
+        ["--ghsa", "GHSA-test", "--intro-only", "--intro-threat-model-refresh"]
+    )
+    assert args.intro_threat_model_refresh is True
+
+
 def test_run_case_rejects_intro_and_baseline_together(
     run_case_module: ModuleType,
 ) -> None:
@@ -68,11 +77,18 @@ def test_run_case_dry_run_payload_includes_intro_only(
         refresh_baseline_cache=False,
         baseline_cache_entry=Path("/tmp/cache-entry"),
         baseline_cmd=["securevibes", "scan"],
+        intro_threat_model_cmd=["securevibes", "scan", "--subagent", "threat-modeling"],
         intro_cmd=["securevibes", "pr-review", "--range", "base..intro"],
         fix_cmd=["securevibes", "pr-review", "--range", "intro..fix"],
     )
     assert payload["intro_only"] is True
     assert payload["baseline_only"] is False
+    assert payload["commands"]["intro_threat_modeling"] == [
+        "securevibes",
+        "scan",
+        "--subagent",
+        "threat-modeling",
+    ]
     assert payload["commands"]["fix_pr_review"] == [
         "securevibes",
         "pr-review",
@@ -140,6 +156,97 @@ def test_run_case_status_resolution(
     run_case_module: ModuleType, kwargs: dict[str, bool], expected: str
 ) -> None:
     assert run_case_module.determine_run_status(**kwargs) == expected
+
+
+def test_run_case_commit_shas_from_entries(run_case_module: ModuleType) -> None:
+    entries = [
+        {"sha": "abc123", "subject": "one"},
+        {"sha": "def456", "subject": "two"},
+        {"not_sha": "ignored"},
+    ]
+    assert run_case_module.commit_shas_from_entries(entries) == ["abc123", "def456"]
+
+
+def test_run_case_replace_range_arg(run_case_module: ModuleType) -> None:
+    cmd = ["python3", "-m", "securevibes.cli.main", "pr-review", ".", "--range", "old"]
+    updated = run_case_module.replace_range_arg(cmd, "new-range")
+    assert "--range" in updated
+    assert updated[updated.index("--range") + 1] == "new-range"
+
+
+def test_run_case_replace_range_with_diff_arg(run_case_module: ModuleType) -> None:
+    cmd = ["python3", "-m", "securevibes.cli.main", "pr-review", ".", "--range", "old"]
+    updated = run_case_module.replace_range_with_diff_arg(
+        cmd,
+        Path("/tmp/commit.patch"),
+    )
+    assert "--range" not in updated
+    assert "--diff" in updated
+    assert updated[updated.index("--diff") + 1] == "/tmp/commit.patch"
+
+
+def test_run_case_filter_split_review_files(run_case_module: ModuleType) -> None:
+    paths = [
+        "docs/guide.md",
+        "CHANGELOG.md",
+        "src/plugins/install.ts",
+        "src/config/schema.ts",
+    ]
+    filtered = run_case_module.filter_split_review_files(paths)
+    assert filtered == ["src/plugins/install.ts", "src/config/schema.ts"]
+
+
+def test_run_case_chunk_paths(run_case_module: ModuleType) -> None:
+    paths = ["a", "b", "c", "d", "e"]
+    chunks = run_case_module.chunk_paths(paths, 2)
+    assert chunks == [["a", "b"], ["c", "d"], ["e"]]
+
+
+def test_run_case_context_limit_detection(run_case_module: ModuleType) -> None:
+    stdout = "Error: PR review aborted: diff context exceeds safe analysis limits."
+    assert run_case_module.pr_review_hit_context_limits(stdout, "") is True
+    assert run_case_module.pr_review_hit_context_limits("normal output", "") is False
+
+
+def test_run_case_merge_pr_review_reports(
+    run_case_module: ModuleType, tmp_path: Path
+) -> None:
+    report_a = tmp_path / "a.json"
+    report_b = tmp_path / "b.json"
+    merged = tmp_path / "merged.json"
+
+    shared_issue = {
+        "threat_id": "THREAT-001",
+        "title": "Path traversal",
+        "severity": "critical",
+    }
+    issue_b = {
+        "threat_id": "THREAT-002",
+        "title": "Command injection",
+        "severity": "high",
+    }
+
+    report_a.write_text(
+        '{"issues": ['
+        '{"threat_id":"THREAT-001","title":"Path traversal","severity":"critical"}'
+        "]}",
+        encoding="utf-8",
+    )
+    report_b.write_text(
+        '{"issues": ['
+        '{"threat_id":"THREAT-001","title":"Path traversal","severity":"critical"},'
+        '{"threat_id":"THREAT-002","title":"Command injection","severity":"high"}'
+        "]}",
+        encoding="utf-8",
+    )
+
+    run_case_module.merge_pr_review_reports([report_a, report_b], merged)
+    payload = run_case_module.load_json(merged)
+    issues = payload.get("issues")
+    assert isinstance(issues, list)
+    assert len(issues) == 2
+    assert shared_issue in issues
+    assert issue_b in issues
 
 
 def test_run_sweep_intro_only_flag_is_supported(run_sweep_module: ModuleType) -> None:
