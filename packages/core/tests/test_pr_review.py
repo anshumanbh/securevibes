@@ -45,8 +45,12 @@ from securevibes.scanner.pr_review_merge import (
 from securevibes.scanner.scanner import (
     DIFF_FILES_DIR,
     Scanner,
+    _build_component_focused_passes,
+    _build_diff_context_subset,
     _build_focused_diff_context,
+    _component_matches_baseline,
     _derive_pr_default_grep_scope,
+    _derive_baseline_component_keys,
     _enforce_focused_diff_coverage,
     _FOCUSED_DIFF_MAX_HUNK_LINES,
     _generate_pr_hypotheses,
@@ -55,6 +59,7 @@ from securevibes.scanner.scanner import (
     _normalize_hypothesis_output,
     _PROMPT_HUNK_MAX_LINES_PER_HUNK,
     _refine_pr_findings_with_llm,
+    _split_component_key,
     score_diff_file_for_security_review,
     _summarize_diff_hunk_snippets,
     _summarize_diff_line_anchors,
@@ -194,9 +199,7 @@ def test_suggest_security_adjacent_files_returns_ranked_neighbors(tmp_path: Path
     """Security-adjacent hints should include nearby auth/policy files."""
     repo = tmp_path / "repo"
     (repo / "src/gateway/server-methods").mkdir(parents=True)
-    (repo / "src/gateway/server-methods/config.ts").write_text(
-        "export const x = 1;\n", "utf-8"
-    )
+    (repo / "src/gateway/server-methods/config.ts").write_text("export const x = 1;\n", "utf-8")
     (repo / "src/gateway/auth.ts").write_text("export const y = 1;\n", "utf-8")
     (repo / "src/gateway/router.ts").write_text("export const z = 1;\n", "utf-8")
     (repo / "src/gateway/notes.txt").write_text("not code\n", "utf-8")
@@ -210,9 +213,7 @@ def test_suggest_security_adjacent_files_returns_ranked_neighbors(tmp_path: Path
     assert "src/gateway/server-methods/config.ts" not in hints
 
 
-def test_suggest_security_adjacent_files_skips_unreadable_dirs(
-    tmp_path: Path, monkeypatch
-):
+def test_suggest_security_adjacent_files_skips_unreadable_dirs(tmp_path: Path, monkeypatch):
     """Unreadable sibling directories should be skipped instead of crashing."""
     repo = tmp_path / "repo"
     blocked_dir = repo / "src/gateway/server-methods"
@@ -483,12 +484,8 @@ def test_enforce_focused_diff_coverage_allows_boundary_diff():
 
 def test_enforce_focused_diff_coverage_ignores_non_security_files():
     """Non-security files (docs, changelogs) dropped by scoring should not trigger fail-closed."""
-    one_line = [
-        DiffLine(type="add", content="x = 1", old_line_num=None, new_line_num=1)
-    ]
-    one_hunk = [
-        DiffHunk(old_start=1, old_count=1, new_start=1, new_count=1, lines=one_line)
-    ]
+    one_line = [DiffLine(type="add", content="x = 1", old_line_num=None, new_line_num=1)]
+    one_hunk = [DiffHunk(old_start=1, old_count=1, new_start=1, new_count=1, lines=one_line)]
     diff_files = [
         # security-relevant source files
         DiffFile(
@@ -540,6 +537,206 @@ def test_enforce_focused_diff_coverage_ignores_non_security_files():
 
     # Should NOT raise — only 2 security-relevant files remain, matching the focused count
     _enforce_focused_diff_coverage(context, focused)
+
+
+def test_split_component_key_uses_stable_path_buckets():
+    """Component keys should be stable across nested and shallow paths."""
+    assert _split_component_key("src/plugins/install.ts") == "src/plugins"
+    assert _split_component_key("src/main.ts") == "src"
+    assert _split_component_key("README.md") == "readme.md"
+
+
+def test_derive_baseline_component_keys_reads_threat_and_vuln_artifacts(tmp_path: Path):
+    """Baseline component extraction should include path-like entries from artifacts."""
+    securevibes_dir = tmp_path / ".securevibes"
+    securevibes_dir.mkdir()
+
+    threat_model = [
+        {
+            "id": "THREAT-1",
+            "affected_components": ["src/plugins", "extensions/voice-call"],
+            "affected_files": [{"file_path": "src/hooks/archive.ts"}],
+        }
+    ]
+    vulnerabilities = [
+        {
+            "threat_id": "VULN-1",
+            "file_path": "src/plugins/install.ts",
+            "source": "src/plugins/install.ts",
+            "sink": "src/plugins/install.ts",
+        }
+    ]
+    (securevibes_dir / "THREAT_MODEL.json").write_text(json.dumps(threat_model), encoding="utf-8")
+    (securevibes_dir / "VULNERABILITIES.json").write_text(
+        json.dumps(vulnerabilities), encoding="utf-8"
+    )
+
+    components = _derive_baseline_component_keys(securevibes_dir)
+
+    assert "src/plugins" in components
+    assert "src/hooks" in components
+    assert "extensions/voice-call" in components
+
+
+def test_component_matches_baseline_allows_prefix_overlap():
+    """Baseline component matching should support parent/child overlap."""
+    baseline = {"src/plugins"}
+
+    assert _component_matches_baseline("src/plugins", baseline)
+    assert _component_matches_baseline("src/plugins/installers", baseline)
+    assert not _component_matches_baseline("src/hooks", baseline)
+
+
+def test_build_diff_context_subset_keeps_only_selected_paths():
+    """Subset builder should preserve only selected files and recompute counters."""
+    plugin_file = DiffFile(
+        old_path="src/plugins/install.ts",
+        new_path="src/plugins/install.ts",
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+        hunks=[
+            DiffHunk(
+                old_start=1,
+                old_count=1,
+                new_start=1,
+                new_count=2,
+                lines=[
+                    DiffLine(type="remove", content="old", old_line_num=1, new_line_num=None),
+                    DiffLine(type="add", content="new", old_line_num=None, new_line_num=1),
+                ],
+            )
+        ],
+    )
+    hook_file = DiffFile(
+        old_path="src/hooks/archive.ts",
+        new_path="src/hooks/archive.ts",
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+        hunks=[
+            DiffHunk(
+                old_start=10,
+                old_count=0,
+                new_start=10,
+                new_count=1,
+                lines=[
+                    DiffLine(
+                        type="add",
+                        content="archive.write",
+                        old_line_num=None,
+                        new_line_num=10,
+                    )
+                ],
+            )
+        ],
+    )
+    context = DiffContext(
+        files=[plugin_file, hook_file],
+        added_lines=2,
+        removed_lines=1,
+        changed_files=["src/plugins/install.ts", "src/hooks/archive.ts"],
+    )
+
+    subset = _build_diff_context_subset(context, ["src/plugins/install.ts"])
+
+    assert subset.changed_files == ["src/plugins/install.ts"]
+    assert subset.added_lines == 1
+    assert subset.removed_lines == 1
+
+
+def test_build_component_focused_passes_prioritizes_baseline_components():
+    """Focused pass planner should prioritize baseline-risk components first."""
+    plugin_file = DiffFile(
+        old_path="src/plugins/install.ts",
+        new_path="src/plugins/install.ts",
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+        hunks=[
+            DiffHunk(
+                old_start=1,
+                old_count=1,
+                new_start=1,
+                new_count=1,
+                lines=[
+                    DiffLine(
+                        type="add",
+                        content="install(userInput)",
+                        old_line_num=None,
+                        new_line_num=1,
+                    )
+                ],
+            )
+        ],
+    )
+    hook_file = DiffFile(
+        old_path="src/hooks/archive.ts",
+        new_path="src/hooks/archive.ts",
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+        hunks=[
+            DiffHunk(
+                old_start=5,
+                old_count=0,
+                new_start=5,
+                new_count=1,
+                lines=[
+                    DiffLine(
+                        type="add",
+                        content="zip.extract",
+                        old_line_num=None,
+                        new_line_num=5,
+                    )
+                ],
+            )
+        ],
+    )
+    docs_file = DiffFile(
+        old_path="docs/readme.md",
+        new_path="docs/readme.md",
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+        hunks=[
+            DiffHunk(
+                old_start=1,
+                old_count=1,
+                new_start=1,
+                new_count=1,
+                lines=[
+                    DiffLine(
+                        type="add",
+                        content="docs update",
+                        old_line_num=None,
+                        new_line_num=1,
+                    )
+                ],
+            )
+        ],
+    )
+    context = DiffContext(
+        files=[plugin_file, hook_file, docs_file],
+        added_lines=3,
+        removed_lines=0,
+        changed_files=[
+            "src/plugins/install.ts",
+            "src/hooks/archive.ts",
+            "docs/readme.md",
+        ],
+    )
+
+    passes = _build_component_focused_passes(
+        context,
+        baseline_component_keys={"src/plugins"},
+        max_component_passes=3,
+    )
+
+    assert passes
+    assert passes[0][0].startswith("focused_baseline-risk:")
+    assert passes[0][1].changed_files == ["src/plugins/install.ts"]
+    assert any(label.startswith("focused_new-surface:") for label, _ in passes)
 
 
 def test_summarize_diff_hunk_snippets_includes_diff_lines():
@@ -1268,9 +1465,7 @@ def test_chain_family_identity_stable_across_wording_and_cwe_variants():
     }
 
     assert build_chain_family_identity(finding_a)
-    assert build_chain_family_identity(finding_a) == build_chain_family_identity(
-        finding_b
-    )
+    assert build_chain_family_identity(finding_a) == build_chain_family_identity(finding_b)
 
 
 def test_chain_family_support_counts_semantically_equivalent_pass_outputs():
@@ -1514,9 +1709,7 @@ def test_dedupe_with_baseline_filter_marks_real_baseline_as_known():
 
 
 @pytest.mark.asyncio
-async def test_pr_review_handles_wrapper_format(
-    tmp_path: Path, mock_scanner_claude_client
-):
+async def test_pr_review_handles_wrapper_format(tmp_path: Path, mock_scanner_claude_client):
     """Wrapper + schema variant should be normalized into proper issue locations/CWE."""
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -1536,9 +1729,7 @@ async def test_pr_review_handles_wrapper_format(
         "recommendation": "Use parameterized queries",
     }
 
-    diff_context = DiffContext(
-        files=[], added_lines=1, removed_lines=0, changed_files=["app.py"]
-    )
+    diff_context = DiffContext(files=[], added_lines=1, removed_lines=0, changed_files=["app.py"])
 
     scanner = Scanner(model="sonnet", debug=False)
     scanner.console = Console(file=StringIO())
@@ -1567,9 +1758,7 @@ async def test_pr_review_handles_wrapper_format(
         severity_threshold="low",
     )
 
-    assert (
-        len(result.issues) > 0
-    ), "Wrapper format should produce non-empty issues after unwrap"
+    assert len(result.issues) > 0, "Wrapper format should produce non-empty issues after unwrap"
     assert result.issues[0].title == "SQL Injection"
     assert result.issues[0].file_path == "src/app.py"
     assert result.issues[0].line_number == 42
@@ -1577,9 +1766,7 @@ async def test_pr_review_handles_wrapper_format(
 
 
 @pytest.mark.asyncio
-async def test_pr_review_missing_artifact_fails_closed(
-    tmp_path: Path, mock_scanner_claude_client
-):
+async def test_pr_review_missing_artifact_fails_closed(tmp_path: Path, mock_scanner_claude_client):
     """Missing PR_VULNERABILITIES.json should fail the PR review path."""
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -1589,9 +1776,7 @@ async def test_pr_review_missing_artifact_fails_closed(
     (securevibes_dir / "SECURITY.md").write_text("# Security\n", encoding="utf-8")
     (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
 
-    diff_context = DiffContext(
-        files=[], added_lines=1, removed_lines=0, changed_files=["app.py"]
-    )
+    diff_context = DiffContext(files=[], added_lines=1, removed_lines=0, changed_files=["app.py"])
 
     scanner = Scanner(model="sonnet", debug=False)
     scanner.console = Console(file=StringIO())
@@ -1605,9 +1790,7 @@ async def test_pr_review_missing_artifact_fails_closed(
 
     mock_instance.receive_messages = async_gen
 
-    with pytest.raises(
-        RuntimeError, match="did not produce a readable PR_VULNERABILITIES"
-    ):
+    with pytest.raises(RuntimeError, match="did not produce a readable PR_VULNERABILITIES"):
         await scanner.pr_review(
             str(repo),
             diff_context,
@@ -1626,9 +1809,7 @@ async def test_pr_review_retries_when_first_attempt_returns_empty(tmp_path: Path
 
     (securevibes_dir / "SECURITY.md").write_text("# Security\n", encoding="utf-8")
     (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
-    diff_context = DiffContext(
-        files=[], added_lines=1, removed_lines=0, changed_files=["app.py"]
-    )
+    diff_context = DiffContext(files=[], added_lines=1, removed_lines=0, changed_files=["app.py"])
 
     scanner = Scanner(model="sonnet", debug=False)
     scanner.console = Console(file=StringIO())
@@ -1646,9 +1827,7 @@ async def test_pr_review_retries_when_first_attempt_returns_empty(tmp_path: Path
                 return
             attempt_counter["count"] += 1
             if attempt_counter["count"] == 1:
-                (securevibes_dir / "PR_VULNERABILITIES.json").write_text(
-                    "[]", encoding="utf-8"
-                )
+                (securevibes_dir / "PR_VULNERABILITIES.json").write_text("[]", encoding="utf-8")
             else:
                 (securevibes_dir / "PR_VULNERABILITIES.json").write_text(
                     json.dumps(
@@ -1705,9 +1884,7 @@ async def test_pr_review_empty_follow_up_attempt_is_logged_without_warning(
 
     (securevibes_dir / "SECURITY.md").write_text("# Security\n", encoding="utf-8")
     (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
-    diff_context = DiffContext(
-        files=[], added_lines=1, removed_lines=0, changed_files=["app.py"]
-    )
+    diff_context = DiffContext(files=[], added_lines=1, removed_lines=0, changed_files=["app.py"])
 
     monkeypatch.setenv("SECUREVIBES_PR_REVIEW_ATTEMPTS", "3")
 
@@ -1750,9 +1927,7 @@ async def test_pr_review_empty_follow_up_attempt_is_logged_without_warning(
                     encoding="utf-8",
                 )
             else:
-                (securevibes_dir / "PR_VULNERABILITIES.json").write_text(
-                    "[]", encoding="utf-8"
-                )
+                (securevibes_dir / "PR_VULNERABILITIES.json").write_text("[]", encoding="utf-8")
 
         mock_instance.query.side_effect = query_side_effect
 
@@ -1801,9 +1976,7 @@ async def test_pr_review_timeout_retries_and_succeeds(tmp_path: Path, monkeypatc
 
     (securevibes_dir / "SECURITY.md").write_text("# Security\n", encoding="utf-8")
     (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
-    diff_context = DiffContext(
-        files=[], added_lines=1, removed_lines=0, changed_files=["app.py"]
-    )
+    diff_context = DiffContext(files=[], added_lines=1, removed_lines=0, changed_files=["app.py"])
 
     monkeypatch.setenv("SECUREVIBES_PR_REVIEW_TIMEOUT_SECONDS", "1")
     monkeypatch.setenv("SECUREVIBES_PR_REVIEW_ATTEMPTS", "2")
@@ -1872,9 +2045,7 @@ async def test_pr_review_timeout_retries_and_succeeds(tmp_path: Path, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_pr_review_query_timeout_uses_configured_timeout(
-    tmp_path: Path, monkeypatch
-):
+async def test_pr_review_query_timeout_uses_configured_timeout(tmp_path: Path, monkeypatch):
     """Query timeout should respect configured timeout and fail closed when artifact is missing."""
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -1883,9 +2054,7 @@ async def test_pr_review_query_timeout_uses_configured_timeout(
 
     (securevibes_dir / "SECURITY.md").write_text("# Security\n", encoding="utf-8")
     (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
-    diff_context = DiffContext(
-        files=[], added_lines=1, removed_lines=0, changed_files=["app.py"]
-    )
+    diff_context = DiffContext(files=[], added_lines=1, removed_lines=0, changed_files=["app.py"])
 
     monkeypatch.setenv("SECUREVIBES_PR_REVIEW_TIMEOUT_SECONDS", "1")
     monkeypatch.setenv("SECUREVIBES_PR_REVIEW_ATTEMPTS", "1")
@@ -1929,9 +2098,7 @@ async def test_pr_review_uses_direct_tools_without_task(tmp_path: Path):
     (securevibes_dir / "SECURITY.md").write_text("# Security\n", encoding="utf-8")
     (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
 
-    diff_context = DiffContext(
-        files=[], added_lines=1, removed_lines=0, changed_files=["app.py"]
-    )
+    diff_context = DiffContext(files=[], added_lines=1, removed_lines=0, changed_files=["app.py"])
 
     scanner = Scanner(model="sonnet", debug=False)
     scanner.console = Console(file=StringIO())
@@ -2051,9 +2218,7 @@ async def test_pr_review_has_subagent_hook(tmp_path: Path):
     (securevibes_dir / "SECURITY.md").write_text("# Security\n", encoding="utf-8")
     (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
 
-    diff_context = DiffContext(
-        files=[], added_lines=1, removed_lines=0, changed_files=["app.py"]
-    )
+    diff_context = DiffContext(files=[], added_lines=1, removed_lines=0, changed_files=["app.py"])
 
     scanner = Scanner(model="sonnet", debug=False)
     scanner.console = Console(file=StringIO())
@@ -2080,9 +2245,7 @@ async def test_pr_review_has_subagent_hook(tmp_path: Path):
 
     options = mock_client.call_args[1]["options"]
     assert "SubagentStop" in options.hooks, "SubagentStop hook must be configured"
-    assert (
-        len(options.hooks["SubagentStop"]) > 0
-    ), "SubagentStop must have at least one hook"
+    assert len(options.hooks["SubagentStop"]) > 0, "SubagentStop must have at least one hook"
 
 
 def test_pr_code_review_prompt_requires_chain_analysis_text():
@@ -2272,8 +2435,7 @@ def test_score_diff_file_new_file_bonus():
     regular = _make_diff_file("src/handler.py")
     new = _make_diff_file("src/handler.py", is_new=True)
     assert (
-        score_diff_file_for_security_review(new)
-        == score_diff_file_for_security_review(regular) + 8
+        score_diff_file_for_security_review(new) == score_diff_file_for_security_review(regular) + 8
     )
 
 
@@ -2425,9 +2587,7 @@ def test_summarize_diff_line_anchors_respects_max_lines_per_file():
     diff_file = DiffFile(
         old_path="src/many.py",
         new_path="src/many.py",
-        hunks=[
-            DiffHunk(old_start=0, old_count=0, new_start=1, new_count=10, lines=lines)
-        ],
+        hunks=[DiffHunk(old_start=0, old_count=0, new_start=1, new_count=10, lines=lines)],
         is_new=False,
         is_deleted=False,
         is_renamed=False,
@@ -2447,17 +2607,13 @@ def test_summarize_diff_line_anchors_respects_max_lines_per_file():
 def test_summarize_diff_line_anchors_respects_max_chars():
     """Output exceeding max_chars should be truncated."""
     lines = [
-        DiffLine(
-            type="add", content=f"content_{i}" * 10, old_line_num=None, new_line_num=i
-        )
+        DiffLine(type="add", content=f"content_{i}" * 10, old_line_num=None, new_line_num=i)
         for i in range(1, 20)
     ]
     diff_file = DiffFile(
         old_path="src/large.py",
         new_path="src/large.py",
-        hunks=[
-            DiffHunk(old_start=0, old_count=0, new_start=1, new_count=19, lines=lines)
-        ],
+        hunks=[DiffHunk(old_start=0, old_count=0, new_start=1, new_count=19, lines=lines)],
         is_new=False,
         is_deleted=False,
         is_renamed=False,
@@ -2537,11 +2693,7 @@ def test_summarize_diff_hunk_snippets_metadata_flags():
                 old_count=1,
                 new_start=1,
                 new_count=1,
-                lines=[
-                    DiffLine(
-                        type="context", content="pass", old_line_num=1, new_line_num=1
-                    )
-                ],
+                lines=[DiffLine(type="context", content="pass", old_line_num=1, new_line_num=1)],
             )
         ],
         is_new=False,
@@ -2642,9 +2794,7 @@ def test_summarize_diff_hunk_snippets_new_file_uses_higher_limit():
     diff_file = DiffFile(
         old_path=None,
         new_path="src/cli-credentials.ts",
-        hunks=[
-            DiffHunk(old_start=0, old_count=0, new_start=1, new_count=150, lines=lines)
-        ],
+        hunks=[DiffHunk(old_start=0, old_count=0, new_start=1, new_count=150, lines=lines)],
         is_new=True,
         is_deleted=False,
         is_renamed=False,
@@ -2675,9 +2825,7 @@ def test_summarize_diff_hunk_snippets_modified_file_uses_standard_limit():
     diff_file = DiffFile(
         old_path="src/existing.ts",
         new_path="src/existing.ts",
-        hunks=[
-            DiffHunk(old_start=0, old_count=0, new_start=1, new_count=150, lines=lines)
-        ],
+        hunks=[DiffHunk(old_start=0, old_count=0, new_start=1, new_count=150, lines=lines)],
         is_new=False,
         is_deleted=False,
         is_renamed=False,
@@ -2711,9 +2859,7 @@ def test_summarize_diff_line_anchors_new_file_uses_higher_limit():
     diff_file = DiffFile(
         old_path=None,
         new_path="src/cli-credentials.ts",
-        hunks=[
-            DiffHunk(old_start=0, old_count=0, new_start=1, new_count=100, lines=lines)
-        ],
+        hunks=[DiffHunk(old_start=0, old_count=0, new_start=1, new_count=100, lines=lines)],
         is_new=True,
         is_deleted=False,
         is_renamed=False,
@@ -2749,9 +2895,7 @@ def test_summarize_diff_line_anchors_modified_file_uses_standard_limit():
     diff_file = DiffFile(
         old_path="src/existing.ts",
         new_path="src/existing.ts",
-        hunks=[
-            DiffHunk(old_start=0, old_count=0, new_start=1, new_count=100, lines=lines)
-        ],
+        hunks=[DiffHunk(old_start=0, old_count=0, new_start=1, new_count=100, lines=lines)],
         is_new=False,
         is_deleted=False,
         is_renamed=False,
@@ -2786,9 +2930,7 @@ def test_write_diff_files_for_agent_creates_files(tmp_path: Path):
     diff_file = DiffFile(
         old_path=None,
         new_path="src/cli-credentials.ts",
-        hunks=[
-            DiffHunk(old_start=0, old_count=0, new_start=1, new_count=5, lines=lines)
-        ],
+        hunks=[DiffHunk(old_start=0, old_count=0, new_start=1, new_count=5, lines=lines)],
         is_new=True,
         is_deleted=False,
         is_renamed=False,
@@ -2825,11 +2967,7 @@ def test_write_diff_files_for_agent_flattens_nested_paths(tmp_path: Path):
                 old_count=0,
                 new_start=1,
                 new_count=1,
-                lines=[
-                    DiffLine(
-                        type="add", content="pass", old_line_num=None, new_line_num=1
-                    )
-                ],
+                lines=[DiffLine(type="add", content="pass", old_line_num=None, new_line_num=1)],
             )
         ],
         is_new=True,
@@ -2889,9 +3027,7 @@ class TestGeneratePrHypotheses:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-        ):
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
             result = await _generate_pr_hypotheses(**self._DEFAULT_KWARGS)
 
         assert result == "- Unable to generate hypotheses."
@@ -2904,9 +3040,7 @@ class TestGeneratePrHypotheses:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-        ):
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
             result = await _generate_pr_hypotheses(**self._DEFAULT_KWARGS)
 
         assert result == "- Unable to generate hypotheses."
@@ -2919,9 +3053,7 @@ class TestGeneratePrHypotheses:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-        ):
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
             result = await _generate_pr_hypotheses(**self._DEFAULT_KWARGS)
 
         assert result == "- Unable to generate hypotheses."
@@ -2954,9 +3086,7 @@ class TestGeneratePrHypotheses:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-        ):
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
             result = await _generate_pr_hypotheses(**self._DEFAULT_KWARGS)
 
         assert "Auth bypass via token reuse" in result
@@ -2986,9 +3116,7 @@ class TestGeneratePrHypotheses:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-        ):
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
             result = await _generate_pr_hypotheses(**self._DEFAULT_KWARGS)
 
         # Empty input -> _normalize_hypothesis_output returns "- None generated."
@@ -3003,9 +3131,7 @@ class TestGeneratePrHypotheses:
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch(
-                "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-            ),
+            patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client),
             patch("securevibes.scanner.scanner.logger") as mock_logger,
         ):
             result = await _generate_pr_hypotheses(**self._DEFAULT_KWARGS)
@@ -3035,9 +3161,7 @@ class TestGeneratePrHypotheses:
             return await real_wait_for(awaitable, timeout=0.01)
 
         with (
-            patch(
-                "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-            ),
+            patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client),
             patch("securevibes.scanner.scanner.asyncio.wait_for", new=short_wait_for),
             patch("securevibes.scanner.scanner.logger") as mock_logger,
         ):
@@ -3077,9 +3201,7 @@ class TestRefinePrFindingsWithLlm:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-        ):
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
             result = await _refine_pr_findings_with_llm(
                 findings=[{"title": "test"}], **self._DEFAULT_KWARGS
             )
@@ -3095,9 +3217,7 @@ class TestRefinePrFindingsWithLlm:
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch(
-                "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-            ),
+            patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client),
             patch("securevibes.scanner.scanner.logger") as mock_logger,
         ):
             result = await _refine_pr_findings_with_llm(
@@ -3129,9 +3249,7 @@ class TestRefinePrFindingsWithLlm:
             return await real_wait_for(awaitable, timeout=0.01)
 
         with (
-            patch(
-                "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-            ),
+            patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client),
             patch("securevibes.scanner.scanner.asyncio.wait_for", new=short_wait_for),
             patch("securevibes.scanner.scanner.logger") as mock_logger,
         ):
@@ -3150,9 +3268,7 @@ class TestRefinePrFindingsWithLlm:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-        ):
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
             result = await _refine_pr_findings_with_llm(
                 findings=[{"title": "test"}], **self._DEFAULT_KWARGS
             )
@@ -3183,9 +3299,7 @@ class TestRefinePrFindingsWithLlm:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-        ):
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
             result = await _refine_pr_findings_with_llm(
                 findings=[{"title": "test"}], **self._DEFAULT_KWARGS
             )
@@ -3220,9 +3334,7 @@ class TestRefinePrFindingsWithLlm:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-        ):
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
             result = await _refine_pr_findings_with_llm(
                 findings=[{"title": "test"}], **self._DEFAULT_KWARGS
             )
@@ -3257,9 +3369,7 @@ class TestRefinePrFindingsWithLlm:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-        ):
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
             result = await _refine_pr_findings_with_llm(
                 findings=[{"title": "test"}], **self._DEFAULT_KWARGS
             )
@@ -3300,9 +3410,7 @@ class TestRefinePrFindingsWithLlm:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-        ):
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
             result = await _refine_pr_findings_with_llm(
                 findings=[{"title": "test"}], **self._DEFAULT_KWARGS
             )
@@ -3341,9 +3449,7 @@ class TestRefinePrFindingsWithLlm:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client
-        ):
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
             result = await _refine_pr_findings_with_llm(
                 findings=[{"title": "test"}], **self._DEFAULT_KWARGS
             )
@@ -3366,9 +3472,7 @@ class TestTriageWiring:
         from securevibes.diff.parser import DiffLine
 
         line = DiffLine(type="add", content="+ pass", old_line_num=None, new_line_num=1)
-        hunk = DiffHunk(
-            old_start=1, old_count=0, new_start=1, new_count=1, lines=[line]
-        )
+        hunk = DiffHunk(old_start=1, old_count=0, new_start=1, new_count=1, lines=[line])
         diff_file = DiffFile(
             old_path="docs/readme.md",
             new_path="docs/readme.md",
@@ -3393,9 +3497,7 @@ class TestTriageWiring:
         (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
         (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
         if include_vulns:
-            (securevibes_dir / "VULNERABILITIES.json").write_text(
-                "[]", encoding="utf-8"
-            )
+            (securevibes_dir / "VULNERABILITIES.json").write_text("[]", encoding="utf-8")
         return repo
 
     @staticmethod
