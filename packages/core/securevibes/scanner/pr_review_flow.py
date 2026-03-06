@@ -152,6 +152,74 @@ class PRReviewAttemptRunner:
     def model(self) -> str:
         return self._scanner.model
 
+    async def _force_close_client(self, *targets: Any, timeout_seconds: float = 5.0) -> None:
+        """Best-effort client shutdown for timed-out attempts."""
+        unique_targets: list[Any] = []
+        seen_ids: set[int] = set()
+        for target in targets:
+            if target is None:
+                continue
+            target_id = id(target)
+            if target_id in seen_ids:
+                continue
+            seen_ids.add(target_id)
+            unique_targets.append(target)
+
+        for target in unique_targets:
+            close_coro = None
+            disconnect_fn = getattr(target, "disconnect", None)
+            if callable(disconnect_fn):
+                close_coro = disconnect_fn()
+            else:
+                close_fn = getattr(target, "close", None)
+                if callable(close_fn):
+                    close_coro = close_fn()
+            if close_coro is None:
+                continue
+            try:
+                await asyncio.wait_for(close_coro, timeout=timeout_seconds)
+            except (Exception, asyncio.CancelledError):
+                pass
+            break
+
+        for target in unique_targets:
+            transport = getattr(target, "_transport", None)
+            process = getattr(transport, "_process", None)
+            if process is None or getattr(process, "returncode", None) is not None:
+                continue
+
+            wait_fn = getattr(process, "wait", None)
+            try:
+                process.terminate()
+            except Exception:
+                pass
+
+            if callable(wait_fn):
+                try:
+                    await asyncio.wait_for(wait_fn(), timeout=1.0)
+                    continue
+                except (Exception, asyncio.CancelledError):
+                    pass
+
+            try:
+                process.kill()
+            except Exception:
+                pass
+
+            if callable(wait_fn):
+                try:
+                    await asyncio.wait_for(wait_fn(), timeout=1.0)
+                except (Exception, asyncio.CancelledError):
+                    pass
+
+        for target in unique_targets:
+            for attr in ("_query", "_transport"):
+                if hasattr(target, attr):
+                    try:
+                        setattr(target, attr, None)
+                    except Exception:
+                        pass
+
     def _record_attempt_chains(
         self,
         state: PRReviewState,
@@ -168,13 +236,9 @@ class PRReviewAttemptRunner:
         # Backward-compatible alias used by existing code paths.
         state.attempt_chain_ids.append(family_ids)
         for chain_id in family_ids:
-            state.chain_support_counts[chain_id] = (
-                state.chain_support_counts.get(chain_id, 0) + 1
-            )
+            state.chain_support_counts[chain_id] = state.chain_support_counts.get(chain_id, 0) + 1
         for chain_id in flow_ids:
-            state.flow_support_counts[chain_id] = (
-                state.flow_support_counts.get(chain_id, 0) + 1
-            )
+            state.flow_support_counts[chain_id] = state.flow_support_counts.get(chain_id, 0) + 1
 
     def _refresh_carry_forward_candidates(
         self,
@@ -186,19 +250,17 @@ class PRReviewAttemptRunner:
             chain_support_counts=state.chain_support_counts,
             total_attempts=len(state.attempt_chain_ids),
         )
-        state.attempt_state.carry_forward_candidate_family_ids = (
-            collect_chain_family_ids(cumulative_candidates)
+        state.attempt_state.carry_forward_candidate_family_ids = collect_chain_family_ids(
+            cumulative_candidates
         )
         state.attempt_state.carry_forward_candidate_flow_ids = collect_chain_flow_ids(
             cumulative_candidates
         )
-        state.attempt_state.carry_forward_candidate_summary = (
-            summarize_chain_candidates_for_prompt(
-                cumulative_candidates,
-                state.chain_support_counts,
-                len(state.attempt_chain_ids),
-                flow_support_counts=state.flow_support_counts,
-            )
+        state.attempt_state.carry_forward_candidate_summary = summarize_chain_candidates_for_prompt(
+            cumulative_candidates,
+            state.chain_support_counts,
+            len(state.attempt_chain_ids),
+            flow_support_counts=state.flow_support_counts,
         )
 
     def _record_attempt_revalidation_observability(
@@ -219,9 +281,7 @@ class PRReviewAttemptRunner:
         state.attempt_revalidation_attempted.append(revalidation_attempted)
         state.attempt_core_evidence_present.append(core_evidence_present)
         if self.debug and revalidation_attempted and not core_evidence_present:
-            logger.debug(
-                "Revalidation pass did not reproduce carried core-chain evidence"
-            )
+            logger.debug("Revalidation pass did not reproduce carried core-chain evidence")
         return core_evidence_present
 
     def _process_attempt_outcome(
@@ -260,9 +320,7 @@ class PRReviewAttemptRunner:
                     attempt_finding_count,
                 )
         effective_attempt_vulns = (
-            observed_vulns
-            if len(observed_vulns) > attempt_finding_count
-            else loaded_vulns
+            observed_vulns if len(observed_vulns) > attempt_finding_count else loaded_vulns
         )
         self._record_attempt_chains(state, effective_attempt_vulns)
         core_evidence_present = self._record_attempt_revalidation_observability(
@@ -300,9 +358,7 @@ class PRReviewAttemptRunner:
                         current_total = float(current_total_raw)
                     else:
                         current_total = 0.0
-                    self._scanner.total_cost = current_total + float(
-                        message.total_cost_usd
-                    )
+                    self._scanner.total_cost = current_total + float(message.total_cost_usd)
                 break
 
     async def run_attempt_loop(
@@ -403,35 +459,34 @@ class PRReviewAttemptRunner:
             )
 
             attempt_error: Optional[str] = None
-            try:
-                async with self._claude_client_cls(options=options) as client:
-                    try:
-                        await asyncio.wait_for(
-                            self._run_attempt_messages(
-                                client=client,
-                                attempt_prompt=attempt_prompt,
-                                tracker=tracker,
-                            ),
-                            timeout=ctx.pr_timeout_seconds,
-                        )
-                    except asyncio.TimeoutError:
-                        attempt_error = (
-                            f"PR code review attempt {attempt_num}/{pr_review_attempts} timed out after "
-                            f"{ctx.pr_timeout_seconds}s."
-                        )
-                        # Force-close the client to kill any hung subprocess
-                        # before the context manager __aexit__ tries a graceful close.
-                        try:
-                            await asyncio.wait_for(client.close(), timeout=5.0)
-                        except Exception:
-                            pass
-            except asyncio.TimeoutError:
-                # Context manager __aexit__ itself timed out during cleanup
-                if not attempt_error:
-                    attempt_error = (
-                        f"PR code review attempt {attempt_num}/{pr_review_attempts} timed out after "
-                        f"{ctx.pr_timeout_seconds}s (cleanup also timed out)."
+            client_ctx = self._claude_client_cls(options=options)
+            connected_client: Optional[Any] = None
+
+            async def _run_client_session() -> None:
+                nonlocal connected_client
+                async with client_ctx as client:
+                    connected_client = client
+                    await self._run_attempt_messages(
+                        client=client,
+                        attempt_prompt=attempt_prompt,
+                        tracker=tracker,
                     )
+
+            try:
+                await asyncio.wait_for(
+                    _run_client_session(),
+                    timeout=ctx.pr_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                attempt_error = (
+                    f"PR code review attempt {attempt_num}/{pr_review_attempts} timed out after "
+                    f"{ctx.pr_timeout_seconds}s."
+                )
+                await self._force_close_client(
+                    connected_client,
+                    client_ctx,
+                    timeout_seconds=5.0,
+                )
             except Exception as exc:
                 if not attempt_error:
                     attempt_error = (
@@ -441,9 +496,7 @@ class PRReviewAttemptRunner:
 
             if attempt_error:
                 state.warnings.append(attempt_error)
-                self.console.print(
-                    f"\n[bold yellow]WARNING:[/bold yellow] {attempt_error}\n"
-                )
+                self.console.print(f"\n[bold yellow]WARNING:[/bold yellow] {attempt_error}\n")
 
             loaded_vulns, load_warning = load_pr_vulnerabilities_artifact(
                 pr_vulns_path=ctx.pr_vulns_path,
@@ -490,18 +543,14 @@ class PRReviewAttemptRunner:
                         len(state.collected_pr_vulns),
                     )
                 if attempt_num < pr_review_attempts and self.debug:
-                    logger.debug(
-                        "Running additional focused PR pass for broader chain coverage"
-                    )
+                    logger.debug("Running additional focused PR pass for broader chain coverage")
                 continue
 
             # No findings in this attempt — track consecutive clean passes for early exit.
             consecutive_clean_passes += 1
 
             if attempt_num < pr_review_attempts:
-                cumulative_findings = len(state.collected_pr_vulns) + len(
-                    state.ephemeral_pr_vulns
-                )
+                cumulative_findings = len(state.collected_pr_vulns) + len(state.ephemeral_pr_vulns)
                 if cumulative_findings > 0:
                     if self.debug:
                         last_observed = (
@@ -537,6 +586,4 @@ class PRReviewAttemptRunner:
                         "yet; retrying with chain-focused prompt."
                     )
                     state.warnings.append(retry_warning)
-                    self.console.print(
-                        f"\n[bold yellow]WARNING:[/bold yellow] {retry_warning}\n"
-                    )
+                    self.console.print(f"\n[bold yellow]WARNING:[/bold yellow] {retry_warning}\n")
