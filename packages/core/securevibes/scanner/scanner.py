@@ -1042,6 +1042,7 @@ async def _generate_new_surface_threat_delta(
     *,
     repo: Path,
     model: str,
+    timeout_seconds: int,
     changed_files: list[str],
     component_delta_summary: str,
     diff_line_anchors: str,
@@ -1120,7 +1121,7 @@ ARCHITECTURE CONTEXT:
                     elif isinstance(message, ResultMessage):
                         break
 
-            await asyncio.wait_for(_run_llm_exchange(), timeout=240)
+            await asyncio.wait_for(_run_llm_exchange(), timeout=max(1, timeout_seconds))
     except (OSError, asyncio.TimeoutError, RuntimeError):
         logger.warning(
             "New-surface threat delta generation timed out or failed — PR review will continue "
@@ -1825,6 +1826,14 @@ class Scanner:
             if pr_review_attempts_override is not None
             else config.get_pr_review_attempts()
         )
+        pr_timeout_seconds = (
+            pr_timeout_seconds_override
+            if pr_timeout_seconds_override is not None
+            else config.get_pr_review_timeout_seconds()
+        )
+        # Keep delta threat modeling bounded so it cannot dominate the main
+        # PR-review budget on large shards.
+        new_surface_delta_timeout = max(30, min(60, pr_timeout_seconds // 3))
         retry_focus_plan = build_pr_retry_focus_plan(
             pr_review_attempts,
             command_builder_signals=command_builder_signals,
@@ -1855,6 +1864,7 @@ class Scanner:
             new_surface_threat_delta = await _generate_new_surface_threat_delta(
                 repo=repo,
                 model=self.model,
+                timeout_seconds=new_surface_delta_timeout,
                 changed_files=new_surface_diff_context.changed_files
                 or focused_diff_context.changed_files,
                 component_delta_summary=component_delta_summary,
@@ -1942,11 +1952,6 @@ You may output [] only if every hypothesis is disproved with concrete code evide
 Only report findings at or above: {severity_threshold}
 """
 
-        pr_timeout_seconds = (
-            pr_timeout_seconds_override
-            if pr_timeout_seconds_override is not None
-            else config.get_pr_review_timeout_seconds()
-        )
         pr_vulns_path = securevibes_dir / PR_VULNERABILITIES_FILE
         detected_languages = LanguageConfig.detect_languages(repo) if repo else set()
 

@@ -2256,6 +2256,7 @@ async def test_generate_new_surface_threat_delta_uses_no_tools_and_default_permi
         await _generate_new_surface_threat_delta(
             repo=repo,
             model="sonnet",
+            timeout_seconds=45,
             changed_files=["src/plugins/install.ts"],
             component_delta_summary="- New-surface changed component: src/plugins -> src/plugins/install.ts",
             diff_line_anchors="- src/plugins/install.ts:42",
@@ -2430,6 +2431,7 @@ async def test_prepare_pr_review_context_includes_new_surface_delta_for_novel_co
             diff_context=diff_context,
             known_vulns_path=known_vulns_path,
             severity_threshold="medium",
+            pr_timeout_seconds_override=120,
         )
 
     assert mock_delta.await_count == 1
@@ -2439,6 +2441,7 @@ async def test_prepare_pr_review_context_includes_new_surface_delta_for_novel_co
     )
     assert "NEW-SURFACE THREAT DELTA" in ctx.contextualized_prompt
     assert "- Installer boundary delta" in ctx.contextualized_prompt
+    assert mock_delta.await_args.kwargs["timeout_seconds"] == 40
 
 
 @pytest.mark.asyncio
