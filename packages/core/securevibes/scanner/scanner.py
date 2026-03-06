@@ -830,6 +830,84 @@ def _derive_baseline_component_keys(securevibes_dir: Path) -> set[str]:
     return component_keys
 
 
+def _classify_changed_components(
+    diff_context: DiffContext,
+    *,
+    baseline_component_keys: set[str],
+) -> tuple[list[tuple[str, list[str], int]], list[tuple[str, list[str], int]]]:
+    """Split changed components into baseline-covered and new-surface groups."""
+    component_to_paths: dict[str, list[str]] = {}
+    path_scores: dict[str, int] = {}
+    for diff_file in diff_context.files:
+        normalized_path = normalize_repo_path(diff_file_path(diff_file))
+        if not normalized_path:
+            continue
+        component_key = _split_component_key(normalized_path)
+        if not component_key:
+            continue
+        component_to_paths.setdefault(component_key, []).append(normalized_path)
+        path_scores[normalized_path] = max(
+            path_scores.get(normalized_path, 0),
+            score_diff_file_for_security_review(diff_file),
+        )
+
+    def _component_weight(paths: list[str]) -> int:
+        return sum(path_scores.get(path, 0) for path in paths)
+
+    risk_components: list[tuple[str, list[str], int]] = []
+    novel_components: list[tuple[str, list[str], int]] = []
+    for component_key, paths in component_to_paths.items():
+        deduped_paths = sorted(
+            {
+                normalize_repo_path(path)
+                for path in paths
+                if isinstance(path, str) and normalize_repo_path(path)
+            }
+        )
+        if not deduped_paths:
+            continue
+        weighted = _component_weight(deduped_paths)
+        row = (component_key, deduped_paths, weighted)
+        if _component_matches_baseline(component_key, baseline_component_keys):
+            risk_components.append(row)
+        else:
+            novel_components.append(row)
+
+    risk_components.sort(key=lambda item: (item[2], len(item[1]), item[0]), reverse=True)
+    novel_components.sort(key=lambda item: (item[2], len(item[1]), item[0]), reverse=True)
+    return risk_components, novel_components
+
+
+def _format_component_delta_summary(
+    risk_components: list[tuple[str, list[str], int]],
+    new_surface_components: list[tuple[str, list[str], int]],
+    *,
+    max_paths_per_component: int = 3,
+) -> str:
+    """Summarize changed component coverage relative to baseline artifacts."""
+
+    def _format_rows(
+        label: str,
+        rows: list[tuple[str, list[str], int]],
+    ) -> list[str]:
+        if not rows:
+            return [f"- {label}: none"]
+        formatted: list[str] = []
+        for component_key, paths, _ in rows:
+            preview = ", ".join(paths[:max_paths_per_component])
+            if len(paths) > max_paths_per_component:
+                preview = f"{preview}, ... (+{len(paths) - max_paths_per_component} more)"
+            formatted.append(f"- {label}: {component_key} -> {preview}")
+        return formatted
+
+    return "\n".join(
+        [
+            *_format_rows("Baseline-covered changed component", risk_components),
+            *_format_rows("New-surface changed component", new_surface_components),
+        ]
+    )
+
+
 def _component_matches_baseline(
     component_key: str,
     baseline_component_keys: set[str],
@@ -919,60 +997,19 @@ def _build_component_focused_passes(
     if max_component_passes < 1:
         return []
 
-    component_to_paths: dict[str, list[str]] = {}
-    path_scores: dict[str, int] = {}
-    for diff_file in diff_context.files:
-        normalized_path = normalize_repo_path(diff_file_path(diff_file))
-        if not normalized_path:
-            continue
-        component_key = _split_component_key(normalized_path)
-        if not component_key:
-            continue
-        component_to_paths.setdefault(component_key, []).append(normalized_path)
-        path_scores[normalized_path] = max(
-            path_scores.get(normalized_path, 0),
-            score_diff_file_for_security_review(diff_file),
-        )
-
-    if len(component_to_paths) <= 1:
+    risk_components, novel_components = _classify_changed_components(
+        diff_context,
+        baseline_component_keys=baseline_component_keys,
+    )
+    if len(risk_components) + len(novel_components) <= 1:
         return []
-
-    def _component_weight(paths: list[str]) -> int:
-        return sum(path_scores.get(path, 0) for path in paths)
-
-    risk_components: list[tuple[str, list[str], int]] = []
-    novel_components: list[tuple[str, list[str], int]] = []
-    for component_key, paths in component_to_paths.items():
-        deduped_paths = sorted(
-            {
-                normalize_repo_path(path)
-                for path in paths
-                if isinstance(path, str) and normalize_repo_path(path)
-            }
-        )
-        if not deduped_paths:
-            continue
-        weighted = _component_weight(deduped_paths)
-        row = (component_key, deduped_paths, weighted)
-        if _component_matches_baseline(component_key, baseline_component_keys):
-            risk_components.append(row)
-        else:
-            novel_components.append(row)
 
     ordered_components = [
         ("baseline-risk", component_key, paths, weight)
-        for component_key, paths, weight in sorted(
-            risk_components,
-            key=lambda item: (item[2], len(item[1]), item[0]),
-            reverse=True,
-        )
+        for component_key, paths, weight in risk_components
     ] + [
         ("new-surface", component_key, paths, weight)
-        for component_key, paths, weight in sorted(
-            novel_components,
-            key=lambda item: (item[2], len(item[1]), item[0]),
-            reverse=True,
-        )
+        for component_key, paths, weight in novel_components
     ]
 
     full_changed_set = {
@@ -999,6 +1036,99 @@ def _build_component_focused_passes(
             break
 
     return focused_passes
+
+
+async def _generate_new_surface_threat_delta(
+    *,
+    repo: Path,
+    model: str,
+    changed_files: list[str],
+    component_delta_summary: str,
+    diff_line_anchors: str,
+    diff_hunk_snippets: str,
+    architecture_context: str,
+    threat_context_summary: str,
+    vuln_context_summary: str,
+) -> str:
+    """Generate threat-model deltas for changed components that lack baseline coverage."""
+    delta_prompt = f"""You are a threat-model delta generator for PR review.
+
+The changed components below do NOT have direct baseline threat/vulnerability coverage.
+Treat them as potential new attack surface added to the existing system architecture.
+
+Generate 3-8 concise threat-model bullets to guide later code review.
+Return ONLY bullet lines.
+
+Each bullet must include:
+- the changed component or trust boundary
+- attacker-controlled input or identity
+- the privileged operation, asset, or sink that could be reached
+- why the impact could be high
+- which changed file/function path should be validated
+
+Focus on realistic high-impact deltas such as:
+- new install/update/load/extract flows
+- new filesystem read/write/import boundaries
+- new auth or trust-boundary decisions
+- new process execution or command construction
+- new credential, token, or webhook handling
+
+Do not restate baseline threats unless the PR extends them into the new surface.
+
+CHANGED FILES:
+{changed_files}
+
+CHANGED COMPONENT COVERAGE:
+{component_delta_summary}
+
+CHANGED LINE ANCHORS:
+{diff_line_anchors}
+
+CHANGED HUNK SNIPPETS:
+{diff_hunk_snippets}
+
+RELEVANT EXISTING THREATS:
+{threat_context_summary}
+
+RELEVANT BASELINE VULNERABILITIES:
+{vuln_context_summary}
+
+ARCHITECTURE CONTEXT:
+{architecture_context}
+"""
+
+    options = ClaudeAgentOptions(
+        cwd=str(repo),
+        setting_sources=["project"],
+        allowed_tools=[],
+        max_turns=8,
+        permission_mode=_SAFE_PERMISSION_MODE,
+        model=model,
+    )
+
+    collected_text: list[str] = []
+    try:
+        async with ClaudeSDKClient(options=options) as client:
+
+            async def _run_llm_exchange() -> None:
+                await client.query(delta_prompt)
+                async for message in client.receive_messages():
+                    if isinstance(message, AssistantMessage):
+                        for block in message.content:
+                            if isinstance(block, TextBlock):
+                                collected_text.append(block.text)
+                    elif isinstance(message, ResultMessage):
+                        break
+
+            await asyncio.wait_for(_run_llm_exchange(), timeout=240)
+    except (OSError, asyncio.TimeoutError, RuntimeError):
+        logger.warning(
+            "New-surface threat delta generation timed out or failed — PR review will continue "
+            "without delta threats",
+        )
+        return "- No new-surface threat delta generated."
+
+    return _normalize_hypothesis_output("\n".join(collected_text))
 
 
 class Scanner:
@@ -1663,6 +1793,15 @@ class Scanner:
             baseline_vulns,
             focused_diff_context.changed_files,
         )
+        baseline_component_keys = _derive_baseline_component_keys(securevibes_dir)
+        risk_components, new_surface_components = _classify_changed_components(
+            focused_diff_context,
+            baseline_component_keys=baseline_component_keys,
+        )
+        component_delta_summary = _format_component_delta_summary(
+            risk_components,
+            new_surface_components,
+        )
         threat_context_summary = summarize_threats_for_prompt(relevant_threats)
         vuln_context_summary = summarize_vulnerabilities_for_prompt(relevant_baseline_vulns)
         security_adjacent_files = suggest_security_adjacent_files(
@@ -1704,6 +1843,35 @@ class Scanner:
                 vuln_context_summary=vuln_context_summary,
                 architecture_context=architecture_context,
             )
+        new_surface_threat_delta = "- No new-surface threat delta generated."
+        if new_surface_components:
+            new_surface_paths = [
+                path for _component_key, paths, _weight in new_surface_components for path in paths
+            ]
+            new_surface_diff_context = _build_diff_context_subset(
+                focused_diff_context,
+                new_surface_paths,
+            )
+            new_surface_threat_delta = await _generate_new_surface_threat_delta(
+                repo=repo,
+                model=self.model,
+                changed_files=new_surface_diff_context.changed_files
+                or focused_diff_context.changed_files,
+                component_delta_summary=component_delta_summary,
+                diff_line_anchors=(
+                    _summarize_diff_line_anchors(new_surface_diff_context)
+                    if new_surface_diff_context.files
+                    else diff_line_anchors
+                ),
+                diff_hunk_snippets=(
+                    _summarize_diff_hunk_snippets(new_surface_diff_context)
+                    if new_surface_diff_context.files
+                    else diff_hunk_snippets
+                ),
+                architecture_context=architecture_context,
+                threat_context_summary=threat_context_summary,
+                vuln_context_summary=vuln_context_summary,
+            )
         if self.debug:
             logger.debug("PR exploit hypotheses prepared")
             logger.debug(
@@ -1711,6 +1879,11 @@ class Scanner:
                 command_builder_signals,
                 path_parser_signals,
                 auth_privilege_signals,
+            )
+            logger.debug(
+                "PR component delta coverage: baseline_components=%d new_surface_components=%d",
+                len(risk_components),
+                len(new_surface_components),
             )
             if retry_focus_plan:
                 focus_preview = " -> ".join(
@@ -1731,6 +1904,14 @@ class Scanner:
 
 ## RELEVANT BASELINE VULNERABILITIES (from VULNERABILITIES.json)
 {vuln_context_summary}
+
+## CHANGED COMPONENT COVERAGE VS BASELINE ARTIFACTS
+{component_delta_summary}
+
+## NEW-SURFACE THREAT DELTA
+Use these only as hypotheses for components that lack baseline coverage.
+Validate or falsify them with concrete code evidence before reporting.
+{new_surface_threat_delta}
 
 ## SECURITY-ADJACENT FILES TO CHECK FOR REACHABILITY
 {adjacent_file_hints}

@@ -45,6 +45,7 @@ from securevibes.scanner.pr_review_merge import (
 from securevibes.scanner.scanner import (
     DIFF_FILES_DIR,
     Scanner,
+    _classify_changed_components,
     _build_component_focused_passes,
     _build_diff_context_subset,
     _build_focused_diff_context,
@@ -53,6 +54,7 @@ from securevibes.scanner.scanner import (
     _derive_baseline_component_keys,
     _enforce_focused_diff_coverage,
     _FOCUSED_DIFF_MAX_HUNK_LINES,
+    _generate_new_surface_threat_delta,
     _generate_pr_hypotheses,
     _NEW_FILE_HUNK_MAX_LINES,
     _NEW_FILE_ANCHOR_MAX_LINES,
@@ -737,6 +739,70 @@ def test_build_component_focused_passes_prioritizes_baseline_components():
     assert passes[0][0].startswith("focused_baseline-risk:")
     assert passes[0][1].changed_files == ["src/plugins/install.ts"]
     assert any(label.startswith("focused_new-surface:") for label, _ in passes)
+
+
+def test_classify_changed_components_splits_baseline_and_new_surface():
+    """Changed components should be classified by baseline overlap."""
+    plugin_file = DiffFile(
+        old_path="src/plugins/install.ts",
+        new_path="src/plugins/install.ts",
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+        hunks=[
+            DiffHunk(
+                old_start=1,
+                old_count=0,
+                new_start=1,
+                new_count=1,
+                lines=[
+                    DiffLine(
+                        type="add",
+                        content="install(userInput)",
+                        old_line_num=None,
+                        new_line_num=1,
+                    )
+                ],
+            )
+        ],
+    )
+    hook_file = DiffFile(
+        old_path="src/hooks/install.ts",
+        new_path="src/hooks/install.ts",
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+        hunks=[
+            DiffHunk(
+                old_start=5,
+                old_count=0,
+                new_start=5,
+                new_count=1,
+                lines=[
+                    DiffLine(
+                        type="add",
+                        content="installHook(userInput)",
+                        old_line_num=None,
+                        new_line_num=5,
+                    )
+                ],
+            )
+        ],
+    )
+    context = DiffContext(
+        files=[plugin_file, hook_file],
+        added_lines=2,
+        removed_lines=0,
+        changed_files=["src/plugins/install.ts", "src/hooks/install.ts"],
+    )
+
+    baseline_rows, new_surface_rows = _classify_changed_components(
+        context,
+        baseline_component_keys={"src/plugins"},
+    )
+
+    assert [row[0] for row in baseline_rows] == ["src/plugins"]
+    assert [row[0] for row in new_surface_rows] == ["src/hooks"]
 
 
 def test_summarize_diff_hunk_snippets_includes_diff_lines():
@@ -2168,6 +2234,43 @@ async def test_generate_pr_hypotheses_uses_no_tools_and_default_permissions(
 
 
 @pytest.mark.asyncio
+async def test_generate_new_surface_threat_delta_uses_no_tools_and_default_permissions(
+    tmp_path: Path,
+):
+    """New-surface threat delta helper should run LLM-only with safe default permissions."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+        mock_instance = MagicMock()
+        mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.query = AsyncMock()
+
+        async def async_gen():
+            return
+            yield  # pragma: no cover
+
+        mock_instance.receive_messages = async_gen
+
+        await _generate_new_surface_threat_delta(
+            repo=repo,
+            model="sonnet",
+            changed_files=["src/plugins/install.ts"],
+            component_delta_summary="- New-surface changed component: src/plugins -> src/plugins/install.ts",
+            diff_line_anchors="- src/plugins/install.ts:42",
+            diff_hunk_snippets="+ const targetDir = path.join(base, pluginId);",
+            architecture_context="- Existing gateway and CLI components",
+            threat_context_summary="- None",
+            vuln_context_summary="- None",
+        )
+
+    options = mock_client.call_args[1]["options"]
+    assert options.allowed_tools == []
+    assert options.permission_mode == "default"
+
+
+@pytest.mark.asyncio
 async def test_refine_pr_findings_uses_no_tools_and_default_permissions(tmp_path: Path):
     """PR refinement helper should run LLM-only with safe default permissions."""
     repo = tmp_path / "repo"
@@ -2246,6 +2349,184 @@ async def test_pr_review_has_subagent_hook(tmp_path: Path):
     options = mock_client.call_args[1]["options"]
     assert "SubagentStop" in options.hooks, "SubagentStop hook must be configured"
     assert len(options.hooks["SubagentStop"]) > 0, "SubagentStop must have at least one hook"
+
+
+@pytest.mark.asyncio
+async def test_prepare_pr_review_context_includes_new_surface_delta_for_novel_components(
+    tmp_path: Path,
+):
+    """PR context should inject delta threats when changed components lack baseline overlap."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    src_dir = repo / "src" / "plugins"
+    src_dir.mkdir(parents=True)
+    (src_dir / "install.ts").write_text("export const install = true;\n", encoding="utf-8")
+
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    (securevibes_dir / "SECURITY.md").write_text("# Security\nGateway only\n", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "THREAT-001",
+                    "title": "Gateway auth issue",
+                    "affected_components": ["src/gateway/server.ts"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    known_vulns_path = securevibes_dir / "VULNERABILITIES.json"
+    known_vulns_path.write_text("[]", encoding="utf-8")
+
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/plugins/install.ts",
+                new_path="src/plugins/install.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=1,
+                        old_count=0,
+                        new_start=1,
+                        new_count=1,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="const targetDir = path.join(base, pluginId);",
+                                old_line_num=None,
+                                new_line_num=1,
+                            )
+                        ],
+                    )
+                ],
+            )
+        ],
+        added_lines=1,
+        removed_lines=0,
+        changed_files=["src/plugins/install.ts"],
+    )
+
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+
+    with (
+        patch(
+            "securevibes.scanner.scanner._generate_pr_hypotheses",
+            new=AsyncMock(return_value="- Generic hypothesis"),
+        ),
+        patch(
+            "securevibes.scanner.scanner._generate_new_surface_threat_delta",
+            new=AsyncMock(return_value="- Installer boundary delta"),
+        ) as mock_delta,
+    ):
+        ctx = await scanner._prepare_pr_review_context(
+            repo=repo,
+            securevibes_dir=securevibes_dir,
+            diff_context=diff_context,
+            known_vulns_path=known_vulns_path,
+            severity_threshold="medium",
+        )
+
+    assert mock_delta.await_count == 1
+    assert "CHANGED COMPONENT COVERAGE VS BASELINE ARTIFACTS" in ctx.contextualized_prompt
+    assert "New-surface changed component: src/plugins -> src/plugins/install.ts" in (
+        ctx.contextualized_prompt
+    )
+    assert "NEW-SURFACE THREAT DELTA" in ctx.contextualized_prompt
+    assert "- Installer boundary delta" in ctx.contextualized_prompt
+
+
+@pytest.mark.asyncio
+async def test_prepare_pr_review_context_skips_new_surface_delta_for_baseline_components(
+    tmp_path: Path,
+):
+    """PR context should skip delta generation when baseline already covers the changed component."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    src_dir = repo / "src" / "plugins"
+    src_dir.mkdir(parents=True)
+    (src_dir / "install.ts").write_text("export const install = true;\n", encoding="utf-8")
+
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    (securevibes_dir / "SECURITY.md").write_text("# Security\nPlugins\n", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "THREAT-001",
+                    "title": "Plugin install issue",
+                    "affected_components": ["src/plugins/install.ts"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    known_vulns_path = securevibes_dir / "VULNERABILITIES.json"
+    known_vulns_path.write_text("[]", encoding="utf-8")
+
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/plugins/install.ts",
+                new_path="src/plugins/install.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=1,
+                        old_count=0,
+                        new_start=1,
+                        new_count=1,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="const targetDir = path.join(base, pluginId);",
+                                old_line_num=None,
+                                new_line_num=1,
+                            )
+                        ],
+                    )
+                ],
+            )
+        ],
+        added_lines=1,
+        removed_lines=0,
+        changed_files=["src/plugins/install.ts"],
+    )
+
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+
+    with (
+        patch(
+            "securevibes.scanner.scanner._generate_pr_hypotheses",
+            new=AsyncMock(return_value="- Generic hypothesis"),
+        ),
+        patch(
+            "securevibes.scanner.scanner._generate_new_surface_threat_delta",
+            new=AsyncMock(return_value="- Should not appear"),
+        ) as mock_delta,
+    ):
+        ctx = await scanner._prepare_pr_review_context(
+            repo=repo,
+            securevibes_dir=securevibes_dir,
+            diff_context=diff_context,
+            known_vulns_path=known_vulns_path,
+            severity_threshold="medium",
+        )
+
+    assert mock_delta.await_count == 0
+    assert "Baseline-covered changed component: src/plugins -> src/plugins/install.ts" in (
+        ctx.contextualized_prompt
+    )
+    assert "- No new-surface threat delta generated." in ctx.contextualized_prompt
 
 
 def test_pr_code_review_prompt_requires_chain_analysis_text():
