@@ -158,6 +158,9 @@ _DATAFLOW_ASSIGNMENT_PATTERNS = (
     re.compile(r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<expr>.+?);?$"),
 )
 _DATAFLOW_CALL_RE = re.compile(r"(?P<callee>[A-Za-z_][A-Za-z0-9_$.]*)\s*\((?P<args>.*)\)")
+_DATAFLOW_FUNCTION_DECL_RE = re.compile(
+    r"^(?:export\s+)?(?:async\s+)?function\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\("
+)
 _DATAFLOW_IGNORED_IDENTIFIERS = {
     "await",
     "break",
@@ -216,6 +219,7 @@ class _DataflowFactCandidate:
     defines: tuple[str, ...]
     uses: tuple[str, ...]
     kind: str
+    scope_name: str | None
 
 
 def _summarize_diff_line_anchors(
@@ -378,6 +382,14 @@ def _looks_like_dataflow_declaration(line: str) -> bool:
     return normalized.startswith(_DATAFLOW_DECLARATION_PREFIXES)
 
 
+def _extract_dataflow_function_name(line: str) -> str | None:
+    """Extract a changed helper function name from a normalized declaration line."""
+    match = _DATAFLOW_FUNCTION_DECL_RE.match(line or "")
+    if not match:
+        return None
+    return match.group("name")
+
+
 def _extract_call_dataflow(line: str) -> tuple[str, set[str], str] | None:
     """Extract a simple call expression for prompt-facing boundary facts."""
     if not line:
@@ -518,6 +530,7 @@ def _collect_changed_code_dataflow_facts(
     diff_file: DiffFile,
     *,
     max_facts: int = 4,
+    helper_semantic_budget: int = 2,
 ) -> list[str]:
     """Collect lightweight value-flow facts from changed code and nearby context."""
     tracked_identifiers: set[str] = set()
@@ -539,14 +552,31 @@ def _collect_changed_code_dataflow_facts(
     candidates: list[_DataflowFactCandidate] = []
     seen_facts: set[str] = set()
     candidate_index = 0
+    current_scope_name: str | None = None
+    current_scope_brace_depth = 0
     for hunk in diff_file.hunks:
         for line in hunk.lines:
             if line.type == "remove":
                 continue
             normalized = _normalize_dataflow_line(line.content)
             if not normalized:
+                if current_scope_name is not None:
+                    current_scope_brace_depth += line.content.count("{") - line.content.count("}")
+                    if current_scope_brace_depth <= 0:
+                        current_scope_name = None
+                        current_scope_brace_depth = 0
+                continue
+            function_name = _extract_dataflow_function_name(normalized)
+            if function_name:
+                current_scope_name = function_name
+                current_scope_brace_depth = line.content.count("{") - line.content.count("}")
                 continue
             if _looks_like_dataflow_declaration(normalized):
+                if current_scope_name is not None:
+                    current_scope_brace_depth += line.content.count("{") - line.content.count("}")
+                    if current_scope_brace_depth <= 0:
+                        current_scope_name = None
+                        current_scope_brace_depth = 0
                 continue
 
             line_no = int(line.new_line_num or line.old_line_num or 0)
@@ -566,39 +596,84 @@ def _collect_changed_code_dataflow_facts(
                                 defines=(name,),
                                 uses=tuple(sorted(expr_identifiers)),
                                 kind="assignment",
+                                scope_name=current_scope_name,
                             )
                         )
                         candidate_index += 1
                         seen_facts.add(fact)
                     tracked_identifiers.add(name)
                     tracked_identifiers.update(expr_identifiers)
-                continue
+            else:
+                call_data = _extract_call_dataflow(normalized)
+                if call_data:
+                    _callee, arg_identifiers, call_excerpt = call_data
+                    if line.type == "add" or arg_identifiers.intersection(tracked_identifiers):
+                        fact = f"{line_prefix}: `{call_excerpt}`"
+                        if fact not in seen_facts:
+                            candidates.append(
+                                _DataflowFactCandidate(
+                                    index=candidate_index,
+                                    line_no=line_no,
+                                    fact=fact,
+                                    defines=tuple(),
+                                    uses=tuple(sorted(arg_identifiers)),
+                                    kind="call",
+                                    scope_name=current_scope_name,
+                                )
+                            )
+                            candidate_index += 1
+                            seen_facts.add(fact)
+                        tracked_identifiers.update(arg_identifiers)
 
-            call_data = _extract_call_dataflow(normalized)
-            if not call_data:
-                continue
-            _callee, arg_identifiers, call_excerpt = call_data
-            if line.type == "add" or arg_identifiers.intersection(tracked_identifiers):
-                fact = f"{line_prefix}: `{call_excerpt}`"
-                if fact not in seen_facts:
-                    candidates.append(
-                        _DataflowFactCandidate(
-                            index=candidate_index,
-                            line_no=line_no,
-                            fact=fact,
-                            defines=tuple(),
-                            uses=tuple(sorted(arg_identifiers)),
-                            kind="call",
-                        )
-                    )
-                    candidate_index += 1
-                    seen_facts.add(fact)
-                tracked_identifiers.update(arg_identifiers)
+            if current_scope_name is not None:
+                current_scope_brace_depth += line.content.count("{") - line.content.count("}")
+                if current_scope_brace_depth <= 0:
+                    current_scope_name = None
+                    current_scope_brace_depth = 0
 
-    return [
-        candidate.fact
-        for candidate in _select_connected_dataflow_facts(candidates, max_facts=max_facts)
-    ]
+    selected_candidates = _select_connected_dataflow_facts(candidates, max_facts=max_facts)
+    selected_indices = {candidate.index for candidate in selected_candidates}
+
+    helper_candidates_by_name: dict[str, list[_DataflowFactCandidate]] = {}
+    for candidate in candidates:
+        if not candidate.scope_name:
+            continue
+        helper_candidates_by_name.setdefault(candidate.scope_name, []).append(candidate)
+
+    helper_names_in_chain: list[str] = []
+    for candidate in selected_candidates:
+        for used in candidate.uses:
+            if used in helper_candidates_by_name and used not in helper_names_in_chain:
+                helper_names_in_chain.append(used)
+
+    helper_candidates: list[_DataflowFactCandidate] = []
+    for helper_name in helper_names_in_chain:
+        ranked_helper_candidates = sorted(
+            (
+                candidate
+                for candidate in helper_candidates_by_name.get(helper_name, [])
+                if candidate.index not in selected_indices
+            ),
+            key=lambda candidate: (
+                1 if candidate.kind == "call" else 0,
+                len(candidate.uses),
+                candidate.line_no,
+                candidate.index,
+            ),
+            reverse=True,
+        )
+        if ranked_helper_candidates:
+            helper_candidate = ranked_helper_candidates[0]
+            helper_candidates.append(helper_candidate)
+            selected_indices.add(helper_candidate.index)
+            if len(helper_candidates) >= helper_semantic_budget:
+                break
+
+    ordered_candidates = sorted(
+        [*selected_candidates, *helper_candidates],
+        key=lambda candidate: (candidate.line_no, candidate.index),
+    )
+    return [candidate.fact for candidate in ordered_candidates]
 
 
 def _format_changed_code_dataflow_summary(

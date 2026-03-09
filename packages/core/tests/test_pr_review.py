@@ -466,6 +466,27 @@ def test_format_changed_code_dataflow_summary_prioritizes_connected_sink_chain()
                             DiffLine(
                                 type="add",
                                 content=(
+                                    'return trimmed.includes("/") ? '
+                                    '(trimmed.split("/").pop() ?? trimmed) : trimmed;'
+                                ),
+                                old_line_num=None,
+                                new_line_num=33,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="function safeDirName(input: string): string {",
+                                old_line_num=None,
+                                new_line_num=39,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content='return trimmed.replaceAll("/", "__");',
+                                old_line_num=None,
+                                new_line_num=41,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content=(
                                     'const pkgName = typeof manifest.name === "string" '
                                     '? manifest.name : "";'
                                 ),
@@ -501,7 +522,7 @@ def test_format_changed_code_dataflow_summary_prioritizes_connected_sink_chain()
                 ],
             ),
         ],
-        added_lines=10,
+        added_lines=14,
         removed_lines=0,
         changed_files=["src/plugins/install.test.ts", "src/plugins/install.ts"],
     )
@@ -509,6 +530,8 @@ def test_format_changed_code_dataflow_summary_prioritizes_connected_sink_chain()
     summary = _format_changed_code_dataflow_summary(diff_context)
 
     assert summary.splitlines()[0] == "- src/plugins/install.ts"
+    assert 'trimmed.includes("/") ? (trimmed.split("/").pop() ?? trimmed)' in summary
+    assert 'trimmed.replaceAll("/", "__")' in summary
     assert 'pkgName <- typeof manifest.name === "string" ? manifest.name : ""' in summary
     assert 'pluginId <- pkgName ? unscopedPackageName(pkgName) : "plugin"' in summary
     assert "targetDir <- path.join(extensionsDir, safeDirName(pluginId))" in summary
