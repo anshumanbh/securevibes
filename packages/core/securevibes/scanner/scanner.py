@@ -1,6 +1,7 @@
 """Security scanner with real-time progress tracking using ClaudeSDKClient"""
 
 import asyncio
+from dataclasses import dataclass
 import json
 import logging
 import re
@@ -148,6 +149,73 @@ _VALID_SUBAGENT_NAMES = frozenset(SUBAGENT_ORDER) | {"pr-code-review"}
 
 logger = logging.getLogger(__name__)
 _NUMBERED_HYPOTHESIS_RE = re.compile(r"^\d+[.)]\s+(?P<body>.+)$")
+_DATAFLOW_ASSIGNMENT_PATTERNS = (
+    re.compile(
+        r"^(?:export\s+)?(?:const|let|var|final|val)\s+"
+        r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<expr>.+?);?$"
+    ),
+    re.compile(r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:=\s*(?P<expr>.+?);?$"),
+    re.compile(r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<expr>.+?);?$"),
+)
+_DATAFLOW_CALL_RE = re.compile(r"(?P<callee>[A-Za-z_][A-Za-z0-9_$.]*)\s*\((?P<args>.*)\)")
+_DATAFLOW_IGNORED_IDENTIFIERS = {
+    "await",
+    "break",
+    "case",
+    "catch",
+    "class",
+    "const",
+    "continue",
+    "default",
+    "def",
+    "elif",
+    "else",
+    "except",
+    "export",
+    "false",
+    "final",
+    "finally",
+    "for",
+    "function",
+    "if",
+    "import",
+    "in",
+    "lambda",
+    "let",
+    "new",
+    "null",
+    "return",
+    "switch",
+    "true",
+    "try",
+    "undefined",
+    "var",
+    "while",
+    "yield",
+}
+_DATAFLOW_LINE_PREFIXES_TO_SKIP = ("if ", "for ", "while ", "switch ", "catch ", "except ")
+_DATAFLOW_DECLARATION_PREFIXES = (
+    "function ",
+    "export function ",
+    "async function ",
+    "export async function ",
+    "class ",
+    "export class ",
+    "interface ",
+    "type ",
+)
+
+
+@dataclass(frozen=True)
+class _DataflowFactCandidate:
+    """Internal representation of a prompt-facing changed-code fact."""
+
+    index: int
+    line_no: int
+    fact: str
+    defines: tuple[str, ...]
+    uses: tuple[str, ...]
+    kind: str
 
 
 def _summarize_diff_line_anchors(
@@ -247,6 +315,321 @@ def _summarize_diff_hunk_snippets(
             )
 
     summary = "\n".join(output).strip() or "- No changed hunks."
+    if len(summary) <= max_chars:
+        return summary
+    return f"{summary[: max_chars - 15].rstrip()}...[truncated]"
+
+
+def _normalize_dataflow_line(content: str) -> str:
+    """Normalize a code line before lightweight dataflow extraction."""
+    collapsed = " ".join(str(content or "").strip().split())
+    if not collapsed:
+        return ""
+    if collapsed.startswith(("//", "#", "/*", "*", "*/")):
+        return ""
+    return collapsed
+
+
+def _extract_dataflow_identifiers(text: str) -> set[str]:
+    """Extract identifier-like tokens while ignoring language keywords."""
+    identifiers: set[str] = set()
+    for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", text or ""):
+        if token.lower() in _DATAFLOW_IGNORED_IDENTIFIERS:
+            continue
+        identifiers.add(token)
+    return identifiers
+
+
+def _shorten_dataflow_excerpt(text: str, *, max_chars: int = 96) -> str:
+    """Compress a code excerpt for prompt-friendly dataflow facts."""
+    excerpt = " ".join(str(text or "").strip().split())
+    excerpt = re.sub(
+        r'"(?:[^"\\]|\\.){25,}"|\'(?:[^\'\\]|\\.){25,}\'',
+        lambda match: f"{match.group(0)[0]}...{match.group(0)[0]}",
+        excerpt,
+    )
+    if len(excerpt) <= max_chars:
+        return excerpt
+    return f"{excerpt[: max_chars - 3].rstrip()}..."
+
+
+def _extract_assignment_dataflow(line: str) -> tuple[str, str] | None:
+    """Extract a simple assignment binding from a normalized source line."""
+    if not line:
+        return None
+    if line.startswith(_DATAFLOW_LINE_PREFIXES_TO_SKIP):
+        return None
+
+    for pattern in _DATAFLOW_ASSIGNMENT_PATTERNS:
+        match = pattern.match(line)
+        if not match:
+            continue
+        name = match.group("name")
+        expr = match.group("expr").strip()
+        if not name or not expr:
+            continue
+        return name, expr
+    return None
+
+
+def _looks_like_dataflow_declaration(line: str) -> bool:
+    """Return True when a normalized line is a declaration signature, not a flow fact."""
+    normalized = line.strip()
+    return normalized.startswith(_DATAFLOW_DECLARATION_PREFIXES)
+
+
+def _extract_call_dataflow(line: str) -> tuple[str, set[str], str] | None:
+    """Extract a simple call expression for prompt-facing boundary facts."""
+    if not line:
+        return None
+    normalized = re.sub(r"^(?:await|return)\s+", "", line).strip()
+    if normalized.startswith(_DATAFLOW_LINE_PREFIXES_TO_SKIP):
+        return None
+    if _looks_like_dataflow_declaration(normalized):
+        return None
+
+    match = _DATAFLOW_CALL_RE.search(normalized)
+    if not match:
+        return None
+
+    callee = match.group("callee").strip()
+    args = match.group("args").strip()
+    if not callee or callee.lower() in _DATAFLOW_IGNORED_IDENTIFIERS:
+        return None
+
+    return (
+        callee,
+        _extract_dataflow_identifiers(args),
+        _shorten_dataflow_excerpt(f"{callee}({args})"),
+    )
+
+
+def _select_connected_dataflow_facts(
+    candidates: list[_DataflowFactCandidate],
+    *,
+    max_facts: int,
+) -> list[_DataflowFactCandidate]:
+    """Prefer the most connected changed-code facts over earliest file-order facts."""
+    if not candidates:
+        return []
+    if len(candidates) <= max_facts:
+        return candidates
+
+    define_indexes: dict[str, list[int]] = {}
+    use_indexes: dict[str, list[int]] = {}
+    for candidate in candidates:
+        for defined in candidate.defines:
+            define_indexes.setdefault(defined, []).append(candidate.index)
+        for used in candidate.uses:
+            use_indexes.setdefault(used, []).append(candidate.index)
+
+    candidate_lookup = {candidate.index: candidate for candidate in candidates}
+
+    def _earlier_def_indices(candidate: _DataflowFactCandidate) -> set[int]:
+        indices: set[int] = set()
+        for used in candidate.uses:
+            indices.update(
+                index for index in define_indexes.get(used, []) if index < candidate.index
+            )
+        return indices
+
+    def _later_use_indices(candidate: _DataflowFactCandidate) -> set[int]:
+        indices: set[int] = set()
+        for defined in candidate.defines:
+            indices.update(
+                index for index in use_indexes.get(defined, []) if index > candidate.index
+            )
+        return indices
+
+    def _candidate_score(candidate: _DataflowFactCandidate) -> tuple[int, int, int, int]:
+        return (
+            len(_earlier_def_indices(candidate)) * 3
+            + len(_later_use_indices(candidate)) * 2
+            + len(candidate.uses)
+            + (2 if candidate.kind == "call" else 0),
+            len(candidate.uses),
+            candidate.line_no,
+            candidate.index,
+        )
+
+    scored = sorted(
+        candidates,
+        key=_candidate_score,
+        reverse=True,
+    )
+
+    selected_indices: set[int] = set()
+    for seed_index in [candidate.index for candidate in scored]:
+        if seed_index in selected_indices:
+            continue
+        selected_indices.add(seed_index)
+        frontier = [seed_index]
+        while frontier and len(selected_indices) < max_facts:
+            current_index = frontier.pop()
+            current = candidate_lookup[current_index]
+            selected_earlier_neighbors = _earlier_def_indices(current).intersection(
+                selected_indices
+            )
+
+            earlier_neighbors = sorted(
+                (index for index in _earlier_def_indices(current) if index not in selected_indices),
+                key=lambda index: _candidate_score(candidate_lookup[index]),
+                reverse=True,
+            )
+            if earlier_neighbors and not (current.kind == "call" and selected_earlier_neighbors):
+                chosen_earlier = earlier_neighbors[0]
+                selected_indices.add(chosen_earlier)
+                frontier.append(chosen_earlier)
+                if len(selected_indices) >= max_facts:
+                    break
+
+            later_neighbors = sorted(
+                (index for index in _later_use_indices(current) if index not in selected_indices),
+                key=lambda index: _candidate_score(candidate_lookup[index]),
+                reverse=True,
+            )
+            if later_neighbors and len(selected_indices) < max_facts:
+                chosen_later = later_neighbors[0]
+                selected_indices.add(chosen_later)
+                frontier.append(chosen_later)
+                if len(selected_indices) >= max_facts:
+                    break
+            if len(selected_indices) >= max_facts:
+                break
+        if len(selected_indices) >= max_facts:
+            break
+
+    if len(selected_indices) < max_facts:
+        for candidate in scored:
+            if candidate.index in selected_indices:
+                continue
+            selected_indices.add(candidate.index)
+            if len(selected_indices) >= max_facts:
+                break
+
+    ordered = sorted(
+        (candidate_lookup[index] for index in selected_indices),
+        key=lambda candidate: (candidate.line_no, candidate.index),
+    )
+    return ordered[:max_facts]
+
+
+def _collect_changed_code_dataflow_facts(
+    diff_file: DiffFile,
+    *,
+    max_facts: int = 4,
+) -> list[str]:
+    """Collect lightweight value-flow facts from changed code and nearby context."""
+    tracked_identifiers: set[str] = set()
+    for hunk in diff_file.hunks:
+        for line in hunk.lines:
+            if line.type != "add":
+                continue
+            normalized = _normalize_dataflow_line(line.content)
+            if not normalized:
+                continue
+            tracked_identifiers.update(_extract_dataflow_identifiers(normalized))
+            assignment = _extract_assignment_dataflow(normalized)
+            if assignment:
+                tracked_identifiers.add(assignment[0])
+
+    if not tracked_identifiers:
+        return []
+
+    candidates: list[_DataflowFactCandidate] = []
+    seen_facts: set[str] = set()
+    candidate_index = 0
+    for hunk in diff_file.hunks:
+        for line in hunk.lines:
+            if line.type == "remove":
+                continue
+            normalized = _normalize_dataflow_line(line.content)
+            if not normalized:
+                continue
+            if _looks_like_dataflow_declaration(normalized):
+                continue
+
+            line_no = int(line.new_line_num or line.old_line_num or 0)
+            line_prefix = f"L{line_no}" if line_no > 0 else "L?"
+            assignment = _extract_assignment_dataflow(normalized)
+            if assignment:
+                name, expr = assignment
+                expr_identifiers = _extract_dataflow_identifiers(expr)
+                if line.type == "add" or expr_identifiers.intersection(tracked_identifiers):
+                    fact = f"{line_prefix}: `{name} <- {_shorten_dataflow_excerpt(expr)}`"
+                    if fact not in seen_facts:
+                        candidates.append(
+                            _DataflowFactCandidate(
+                                index=candidate_index,
+                                line_no=line_no,
+                                fact=fact,
+                                defines=(name,),
+                                uses=tuple(sorted(expr_identifiers)),
+                                kind="assignment",
+                            )
+                        )
+                        candidate_index += 1
+                        seen_facts.add(fact)
+                    tracked_identifiers.add(name)
+                    tracked_identifiers.update(expr_identifiers)
+                continue
+
+            call_data = _extract_call_dataflow(normalized)
+            if not call_data:
+                continue
+            _callee, arg_identifiers, call_excerpt = call_data
+            if line.type == "add" or arg_identifiers.intersection(tracked_identifiers):
+                fact = f"{line_prefix}: `{call_excerpt}`"
+                if fact not in seen_facts:
+                    candidates.append(
+                        _DataflowFactCandidate(
+                            index=candidate_index,
+                            line_no=line_no,
+                            fact=fact,
+                            defines=tuple(),
+                            uses=tuple(sorted(arg_identifiers)),
+                            kind="call",
+                        )
+                    )
+                    candidate_index += 1
+                    seen_facts.add(fact)
+                tracked_identifiers.update(arg_identifiers)
+
+    return [
+        candidate.fact
+        for candidate in _select_connected_dataflow_facts(candidates, max_facts=max_facts)
+    ]
+
+
+def _format_changed_code_dataflow_summary(
+    diff_context: DiffContext,
+    *,
+    max_files: int = 6,
+    max_facts_per_file: int = 4,
+    max_chars: int = 3200,
+) -> str:
+    """Summarize changed-code value derivation and boundary calls for PR review."""
+    lines: list[str] = []
+    ranked_files = sorted(
+        diff_context.files,
+        key=lambda diff_file: (
+            score_diff_file_for_security_review(diff_file),
+            diff_file_path(diff_file),
+        ),
+        reverse=True,
+    )
+    for diff_file in ranked_files[:max_files]:
+        path = diff_file_path(diff_file)
+        if not path:
+            continue
+        facts = _collect_changed_code_dataflow_facts(diff_file, max_facts=max_facts_per_file)
+        if not facts:
+            continue
+        lines.append(f"- {path}")
+        for fact in facts:
+            lines.append(f"  - {fact}")
+
+    summary = "\n".join(lines).strip() or "- None identified from changed-code facts."
     if len(summary) <= max_chars:
         return summary
     return f"{summary[: max_chars - 15].rstrip()}...[truncated]"
@@ -376,6 +759,9 @@ async def _generate_pr_hypotheses(
     changed_files: list[str],
     diff_line_anchors: str,
     diff_hunk_snippets: str,
+    changed_code_dataflow_summary: str,
+    component_delta_summary: str,
+    new_surface_threat_delta: str,
     threat_context_summary: str,
     vuln_context_summary: str,
     architecture_context: str,
@@ -392,6 +778,16 @@ Return ONLY bullet lines. Each bullet should include:
 - why impact could be high
 - which files/functions should be validated
 
+Ground every hypothesis in concrete changed-code evidence from the sections below.
+Do NOT invent scenarios that are not supported by the changed diff, changed-code dataflow
+facts, or baseline/new-surface context. Prefer the most direct source -> transform -> sink
+chains over broader ecosystem or supply-chain speculation.
+When CHANGED-CODE DATAFLOW FACTS are present, quote at least one identifier or boundary/API
+call from those facts in every hypothesis.
+Prefer one hypothesis per explicit changed-code chain before expanding to adjacent theories.
+If a broader theory is not directly supported by the same changed-code chain or line anchors,
+omit it.
+
 Focus on chains such as:
 - auth/trust-boundary bypass + privileged action
 - command/shell/option injection
@@ -406,6 +802,15 @@ CHANGED LINE ANCHORS:
 
 CHANGED HUNK SNIPPETS:
 {diff_hunk_snippets}
+
+CHANGED COMPONENT COVERAGE VS BASELINE ARTIFACTS:
+{component_delta_summary}
+
+CHANGED-CODE DATAFLOW FACTS:
+{changed_code_dataflow_summary}
+
+NEW-SURFACE THREAT DELTA:
+{new_surface_threat_delta}
 
 RELEVANT THREATS:
 {threat_context_summary}
@@ -1815,6 +2220,7 @@ class Scanner:
             if security_adjacent_files
             else "- None identified from changed-file neighborhoods"
         )
+        changed_code_dataflow_summary = _format_changed_code_dataflow_summary(focused_diff_context)
         diff_line_anchors = _summarize_diff_line_anchors(focused_diff_context)
         diff_hunk_snippets = _summarize_diff_hunk_snippets(focused_diff_context)
         command_builder_signals = diff_has_command_builder_signals(focused_diff_context)
@@ -1840,18 +2246,6 @@ class Scanner:
             path_parser_signals=path_parser_signals,
             auth_privilege_signals=auth_privilege_signals,
         )
-        pr_hypotheses = "- None generated."
-        if focused_diff_context.files:
-            pr_hypotheses = await _generate_pr_hypotheses(
-                repo=repo,
-                model=self.model,
-                changed_files=focused_diff_context.changed_files,
-                diff_line_anchors=diff_line_anchors,
-                diff_hunk_snippets=diff_hunk_snippets,
-                threat_context_summary=threat_context_summary,
-                vuln_context_summary=vuln_context_summary,
-                architecture_context=architecture_context,
-            )
         new_surface_threat_delta = "- No new-surface threat delta generated."
         if new_surface_components:
             new_surface_paths = [
@@ -1881,6 +2275,21 @@ class Scanner:
                 architecture_context=architecture_context,
                 threat_context_summary=threat_context_summary,
                 vuln_context_summary=vuln_context_summary,
+            )
+        pr_hypotheses = "- None generated."
+        if focused_diff_context.files:
+            pr_hypotheses = await _generate_pr_hypotheses(
+                repo=repo,
+                model=self.model,
+                changed_files=focused_diff_context.changed_files,
+                diff_line_anchors=diff_line_anchors,
+                diff_hunk_snippets=diff_hunk_snippets,
+                changed_code_dataflow_summary=changed_code_dataflow_summary,
+                component_delta_summary=component_delta_summary,
+                new_surface_threat_delta=new_surface_threat_delta,
+                threat_context_summary=threat_context_summary,
+                vuln_context_summary=vuln_context_summary,
+                architecture_context=architecture_context,
             )
         if self.debug:
             logger.debug("PR exploit hypotheses prepared")
@@ -1923,6 +2332,11 @@ Use these only as hypotheses for components that lack baseline coverage.
 Validate or falsify them with concrete code evidence before reporting.
 {new_surface_threat_delta}
 
+## CHANGED-CODE DATAFLOW FACTS
+Heuristic summaries of value derivation and boundary/API calls introduced or modified by the diff.
+Use them only to prioritize review; validate every fact against the authoritative diff snippets before reporting.
+{changed_code_dataflow_summary}
+
 ## SECURITY-ADJACENT FILES TO CHECK FOR REACHABILITY
 {adjacent_file_hints}
 
@@ -1944,6 +2358,10 @@ Prioritized changed files: {focused_diff_context.changed_files}
 {diff_hunk_snippets}
 
 ## HYPOTHESES TO VALIDATE (LLM-generated)
+Treat these as lower-confidence brainstorming, not ground truth.
+CHANGED-CODE DATAFLOW FACTS and authoritative diff snippets outrank this section.
+If a hypothesis is broader, weaker, or less direct than an explicit changed-code chain,
+ignore the weaker hypothesis and follow the explicit chain instead.
 Validate or falsify each hypothesis before final output:
 You may output [] only if every hypothesis is disproved with concrete code evidence.
 {pr_hypotheses}

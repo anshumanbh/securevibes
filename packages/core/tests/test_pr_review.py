@@ -54,6 +54,7 @@ from securevibes.scanner.scanner import (
     _derive_baseline_component_keys,
     _enforce_focused_diff_coverage,
     _FOCUSED_DIFF_MAX_HUNK_LINES,
+    _format_changed_code_dataflow_summary,
     _generate_new_surface_threat_delta,
     _generate_pr_hypotheses,
     _NEW_FILE_HUNK_MAX_LINES,
@@ -334,6 +335,185 @@ def test_build_focused_diff_context_trims_oversized_hunks():
     assert len(focused.files) == 1
     assert len(focused.files[0].hunks) == 1
     assert len(focused.files[0].hunks[0].lines) == _FOCUSED_DIFF_MAX_HUNK_LINES
+
+
+def test_format_changed_code_dataflow_summary_tracks_connected_assignments_and_calls():
+    """Changed-code summary should surface connected value-flow facts from the diff."""
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/plugins/install.ts",
+                new_path="src/plugins/install.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=140,
+                        old_count=3,
+                        new_start=140,
+                        new_count=3,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content=(
+                                    "const pluginId = "
+                                    "safeDirName(unscopedPackageName(manifest.name));"
+                                ),
+                                old_line_num=None,
+                                new_line_num=146,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const targetDir = path.join(baseDir, pluginId);",
+                                old_line_num=None,
+                                new_line_num=148,
+                            ),
+                            DiffLine(
+                                type="context",
+                                content="await fs.cp(packageDir, targetDir, { recursive: true });",
+                                old_line_num=150,
+                                new_line_num=150,
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ],
+        added_lines=2,
+        removed_lines=0,
+        changed_files=["src/plugins/install.ts"],
+    )
+
+    summary = _format_changed_code_dataflow_summary(diff_context)
+
+    assert "src/plugins/install.ts" in summary
+    assert "pluginId <- safeDirName(unscopedPackageName(manifest.name))" in summary
+    assert "targetDir <- path.join(baseDir, pluginId)" in summary
+    assert "fs.cp(packageDir, targetDir, { recursive: true })" in summary
+
+
+def test_format_changed_code_dataflow_summary_prioritizes_connected_sink_chain():
+    """Connected sink chains should outrank helper declarations and test scaffolding."""
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/plugins/install.test.ts",
+                new_path="src/plugins/install.test.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=170,
+                        old_count=0,
+                        new_start=170,
+                        new_count=4,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content='it("installs from a zip archive", async () => {',
+                                old_line_num=None,
+                                new_line_num=176,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const stateDir = makeTempDir();",
+                                old_line_num=None,
+                                new_line_num=177,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const workDir = makeTempDir();",
+                                old_line_num=None,
+                                new_line_num=178,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content='const archivePath = path.join(workDir, "plugin.zip");',
+                                old_line_num=None,
+                                new_line_num=179,
+                            ),
+                        ],
+                    )
+                ],
+            ),
+            DiffFile(
+                old_path="src/plugins/install.ts",
+                new_path="src/plugins/install.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=25,
+                        old_count=0,
+                        new_start=25,
+                        new_count=20,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="function unscopedPackageName(name: string): string {",
+                                old_line_num=None,
+                                new_line_num=30,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const trimmed = name.trim();",
+                                old_line_num=None,
+                                new_line_num=31,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content=(
+                                    'const pkgName = typeof manifest.name === "string" '
+                                    '? manifest.name : "";'
+                                ),
+                                old_line_num=None,
+                                new_line_num=181,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content=(
+                                    "const pluginId = pkgName ? "
+                                    'unscopedPackageName(pkgName) : "plugin";'
+                                ),
+                                old_line_num=None,
+                                new_line_num=182,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content=(
+                                    "const targetDir = "
+                                    "path.join(extensionsDir, safeDirName(pluginId));"
+                                ),
+                                old_line_num=None,
+                                new_line_num=183,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="await fs.cp(packageDir, targetDir, { recursive: true });",
+                                old_line_num=None,
+                                new_line_num=193,
+                            ),
+                        ],
+                    )
+                ],
+            ),
+        ],
+        added_lines=10,
+        removed_lines=0,
+        changed_files=["src/plugins/install.test.ts", "src/plugins/install.ts"],
+    )
+
+    summary = _format_changed_code_dataflow_summary(diff_context)
+
+    assert summary.splitlines()[0] == "- src/plugins/install.ts"
+    assert 'pkgName <- typeof manifest.name === "string" ? manifest.name : ""' in summary
+    assert 'pluginId <- pkgName ? unscopedPackageName(pkgName) : "plugin"' in summary
+    assert "targetDir <- path.join(extensionsDir, safeDirName(pluginId))" in summary
+    assert "fs.cp(packageDir, targetDir, { recursive: true })" in summary
+    assert "unscopedPackageName(name: string)" not in summary
 
 
 def test_enforce_focused_diff_coverage_rejects_dropped_files():
@@ -2223,6 +2403,9 @@ async def test_generate_pr_hypotheses_uses_no_tools_and_default_permissions(
             changed_files=["app.py"],
             diff_line_anchors="- app.py",
             diff_hunk_snippets="--- app.py",
+            changed_code_dataflow_summary="- targetDir <- path.join(base, pluginId)",
+            component_delta_summary="- New-surface changed component: src/plugins -> app.py",
+            new_surface_threat_delta="- Path boundary delta",
             threat_context_summary="- none",
             vuln_context_summary="- none",
             architecture_context="- none",
@@ -2442,6 +2625,103 @@ async def test_prepare_pr_review_context_includes_new_surface_delta_for_novel_co
     assert "NEW-SURFACE THREAT DELTA" in ctx.contextualized_prompt
     assert "- Installer boundary delta" in ctx.contextualized_prompt
     assert mock_delta.await_args.kwargs["timeout_seconds"] == 40
+
+
+@pytest.mark.asyncio
+async def test_prepare_pr_review_context_includes_changed_code_dataflow_facts(
+    tmp_path: Path,
+):
+    """PR context should inject generic changed-code value-flow facts."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    src_dir = repo / "src" / "plugins"
+    src_dir.mkdir(parents=True)
+    (src_dir / "install.ts").write_text("export const install = true;\n", encoding="utf-8")
+
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    (securevibes_dir / "SECURITY.md").write_text("# Security\n", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+    known_vulns_path = securevibes_dir / "VULNERABILITIES.json"
+    known_vulns_path.write_text("[]", encoding="utf-8")
+
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/plugins/install.ts",
+                new_path="src/plugins/install.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=140,
+                        old_count=3,
+                        new_start=140,
+                        new_count=3,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content=(
+                                    "const pluginId = "
+                                    "safeDirName(unscopedPackageName(manifest.name));"
+                                ),
+                                old_line_num=None,
+                                new_line_num=146,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const targetDir = path.join(baseDir, pluginId);",
+                                old_line_num=None,
+                                new_line_num=148,
+                            ),
+                            DiffLine(
+                                type="context",
+                                content="await fs.cp(packageDir, targetDir, { recursive: true });",
+                                old_line_num=150,
+                                new_line_num=150,
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ],
+        added_lines=2,
+        removed_lines=0,
+        changed_files=["src/plugins/install.ts"],
+    )
+
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+
+    with (
+        patch(
+            "securevibes.scanner.scanner._generate_pr_hypotheses",
+            new=AsyncMock(return_value="- Generic hypothesis"),
+        ),
+        patch(
+            "securevibes.scanner.scanner._generate_new_surface_threat_delta",
+            new=AsyncMock(return_value="- Installer boundary delta"),
+        ),
+    ):
+        ctx = await scanner._prepare_pr_review_context(
+            repo=repo,
+            securevibes_dir=securevibes_dir,
+            diff_context=diff_context,
+            known_vulns_path=known_vulns_path,
+            severity_threshold="medium",
+            pr_timeout_seconds_override=120,
+        )
+
+    assert "CHANGED-CODE DATAFLOW FACTS" in ctx.contextualized_prompt
+    assert "pluginId <- safeDirName(unscopedPackageName(manifest.name))" in (
+        ctx.contextualized_prompt
+    )
+    assert "targetDir <- path.join(baseDir, pluginId)" in ctx.contextualized_prompt
+    assert "fs.cp(packageDir, targetDir, { recursive: true })" in ctx.contextualized_prompt
+    assert "CHANGED-CODE DATAFLOW FACTS and authoritative diff snippets outrank" in (
+        ctx.contextualized_prompt
+    )
 
 
 @pytest.mark.asyncio
@@ -3298,6 +3578,9 @@ class TestGeneratePrHypotheses:
         changed_files=["src/auth.py"],
         diff_line_anchors="src/auth.py:42",
         diff_hunk_snippets="+ if user.is_admin:",
+        changed_code_dataflow_summary="- targetDir <- path.join(base, pluginId)",
+        component_delta_summary="- New-surface changed component: src/auth -> src/auth.py",
+        new_surface_threat_delta="- Auth boundary delta",
         threat_context_summary="- Auth bypass",
         vuln_context_summary="- None",
         architecture_context="Flask app",
@@ -3375,6 +3658,43 @@ class TestGeneratePrHypotheses:
 
         assert "Auth bypass via token reuse" in result
         assert "SSRF in proxy" in result
+
+    @pytest.mark.asyncio
+    async def test_prompt_includes_changed_code_and_new_surface_context(self):
+        """Hypothesis prompt should include structured changed-code and component delta context."""
+        from claude_agent_sdk.types import ResultMessage
+
+        result_msg = ResultMessage(
+            subtype="success",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=False,
+            num_turns=1,
+            session_id="test-session",
+        )
+
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=None)
+
+        async def mock_receive():
+            yield result_msg
+
+        mock_client.receive_messages = mock_receive
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
+            await _generate_pr_hypotheses(**self._DEFAULT_KWARGS)
+
+        prompt = mock_client.query.await_args.args[0]
+        assert "CHANGED-CODE DATAFLOW FACTS" in prompt
+        assert "- targetDir <- path.join(base, pluginId)" in prompt
+        assert "CHANGED COMPONENT COVERAGE VS BASELINE ARTIFACTS" in prompt
+        assert "- New-surface changed component: src/auth -> src/auth.py" in prompt
+        assert "NEW-SURFACE THREAT DELTA" in prompt
+        assert "- Auth boundary delta" in prompt
+        assert "quote at least one identifier or boundary/API" in prompt
+        assert "Prefer one hypothesis per explicit changed-code chain" in prompt
 
     @pytest.mark.asyncio
     async def test_empty_response_normalizes(self):
