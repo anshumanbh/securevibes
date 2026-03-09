@@ -3,14 +3,14 @@
   "status": "intro_only_completed",
   "model": "sonnet",
   "severity_filter": "medium",
-  "run_id": "20260306T182059Z",
+  "run_id": "20260306T202611Z",
   "securevibes_repo": "/Users/anshumanbhartiya/repos/securevibes",
-  "securevibes_commit": "cea11a683d7e3360429ca29741208405299b9eef",
+  "securevibes_commit": "3066d1a6007f02033dedaa258dcf67caa3b0f1ec",
   "baseline_cache": {
     "enabled": true,
     "refresh_requested": false,
-    "requested_entry_key": "baseline-a6ea74f8e6ff__sv-cea11a683d7e__model-sonnet__sev-medium",
-    "requested_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-a6ea74f8e6ff__sv-cea11a683d7e__model-sonnet__sev-medium",
+    "requested_entry_key": "baseline-a6ea74f8e6ff__sv-3066d1a6007f__model-sonnet__sev-medium",
+    "requested_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-a6ea74f8e6ff__sv-3066d1a6007f__model-sonnet__sev-medium",
     "resolved_entry_key": "baseline-a6ea74f8e6ff__sv-596cb2e42f31__model-sonnet__sev-medium",
     "resolved_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-a6ea74f8e6ff__sv-596cb2e42f31__model-sonnet__sev-medium",
     "compatible_fallback_used": true,
@@ -21,7 +21,7 @@
     "command_exit": 0,
     "effective_success": true,
     "rate_limited": false,
-    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-qrq5-wjgg-rvqw/runs/20260306T182059Z/baseline_scan.json",
+    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-qrq5-wjgg-rvqw/runs/20260306T202611Z/baseline_scan.json",
     "summary": {
       "exists": true,
       "issue_count": 13,
@@ -47,13 +47,14 @@
     "effective_success": true,
     "rate_limited": true,
     "range": "2f4a248314fdd754b8344d955842fdd47f828fab^..2f4a248314fdd754b8344d955842fdd47f828fab,3a6ee5ee00176c88aee32bb8bfd543780014c079^..3a6ee5ee00176c88aee32bb8bfd543780014c079",
-    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-qrq5-wjgg-rvqw/runs/20260306T182059Z/intro_pr_review.json",
+    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-qrq5-wjgg-rvqw/runs/20260306T202611Z/intro_pr_review.json",
     "summary": {
       "exists": true,
-      "issue_count": 5,
+      "issue_count": 4,
       "severities": {
-        "high": 3,
-        "medium": 2
+        "critical": 1,
+        "high": 2,
+        "medium": 1
       }
     },
     "split_shard_filtering": {
@@ -70,14 +71,14 @@
     "command_exit": null,
     "effective_success": null,
     "auto_triggered": false,
-    "log": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-qrq5-wjgg-rvqw/runs/20260306T182059Z/intro_threat_modeling.log.json"
+    "log": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-qrq5-wjgg-rvqw/runs/20260306T202611Z/intro_threat_modeling.log.json"
   },
   "fix_pr_review": {
     "command_exit": null,
     "effective_success": null,
     "rate_limited": null,
     "range": "d03eca8450dc493b198a88b105fd180895238e57^..d03eca8450dc493b198a88b105fd180895238e57",
-    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-qrq5-wjgg-rvqw/runs/20260306T182059Z/fix_pr_review.json",
+    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-qrq5-wjgg-rvqw/runs/20260306T202611Z/fix_pr_review.json",
     "summary": {
       "exists": false,
       "issue_count": null,
@@ -86,9 +87,9 @@
   },
   "tier1_detected_from_new_commits": true,
   "tier2_root_cause_match": false,
-  "tier2_match_basis": "same_cwe_different_code_path",
-  "tier2_notes": "Tier-1 pass only. SecureVibes found a real CWE-22 path traversal in src/hooks/workspace.ts (hook package path resolution), but the disclosed advisory is the install-path traversal fixed in src/plugins/install.ts and src/hooks/install.ts by d03eca8450dc493b198a88b105fd180895238e57. Same vulnerability class, different root-cause path, so this does not count as a Tier-2 match.",
+  "tier2_match_basis": "same area, different root cause",
+  "tier2_notes": "SecureVibes found plugin-install and hook-install risks in the introducing commits, including CWE-829 npm lifecycle script execution in src/plugins/install.ts:168 and a contradictory CWE-59 archive/copy traversal theory in src/infra/archive.ts:83, but it did not identify the disclosed CWE-22 install-path traversal fixed in src/plugins/install.ts and src/hooks/install.ts.",
   "could_propose_fix": false,
   "post_fix_regression_status": null,
-  "notes": "Tier-2 adjudication is manual: compare intro_pr_review findings against cases/<GHSA>/analysis.md root cause."
+  "notes": "Tier-2 adjudicated: Tier-1 pass, Tier-2 miss. The run detected real vulnerabilities in the new plugin/hook install surface but not the advisory root cause from analysis.md."
 }
