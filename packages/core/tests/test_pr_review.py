@@ -55,6 +55,7 @@ from securevibes.scanner.scanner import (
     _enforce_focused_diff_coverage,
     _FOCUSED_DIFF_MAX_HUNK_LINES,
     _format_changed_code_dataflow_summary,
+    _format_changed_code_dataflow_chains,
     _generate_new_surface_threat_delta,
     _generate_pr_hypotheses,
     _NEW_FILE_HUNK_MAX_LINES,
@@ -390,6 +391,78 @@ def test_format_changed_code_dataflow_summary_tracks_connected_assignments_and_c
     assert "src/plugins/install.ts" in summary
     assert "pluginId <- safeDirName(unscopedPackageName(manifest.name))" in summary
     assert "targetDir <- path.join(baseDir, pluginId)" in summary
+    assert "fs.cp(packageDir, targetDir, { recursive: true })" in summary
+
+
+def test_format_changed_code_dataflow_chains_tracks_explicit_chain():
+    """Changed-code chains should preserve the concrete source-to-sink path."""
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/plugins/install.ts",
+                new_path="src/plugins/install.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=130,
+                        old_count=5,
+                        new_start=130,
+                        new_count=8,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content='const manifestPath = path.join(packageDir, "package.json");',
+                                old_line_num=None,
+                                new_line_num=130,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const manifest = await readJsonFile<PackageManifest>(manifestPath);",
+                                old_line_num=None,
+                                new_line_num=137,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content='const pkgName = typeof manifest.name === "string" ? manifest.name : "";',
+                                old_line_num=None,
+                                new_line_num=149,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content='const pluginId = pkgName ? unscopedPackageName(pkgName) : "plugin";',
+                                old_line_num=None,
+                                new_line_num=150,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const targetDir = path.join(extensionsDir, safeDirName(pluginId));",
+                                old_line_num=None,
+                                new_line_num=151,
+                            ),
+                            DiffLine(
+                                type="context",
+                                content="await fs.cp(packageDir, targetDir, { recursive: true });",
+                                old_line_num=161,
+                                new_line_num=161,
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ],
+        added_lines=5,
+        removed_lines=0,
+        changed_files=["src/plugins/install.ts"],
+    )
+
+    summary = _format_changed_code_dataflow_chains(diff_context)
+
+    assert "src/plugins/install.ts:" in summary
+    assert "manifest <- await readJsonFile<PackageManifest>(manifestPath)" in summary
+    assert 'pluginId <- pkgName ? unscopedPackageName(pkgName) : "plugin"' in summary
+    assert "targetDir <- path.join(extensionsDir, safeDirName(pluginId))" in summary
     assert "fs.cp(packageDir, targetDir, { recursive: true })" in summary
 
 
@@ -2427,6 +2500,7 @@ async def test_generate_pr_hypotheses_uses_no_tools_and_default_permissions(
             diff_line_anchors="- app.py",
             diff_hunk_snippets="--- app.py",
             changed_code_dataflow_summary="- targetDir <- path.join(base, pluginId)",
+            changed_code_chain_summary="- app.py: targetDir <- path.join(base, pluginId)",
             component_delta_summary="- New-surface changed component: src/plugins -> app.py",
             new_surface_threat_delta="- Path boundary delta",
             threat_context_summary="- none",
@@ -2745,6 +2819,15 @@ async def test_prepare_pr_review_context_includes_changed_code_dataflow_facts(
     assert "CHANGED-CODE DATAFLOW FACTS and authoritative diff snippets outrank" in (
         ctx.contextualized_prompt
     )
+    assert "Reason from code-enforced constraints on the reviewed path" in (
+        ctx.contextualized_prompt
+    )
+    assert "Values loaded from local files," in (ctx.contextualized_prompt)
+    assert "remain attacker-controlled" in (ctx.contextualized_prompt)
+    assert "EXPLICIT CHANGED-CODE CHAINS TO VALIDATE INDEPENDENTLY" in (ctx.contextualized_prompt)
+    assert "Treat each chain below as a separate review obligation" in (ctx.contextualized_prompt)
+    assert "trace at least one concrete" in (ctx.contextualized_prompt)
+    assert "edge-case input" in (ctx.contextualized_prompt)
 
 
 @pytest.mark.asyncio
@@ -3602,6 +3685,7 @@ class TestGeneratePrHypotheses:
         diff_line_anchors="src/auth.py:42",
         diff_hunk_snippets="+ if user.is_admin:",
         changed_code_dataflow_summary="- targetDir <- path.join(base, pluginId)",
+        changed_code_chain_summary="- src/auth.py: targetDir <- path.join(base, pluginId)",
         component_delta_summary="- New-surface changed component: src/auth -> src/auth.py",
         new_surface_threat_delta="- Auth boundary delta",
         threat_context_summary="- Auth bypass",
@@ -3718,6 +3802,14 @@ class TestGeneratePrHypotheses:
         assert "- Auth boundary delta" in prompt
         assert "quote at least one identifier or boundary/API" in prompt
         assert "Prefer one hypothesis per explicit changed-code chain" in prompt
+        assert "Reason from constraints enforced in the reviewed code path" in prompt
+        assert "treat that value as attacker-controlled" in prompt
+        assert "EXPLICIT CHANGED-CODE CHAINS TO VALIDATE INDEPENDENTLY" in prompt
+        assert "- src/auth.py: targetDir <- path.join(base, pluginId)" in prompt
+        assert "Do not let a confirmed" in prompt
+        assert "issue on one chain substitute" in prompt
+        assert "trace at least one concrete" in prompt
+        assert "edge-case input" in prompt
 
     @pytest.mark.asyncio
     async def test_empty_response_normalizes(self):

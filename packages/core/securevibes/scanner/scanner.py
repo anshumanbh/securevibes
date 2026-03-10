@@ -710,6 +710,46 @@ def _format_changed_code_dataflow_summary(
     return f"{summary[: max_chars - 15].rstrip()}...[truncated]"
 
 
+def _format_changed_code_dataflow_chains(
+    diff_context: DiffContext,
+    *,
+    max_files: int = 6,
+    max_facts_per_file: int = 6,
+    max_chars: int = 3200,
+) -> str:
+    """Format explicit per-file changed-code chains for independent validation."""
+    chain_lines: list[str] = []
+    ranked_files = sorted(
+        diff_context.files,
+        key=lambda diff_file: (
+            score_diff_file_for_security_review(diff_file),
+            diff_file_path(diff_file),
+        ),
+        reverse=True,
+    )
+    for diff_file in ranked_files[:max_files]:
+        path = diff_file_path(diff_file)
+        if not path:
+            continue
+        facts = _collect_changed_code_dataflow_facts(diff_file, max_facts=max_facts_per_file)
+        if len(facts) < 2:
+            continue
+        chain_parts: list[str] = []
+        for fact in facts:
+            _line_prefix, _sep, detail = fact.partition(": ")
+            cleaned = detail.strip().strip("`")
+            if cleaned:
+                chain_parts.append(cleaned)
+        if len(chain_parts) < 2:
+            continue
+        chain_lines.append(f"- {path}: " + " -> ".join(chain_parts))
+
+    summary = "\n".join(chain_lines).strip() or "- None identified from changed-code chains."
+    if len(summary) <= max_chars:
+        return summary
+    return f"{summary[: max_chars - 15].rstrip()}...[truncated]"
+
+
 def _write_diff_files_for_agent(
     securevibes_dir: Path,
     diff_context: DiffContext,
@@ -835,6 +875,7 @@ async def _generate_pr_hypotheses(
     diff_line_anchors: str,
     diff_hunk_snippets: str,
     changed_code_dataflow_summary: str,
+    changed_code_chain_summary: str,
     component_delta_summary: str,
     new_surface_threat_delta: str,
     threat_context_summary: str,
@@ -857,6 +898,15 @@ Ground every hypothesis in concrete changed-code evidence from the sections belo
 Do NOT invent scenarios that are not supported by the changed diff, changed-code dataflow
 facts, or baseline/new-surface context. Prefer the most direct source -> transform -> sink
 chains over broader ecosystem or supply-chain speculation.
+Reason from constraints enforced in the reviewed code path, not ecosystem conventions or
+assumed upstream validation. If a value is loaded from a local file, archive, manifest,
+config, CLI arg, env var, or request and the code does not validate it on this path,
+treat that value as attacker-controlled.
+If a changed-code chain reaches path or filesystem APIs, trace at least one concrete
+edge-case input through every transform and the final resolved path before discarding
+that chain.
+Validate or falsify each explicit changed-code chain independently. Do not let a confirmed
+issue on one chain substitute for review of a different chain.
 When CHANGED-CODE DATAFLOW FACTS are present, quote at least one identifier or boundary/API
 call from those facts in every hypothesis.
 Prefer one hypothesis per explicit changed-code chain before expanding to adjacent theories.
@@ -883,6 +933,9 @@ CHANGED COMPONENT COVERAGE VS BASELINE ARTIFACTS:
 
 CHANGED-CODE DATAFLOW FACTS:
 {changed_code_dataflow_summary}
+
+EXPLICIT CHANGED-CODE CHAINS TO VALIDATE INDEPENDENTLY:
+{changed_code_chain_summary}
 
 NEW-SURFACE THREAT DELTA:
 {new_surface_threat_delta}
@@ -2296,6 +2349,7 @@ class Scanner:
             else "- None identified from changed-file neighborhoods"
         )
         changed_code_dataflow_summary = _format_changed_code_dataflow_summary(focused_diff_context)
+        changed_code_chain_summary = _format_changed_code_dataflow_chains(focused_diff_context)
         diff_line_anchors = _summarize_diff_line_anchors(focused_diff_context)
         diff_hunk_snippets = _summarize_diff_hunk_snippets(focused_diff_context)
         command_builder_signals = diff_has_command_builder_signals(focused_diff_context)
@@ -2360,6 +2414,7 @@ class Scanner:
                 diff_line_anchors=diff_line_anchors,
                 diff_hunk_snippets=diff_hunk_snippets,
                 changed_code_dataflow_summary=changed_code_dataflow_summary,
+                changed_code_chain_summary=changed_code_chain_summary,
                 component_delta_summary=component_delta_summary,
                 new_surface_threat_delta=new_surface_threat_delta,
                 threat_context_summary=threat_context_summary,
@@ -2410,7 +2465,18 @@ Validate or falsify them with concrete code evidence before reporting.
 ## CHANGED-CODE DATAFLOW FACTS
 Heuristic summaries of value derivation and boundary/API calls introduced or modified by the diff.
 Use them only to prioritize review; validate every fact against the authoritative diff snippets before reporting.
+Reason from code-enforced constraints on the reviewed path, not package-manager, registry,
+schema, or protocol conventions that are not enforced here. Values loaded from local files,
+archives, manifests, configs, CLI args, env vars, or requests remain attacker-controlled
+until the code validates them.
+When a changed-code chain reaches path or filesystem APIs, trace at least one concrete
+edge-case input through every transform and the final resolved path before discarding it.
 {changed_code_dataflow_summary}
+
+## EXPLICIT CHANGED-CODE CHAINS TO VALIDATE INDEPENDENTLY
+Treat each chain below as a separate review obligation.
+Do not let a confirmed issue on one chain substitute for validating or falsifying another.
+{changed_code_chain_summary}
 
 ## SECURITY-ADJACENT FILES TO CHECK FOR REACHABILITY
 {adjacent_file_hints}
