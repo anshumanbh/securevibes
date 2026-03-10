@@ -42,6 +42,7 @@ from securevibes.scanner.pr_review_merge import (
     dedupe_pr_vulns,
     filter_baseline_vulns,
 )
+from securevibes.scanner.pr_review_flow import PRReviewContext, PRReviewState
 from securevibes.scanner.scanner import (
     DIFF_FILES_DIR,
     Scanner,
@@ -2139,6 +2140,198 @@ async def test_pr_review_missing_artifact_fails_closed(tmp_path: Path, mock_scan
             known_vulns_path=None,
             severity_threshold="low",
         )
+
+
+def _make_test_pr_review_context(
+    repo: Path,
+    securevibes_dir: Path,
+    diff_context: DiffContext,
+) -> PRReviewContext:
+    """Build a minimal PRReviewContext for scanner.pr_review regression tests."""
+    return PRReviewContext(
+        repo=repo,
+        securevibes_dir=securevibes_dir,
+        focused_diff_context=diff_context,
+        diff_context=diff_context,
+        contextualized_prompt="test prompt",
+        baseline_vulns=[],
+        pr_review_attempts=1,
+        pr_timeout_seconds=60,
+        pr_vulns_path=securevibes_dir / "PR_VULNERABILITIES.json",
+        detected_languages=set(),
+        command_builder_signals=False,
+        path_parser_signals=False,
+        auth_privilege_signals=False,
+        retry_focus_plan=[],
+        diff_line_anchors="- src/app.py:1",
+        diff_hunk_snippets="+ danger()",
+        pr_grep_default_scope="src",
+        scan_start_time=0.0,
+        severity_threshold="low",
+    )
+
+
+@pytest.mark.asyncio
+async def test_pr_review_persists_final_canonical_artifact_without_baseline_vulns(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """Final PR review should persist canonical findings even without baseline vuln dedupe."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    (securevibes_dir / "SECURITY.md").write_text("# Security\n", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+
+    diff_context = DiffContext(
+        files=[], added_lines=1, removed_lines=0, changed_files=["src/app.py"]
+    )
+    ctx = _make_test_pr_review_context(repo, securevibes_dir, diff_context)
+    finding = {
+        "threat_id": "PR-100",
+        "finding_type": "new_threat",
+        "title": "Persisted finding",
+        "description": "A merged PR finding.",
+        "severity": "high",
+        "file_path": "src/app.py",
+        "line_number": 7,
+        "code_snippet": "danger()",
+        "attack_scenario": "1) user input reaches sink",
+        "evidence": "src/app.py:7",
+        "cwe_id": "CWE-94",
+        "recommendation": "Add validation.",
+    }
+    state = PRReviewState(
+        pr_vulns=[finding],
+        collected_pr_vulns=[finding],
+        artifact_loaded=True,
+        attempts_run=1,
+        raw_pr_finding_count=1,
+    )
+
+    async def mock_single_pass(self, **_kwargs):
+        (securevibes_dir / "PR_VULNERABILITIES.json").write_text(
+            json.dumps([finding]),
+            encoding="utf-8",
+        )
+        return ctx, state
+
+    monkeypatch.setattr(Scanner, "_run_single_pr_review_pass", mock_single_pass)
+    monkeypatch.setattr(
+        "securevibes.scanner.scanner._build_component_focused_passes",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        "securevibes.scanner.scanner._derive_baseline_component_keys",
+        lambda *_args, **_kwargs: set(),
+    )
+
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+
+    result = await scanner.pr_review(
+        str(repo),
+        diff_context,
+        known_vulns_path=None,
+        severity_threshold="low",
+    )
+
+    primary_artifact = securevibes_dir / "PR_VULNERABILITIES.json"
+    canonical_artifact = securevibes_dir / "PR_VULNERABILITIES.canonical.json"
+
+    assert result.issues
+    assert json.loads(primary_artifact.read_text(encoding="utf-8")) == [finding]
+    assert json.loads(canonical_artifact.read_text(encoding="utf-8")) == [finding]
+
+
+@pytest.mark.asyncio
+async def test_pr_review_focused_pass_empty_artifact_does_not_clobber_aggregate_findings(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """Later focused passes should not erase findings from earlier passes."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    (securevibes_dir / "SECURITY.md").write_text("# Security\n", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+
+    diff_context = DiffContext(
+        files=[], added_lines=1, removed_lines=0, changed_files=["src/app.py"]
+    )
+    primary_ctx = _make_test_pr_review_context(repo, securevibes_dir, diff_context)
+    focused_ctx = _make_test_pr_review_context(repo, securevibes_dir, diff_context)
+
+    finding = {
+        "threat_id": "PR-200",
+        "finding_type": "new_threat",
+        "title": "Primary pass finding",
+        "description": "First pass found the issue.",
+        "severity": "high",
+        "file_path": "src/app.py",
+        "line_number": 11,
+        "code_snippet": "danger()",
+        "attack_scenario": "1) user input reaches sink",
+        "evidence": "src/app.py:11",
+        "cwe_id": "CWE-94",
+        "recommendation": "Add validation.",
+    }
+    primary_state = PRReviewState(
+        pr_vulns=[finding],
+        collected_pr_vulns=[finding],
+        artifact_loaded=True,
+        attempts_run=1,
+        raw_pr_finding_count=1,
+    )
+    focused_state = PRReviewState(
+        pr_vulns=[],
+        collected_pr_vulns=[],
+        artifact_loaded=True,
+        attempts_run=1,
+        raw_pr_finding_count=0,
+    )
+
+    call_counter = {"count": 0}
+
+    async def mock_single_pass(self, **_kwargs):
+        call_counter["count"] += 1
+        artifact = securevibes_dir / "PR_VULNERABILITIES.json"
+        if call_counter["count"] == 1:
+            artifact.write_text(json.dumps([finding]), encoding="utf-8")
+            return primary_ctx, primary_state
+        artifact.write_text("[]", encoding="utf-8")
+        return focused_ctx, focused_state
+
+    monkeypatch.setattr(Scanner, "_run_single_pr_review_pass", mock_single_pass)
+    monkeypatch.setattr(
+        "securevibes.scanner.scanner._build_component_focused_passes",
+        lambda *_args, **_kwargs: [("focused_new-surface:src", diff_context)],
+    )
+    monkeypatch.setattr(
+        "securevibes.scanner.scanner._derive_baseline_component_keys",
+        lambda *_args, **_kwargs: set(),
+    )
+
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+
+    result = await scanner.pr_review(
+        str(repo),
+        diff_context,
+        known_vulns_path=None,
+        severity_threshold="low",
+    )
+
+    primary_artifact = securevibes_dir / "PR_VULNERABILITIES.json"
+    canonical_artifact = securevibes_dir / "PR_VULNERABILITIES.canonical.json"
+
+    assert call_counter["count"] == 2
+    assert result.issues
+    assert result.issues[0].title == "Primary pass finding"
+    assert json.loads(primary_artifact.read_text(encoding="utf-8")) == [finding]
+    assert json.loads(canonical_artifact.read_text(encoding="utf-8")) == [finding]
 
 
 @pytest.mark.asyncio

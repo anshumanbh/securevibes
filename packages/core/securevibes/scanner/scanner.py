@@ -119,6 +119,7 @@ _MAX_FOCUSED_COMPONENT_PASSES = 6
 _MAX_FOCUSED_PASS_ATTEMPTS = 2
 _SAFE_PERMISSION_MODE = resolve_permission_mode()
 _BASE_ALLOWED_TOOLS = ("Task", "Skill", "Read", "Write", "Grep", "Glob", "LS")
+_PR_CANONICAL_VULNERABILITIES_SUFFIX = ".canonical"
 SECURITY_PATH_HINTS = (
     "auth",
     "permission",
@@ -1795,6 +1796,46 @@ class Scanner:
             return_resolved=return_resolved,
         )
 
+    def _canonical_pr_vulns_path(self, pr_vulns_path: Path) -> Path:
+        """Return the sidecar path used to preserve canonical PR findings across passes."""
+        suffix = pr_vulns_path.suffix
+        stem = pr_vulns_path.stem
+        return pr_vulns_path.with_name(f"{stem}{_PR_CANONICAL_VULNERABILITIES_SUFFIX}{suffix}")
+
+    def _persist_pr_review_findings_snapshot(
+        self,
+        *,
+        repo: Path,
+        pr_vulns_path: Path,
+        findings: list[dict],
+        warnings: list[str],
+        operation_label: str,
+    ) -> None:
+        """Persist the current canonical PR findings to stable artifacts."""
+        payload = json.dumps(findings, indent=2)
+        target_specs = (
+            (
+                pr_vulns_path,
+                f"{operation_label} PR findings artifact",
+            ),
+            (
+                self._canonical_pr_vulns_path(pr_vulns_path),
+                f"{operation_label} canonical PR findings artifact",
+            ),
+        )
+
+        for target_path, operation in target_specs:
+            try:
+                safe_target = self._repo_output_path(
+                    repo,
+                    target_path,
+                    operation=operation,
+                )
+                safe_target.parent.mkdir(parents=True, exist_ok=True)
+                safe_target.write_text(payload, encoding="utf-8")
+            except OSError as exc:
+                warnings.append(f"Unable to persist {operation}: {exc}")
+
     def _sync_dast_accounts_file(self, repo: Path) -> None:
         """Copy optional DAST accounts file into `.securevibes/` for agent access."""
         accounts_path = self.dast_config.get("accounts_path")
@@ -2199,6 +2240,13 @@ class Scanner:
 
         aggregated_findings = list(state.pr_vulns)
         aggregated_warnings = list(state.warnings)
+        self._persist_pr_review_findings_snapshot(
+            repo=repo,
+            pr_vulns_path=ctx.pr_vulns_path,
+            findings=merge_pr_attempt_findings(aggregated_findings),
+            warnings=aggregated_warnings,
+            operation_label="initial aggregated",
+        )
         baseline_component_keys = _derive_baseline_component_keys(securevibes_dir)
         focused_passes = _build_component_focused_passes(
             diff_context,
@@ -2260,6 +2308,14 @@ class Scanner:
                         pass_label,
                         len(pass_state.pr_vulns),
                     )
+
+            self._persist_pr_review_findings_snapshot(
+                repo=repo,
+                pr_vulns_path=ctx.pr_vulns_path,
+                findings=merge_pr_attempt_findings(aggregated_findings),
+                warnings=aggregated_warnings,
+                operation_label=f"focused pass {pass_label}",
+            )
 
         if len(aggregated_findings) > len(state.pr_vulns):
             cross_pass_merge_stats: Dict[str, int] = {}
@@ -2803,17 +2859,14 @@ Only report findings at or above: {severity_threshold}
 
         if ctx.baseline_vulns and pr_vulns:
             pr_vulns = dedupe_pr_vulns(pr_vulns, ctx.baseline_vulns)
-            try:
-                safe_pr_vulns_path = self._repo_output_path(
-                    ctx.repo,
-                    ctx.pr_vulns_path,
-                    operation="deduped PR findings artifact",
-                )
-                safe_pr_vulns_path.write_text(json.dumps(pr_vulns, indent=2), encoding="utf-8")
-            except OSError as e:
-                state.warnings.append(
-                    f"Unable to persist deduped PR findings to {ctx.pr_vulns_path}: {e}"
-                )
+
+        self._persist_pr_review_findings_snapshot(
+            repo=ctx.repo,
+            pr_vulns_path=ctx.pr_vulns_path,
+            findings=pr_vulns if isinstance(pr_vulns, list) else [],
+            warnings=state.warnings,
+            operation_label="final canonical",
+        )
 
         final_pr_finding_count = len(pr_vulns)
         if self.debug:
