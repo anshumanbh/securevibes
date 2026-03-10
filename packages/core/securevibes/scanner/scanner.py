@@ -162,6 +162,23 @@ _DATAFLOW_CALL_RE = re.compile(r"(?P<callee>[A-Za-z_][A-Za-z0-9_$.]*)\s*\((?P<ar
 _DATAFLOW_FUNCTION_DECL_RE = re.compile(
     r"^(?:export\s+)?(?:async\s+)?function\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\("
 )
+_DATAFLOW_PREDICATE_HINTS = (
+    "&&",
+    "||",
+    "===",
+    "!==",
+    "==",
+    "!=",
+    ">=",
+    "<=",
+    ".some(",
+    ".every(",
+    ".includes(",
+    ".startsWith(",
+    ".endsWith(",
+    ".test(",
+)
+_DATAFLOW_PREDICATE_NEIGHBOR_LINE_WINDOW = 5
 _DATAFLOW_IGNORED_IDENTIFIERS = {
     "await",
     "break",
@@ -417,6 +434,25 @@ def _extract_call_dataflow(line: str) -> tuple[str, set[str], str] | None:
     )
 
 
+def _extract_predicate_dataflow(line: str) -> tuple[set[str], str] | None:
+    """Extract boolean/predicate logic that can drive policy or sink decisions."""
+    if not line:
+        return None
+    normalized = line.strip()
+    if normalized.startswith(_DATAFLOW_LINE_PREFIXES_TO_SKIP):
+        normalized = re.sub(r"^(?:if|while)\s*\(", "", normalized).strip()
+    normalized = re.sub(r"^(?:return|else if)\s+", "", normalized).strip()
+    normalized = normalized.rstrip("{").rstrip(";").strip()
+    if not normalized or _looks_like_dataflow_declaration(normalized):
+        return None
+    if not any(hint in normalized for hint in _DATAFLOW_PREDICATE_HINTS):
+        return None
+    identifiers = _extract_dataflow_identifiers(normalized)
+    if not identifiers:
+        return None
+    return identifiers, _shorten_dataflow_excerpt(normalized)
+
+
 def _select_connected_dataflow_facts(
     candidates: list[_DataflowFactCandidate],
     *,
@@ -455,70 +491,189 @@ def _select_connected_dataflow_facts(
         return indices
 
     def _candidate_score(candidate: _DataflowFactCandidate) -> tuple[int, int, int, int]:
+        kind_bonus = 0
+        if candidate.kind == "predicate":
+            kind_bonus = 4
+        elif candidate.kind == "call":
+            kind_bonus = 2
         return (
             len(_earlier_def_indices(candidate)) * 3
             + len(_later_use_indices(candidate)) * 2
             + len(candidate.uses)
-            + (2 if candidate.kind == "call" else 0),
+            + kind_bonus,
             len(candidate.uses),
             candidate.line_no,
             candidate.index,
         )
 
-    scored = sorted(
-        candidates,
-        key=_candidate_score,
-        reverse=True,
+    local_neighbor_map: dict[int, set[int]] = {candidate.index: set() for candidate in candidates}
+    ordered_candidates = sorted(
+        candidates, key=lambda candidate: (candidate.line_no, candidate.index)
     )
+    for idx, candidate in enumerate(ordered_candidates):
+        if candidate.kind == "predicate":
+            window = ordered_candidates[max(0, idx - 4) : idx + 5]
+            for neighbor in window:
+                if neighbor.index == candidate.index:
+                    continue
+                if (
+                    abs(neighbor.line_no - candidate.line_no)
+                    > _DATAFLOW_PREDICATE_NEIGHBOR_LINE_WINDOW
+                ):
+                    continue
+                local_neighbor_map[candidate.index].add(neighbor.index)
+                local_neighbor_map[neighbor.index].add(candidate.index)
+            continue
+
+        window = ordered_candidates[max(0, idx - 2) : idx + 3]
+        for neighbor in window:
+            if neighbor.kind != "predicate":
+                continue
+            if abs(neighbor.line_no - candidate.line_no) > _DATAFLOW_PREDICATE_NEIGHBOR_LINE_WINDOW:
+                continue
+            local_neighbor_map[candidate.index].add(neighbor.index)
+            local_neighbor_map[neighbor.index].add(candidate.index)
+
+    neighbor_map: dict[int, set[int]] = {}
+    for candidate in candidates:
+        neighbors = _earlier_def_indices(candidate) | _later_use_indices(candidate)
+        neighbors.update(local_neighbor_map.get(candidate.index, set()))
+        neighbor_map[candidate.index] = neighbors
+
+    def _select_within_component(
+        component_candidates: list[_DataflowFactCandidate],
+        *,
+        limit: int,
+    ) -> set[int]:
+        component_indices = {candidate.index for candidate in component_candidates}
+        scored = sorted(
+            component_candidates,
+            key=_candidate_score,
+            reverse=True,
+        )
+        selected: set[int] = set()
+        for seed_index in [candidate.index for candidate in scored]:
+            if seed_index in selected:
+                continue
+            selected.add(seed_index)
+            frontier = [seed_index]
+            while frontier and len(selected) < limit:
+                current_index = frontier.pop()
+                current = candidate_lookup[current_index]
+                selected_earlier_neighbors = _earlier_def_indices(current).intersection(selected)
+
+                earlier_neighbors = sorted(
+                    (
+                        index
+                        for index in _earlier_def_indices(current)
+                        if index in component_indices and index not in selected
+                    ),
+                    key=lambda index: _candidate_score(candidate_lookup[index]),
+                    reverse=True,
+                )
+                if earlier_neighbors and not (
+                    current.kind == "call" and selected_earlier_neighbors
+                ):
+                    chosen_earlier = earlier_neighbors[0]
+                    selected.add(chosen_earlier)
+                    frontier.append(chosen_earlier)
+                    if len(selected) >= limit:
+                        break
+
+                later_neighbors = sorted(
+                    (
+                        index
+                        for index in _later_use_indices(current)
+                        if index in component_indices and index not in selected
+                    ),
+                    key=lambda index: _candidate_score(candidate_lookup[index]),
+                    reverse=True,
+                )
+                if later_neighbors and len(selected) < limit:
+                    chosen_later = later_neighbors[0]
+                    selected.add(chosen_later)
+                    frontier.append(chosen_later)
+                    if len(selected) >= limit:
+                        break
+                if len(selected) >= limit:
+                    break
+            if len(selected) >= limit:
+                break
+
+        if len(selected) < limit:
+            for candidate in scored:
+                if candidate.index in selected:
+                    continue
+                selected.add(candidate.index)
+                if len(selected) >= limit:
+                    break
+        return selected
+
+    remaining_indices = {candidate.index for candidate in candidates}
+    components: list[list[_DataflowFactCandidate]] = []
+    while remaining_indices:
+        seed_index = remaining_indices.pop()
+        component_indices = {seed_index}
+        frontier = [seed_index]
+        while frontier:
+            current_index = frontier.pop()
+            for neighbor_index in neighbor_map.get(current_index, set()):
+                if neighbor_index in component_indices:
+                    continue
+                component_indices.add(neighbor_index)
+                if neighbor_index in remaining_indices:
+                    remaining_indices.remove(neighbor_index)
+                frontier.append(neighbor_index)
+        components.append(
+            sorted(
+                (candidate_lookup[index] for index in component_indices),
+                key=lambda candidate: (candidate.line_no, candidate.index),
+            )
+        )
+
+    def _component_score(
+        component_candidates: list[_DataflowFactCandidate],
+    ) -> tuple[int, int, int, int, int, int]:
+        component_indices = {candidate.index for candidate in component_candidates}
+        component_size = len(component_candidates)
+        predicate_count = sum(
+            1 for candidate in component_candidates if candidate.kind == "predicate"
+        )
+        connected_count = sum(
+            1
+            for candidate in component_candidates
+            if neighbor_map.get(candidate.index, set()).intersection(component_indices)
+        )
+        def_use_count = sum(
+            1
+            for candidate in component_candidates
+            if candidate.defines and _later_use_indices(candidate).intersection(component_indices)
+        )
+        best_candidate_score = max(
+            _candidate_score(candidate)[0] for candidate in component_candidates
+        )
+        predicate_density = int((predicate_count * 100) / component_size)
+        def_use_density = int((def_use_count * 100) / component_size)
+        connected_density = int((connected_count * 100) / component_size)
+        return (
+            def_use_density,
+            predicate_density,
+            connected_density,
+            def_use_count,
+            predicate_count,
+            best_candidate_score,
+        )
+
+    ranked_components = sorted(components, key=_component_score, reverse=True)
 
     selected_indices: set[int] = set()
-    for seed_index in [candidate.index for candidate in scored]:
-        if seed_index in selected_indices:
-            continue
-        selected_indices.add(seed_index)
-        frontier = [seed_index]
-        while frontier and len(selected_indices) < max_facts:
-            current_index = frontier.pop()
-            current = candidate_lookup[current_index]
-            selected_earlier_neighbors = _earlier_def_indices(current).intersection(
-                selected_indices
-            )
-
-            earlier_neighbors = sorted(
-                (index for index in _earlier_def_indices(current) if index not in selected_indices),
-                key=lambda index: _candidate_score(candidate_lookup[index]),
-                reverse=True,
-            )
-            if earlier_neighbors and not (current.kind == "call" and selected_earlier_neighbors):
-                chosen_earlier = earlier_neighbors[0]
-                selected_indices.add(chosen_earlier)
-                frontier.append(chosen_earlier)
-                if len(selected_indices) >= max_facts:
-                    break
-
-            later_neighbors = sorted(
-                (index for index in _later_use_indices(current) if index not in selected_indices),
-                key=lambda index: _candidate_score(candidate_lookup[index]),
-                reverse=True,
-            )
-            if later_neighbors and len(selected_indices) < max_facts:
-                chosen_later = later_neighbors[0]
-                selected_indices.add(chosen_later)
-                frontier.append(chosen_later)
-                if len(selected_indices) >= max_facts:
-                    break
-            if len(selected_indices) >= max_facts:
-                break
-        if len(selected_indices) >= max_facts:
+    for component_candidates in ranked_components:
+        remaining_budget = max_facts - len(selected_indices)
+        if remaining_budget <= 0:
             break
-
-    if len(selected_indices) < max_facts:
-        for candidate in scored:
-            if candidate.index in selected_indices:
-                continue
-            selected_indices.add(candidate.index)
-            if len(selected_indices) >= max_facts:
-                break
+        selected_indices.update(
+            _select_within_component(component_candidates, limit=remaining_budget)
+        )
 
     ordered = sorted(
         (candidate_lookup[index] for index in selected_indices),
@@ -605,7 +760,12 @@ def _collect_changed_code_dataflow_facts(
                     tracked_identifiers.add(name)
                     tracked_identifiers.update(expr_identifiers)
             else:
+                predicate_data = _extract_predicate_dataflow(normalized)
                 call_data = _extract_call_dataflow(normalized)
+                if call_data:
+                    _callee, arg_identifiers, call_excerpt = call_data
+                    if predicate_data and call_excerpt in predicate_data[1]:
+                        call_data = None
                 if call_data:
                     _callee, arg_identifiers, call_excerpt = call_data
                     if line.type == "add" or arg_identifiers.intersection(tracked_identifiers):
@@ -625,6 +785,27 @@ def _collect_changed_code_dataflow_facts(
                             candidate_index += 1
                             seen_facts.add(fact)
                         tracked_identifiers.update(arg_identifiers)
+                if predicate_data:
+                    predicate_identifiers, predicate_excerpt = predicate_data
+                    if line.type == "add" or predicate_identifiers.intersection(
+                        tracked_identifiers
+                    ):
+                        fact = f"{line_prefix}: `{predicate_excerpt}`"
+                        if fact not in seen_facts:
+                            candidates.append(
+                                _DataflowFactCandidate(
+                                    index=candidate_index,
+                                    line_no=line_no,
+                                    fact=fact,
+                                    defines=tuple(),
+                                    uses=tuple(sorted(predicate_identifiers)),
+                                    kind="predicate",
+                                    scope_name=current_scope_name,
+                                )
+                            )
+                            candidate_index += 1
+                            seen_facts.add(fact)
+                        tracked_identifiers.update(predicate_identifiers)
 
             if current_scope_name is not None:
                 current_scope_brace_depth += line.content.count("{") - line.content.count("}")
@@ -677,29 +858,57 @@ def _collect_changed_code_dataflow_facts(
     return [candidate.fact for candidate in ordered_candidates]
 
 
-def _format_changed_code_dataflow_summary(
+def _count_predicate_facts(facts: list[str]) -> int:
+    """Count extracted facts that describe changed decision predicates."""
+    return sum(1 for fact in facts if any(hint in fact for hint in _DATAFLOW_PREDICATE_HINTS))
+
+
+def _rank_diff_files_for_changed_code_facts(
     diff_context: DiffContext,
     *,
-    max_files: int = 6,
-    max_facts_per_file: int = 4,
-    max_chars: int = 3200,
-) -> str:
-    """Summarize changed-code value derivation and boundary calls for PR review."""
-    lines: list[str] = []
-    ranked_files = sorted(
-        diff_context.files,
-        key=lambda diff_file: (
-            score_diff_file_for_security_review(diff_file),
-            diff_file_path(diff_file),
-        ),
-        reverse=True,
-    )
-    for diff_file in ranked_files[:max_files]:
+    max_facts_per_file: int,
+) -> list[tuple[DiffFile, list[str]]]:
+    """Rank diff files by changed-code fact richness before prompt truncation."""
+    ranked_entries: list[tuple[tuple[int, int, int, str], DiffFile, list[str]]] = []
+    for diff_file in diff_context.files:
         path = diff_file_path(diff_file)
         if not path:
             continue
         facts = _collect_changed_code_dataflow_facts(diff_file, max_facts=max_facts_per_file)
         if not facts:
+            continue
+        ranked_entries.append(
+            (
+                (
+                    _count_predicate_facts(facts),
+                    len(facts),
+                    score_diff_file_for_security_review(diff_file),
+                    path,
+                ),
+                diff_file,
+                facts,
+            )
+        )
+
+    ranked_entries.sort(key=lambda entry: entry[0], reverse=True)
+    return [(diff_file, facts) for _score, diff_file, facts in ranked_entries]
+
+
+def _format_changed_code_dataflow_summary(
+    diff_context: DiffContext,
+    *,
+    max_files: int = 6,
+    max_facts_per_file: int = 6,
+    max_chars: int = 3200,
+) -> str:
+    """Summarize changed-code value derivation and boundary calls for PR review."""
+    lines: list[str] = []
+    for diff_file, facts in _rank_diff_files_for_changed_code_facts(
+        diff_context,
+        max_facts_per_file=max_facts_per_file,
+    )[:max_files]:
+        path = diff_file_path(diff_file)
+        if not path:
             continue
         lines.append(f"- {path}")
         for fact in facts:
@@ -720,19 +929,13 @@ def _format_changed_code_dataflow_chains(
 ) -> str:
     """Format explicit per-file changed-code chains for independent validation."""
     chain_lines: list[str] = []
-    ranked_files = sorted(
-        diff_context.files,
-        key=lambda diff_file: (
-            score_diff_file_for_security_review(diff_file),
-            diff_file_path(diff_file),
-        ),
-        reverse=True,
-    )
-    for diff_file in ranked_files[:max_files]:
+    for diff_file, facts in _rank_diff_files_for_changed_code_facts(
+        diff_context,
+        max_facts_per_file=max_facts_per_file,
+    )[:max_files]:
         path = diff_file_path(diff_file)
         if not path:
             continue
-        facts = _collect_changed_code_dataflow_facts(diff_file, max_facts=max_facts_per_file)
         if len(facts) < 2:
             continue
         chain_parts: list[str] = []
@@ -994,6 +1197,7 @@ async def _refine_pr_findings_with_llm(
     model: str,
     diff_line_anchors: str,
     diff_hunk_snippets: str,
+    changed_code_chain_summary: str = "- None identified.",
     findings: list[dict],
     severity_threshold: str,
     focus_areas: Optional[list[str]] = None,
@@ -1039,6 +1243,7 @@ Cross-domain exploit checks:
 - Do not classify explicit option-value pairs (such as `-i <value>`) as option injection unless the value is proven to be reinterpreted as a flag.
 - For path/parser diffs, verify concrete path/source -> file read/host/send/upload sink reachability before reporting.
 - For auth/privilege diffs, verify concrete caller reachability and missing enforcement before reporting.
+- Authorization and policy allow/deny decisions are privileged sinks. If attacker-controlled identity or selector data reaches an allow/deny predicate and changed code weakens matching, normalization, or missing-value handling, preserve that bypass as a concrete exploit chain even when the policy list itself is operator-configured.
 
 Return ONLY a JSON array of findings using the existing schema fields.
 
@@ -1056,6 +1261,10 @@ CHANGED LINE ANCHORS:
 
 CHANGED HUNK SNIPPETS:
 {diff_hunk_snippets}
+
+EXPLICIT CHANGED-CODE CHAINS:
+Use these as concrete review obligations when adjudicating whether a candidate finding is real or speculative.
+{changed_code_chain_summary}
 
 CANDIDATE FINDINGS JSON:
 {finding_json}
@@ -2651,6 +2860,7 @@ Only report findings at or above: {severity_threshold}
             pr_grep_default_scope=pr_grep_default_scope,
             scan_start_time=scan_start_time,
             severity_threshold=severity_threshold,
+            changed_code_chain_summary=changed_code_chain_summary,
         )
 
     def _raise_pr_review_execution_failure(
@@ -2766,6 +2976,7 @@ Only report findings at or above: {severity_threshold}
                 model=self.model,
                 diff_line_anchors=ctx.diff_line_anchors,
                 diff_hunk_snippets=ctx.diff_hunk_snippets,
+                changed_code_chain_summary=ctx.changed_code_chain_summary,
                 findings=state.pr_vulns,
                 severity_threshold=ctx.severity_threshold,
                 focus_areas=refinement_focus_areas,
@@ -2838,6 +3049,7 @@ Only report findings at or above: {severity_threshold}
                 model=self.model,
                 diff_line_anchors=ctx.diff_line_anchors,
                 diff_hunk_snippets=ctx.diff_hunk_snippets,
+                changed_code_chain_summary=ctx.changed_code_chain_summary,
                 findings=state.pr_vulns,
                 severity_threshold=ctx.severity_threshold,
                 focus_areas=refinement_focus_areas,

@@ -77,6 +77,7 @@ class PRReviewContext:
     pr_grep_default_scope: str
     scan_start_time: float
     severity_threshold: str
+    changed_code_chain_summary: str = "- None identified."
 
 
 @dataclass

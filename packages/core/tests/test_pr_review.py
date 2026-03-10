@@ -613,6 +613,210 @@ def test_format_changed_code_dataflow_summary_prioritizes_connected_sink_chain()
     assert "unscopedPackageName(name: string)" not in summary
 
 
+def test_format_changed_code_dataflow_chains_prioritizes_policy_predicates():
+    """Policy decision chains should outrank generic plumbing files in prompt summaries."""
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/webhook.ts",
+                new_path="src/webhook.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=10,
+                        old_count=0,
+                        new_start=10,
+                        new_count=3,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="const call = this.manager.getCallByProviderCallId(providerCallId);",
+                                old_line_num=None,
+                                new_line_num=10,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="console.log(`listening on ${url}`);",
+                                old_line_num=None,
+                                new_line_num=11,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content='console.warn("webhook started");',
+                                old_line_num=None,
+                                new_line_num=12,
+                            ),
+                        ],
+                    )
+                ],
+            ),
+            DiffFile(
+                old_path="src/manager.ts",
+                new_path="src/manager.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=470,
+                        old_count=0,
+                        new_start=470,
+                        new_count=6,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content='const normalized = from?.replace(/\\D/g, "") || "";',
+                                old_line_num=None,
+                                new_line_num=477,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const allowed = (allowFrom || []).some((num) => {",
+                                old_line_num=None,
+                                new_line_num=478,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content='const normalizedAllow = num.replace(/\\D/g, "");',
+                                old_line_num=None,
+                                new_line_num=479,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="return normalized.endsWith(normalizedAllow) ||",
+                                old_line_num=None,
+                                new_line_num=481,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="normalizedAllow.endsWith(normalized);",
+                                old_line_num=None,
+                                new_line_num=482,
+                            ),
+                        ],
+                    )
+                ],
+            ),
+        ],
+        added_lines=8,
+        removed_lines=0,
+        changed_files=["src/webhook.ts", "src/manager.ts"],
+    )
+
+    summary = _format_changed_code_dataflow_chains(diff_context, max_files=1)
+
+    assert summary.splitlines()[0].startswith("- src/manager.ts:")
+    assert 'normalized <- from?.replace(/\\D/g, "") || ""' in summary
+    assert "allowed <- (allowFrom || []).some((num) => {" in summary
+    assert "normalized.endsWith(normalizedAllow) ||" in summary
+
+
+def test_format_changed_code_dataflow_summary_prioritizes_predicate_cluster_within_file():
+    """Predicate-rich clusters should outrank disconnected plumbing facts in the same file."""
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/manager.ts",
+                new_path="src/manager.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=100,
+                        old_count=0,
+                        new_start=100,
+                        new_count=4,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="const activeCalls = this.getActiveCalls();",
+                                old_line_num=None,
+                                new_line_num=104,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const callId = crypto.randomUUID();",
+                                old_line_num=None,
+                                new_line_num=113,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="this.activeCalls.set(callId, call);",
+                                old_line_num=None,
+                                new_line_num=120,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="this.providerCallIdMap.set(call.providerCallId, callId);",
+                                old_line_num=None,
+                                new_line_num=121,
+                            ),
+                        ],
+                    ),
+                    DiffHunk(
+                        old_start=470,
+                        old_count=0,
+                        new_start=470,
+                        new_count=8,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content='const normalized = from?.replace(/\\D/g, "") || "";',
+                                old_line_num=None,
+                                new_line_num=477,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const allowed = (allowFrom || []).some((num) => {",
+                                old_line_num=None,
+                                new_line_num=478,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content='const normalizedAllow = num.replace(/\\D/g, "");',
+                                old_line_num=None,
+                                new_line_num=479,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="return normalized.endsWith(normalizedAllow) ||",
+                                old_line_num=None,
+                                new_line_num=481,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="normalizedAllow.endsWith(normalized);",
+                                old_line_num=None,
+                                new_line_num=482,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content='const status = allowed ? "accepted" : "rejected";',
+                                old_line_num=None,
+                                new_line_num=485,
+                            ),
+                        ],
+                    ),
+                ],
+            )
+        ],
+        added_lines=10,
+        removed_lines=0,
+        changed_files=["src/manager.ts"],
+    )
+
+    summary = _format_changed_code_dataflow_summary(diff_context)
+
+    assert 'normalized <- from?.replace(/\\D/g, "") || ""' in summary
+    assert "allowed <- (allowFrom || []).some((num) => {" in summary
+    assert "normalized.endsWith(normalizedAllow) ||" in summary
+    assert "activeCalls <- this.getActiveCalls()" not in summary
+    assert "callId <- crypto.randomUUID()" not in summary
+
+
 def test_enforce_focused_diff_coverage_rejects_dropped_files():
     """PR review should fail closed when focused context drops changed files."""
     diff_files = [
@@ -4337,6 +4541,52 @@ class TestRefinePrFindingsWithLlm:
         assert len(result) == 2
         assert result[0]["title"] == "Auth bypass"
         assert result[1]["title"] == "SSRF"
+
+    @pytest.mark.asyncio
+    async def test_refinement_prompt_includes_changed_code_chains_and_auth_sink_guidance(self):
+        """Verifier prompt should retain explicit changed-code chains and auth-sink guidance."""
+        from claude_agent_sdk.types import AssistantMessage, TextBlock, ResultMessage
+
+        captured_prompt: dict[str, str] = {}
+        text_block = TextBlock(text="[]")
+        assistant_msg = AssistantMessage(content=[text_block], model="sonnet")
+        result_msg = ResultMessage(
+            subtype="success",
+            total_cost_usd=0.01,
+            duration_ms=1000,
+            duration_api_ms=800,
+            is_error=False,
+            num_turns=1,
+            session_id="test-session",
+        )
+
+        mock_client = AsyncMock()
+
+        async def _capture_query(prompt: str):
+            captured_prompt["value"] = prompt
+
+        mock_client.query = AsyncMock(side_effect=_capture_query)
+
+        async def mock_receive():
+            yield assistant_msg
+            yield result_msg
+
+        mock_client.receive_messages = mock_receive
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
+            await _refine_pr_findings_with_llm(
+                findings=[{"title": "test"}],
+                changed_code_chain_summary="- callerId -> normalize -> allow/deny predicate",
+                mode="verifier",
+                **self._DEFAULT_KWARGS,
+            )
+
+        prompt = captured_prompt["value"]
+        assert "Authorization and policy allow/deny decisions are privileged sinks." in prompt
+        assert "EXPLICIT CHANGED-CODE CHAINS:" in prompt
+        assert "- callerId -> normalize -> allow/deny predicate" in prompt
 
     @pytest.mark.asyncio
     async def test_filters_non_dict_entries(self):
