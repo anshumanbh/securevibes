@@ -7,7 +7,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Callable
 from rich.console import Console
 
 from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
@@ -1836,6 +1836,46 @@ class Scanner:
             except OSError as exc:
                 warnings.append(f"Unable to persist {operation}: {exc}")
 
+    def _build_pr_review_checkpoint_result(
+        self,
+        *,
+        ctx: PRReviewContext,
+        findings: list[dict],
+        warnings: list[str],
+    ) -> ScanResult:
+        """Build a checkpoint result for in-progress PR review output writes."""
+        return ScanResult(
+            repository_path=str(ctx.repo),
+            issues=issues_from_pr_vulns(findings),
+            files_scanned=len(ctx.diff_context.changed_files),
+            scan_time_seconds=round(max(0.0, time.time() - ctx.scan_start_time), 2),
+            total_cost_usd=round(float(self.total_cost or 0.0), 4),
+            warnings=list(dict.fromkeys(warnings)),
+        )
+
+    def _emit_pr_review_progress_checkpoint(
+        self,
+        *,
+        ctx: PRReviewContext,
+        findings: list[dict],
+        warnings: list[str],
+        progress_writer: Optional[Callable[[ScanResult], None]],
+        checkpoint_label: str,
+    ) -> None:
+        """Write a PR review checkpoint when the caller requested progressive output."""
+        if progress_writer is None:
+            return
+
+        checkpoint_result = self._build_pr_review_checkpoint_result(
+            ctx=ctx,
+            findings=findings,
+            warnings=warnings,
+        )
+        try:
+            progress_writer(checkpoint_result)
+        except Exception as exc:  # pragma: no cover - defensive guard around caller I/O
+            warnings.append(f"Unable to write {checkpoint_label} PR review checkpoint: {exc}")
+
     def _sync_dast_accounts_file(self, repo: Path) -> None:
         """Copy optional DAST accounts file into `.securevibes/` for agent access."""
         accounts_path = self.dast_config.get("accounts_path")
@@ -2147,6 +2187,7 @@ class Scanner:
         pr_review_attempts: Optional[int] = None,
         pr_timeout_seconds: Optional[int] = None,
         auto_triage: bool = False,
+        progress_writer: Optional[Callable[[ScanResult], None]] = None,
     ) -> ScanResult:
         """
         Run context-aware PR security review.
@@ -2247,6 +2288,13 @@ class Scanner:
             warnings=aggregated_warnings,
             operation_label="initial aggregated",
         )
+        self._emit_pr_review_progress_checkpoint(
+            ctx=ctx,
+            findings=merge_pr_attempt_findings(aggregated_findings),
+            warnings=aggregated_warnings,
+            progress_writer=progress_writer,
+            checkpoint_label="initial aggregated",
+        )
         baseline_component_keys = _derive_baseline_component_keys(securevibes_dir)
         focused_passes = _build_component_focused_passes(
             diff_context,
@@ -2316,6 +2364,13 @@ class Scanner:
                 warnings=aggregated_warnings,
                 operation_label=f"focused pass {pass_label}",
             )
+            self._emit_pr_review_progress_checkpoint(
+                ctx=ctx,
+                findings=merge_pr_attempt_findings(aggregated_findings),
+                warnings=aggregated_warnings,
+                progress_writer=progress_writer,
+                checkpoint_label=f"focused pass {pass_label}",
+            )
 
         if len(aggregated_findings) > len(state.pr_vulns):
             cross_pass_merge_stats: Dict[str, int] = {}
@@ -2330,7 +2385,13 @@ class Scanner:
         # Preserve stable ordering while removing duplicate warning strings.
         state.warnings = list(dict.fromkeys(aggregated_warnings))
 
-        return self._build_pr_review_result(ctx, state, update_artifacts, severity_threshold)
+        return self._build_pr_review_result(
+            ctx,
+            state,
+            update_artifacts,
+            severity_threshold,
+            progress_writer=progress_writer,
+        )
 
     async def _prepare_pr_review_context(
         self,
@@ -2852,6 +2913,7 @@ Only report findings at or above: {severity_threshold}
         state: PRReviewState,
         update_artifacts: bool,
         severity_threshold: str,
+        progress_writer: Optional[Callable[[ScanResult], None]] = None,
     ) -> ScanResult:
         """Build the final ScanResult from accumulated PR review state."""
         pr_vulns = state.pr_vulns
@@ -2940,7 +3002,7 @@ Only report findings at or above: {severity_threshold}
                     style="yellow",
                 )
 
-        return ScanResult(
+        result = ScanResult(
             repository_path=str(ctx.repo),
             issues=issues_from_pr_vulns(pr_vulns if isinstance(pr_vulns, list) else []),
             files_scanned=len(ctx.diff_context.changed_files),
@@ -2948,6 +3010,14 @@ Only report findings at or above: {severity_threshold}
             total_cost_usd=round(self.total_cost, 4),
             warnings=state.warnings,
         )
+        self._emit_pr_review_progress_checkpoint(
+            ctx=ctx,
+            findings=pr_vulns if isinstance(pr_vulns, list) else [],
+            warnings=state.warnings,
+            progress_writer=progress_writer,
+            checkpoint_label="final canonical",
+        )
+        return result
 
     async def _execute_scan(
         self,

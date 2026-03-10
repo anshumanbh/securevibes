@@ -2316,12 +2316,16 @@ async def test_pr_review_focused_pass_empty_artifact_does_not_clobber_aggregate_
 
     scanner = Scanner(model="sonnet", debug=False)
     scanner.console = Console(file=StringIO())
+    checkpoint_payloads: list[dict] = []
 
     result = await scanner.pr_review(
         str(repo),
         diff_context,
         known_vulns_path=None,
         severity_threshold="low",
+        progress_writer=lambda checkpoint_result: checkpoint_payloads.append(
+            checkpoint_result.to_dict()
+        ),
     )
 
     primary_artifact = securevibes_dir / "PR_VULNERABILITIES.json"
@@ -2330,6 +2334,8 @@ async def test_pr_review_focused_pass_empty_artifact_does_not_clobber_aggregate_
     assert call_counter["count"] == 2
     assert result.issues
     assert result.issues[0].title == "Primary pass finding"
+    assert checkpoint_payloads
+    assert checkpoint_payloads[-1]["issues"][0]["title"] == "Primary pass finding"
     assert json.loads(primary_artifact.read_text(encoding="utf-8")) == [finding]
     assert json.loads(canonical_artifact.read_text(encoding="utf-8")) == [finding]
 

@@ -1,5 +1,6 @@
 """CLI-focused tests for PR review command selection and validation paths."""
 
+import json
 from pathlib import Path
 
 import click
@@ -7,6 +8,8 @@ import pytest
 from click.testing import CliRunner
 
 from securevibes.cli.main import _clean_pr_artifacts, _parse_since_date_pacific, cli
+from securevibes.models.issue import SecurityIssue, Severity
+from securevibes.models.result import ScanResult
 
 
 @pytest.mark.parametrize(
@@ -365,9 +368,7 @@ def test_auto_triage_flag_reaches_run_pr_review(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("securevibes.cli.main._run_pr_review", _capture_pr_review)
 
     runner = CliRunner()
-    result = runner.invoke(
-        cli, ["pr-review", str(repo), "--diff", str(diff_file), "--auto-triage"]
-    )
+    runner.invoke(cli, ["pr-review", str(repo), "--diff", str(diff_file), "--auto-triage"])
 
     assert captured.get("auto_triage") is True
 
@@ -404,3 +405,76 @@ def test_auto_triage_default_is_false(tmp_path: Path, monkeypatch):
     runner.invoke(cli, ["pr-review", str(repo), "--diff", str(diff_file)])
 
     assert captured.get("auto_triage") is False
+
+
+def test_pr_review_progress_writer_persists_checkpoint_before_final_return(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """Checkpoint writer should persist JSON output during long-running PR review execution."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+
+    diff_file = tmp_path / "changes.patch"
+    diff_file.write_text(
+        "diff --git a/src/app.py b/src/app.py\n"
+        "--- a/src/app.py\n"
+        "+++ b/src/app.py\n"
+        "@@ -1 +1 @@\n"
+        "-safe()\n"
+        "+danger()\n",
+        encoding="utf-8",
+    )
+    output_file = repo / ".securevibes" / "intro_pr_review.json"
+
+    async def _checkpoint_then_fail(*_args, **kwargs):
+        progress_writer = kwargs["progress_writer"]
+        progress_writer(
+            ScanResult(
+                repository_path=str(repo),
+                issues=[
+                    SecurityIssue(
+                        id="PR-1",
+                        severity=Severity.HIGH,
+                        title="Checkpoint finding",
+                        description="Checkpointed during focused passes.",
+                        file_path="src/app.py",
+                        line_number=1,
+                        code_snippet="danger()",
+                        cwe_id="CWE-94",
+                    )
+                ],
+                files_scanned=1,
+                scan_time_seconds=1.2,
+                total_cost_usd=0.02,
+                warnings=["checkpoint"],
+            )
+        )
+        raise RuntimeError("short-circuit")
+
+    monkeypatch.setattr("securevibes.cli.main._run_pr_review", _checkpoint_then_fail)
+
+    runner = CliRunner()
+    invocation = runner.invoke(
+        cli,
+        [
+            "pr-review",
+            str(repo),
+            "--diff",
+            str(diff_file),
+            "--format",
+            "json",
+            "--output",
+            str(output_file),
+        ],
+    )
+
+    assert invocation.exit_code == 1
+    assert output_file.exists()
+    payload = json.loads(output_file.read_text(encoding="utf-8"))
+    assert payload["summary"]["high"] == 1
+    assert payload["issues"][0]["title"] == "Checkpoint finding"
