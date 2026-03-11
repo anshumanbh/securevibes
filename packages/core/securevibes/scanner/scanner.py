@@ -2611,6 +2611,7 @@ class Scanner:
     ) -> PRReviewContext:
         """Assemble all context needed before the PR review attempt loop."""
         scan_start_time = time.time()
+        context_prep_start_time = time.time()
 
         focused_diff_context = _build_focused_diff_context(diff_context)
         _enforce_focused_diff_coverage(diff_context, focused_diff_context)
@@ -2699,7 +2700,9 @@ class Scanner:
             auth_privilege_signals=auth_privilege_signals,
         )
         new_surface_threat_delta = "- No new-surface threat delta generated."
+        new_surface_delta_seconds = 0.0
         if new_surface_components:
+            new_surface_delta_start = time.time()
             new_surface_paths = [
                 path for _component_key, paths, _weight in new_surface_components for path in paths
             ]
@@ -2728,8 +2731,11 @@ class Scanner:
                 threat_context_summary=threat_context_summary,
                 vuln_context_summary=vuln_context_summary,
             )
+            new_surface_delta_seconds = round(time.time() - new_surface_delta_start, 2)
         pr_hypotheses = "- None generated."
+        hypothesis_generation_seconds = 0.0
         if focused_diff_context.files:
+            hypothesis_generation_start = time.time()
             pr_hypotheses = await _generate_pr_hypotheses(
                 repo=repo,
                 model=self.model,
@@ -2745,6 +2751,8 @@ class Scanner:
                 vuln_context_summary=vuln_context_summary,
                 architecture_context=architecture_context,
             )
+            hypothesis_generation_seconds = round(time.time() - hypothesis_generation_start, 2)
+        context_prep_seconds = round(time.time() - context_prep_start_time, 2)
         if self.debug:
             logger.debug("PR exploit hypotheses prepared")
             logger.debug(
@@ -2859,6 +2867,24 @@ Only report findings at or above: {severity_threshold}
             scan_start_time=scan_start_time,
             severity_threshold=severity_threshold,
             changed_code_chain_summary=changed_code_chain_summary,
+            context_prep_seconds=context_prep_seconds,
+            new_surface_delta_seconds=new_surface_delta_seconds,
+            hypothesis_generation_seconds=hypothesis_generation_seconds,
+        )
+
+    def _format_pr_timing_summary(self, ctx: PRReviewContext, state: PRReviewState) -> str:
+        """Return a concise PR timing summary for fail-closed debugging."""
+        attempt_summary = (
+            ", ".join(f"{elapsed:.2f}s" for elapsed in state.attempt_elapsed_seconds)
+            if state.attempt_elapsed_seconds
+            else "none"
+        )
+        return (
+            "PR timing summary: "
+            f"context_prep={ctx.context_prep_seconds:.2f}s "
+            f"(new_surface_delta={ctx.new_surface_delta_seconds:.2f}s, "
+            f"hypotheses={ctx.hypothesis_generation_seconds:.2f}s); "
+            f"attempts=[{attempt_summary}]"
         )
 
     def _raise_pr_review_execution_failure(
@@ -2871,8 +2897,11 @@ Only report findings at or above: {severity_threshold}
             "PR code review agent did not produce a readable PR_VULNERABILITIES.json after "
             f"{ctx.pr_review_attempts} attempt(s). Refusing fail-open PR review result."
         )
+        timing_summary = self._format_pr_timing_summary(ctx, state)
         state.warnings.append(error_msg)
+        state.warnings.append(timing_summary)
         self.console.print(f"\n[bold red]ERROR:[/bold red] {error_msg}\n")
+        self.console.print(f"[bold yellow]Timing:[/bold yellow] {timing_summary}\n")
         raise RuntimeError(error_msg)
 
     async def _run_pr_refinement_and_verification(

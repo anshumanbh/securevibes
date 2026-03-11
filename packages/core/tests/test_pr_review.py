@@ -3129,6 +3129,9 @@ async def test_prepare_pr_review_context_includes_new_surface_delta_for_novel_co
     assert "- Installer boundary delta" in ctx.contextualized_prompt
     assert mock_delta.await_args.kwargs["timeout_seconds"] == 40
     assert mock_hypotheses.await_args.kwargs["timeout_seconds"] == 120
+    assert ctx.context_prep_seconds >= 0
+    assert ctx.new_surface_delta_seconds >= 0
+    assert ctx.hypothesis_generation_seconds >= 0
 
 
 @pytest.mark.asyncio
@@ -4863,3 +4866,44 @@ class TestTriageWiring:
         # Timeout=200 preserved; attempts reduced by triage since not explicitly set
         assert captured["attempts"] == 1
         assert captured["timeout"] == 200
+
+
+def test_raise_pr_review_execution_failure_adds_timing_summary(tmp_path: Path):
+    """Fail-closed PR review errors should include timing context for debugging."""
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+    empty_diff = DiffContext(files=[], added_lines=0, removed_lines=0, changed_files=[])
+    ctx = PRReviewContext(
+        repo=tmp_path,
+        securevibes_dir=tmp_path / ".securevibes",
+        focused_diff_context=empty_diff,
+        diff_context=empty_diff,
+        contextualized_prompt="Review this PR",
+        baseline_vulns=[],
+        pr_review_attempts=1,
+        pr_timeout_seconds=180,
+        pr_vulns_path=tmp_path / "PR_VULNERABILITIES.json",
+        detected_languages={"python"},
+        command_builder_signals=False,
+        path_parser_signals=False,
+        auth_privilege_signals=False,
+        retry_focus_plan=[],
+        diff_line_anchors="",
+        diff_hunk_snippets="",
+        pr_grep_default_scope=".",
+        scan_start_time=0.0,
+        severity_threshold="medium",
+        context_prep_seconds=241.5,
+        new_surface_delta_seconds=60.0,
+        hypothesis_generation_seconds=180.0,
+    )
+    state = PRReviewState(attempt_elapsed_seconds=[179.9])
+
+    with pytest.raises(
+        RuntimeError,
+        match="PR code review agent did not produce a readable PR_VULNERABILITIES.json",
+    ):
+        scanner._raise_pr_review_execution_failure(ctx, state)
+
+    assert any("PR timing summary:" in warning for warning in state.warnings)
+    assert any("attempts=[179.90s]" in warning for warning in state.warnings)

@@ -112,6 +112,9 @@ class TestPRReviewContext:
         assert ctx.pr_review_attempts == 3
         assert ctx.detected_languages == {"python"}
         assert ctx.retry_focus_plan == ["command_option", "path_exfiltration"]
+        assert ctx.context_prep_seconds == 0.0
+        assert ctx.new_surface_delta_seconds == 0.0
+        assert ctx.hypothesis_generation_seconds == 0.0
 
 
 class TestPRReviewState:
@@ -127,6 +130,7 @@ class TestPRReviewState:
         assert state.attempts_with_overwritten_artifact == 0
         assert state.attempt_finding_counts == []
         assert state.attempt_observed_counts == []
+        assert state.attempt_elapsed_seconds == []
         assert state.attempt_focus_areas == []
         assert state.attempt_chain_ids == []
         assert state.attempt_chain_exact_ids == []
@@ -627,6 +631,8 @@ class TestRunAttemptLoop:
 
         assert any("timed out after 0.1s" in warning for warning in state.warnings)
         assert state.attempt_finding_counts == [0]
+        assert len(state.attempt_elapsed_seconds) == 1
+        assert state.attempt_elapsed_seconds[0] >= 0
 
     async def test_timeout_budget_includes_client_setup(self, single_attempt_ctx):
         """Client setup time should count against the same attempt timeout budget."""

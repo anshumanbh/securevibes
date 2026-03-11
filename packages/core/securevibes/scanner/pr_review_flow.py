@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional, Type
@@ -78,6 +79,9 @@ class PRReviewContext:
     scan_start_time: float
     severity_threshold: str
     changed_code_chain_summary: str = "- None identified."
+    context_prep_seconds: float = 0.0
+    new_surface_delta_seconds: float = 0.0
+    hypothesis_generation_seconds: float = 0.0
 
 
 @dataclass
@@ -93,6 +97,7 @@ class PRReviewState:
     attempts_with_overwritten_artifact: int = 0
     attempt_finding_counts: list[int] = field(default_factory=list)
     attempt_observed_counts: list[int] = field(default_factory=list)
+    attempt_elapsed_seconds: list[float] = field(default_factory=list)
     attempt_focus_areas: list[str] = field(default_factory=list)
     attempt_chain_ids: list[set[str]] = field(default_factory=list)
     attempt_chain_exact_ids: list[set[str]] = field(default_factory=list)
@@ -372,6 +377,7 @@ class PRReviewAttemptRunner:
         consecutive_clean_passes = 0
 
         for attempt_idx in range(pr_review_attempts):
+            attempt_start_time = time.monotonic()
             attempt_num = attempt_idx + 1
             state.attempts_run = attempt_num
             retry_suffix = ""
@@ -527,6 +533,7 @@ class PRReviewAttemptRunner:
                 loaded_vulns=loaded_vulns,
                 load_warning=load_warning,
             )
+            state.attempt_elapsed_seconds.append(round(time.monotonic() - attempt_start_time, 2))
 
             if attempt_error or load_warning:
                 consecutive_clean_passes = 0
