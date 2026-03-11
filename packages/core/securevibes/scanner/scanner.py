@@ -1166,9 +1166,9 @@ ARCHITECTURE CONTEXT:
 
     collected_text: list[str] = []
     try:
-        async with ClaudeSDKClient(options=options) as client:
 
-            async def _run_llm_exchange() -> None:
+        async def _run_client_session() -> None:
+            async with ClaudeSDKClient(options=options) as client:
                 await client.query(hypothesis_prompt)
                 async for message in client.receive_messages():
                     if isinstance(message, AssistantMessage):
@@ -1178,7 +1178,7 @@ ARCHITECTURE CONTEXT:
                     elif isinstance(message, ResultMessage):
                         break
 
-            await asyncio.wait_for(_run_llm_exchange(), timeout=max(1, timeout_seconds))
+        await asyncio.wait_for(_run_client_session(), timeout=max(1, timeout_seconds))
     except (OSError, asyncio.TimeoutError, RuntimeError):
         logger.warning(
             "Hypothesis generation timed out or failed — downstream review passes may lack context",
@@ -1279,9 +1279,9 @@ CANDIDATE FINDINGS JSON:
 
     collected_text: list[str] = []
     try:
-        async with ClaudeSDKClient(options=options) as client:
 
-            async def _run_llm_exchange() -> None:
+        async def _run_client_session() -> None:
+            async with ClaudeSDKClient(options=options) as client:
                 await client.query(refinement_prompt)
                 async for message in client.receive_messages():
                     if isinstance(message, AssistantMessage):
@@ -1291,7 +1291,7 @@ CANDIDATE FINDINGS JSON:
                     elif isinstance(message, ResultMessage):
                         break
 
-            await asyncio.wait_for(_run_llm_exchange(), timeout=max(1, timeout_seconds))
+        await asyncio.wait_for(_run_client_session(), timeout=max(1, timeout_seconds))
     except (OSError, asyncio.TimeoutError, RuntimeError):
         logger.warning(
             "PR finding refinement timed out or failed — unrefined findings will be retained",
@@ -1313,6 +1313,14 @@ CANDIDATE FINDINGS JSON:
     if not isinstance(parsed, list):
         return None
     return [entry for entry in parsed if isinstance(entry, dict)]
+
+
+def _derive_pr_context_timeouts(pr_timeout_seconds: int) -> tuple[int, int]:
+    """Bound pre-review context generation so the main PR attempt retains most budget."""
+    effective_timeout = max(30, pr_timeout_seconds)
+    new_surface_delta_timeout = max(15, min(30, effective_timeout // 6))
+    hypothesis_timeout = max(20, min(45, effective_timeout // 4))
+    return new_surface_delta_timeout, hypothesis_timeout
 
 
 def score_diff_file_for_security_review(diff_file: DiffFile) -> int:
@@ -1849,9 +1857,9 @@ ARCHITECTURE CONTEXT:
 
     collected_text: list[str] = []
     try:
-        async with ClaudeSDKClient(options=options) as client:
 
-            async def _run_llm_exchange() -> None:
+        async def _run_client_session() -> None:
+            async with ClaudeSDKClient(options=options) as client:
                 await client.query(delta_prompt)
                 async for message in client.receive_messages():
                     if isinstance(message, AssistantMessage):
@@ -1861,7 +1869,7 @@ ARCHITECTURE CONTEXT:
                     elif isinstance(message, ResultMessage):
                         break
 
-            await asyncio.wait_for(_run_llm_exchange(), timeout=max(1, timeout_seconds))
+        await asyncio.wait_for(_run_client_session(), timeout=max(1, timeout_seconds))
     except (OSError, asyncio.TimeoutError, RuntimeError):
         logger.warning(
             "New-surface threat delta generation timed out or failed — PR review will continue "
@@ -2690,9 +2698,10 @@ class Scanner:
             if pr_timeout_seconds_override is not None
             else config.get_pr_review_timeout_seconds()
         )
-        # Keep delta threat modeling bounded so it cannot dominate the main
-        # PR-review budget on large shards.
-        new_surface_delta_timeout = max(30, min(60, pr_timeout_seconds // 3))
+        (
+            new_surface_delta_timeout,
+            hypothesis_generation_timeout,
+        ) = _derive_pr_context_timeouts(pr_timeout_seconds)
         retry_focus_plan = build_pr_retry_focus_plan(
             pr_review_attempts,
             command_builder_signals=command_builder_signals,
@@ -2739,7 +2748,7 @@ class Scanner:
             pr_hypotheses = await _generate_pr_hypotheses(
                 repo=repo,
                 model=self.model,
-                timeout_seconds=pr_timeout_seconds,
+                timeout_seconds=hypothesis_generation_timeout,
                 changed_files=focused_diff_context.changed_files,
                 diff_line_anchors=diff_line_anchors,
                 diff_hunk_snippets=diff_hunk_snippets,

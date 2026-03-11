@@ -52,6 +52,7 @@ from securevibes.scanner.scanner import (
     _build_focused_diff_context,
     _component_matches_baseline,
     _derive_pr_default_grep_scope,
+    _derive_pr_context_timeouts,
     _derive_baseline_component_keys,
     _enforce_focused_diff_coverage,
     _FOCUSED_DIFF_MAX_HUNK_LINES,
@@ -611,6 +612,13 @@ def test_format_changed_code_dataflow_summary_prioritizes_connected_sink_chain()
     assert "targetDir <- path.join(extensionsDir, safeDirName(pluginId))" in summary
     assert "fs.cp(packageDir, targetDir, { recursive: true })" in summary
     assert "unscopedPackageName(name: string)" not in summary
+
+
+def test_derive_pr_context_timeouts_bounds_context_budget():
+    """Pre-review context budgets should stay well below the main attempt budget."""
+    assert _derive_pr_context_timeouts(60) == (15, 20)
+    assert _derive_pr_context_timeouts(120) == (20, 30)
+    assert _derive_pr_context_timeouts(180) == (30, 45)
 
 
 def test_format_changed_code_dataflow_chains_prioritizes_policy_predicates():
@@ -2956,6 +2964,53 @@ async def test_generate_new_surface_threat_delta_uses_no_tools_and_default_permi
 
 
 @pytest.mark.asyncio
+async def test_generate_new_surface_threat_delta_timeout_includes_client_setup(tmp_path: Path):
+    """New-surface threat delta timeout should cover slow client setup."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    class _SlowClientCtx:
+        async def __aenter__(self):
+            await asyncio.sleep(0.05)
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def query(self, prompt):
+            return None
+
+        async def receive_messages(self):
+            if False:  # pragma: no cover
+                yield None
+
+    with patch(
+        "securevibes.scanner.scanner.ClaudeSDKClient",
+        return_value=_SlowClientCtx(),
+    ):
+        real_wait_for = asyncio.wait_for
+
+        async def short_wait_for(awaitable, timeout):
+            return await real_wait_for(awaitable, timeout=0.01)
+
+        with patch("securevibes.scanner.scanner.asyncio.wait_for", new=short_wait_for):
+            result = await _generate_new_surface_threat_delta(
+                repo=repo,
+                model="sonnet",
+                timeout_seconds=1,
+                changed_files=["src/plugins/install.ts"],
+                component_delta_summary="- New-surface changed component: src/plugins -> src/plugins/install.ts",
+                diff_line_anchors="- src/plugins/install.ts:42",
+                diff_hunk_snippets="+ const targetDir = path.join(base, pluginId);",
+                architecture_context="- Existing gateway and CLI components",
+                threat_context_summary="- None",
+                vuln_context_summary="- None",
+            )
+
+    assert result == "- No new-surface threat delta generated."
+
+
+@pytest.mark.asyncio
 async def test_refine_pr_findings_uses_no_tools_and_default_permissions(tmp_path: Path):
     """PR refinement helper should run LLM-only with safe default permissions."""
     repo = tmp_path / "repo"
@@ -3127,8 +3182,8 @@ async def test_prepare_pr_review_context_includes_new_surface_delta_for_novel_co
     )
     assert "NEW-SURFACE THREAT DELTA" in ctx.contextualized_prompt
     assert "- Installer boundary delta" in ctx.contextualized_prompt
-    assert mock_delta.await_args.kwargs["timeout_seconds"] == 40
-    assert mock_hypotheses.await_args.kwargs["timeout_seconds"] == 120
+    assert mock_delta.await_args.kwargs["timeout_seconds"] == 20
+    assert mock_hypotheses.await_args.kwargs["timeout_seconds"] == 30
     assert ctx.context_prep_seconds >= 0
     assert ctx.new_surface_delta_seconds >= 0
     assert ctx.hypothesis_generation_seconds >= 0
@@ -4300,6 +4355,42 @@ class TestGeneratePrHypotheses:
         mock_logger.warning.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_timeout_includes_client_setup(self):
+        """Hypothesis timeout should cover slow client setup."""
+
+        class _SlowClientCtx:
+            async def __aenter__(self):
+                await asyncio.sleep(0.05)
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def query(self, prompt):
+                return None
+
+            async def receive_messages(self):
+                if False:  # pragma: no cover
+                    yield None
+
+        with patch(
+            "securevibes.scanner.scanner.ClaudeSDKClient",
+            return_value=_SlowClientCtx(),
+        ):
+            real_wait_for = asyncio.wait_for
+
+            async def short_wait_for(awaitable, timeout):
+                return await real_wait_for(awaitable, timeout=0.01)
+
+            with patch("securevibes.scanner.scanner.asyncio.wait_for", new=short_wait_for):
+                result = await _generate_pr_hypotheses(
+                    timeout_seconds=1,
+                    **self._DEFAULT_KWARGS,
+                )
+
+        assert result == "- Unable to generate hypotheses."
+
+    @pytest.mark.asyncio
     async def test_explicit_timeout_seconds_are_honored(self):
         """Hypothesis generation should honor the caller-provided timeout budget."""
         from claude_agent_sdk.types import ResultMessage
@@ -4427,6 +4518,43 @@ class TestRefinePrFindingsWithLlm:
 
         assert result is None
         mock_logger.warning.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_timeout_includes_client_setup(self):
+        """Refinement timeout should cover slow client setup."""
+
+        class _SlowClientCtx:
+            async def __aenter__(self):
+                await asyncio.sleep(0.05)
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def query(self, prompt):
+                return None
+
+            async def receive_messages(self):
+                if False:  # pragma: no cover
+                    yield None
+
+        with patch(
+            "securevibes.scanner.scanner.ClaudeSDKClient",
+            return_value=_SlowClientCtx(),
+        ):
+            real_wait_for = asyncio.wait_for
+
+            async def short_wait_for(awaitable, timeout):
+                return await real_wait_for(awaitable, timeout=0.01)
+
+            with patch("securevibes.scanner.scanner.asyncio.wait_for", new=short_wait_for):
+                result = await _refine_pr_findings_with_llm(
+                    findings=[{"title": "test"}],
+                    timeout_seconds=1,
+                    **self._DEFAULT_KWARGS,
+                )
+
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_os_error_returns_none(self):
