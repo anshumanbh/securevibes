@@ -1075,6 +1075,7 @@ async def _generate_pr_hypotheses(
     *,
     repo: Path,
     model: str,
+    timeout_seconds: int = 240,
     changed_files: list[str],
     diff_line_anchors: str,
     diff_hunk_snippets: str,
@@ -1177,11 +1178,7 @@ ARCHITECTURE CONTEXT:
                     elif isinstance(message, ResultMessage):
                         break
 
-            # 240s timeout covers the full LLM exchange (query + stream).
-            # Raised from 90s because prompt truncation limits were increased
-            # (NEW_FILE_HUNK_MAX_LINES=200, NEW_FILE_ANCHOR_MAX_LINES=120)
-            # producing larger prompts that need more time on big repos.
-            await asyncio.wait_for(_run_llm_exchange(), timeout=240)
+            await asyncio.wait_for(_run_llm_exchange(), timeout=max(1, timeout_seconds))
     except (OSError, asyncio.TimeoutError, RuntimeError):
         logger.warning(
             "Hypothesis generation timed out or failed — downstream review passes may lack context",
@@ -1195,6 +1192,7 @@ async def _refine_pr_findings_with_llm(
     *,
     repo: Path,
     model: str,
+    timeout_seconds: int = 240,
     diff_line_anchors: str,
     diff_hunk_snippets: str,
     changed_code_chain_summary: str = "- None identified.",
@@ -1293,8 +1291,7 @@ CANDIDATE FINDINGS JSON:
                     elif isinstance(message, ResultMessage):
                         break
 
-            # 240s timeout — matches hypothesis generation timeout.
-            await asyncio.wait_for(_run_llm_exchange(), timeout=240)
+            await asyncio.wait_for(_run_llm_exchange(), timeout=max(1, timeout_seconds))
     except (OSError, asyncio.TimeoutError, RuntimeError):
         logger.warning(
             "PR finding refinement timed out or failed — unrefined findings will be retained",
@@ -2736,6 +2733,7 @@ class Scanner:
             pr_hypotheses = await _generate_pr_hypotheses(
                 repo=repo,
                 model=self.model,
+                timeout_seconds=pr_timeout_seconds,
                 changed_files=focused_diff_context.changed_files,
                 diff_line_anchors=diff_line_anchors,
                 diff_hunk_snippets=diff_hunk_snippets,
@@ -2974,6 +2972,7 @@ Only report findings at or above: {severity_threshold}
             refined_pr_vulns = await _refine_pr_findings_with_llm(
                 repo=ctx.repo,
                 model=self.model,
+                timeout_seconds=ctx.pr_timeout_seconds,
                 diff_line_anchors=ctx.diff_line_anchors,
                 diff_hunk_snippets=ctx.diff_hunk_snippets,
                 changed_code_chain_summary=ctx.changed_code_chain_summary,
@@ -3047,6 +3046,7 @@ Only report findings at or above: {severity_threshold}
             verified_pr_vulns = await _refine_pr_findings_with_llm(
                 repo=ctx.repo,
                 model=self.model,
+                timeout_seconds=ctx.pr_timeout_seconds,
                 diff_line_anchors=ctx.diff_line_anchors,
                 diff_hunk_snippets=ctx.diff_hunk_snippets,
                 changed_code_chain_summary=ctx.changed_code_chain_summary,

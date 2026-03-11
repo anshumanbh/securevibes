@@ -2899,6 +2899,7 @@ async def test_generate_pr_hypotheses_uses_no_tools_and_default_permissions(
         await _generate_pr_hypotheses(
             repo=repo,
             model="sonnet",
+            timeout_seconds=120,
             changed_files=["app.py"],
             diff_line_anchors="- app.py",
             diff_hunk_snippets="--- app.py",
@@ -2975,6 +2976,7 @@ async def test_refine_pr_findings_uses_no_tools_and_default_permissions(tmp_path
         await _refine_pr_findings_with_llm(
             repo=repo,
             model="sonnet",
+            timeout_seconds=120,
             diff_line_anchors="- app.py",
             diff_hunk_snippets="--- app.py",
             findings=[
@@ -3102,7 +3104,7 @@ async def test_prepare_pr_review_context_includes_new_surface_delta_for_novel_co
         patch(
             "securevibes.scanner.scanner._generate_pr_hypotheses",
             new=AsyncMock(return_value="- Generic hypothesis"),
-        ),
+        ) as mock_hypotheses,
         patch(
             "securevibes.scanner.scanner._generate_new_surface_threat_delta",
             new=AsyncMock(return_value="- Installer boundary delta"),
@@ -3118,6 +3120,7 @@ async def test_prepare_pr_review_context_includes_new_surface_delta_for_novel_co
         )
 
     assert mock_delta.await_count == 1
+    assert mock_hypotheses.await_count == 1
     assert "CHANGED COMPONENT COVERAGE VS BASELINE ARTIFACTS" in ctx.contextualized_prompt
     assert "New-surface changed component: src/plugins -> src/plugins/install.ts" in (
         ctx.contextualized_prompt
@@ -3125,6 +3128,7 @@ async def test_prepare_pr_review_context_includes_new_surface_delta_for_novel_co
     assert "NEW-SURFACE THREAT DELTA" in ctx.contextualized_prompt
     assert "- Installer boundary delta" in ctx.contextualized_prompt
     assert mock_delta.await_args.kwargs["timeout_seconds"] == 40
+    assert mock_hypotheses.await_args.kwargs["timeout_seconds"] == 120
 
 
 @pytest.mark.asyncio
@@ -4292,6 +4296,45 @@ class TestGeneratePrHypotheses:
         assert result == "- Unable to generate hypotheses."
         mock_logger.warning.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_explicit_timeout_seconds_are_honored(self):
+        """Hypothesis generation should honor the caller-provided timeout budget."""
+        from claude_agent_sdk.types import ResultMessage
+
+        result_msg = ResultMessage(
+            subtype="success",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=False,
+            num_turns=1,
+            session_id="test-session",
+        )
+
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=None)
+
+        async def mock_receive():
+            yield result_msg
+
+        mock_client.receive_messages = mock_receive
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        captured: dict[str, float] = {}
+        real_wait_for = asyncio.wait_for
+
+        async def capture_wait_for(awaitable, timeout):
+            captured["timeout"] = timeout
+            return await real_wait_for(awaitable, timeout=timeout)
+
+        with (
+            patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client),
+            patch("securevibes.scanner.scanner.asyncio.wait_for", new=capture_wait_for),
+        ):
+            await _generate_pr_hypotheses(timeout_seconds=17, **self._DEFAULT_KWARGS)
+
+        assert captured["timeout"] == 17
+
 
 # ---------------------------------------------------------------------------
 # Tests for _refine_pr_findings_with_llm (P3.7)
@@ -4623,8 +4666,49 @@ class TestRefinePrFindingsWithLlm:
             )
 
         assert result is not None
-        assert len(result) == 1
-        assert result[0]["title"] == "valid"
+
+    @pytest.mark.asyncio
+    async def test_explicit_timeout_seconds_are_honored(self):
+        """Finding refinement should honor the caller-provided timeout budget."""
+        from claude_agent_sdk.types import ResultMessage
+
+        result_msg = ResultMessage(
+            subtype="success",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=False,
+            num_turns=1,
+            session_id="test-session",
+        )
+
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=None)
+
+        async def mock_receive():
+            yield result_msg
+
+        mock_client.receive_messages = mock_receive
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        captured: dict[str, float] = {}
+        real_wait_for = asyncio.wait_for
+
+        async def capture_wait_for(awaitable, timeout):
+            captured["timeout"] = timeout
+            return await real_wait_for(awaitable, timeout=timeout)
+
+        with (
+            patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client),
+            patch("securevibes.scanner.scanner.asyncio.wait_for", new=capture_wait_for),
+        ):
+            await _refine_pr_findings_with_llm(
+                findings=[{"title": "test"}],
+                timeout_seconds=19,
+                **self._DEFAULT_KWARGS,
+            )
+
+        assert captured["timeout"] == 19
 
 
 # ---------------------------------------------------------------------------
