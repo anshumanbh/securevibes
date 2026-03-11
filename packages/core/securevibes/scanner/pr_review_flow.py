@@ -82,6 +82,7 @@ class PRReviewContext:
     context_prep_seconds: float = 0.0
     new_surface_delta_seconds: float = 0.0
     hypothesis_generation_seconds: float = 0.0
+    context_phase_timings: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass

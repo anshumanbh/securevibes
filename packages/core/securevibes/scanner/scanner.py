@@ -2620,9 +2620,14 @@ class Scanner:
         """Assemble all context needed before the PR review attempt loop."""
         scan_start_time = time.time()
         context_prep_start_time = time.time()
+        context_phase_timings: Dict[str, float] = {}
 
+        phase_start = time.time()
         focused_diff_context = _build_focused_diff_context(diff_context)
         _enforce_focused_diff_coverage(diff_context, focused_diff_context)
+        context_phase_timings["focused_diff_seconds"] = round(time.time() - phase_start, 2)
+
+        phase_start = time.time()
         diff_context_path = self._repo_output_path(
             repo,
             Path(SECUREVIBES_DIR) / DIFF_CONTEXT_FILE,
@@ -2633,17 +2638,23 @@ class Scanner:
         # Write individual diff files so the LLM agent can Read them when
         # prompt snippets are truncated (especially for large new files).
         diff_file_paths = _write_diff_files_for_agent(securevibes_dir, focused_diff_context)
+        context_phase_timings["diff_artifact_write_seconds"] = round(time.time() - phase_start, 2)
 
+        phase_start = time.time()
         architecture_context = extract_relevant_architecture(
             securevibes_dir / SECURITY_FILE,
             focused_diff_context.changed_files,
         )
+        context_phase_timings["architecture_context_seconds"] = round(time.time() - phase_start, 2)
 
+        phase_start = time.time()
         relevant_threats = filter_relevant_threats(
             securevibes_dir / THREAT_MODEL_FILE,
             focused_diff_context.changed_files,
         )
+        context_phase_timings["threat_filter_seconds"] = round(time.time() - phase_start, 2)
 
+        phase_start = time.time()
         known_vulns = []
         if known_vulns_path and known_vulns_path.exists():
             try:
@@ -2653,17 +2664,27 @@ class Scanner:
                     known_vulns = parsed
             except (OSError, json.JSONDecodeError):
                 known_vulns = []
+        context_phase_timings["known_vuln_load_seconds"] = round(time.time() - phase_start, 2)
 
+        phase_start = time.time()
         baseline_vulns = filter_baseline_vulns(known_vulns)
         relevant_baseline_vulns = filter_relevant_vulnerabilities(
             baseline_vulns,
             focused_diff_context.changed_files,
         )
+        context_phase_timings["baseline_vuln_filter_seconds"] = round(time.time() - phase_start, 2)
+
+        phase_start = time.time()
         baseline_component_keys = _derive_baseline_component_keys(securevibes_dir)
         risk_components, new_surface_components = _classify_changed_components(
             focused_diff_context,
             baseline_component_keys=baseline_component_keys,
         )
+        context_phase_timings["component_classification_seconds"] = round(
+            time.time() - phase_start, 2
+        )
+
+        phase_start = time.time()
         component_delta_summary = _format_component_delta_summary(
             risk_components,
             new_surface_components,
@@ -2688,6 +2709,11 @@ class Scanner:
         path_parser_signals = diff_has_path_parser_signals(focused_diff_context)
         auth_privilege_signals = diff_has_auth_privilege_signals(focused_diff_context)
         pr_grep_default_scope = _derive_pr_default_grep_scope(focused_diff_context)
+        context_phase_timings["prompt_context_summary_seconds"] = round(
+            time.time() - phase_start, 2
+        )
+
+        phase_start = time.time()
         pr_review_attempts = (
             pr_review_attempts_override
             if pr_review_attempts_override is not None
@@ -2708,6 +2734,7 @@ class Scanner:
             path_parser_signals=path_parser_signals,
             auth_privilege_signals=auth_privilege_signals,
         )
+        context_phase_timings["budget_and_retry_plan_seconds"] = round(time.time() - phase_start, 2)
         new_surface_threat_delta = "- No new-surface threat delta generated."
         new_surface_delta_seconds = 0.0
         if new_surface_components:
@@ -2741,6 +2768,7 @@ class Scanner:
                 vuln_context_summary=vuln_context_summary,
             )
             new_surface_delta_seconds = round(time.time() - new_surface_delta_start, 2)
+            context_phase_timings["new_surface_delta_seconds"] = new_surface_delta_seconds
         pr_hypotheses = "- None generated."
         hypothesis_generation_seconds = 0.0
         if focused_diff_context.files:
@@ -2761,7 +2789,9 @@ class Scanner:
                 architecture_context=architecture_context,
             )
             hypothesis_generation_seconds = round(time.time() - hypothesis_generation_start, 2)
+            context_phase_timings["hypothesis_generation_seconds"] = hypothesis_generation_seconds
         context_prep_seconds = round(time.time() - context_prep_start_time, 2)
+        context_phase_timings["context_prep_total_seconds"] = context_prep_seconds
         if self.debug:
             logger.debug("PR exploit hypotheses prepared")
             logger.debug(
@@ -2879,6 +2909,7 @@ Only report findings at or above: {severity_threshold}
             context_prep_seconds=context_prep_seconds,
             new_surface_delta_seconds=new_surface_delta_seconds,
             hypothesis_generation_seconds=hypothesis_generation_seconds,
+            context_phase_timings=context_phase_timings,
         )
 
     def _format_pr_timing_summary(self, ctx: PRReviewContext, state: PRReviewState) -> str:
@@ -2888,11 +2919,21 @@ Only report findings at or above: {severity_threshold}
             if state.attempt_elapsed_seconds
             else "none"
         )
+        phase_summary = (
+            ", ".join(
+                f"{phase}={elapsed:.2f}s"
+                for phase, elapsed in ctx.context_phase_timings.items()
+                if elapsed > 0
+            )
+            if ctx.context_phase_timings
+            else "none"
+        )
         return (
             "PR timing summary: "
             f"context_prep={ctx.context_prep_seconds:.2f}s "
             f"(new_surface_delta={ctx.new_surface_delta_seconds:.2f}s, "
             f"hypotheses={ctx.hypothesis_generation_seconds:.2f}s); "
+            f"phases=[{phase_summary}]; "
             f"attempts=[{attempt_summary}]"
         )
 

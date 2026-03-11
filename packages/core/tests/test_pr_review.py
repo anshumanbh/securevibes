@@ -3187,6 +3187,8 @@ async def test_prepare_pr_review_context_includes_new_surface_delta_for_novel_co
     assert ctx.context_prep_seconds >= 0
     assert ctx.new_surface_delta_seconds >= 0
     assert ctx.hypothesis_generation_seconds >= 0
+    assert "component_classification_seconds" in ctx.context_phase_timings
+    assert "context_prep_total_seconds" in ctx.context_phase_timings
 
 
 @pytest.mark.asyncio
@@ -5024,6 +5026,13 @@ def test_raise_pr_review_execution_failure_adds_timing_summary(tmp_path: Path):
         context_prep_seconds=241.5,
         new_surface_delta_seconds=60.0,
         hypothesis_generation_seconds=180.0,
+        context_phase_timings={
+            "focused_diff_seconds": 1.2,
+            "component_classification_seconds": 0.4,
+            "new_surface_delta_seconds": 60.0,
+            "hypothesis_generation_seconds": 180.0,
+            "context_prep_total_seconds": 241.5,
+        },
     )
     state = PRReviewState(attempt_elapsed_seconds=[179.9])
 
@@ -5034,4 +5043,5 @@ def test_raise_pr_review_execution_failure_adds_timing_summary(tmp_path: Path):
         scanner._raise_pr_review_execution_failure(ctx, state)
 
     assert any("PR timing summary:" in warning for warning in state.warnings)
+    assert any("component_classification_seconds=0.40s" in warning for warning in state.warnings)
     assert any("attempts=[179.90s]" in warning for warning in state.warnings)

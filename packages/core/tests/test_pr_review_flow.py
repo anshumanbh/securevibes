@@ -115,6 +115,7 @@ class TestPRReviewContext:
         assert ctx.context_prep_seconds == 0.0
         assert ctx.new_surface_delta_seconds == 0.0
         assert ctx.hypothesis_generation_seconds == 0.0
+        assert ctx.context_phase_timings == {}
 
 
 class TestPRReviewState:
