@@ -3834,6 +3834,10 @@ async def test_prepare_pr_review_context_includes_changed_code_dataflow_facts(
     assert "Reason from code-enforced constraints on the reviewed path" in (
         ctx.contextualized_prompt
     )
+    assert "compare the validator's matching semantics to the downstream consumer's semantics" in (
+        ctx.contextualized_prompt
+    )
+    assert "aliases, abbreviations, normalization differences" in (ctx.contextualized_prompt)
     assert "Values loaded from local files," in (ctx.contextualized_prompt)
     assert "remain attacker-controlled" in (ctx.contextualized_prompt)
     assert "EXPLICIT CHANGED-CODE CHAINS TO VALIDATE INDEPENDENTLY" in (ctx.contextualized_prompt)
@@ -5306,6 +5310,10 @@ class TestRefinePrFindingsWithLlm:
 
         prompt = captured_prompt["value"]
         assert "Authorization and policy allow/deny decisions are privileged sinks." in prompt
+        assert (
+            "compare the validator's matching semantics to the downstream consumer's semantics"
+            in prompt
+        )
         assert "EXPLICIT CHANGED-CODE CHAINS:" in prompt
         assert "- callerId -> normalize -> allow/deny predicate" in prompt
 

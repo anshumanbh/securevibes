@@ -1474,6 +1474,7 @@ Cross-domain exploit checks:
 - For command/CLI helper diffs, verify whether attacker-controlled host/target values can become CLI options.
 - If positional host/target arguments are appended without robust dash-prefixed rejection or `--` separation, treat as option injection chain (CWE-88) when supported by the diff.
 - Do not classify explicit option-value pairs (such as `-i <value>`) as option injection unless the value is proven to be reinterpreted as a flag.
+- When changed code implements an allow/deny policy in front of a downstream parser, interpreter, CLI, or protocol consumer, compare the validator's matching semantics to the downstream consumer's semantics. Exact string checks, aliases, abbreviations, normalization differences, inline-value forms, or fallback paths can create a bypass if the downstream consumer accepts a broader input language than the validator.
 - For path/parser diffs, verify concrete path/source -> file read/host/send/upload sink reachability before reporting.
 - For auth/privilege diffs, verify concrete caller reachability and missing enforcement before reporting.
 - Authorization and policy allow/deny decisions are privileged sinks. If attacker-controlled identity or selector data reaches an allow/deny predicate and changed code weakens matching, normalization, or missing-value handling, preserve that bypass as a concrete exploit chain even when the policy list itself is operator-configured.
@@ -3105,6 +3106,10 @@ Reason from code-enforced constraints on the reviewed path, not package-manager,
 schema, or protocol conventions that are not enforced here. Values loaded from local files,
 archives, manifests, configs, CLI args, env vars, or requests remain attacker-controlled
 until the code validates them.
+If changed code validates data before another parser, interpreter, CLI, or protocol consumer
+handles it, compare the validator's matching semantics to the downstream consumer's semantics.
+Look for exact-match checks, aliases, abbreviations, normalization differences, inline-value
+forms, or fallback behavior that can make the policy narrower than the real consumer.
 When a changed-code chain reaches path or filesystem APIs, trace at least one concrete
 edge-case input through every transform and the final resolved path before discarding it.
 {changed_code_dataflow_summary}
