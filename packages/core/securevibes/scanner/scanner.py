@@ -7,7 +7,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any, Callable
+from typing import Optional, Dict, Any, Callable, Sequence
 from rich.console import Console
 
 from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
@@ -120,6 +120,12 @@ _MAX_FOCUSED_PASS_ATTEMPTS = 2
 _SAFE_PERMISSION_MODE = resolve_permission_mode()
 _BASE_ALLOWED_TOOLS = ("Task", "Skill", "Read", "Write", "Grep", "Glob", "LS")
 _PR_CANONICAL_VULNERABILITIES_SUFFIX = ".canonical"
+_HIGH_IMPACT_BASELINE_SEVERITY_RANKS = {
+    "critical": 4,
+    "high": 3,
+    "medium": 2,
+    "low": 1,
+}
 SECURITY_PATH_HINTS = (
     "auth",
     "permission",
@@ -1318,6 +1324,7 @@ async def _generate_pr_hypotheses(
     changed_code_chain_summary: str,
     component_delta_summary: str,
     new_surface_threat_delta: str,
+    baseline_reachability_summary: str,
     threat_context_summary: str,
     vuln_context_summary: str,
     architecture_context: str,
@@ -1352,6 +1359,9 @@ call from those facts in every hypothesis.
 Prefer one hypothesis per explicit changed-code chain before expanding to adjacent theories.
 If a broader theory is not directly supported by the same changed-code chain or line anchors,
 omit it.
+If auth/session/role/permission/policy logic changes, compare those changes against any
+existing high-impact baseline operations that may become newly reachable or less restricted.
+Prefer a composed exploit hypothesis when the diff unlocks a known dangerous sink.
 
 Focus on chains such as:
 - auth/trust-boundary bypass + privileged action
@@ -1379,6 +1389,9 @@ EXPLICIT CHANGED-CODE CHAINS TO VALIDATE INDEPENDENTLY:
 
 NEW-SURFACE THREAT DELTA:
 {new_surface_threat_delta}
+
+BASELINE HIGH-IMPACT OPERATIONS THAT MAY BECOME NEWLY REACHABLE:
+{baseline_reachability_summary}
 
 RELEVANT THREATS:
 {threat_context_summary}
@@ -1890,6 +1903,140 @@ def _format_component_delta_summary(
             *_format_rows("New-surface changed component", new_surface_components),
         ]
     )
+
+
+def _baseline_vuln_severity_rank(value: object) -> int:
+    """Return a sortable severity rank for baseline vulnerability context selection."""
+    normalized = str(value or "").strip().lower()
+    return _HIGH_IMPACT_BASELINE_SEVERITY_RANKS.get(normalized, 0)
+
+
+def _baseline_vuln_component_keys(entry: dict) -> set[str]:
+    """Extract coarse component keys referenced by a baseline vulnerability entry."""
+    path_candidates: set[str] = set()
+    _collect_path_candidates_from_payload(entry, path_candidates)
+    return {
+        component_key
+        for component_key in (_split_component_key(candidate) for candidate in path_candidates)
+        if component_key
+    }
+
+
+def _component_overlap_rank(
+    vuln_component_keys: set[str],
+    changed_component_keys: set[str],
+) -> int:
+    """Return a score for component overlap between baseline and changed files."""
+    best_rank = 0
+    for vuln_component in vuln_component_keys:
+        for changed_component in changed_component_keys:
+            if vuln_component == changed_component:
+                return 3
+            if vuln_component.startswith(f"{changed_component}/"):
+                best_rank = max(best_rank, 2)
+            elif changed_component.startswith(f"{vuln_component}/"):
+                best_rank = max(best_rank, 1)
+    return best_rank
+
+
+def _format_reachability_location(entry: dict, candidate_paths: Sequence[str]) -> str:
+    """Format the best file/line anchor available for a baseline reachability candidate."""
+    raw_path = normalize_repo_path(entry.get("file_path"))
+    path = raw_path or (candidate_paths[0] if candidate_paths else "")
+    if not path:
+        return "unknown-path"
+
+    line_value = entry.get("line_number")
+    try:
+        line_number = int(line_value) if line_value is not None else 0
+    except (TypeError, ValueError):
+        line_number = 0
+    return f"{path}:{line_number}" if line_number > 0 else path
+
+
+def _summarize_auth_reachability_candidates(
+    baseline_vulns: Sequence[dict],
+    changed_files: list[str],
+    *,
+    auth_privilege_signals: bool,
+    max_items: int = 4,
+) -> str:
+    """Summarize existing high-impact baseline sinks that auth changes may newly expose."""
+    if not auth_privilege_signals:
+        return "- No auth/privilege diff signals detected."
+
+    changed_set = {
+        normalize_repo_path(path)
+        for path in changed_files
+        if isinstance(path, str) and normalize_repo_path(path)
+    }
+    changed_component_keys = {
+        component_key
+        for component_key in (_split_component_key(path) for path in changed_set)
+        if component_key
+    }
+    if not changed_component_keys:
+        return "- No overlapping high-impact baseline operations identified."
+
+    ranked_candidates: list[tuple[int, int, int, str, str, str]] = []
+    for vuln in baseline_vulns:
+        if not isinstance(vuln, dict):
+            continue
+
+        severity_rank = _baseline_vuln_severity_rank(vuln.get("severity"))
+        if severity_rank < _HIGH_IMPACT_BASELINE_SEVERITY_RANKS["high"]:
+            continue
+
+        candidate_paths: set[str] = set()
+        _collect_path_candidates_from_payload(vuln, candidate_paths)
+        normalized_paths = sorted(normalize_repo_path(path) for path in candidate_paths if path)
+        component_overlap = _component_overlap_rank(
+            _baseline_vuln_component_keys(vuln),
+            changed_component_keys,
+        )
+        if component_overlap <= 0:
+            continue
+
+        location = _format_reachability_location(vuln, normalized_paths)
+        unchanged_sink = int(
+            bool(location)
+            and location != "unknown-path"
+            and location.split(":", 1)[0] not in changed_set
+        )
+        severity_label = str(vuln.get("severity") or "unknown").strip().lower() or "unknown"
+        title = str(
+            vuln.get("title") or vuln.get("threat_id") or "Untitled baseline finding"
+        ).strip()
+        ranked_candidates.append(
+            (
+                severity_rank,
+                component_overlap,
+                unchanged_sink,
+                severity_label,
+                location,
+                title,
+            )
+        )
+
+    if not ranked_candidates:
+        return "- No overlapping high-impact baseline operations identified."
+
+    ranked_candidates.sort(
+        key=lambda item: (item[0], item[1], item[2], item[4], item[5]),
+        reverse=True,
+    )
+
+    bullets: list[str] = []
+    for _sev_rank, _overlap, unchanged_sink, severity_label, location, title in ranked_candidates[
+        :max_items
+    ]:
+        unchanged_note = "existing unchanged sink" if unchanged_sink else "existing sink"
+        bullets.append(
+            f"- {severity_label} | {location} | {title} | {unchanged_note}; "
+            "check whether auth/session/role/policy changes make this operation newly "
+            "reachable or less restricted."
+        )
+    return "\n".join(bullets)
 
 
 def _component_matches_baseline(
@@ -2974,6 +3121,11 @@ class Scanner:
         command_builder_signals = diff_has_command_builder_signals(focused_diff_context)
         path_parser_signals = diff_has_path_parser_signals(focused_diff_context)
         auth_privilege_signals = diff_has_auth_privilege_signals(focused_diff_context)
+        baseline_reachability_summary = _summarize_auth_reachability_candidates(
+            baseline_vulns,
+            focused_diff_context.changed_files,
+            auth_privilege_signals=auth_privilege_signals,
+        )
         pr_grep_default_scope = _derive_pr_default_grep_scope(focused_diff_context)
         context_phase_timings["prompt_context_summary_seconds"] = round(
             time.time() - phase_start, 2
@@ -3050,6 +3202,7 @@ class Scanner:
                 changed_code_chain_summary=changed_code_chain_summary,
                 component_delta_summary=component_delta_summary,
                 new_surface_threat_delta=new_surface_threat_delta,
+                baseline_reachability_summary=baseline_reachability_summary,
                 threat_context_summary=threat_context_summary,
                 vuln_context_summary=vuln_context_summary,
                 architecture_context=architecture_context,
@@ -3098,6 +3251,12 @@ class Scanner:
 Use these only as hypotheses for components that lack baseline coverage.
 Validate or falsify them with concrete code evidence before reporting.
 {new_surface_threat_delta}
+
+## BASELINE HIGH-IMPACT OPERATIONS THAT MAY BECOME NEWLY REACHABLE
+When the diff changes auth, session, role, permission, policy, or trust-boundary logic,
+review whether it makes any existing high-impact operation below newly reachable or less
+restricted, even if the sink file itself is unchanged.
+{baseline_reachability_summary}
 
 ## CHANGED-CODE DATAFLOW FACTS
 Heuristic summaries of value derivation and boundary/API calls introduced or modified by the diff.

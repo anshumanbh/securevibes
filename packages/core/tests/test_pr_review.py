@@ -66,6 +66,7 @@ from securevibes.scanner.scanner import (
     _PROMPT_HUNK_MAX_LINES_PER_HUNK,
     _refine_pr_findings_with_llm,
     _split_component_key,
+    _summarize_auth_reachability_candidates,
     score_diff_file_for_security_review,
     _summarize_diff_hunk_snippets,
     _summarize_diff_line_anchors,
@@ -1839,6 +1840,59 @@ def test_classify_changed_components_splits_baseline_and_new_surface():
     assert [row[0] for row in new_surface_rows] == ["src/hooks"]
 
 
+def test_summarize_auth_reachability_candidates_prefers_overlapping_unchanged_sinks():
+    """Auth diffs should pull in overlapping high-impact baseline sinks from unchanged files."""
+    baseline_vulns = [
+        {
+            "title": "Config apply reaches privileged restart path",
+            "severity": "high",
+            "file_path": "src/gateway/server-methods/config.ts",
+            "line_number": 195,
+        },
+        {
+            "title": "Unrelated elevated shell path",
+            "severity": "critical",
+            "file_path": "src/auto-reply/reply/reply-elevated.ts",
+            "line_number": 64,
+        },
+        {
+            "title": "Low-signal timing detail",
+            "severity": "medium",
+            "file_path": "src/gateway/auth.ts",
+            "line_number": 175,
+        },
+    ]
+
+    summary = _summarize_auth_reachability_candidates(
+        baseline_vulns,
+        ["src/gateway/server/ws-connection/message-handler.ts"],
+        auth_privilege_signals=True,
+    )
+
+    assert "src/gateway/server-methods/config.ts:195" in summary
+    assert "Config apply reaches privileged restart path" in summary
+    assert "existing unchanged sink" in summary
+    assert "reply-elevated.ts" not in summary
+    assert "Low-signal timing detail" not in summary
+
+
+def test_summarize_auth_reachability_candidates_skips_non_auth_diffs():
+    """Without auth/privilege signals, no composed baseline sink summary should be injected."""
+    summary = _summarize_auth_reachability_candidates(
+        [
+            {
+                "title": "Config apply reaches privileged restart path",
+                "severity": "high",
+                "file_path": "src/gateway/server-methods/config.ts",
+            }
+        ],
+        ["src/gateway/server/ws-connection/message-handler.ts"],
+        auth_privilege_signals=False,
+    )
+
+    assert summary == "- No auth/privilege diff signals detected."
+
+
 def test_summarize_diff_hunk_snippets_includes_diff_lines():
     """Prompt hunk snippets should preserve +/- diff lines for missing-file analysis."""
     diff_file = DiffFile(
@@ -3460,6 +3514,7 @@ async def test_generate_pr_hypotheses_uses_no_tools_and_default_permissions(
             changed_code_chain_summary="- app.py: targetDir <- path.join(base, pluginId)",
             component_delta_summary="- New-surface changed component: src/plugins -> app.py",
             new_surface_threat_delta="- Path boundary delta",
+            baseline_reachability_summary="- No overlapping high-impact baseline operations identified.",
             threat_context_summary="- none",
             vuln_context_summary="- none",
             architecture_context="- none",
@@ -3844,6 +3899,117 @@ async def test_prepare_pr_review_context_includes_changed_code_dataflow_facts(
     assert "Treat each chain below as a separate review obligation" in (ctx.contextualized_prompt)
     assert "trace at least one concrete" in (ctx.contextualized_prompt)
     assert "edge-case input" in (ctx.contextualized_prompt)
+
+
+@pytest.mark.asyncio
+async def test_prepare_pr_review_context_includes_auth_reachability_baseline_sinks(
+    tmp_path: Path,
+):
+    """Auth diffs should pull baseline high-impact sinks from overlapping unchanged files."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    gateway_dir = repo / "src" / "gateway" / "server" / "ws-connection"
+    gateway_dir.mkdir(parents=True)
+    (gateway_dir / "message-handler.ts").write_text(
+        "export const handler = true;\n", encoding="utf-8"
+    )
+
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    (securevibes_dir / "SECURITY.md").write_text("# Security\nGateway\n", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+    known_vulns_path = securevibes_dir / "VULNERABILITIES.json"
+    known_vulns_path.write_text(
+        json.dumps(
+            [
+                {
+                    "title": "Config apply reaches privileged restart path",
+                    "severity": "high",
+                    "file_path": "src/gateway/server-methods/config.ts",
+                    "line_number": 195,
+                },
+                {
+                    "title": "Unrelated elevated shell path",
+                    "severity": "critical",
+                    "file_path": "src/auto-reply/reply/reply-elevated.ts",
+                    "line_number": 64,
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/gateway/server/ws-connection/message-handler.ts",
+                new_path="src/gateway/server/ws-connection/message-handler.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=250,
+                        old_count=2,
+                        new_start=250,
+                        new_count=2,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="const role = frame.role ?? 'user';",
+                                old_line_num=None,
+                                new_line_num=253,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="if (role === 'admin') session.role = role;",
+                                old_line_num=None,
+                                new_line_num=254,
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ],
+        added_lines=2,
+        removed_lines=0,
+        changed_files=["src/gateway/server/ws-connection/message-handler.ts"],
+    )
+
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+
+    with (
+        patch(
+            "securevibes.scanner.scanner._generate_pr_hypotheses",
+            new=AsyncMock(return_value="- Gateway auth hypothesis"),
+        ) as mock_hypotheses,
+        patch(
+            "securevibes.scanner.scanner._generate_new_surface_threat_delta",
+            new=AsyncMock(return_value="- No new-surface threat delta generated."),
+        ),
+    ):
+        ctx = await scanner._prepare_pr_review_context(
+            repo=repo,
+            securevibes_dir=securevibes_dir,
+            diff_context=diff_context,
+            known_vulns_path=known_vulns_path,
+            severity_threshold="medium",
+            pr_timeout_seconds_override=120,
+        )
+
+    assert "BASELINE HIGH-IMPACT OPERATIONS THAT MAY BECOME NEWLY REACHABLE" in (
+        ctx.contextualized_prompt
+    )
+    assert "src/gateway/server-methods/config.ts:195" in ctx.contextualized_prompt
+    assert "Config apply reaches privileged restart path" in ctx.contextualized_prompt
+    baseline_reachability_summary = mock_hypotheses.await_args.kwargs[
+        "baseline_reachability_summary"
+    ]
+    assert baseline_reachability_summary.startswith(
+        "- high | src/gateway/server-methods/config.ts:195"
+    )
+    assert "reply-elevated.ts" not in baseline_reachability_summary
 
 
 @pytest.mark.asyncio
@@ -4704,6 +4870,7 @@ class TestGeneratePrHypotheses:
         changed_code_chain_summary="- src/auth.py: targetDir <- path.join(base, pluginId)",
         component_delta_summary="- New-surface changed component: src/auth -> src/auth.py",
         new_surface_threat_delta="- Auth boundary delta",
+        baseline_reachability_summary="- high | src/gateway/server-methods/config.ts:195 | Config apply reaches privileged restart path | existing unchanged sink; check whether auth/session/role/policy changes make this operation newly reachable or less restricted.",
         threat_context_summary="- Auth bypass",
         vuln_context_summary="- None",
         architecture_context="Flask app",
@@ -4816,9 +4983,12 @@ class TestGeneratePrHypotheses:
         assert "- New-surface changed component: src/auth -> src/auth.py" in prompt
         assert "NEW-SURFACE THREAT DELTA" in prompt
         assert "- Auth boundary delta" in prompt
+        assert "BASELINE HIGH-IMPACT OPERATIONS THAT MAY BECOME NEWLY REACHABLE" in prompt
+        assert "Config apply reaches privileged restart path" in prompt
         assert "quote at least one identifier or boundary/API" in prompt
         assert "Prefer one hypothesis per explicit changed-code chain" in prompt
         assert "Reason from constraints enforced in the reviewed code path" in prompt
+        assert "Prefer a composed exploit hypothesis" in prompt
         assert "treat that value as attacker-controlled" in prompt
         assert "EXPLICIT CHANGED-CODE CHAINS TO VALIDATE INDEPENDENTLY" in prompt
         assert "- src/auth.py: targetDir <- path.join(base, pluginId)" in prompt
