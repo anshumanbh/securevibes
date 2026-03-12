@@ -1,0 +1,55 @@
+{
+  "repository_path": "/private/var/folders/gw/14xtk_2n21q2jfw80ymcy4_r0000gn/T/securevibes-GHSA-943q-mwmv-hhvh-2m8ajqs2/openclaw",
+  "recovered_from_temp_artifact": true,
+  "issues": [
+    {
+      "id": "THREAT-001",
+      "severity": "medium",
+      "title": "Non-Constant-Time Token Comparison in /tools/invoke Endpoint",
+      "description": "The newly added /tools/invoke HTTP endpoint (src/gateway/tools-invoke-http.ts:71-76) authenticates callers using authorizeGatewayConnect(), which performs a non-constant-time string comparison for token-mode authentication (src/gateway/auth.ts:175). This creates a timing oracle that allows an attacker to deduce the gateway token character by character through response latency measurement.",
+      "file_path": "src/gateway/tools-invoke-http.ts",
+      "line_number": 71,
+      "code_snippet": "const token = getBearerToken(req);\nconst authResult = await authorizeGatewayConnect({\n  auth: opts.auth,\n  connectAuth: token ? { token } : null,\n  req,\n});",
+      "recommendation": "Replace the strict equality token comparison in src/gateway/auth.ts:175 with the existing safeEqual() helper that uses timingSafeEqual (already implemented for password mode at line 189). This fix will secure all endpoints that use authorizeGatewayConnect, including the new /tools/invoke endpoint.",
+      "cwe_id": "CWE-208",
+      "finding_type": "known_vuln",
+      "attack_scenario": "1) Attacker sends thousands of POST requests to /tools/invoke with progressively refined token guesses. 2) The authorizeGatewayConnect() function at src/gateway/auth.ts:175 uses strict equality (connectAuth.token !== auth.token) instead of timingSafeEqual. 3) By measuring response latency, the attacker narrows down the actual token value character by character. 4) Once the token is recovered, the attacker gains authenticated access to invoke arbitrary allowlisted tools.",
+      "evidence": "Data flow: src/gateway/tools-invoke-http.ts:71 extracts Bearer token -> src/gateway/tools-invoke-http.ts:72-76 calls authorizeGatewayConnect -> src/gateway/auth.ts:168-178 token mode branch uses strict equality at line 175: 'if (connectAuth.token !== auth.token)'. Baseline vulnerability THREAT-001 documented in VULNERABILITIES.json confirms this auth.ts weakness. The new endpoint reuses this vulnerable auth path."
+    },
+    {
+      "id": "THREAT-014",
+      "severity": "high",
+      "title": "Unbounded Tool Invocation Queue via /tools/invoke Endpoint",
+      "description": "The new /tools/invoke endpoint (src/gateway/tools-invoke-http.ts:58-162) executes arbitrary allowlisted tools synchronously without any rate limiting, queue depth checks, or concurrency controls. Each authenticated POST request triggers immediate tool execution at line 153. An attacker with a valid gateway token can flood the endpoint with tool invocation requests, causing unbounded memory growth, API cost exhaustion, and denial of service.",
+      "file_path": "src/gateway/tools-invoke-http.ts",
+      "line_number": 153,
+      "code_snippet": "const result = await (tool as any).execute?.(`http-${Date.now()}`, toolArgs);\nsendJson(res, 200, { ok: true, result });",
+      "recommendation": "Implement a maximum concurrent tool execution limit and per-token rate limiting (e.g., max 10 tool invocations per minute per gateway token). Reject new requests with HTTP 429 when limits are exceeded. Share rate limit state with the /hooks/agent endpoint to prevent attackers from switching endpoints. Consider adding a configurable global tool execution queue with depth monitoring.",
+      "cwe_id": "CWE-400",
+      "finding_type": "threat_enabler",
+      "attack_scenario": "1) Attacker obtains gateway token via timing oracle (THREAT-001), leaked logs, or brute force. 2) Attacker scripts 10,000 POST requests to /tools/invoke with body {tool: 'sessions_spawn', args: {task: 'expensive operation'}, sessionKey: 'main'}. 3) Each request reaches line 153 and spawns a new agent job that invokes LLM APIs. 4) Gateway process exhausts memory from unbounded job queue and owner incurs thousands of dollars in LLM API costs. 5) No rate limiting or queue depth enforcement prevents this attack.",
+      "evidence": "Code inspection shows no rate limiting: src/gateway/tools-invoke-http.ts:58-162 full handler contains no call count checks, queue depth validation, or concurrency limits. Each request immediately executes tool at line 153. Baseline threat THREAT-014 documents the same issue for the /hooks/agent endpoint. The new /tools/invoke endpoint creates a second attack vector for the same unbounded queue vulnerability."
+    },
+    {
+      "id": "NEW-001",
+      "severity": "high",
+      "title": "Privileged Tool Invocation Bypasses Channel-Level Allowlists",
+      "description": "The /tools/invoke endpoint (src/gateway/tools-invoke-http.ts) applies tool policy filtering but bypasses channel-level group allowlists when the optional x-clawdbot-message-channel and x-clawdbot-account-id headers are omitted. The endpoint exposes privileged tools (gateway, cron, sessions_spawn, message, sessions_send) to any caller with a valid gateway token, regardless of whether they would be authorized via messaging channel allowlists that normally govern access to these tools.",
+      "file_path": "src/gateway/tools-invoke-http.ts",
+      "line_number": 106,
+      "code_snippet": "const messageChannel = normalizeMessageChannel(\n  getHeader(req, \"x-clawdbot-message-channel\") ?? \"\",\n);\nconst accountId = getHeader(req, \"x-clawdbot-account-id\")?.trim() || undefined;\n...\nconst groupPolicy = resolveGroupToolPolicy({\n  config: cfg,\n  sessionKey,\n  messageProvider: messageChannel ?? undefined,\n  accountId: accountId ?? null,\n});",
+      "recommendation": "Require x-clawdbot-message-channel and x-clawdbot-account-id headers for all /tools/invoke requests, or create a separate tool allowlist specifically for HTTP-invoked tools that excludes privileged operations (gateway, cron, sessions_spawn, message). Alternatively, enforce that /tools/invoke can only execute tools explicitly marked as safe for unauthenticated channel contexts, similar to how the OpenAI-compatible endpoint should have a separate agent profile (THREAT-018 mitigation). Add integration tests that verify channel allowlist policies are honored by the endpoint.",
+      "cwe_id": "CWE-862",
+      "finding_type": "new_threat",
+      "attack_scenario": "1) Attacker obtains gateway token via THREAT-001 timing attack or other means. 2) Attacker sends POST /tools/invoke without x-clawdbot-message-channel header: {tool: 'gateway', action: 'config.apply', raw: '<malicious config>', sessionKey: 'main'}. 3) At line 106-109, messageChannel resolves to undefined because header is missing. 4) At line 120-125, resolveGroupToolPolicy receives messageProvider: undefined and accountId: null. 5) In src/agents/pi-tools.policy.ts:218, group policy resolution returns undefined when channel is falsy, bypassing channel-level allowlist checks. 6) Only global and agent-level tool policies apply. If gateway tool is allowed at agent level (default), the attacker can invoke config.apply to modify gateway configuration, cron to schedule persistent jobs, or sessions_spawn to trigger arbitrary agent tasks without being in any messaging channel allowlist.",
+      "evidence": "Control flow trace: src/gateway/tools-invoke-http.ts:106-109 makes headers optional -> line 120-125 passes undefined/null to resolveGroupToolPolicy -> src/agents/pi-tools.policy.ts:202-240 shows groupPolicy resolution requires valid channel (line 218 early return when !channel) -> src/gateway/tools-invoke-http.ts:127-134 applies policy list but groupPolicy is undefined when headers omitted -> channel-level allowlists (channels.telegram.groups, channels.slack.groups, tools.elevated.allowFrom) are NOT enforced. Test at src/gateway/tools-invoke-http.test.ts:30-34 confirms invocation without channel headers succeeds. Exposed tools verified: createGatewayTool (config.apply, restart), createCronTool (job scheduling), createSessionsSpawnTool (agent spawning), createMessageTool (cross-channel messaging) all available in createClawdbotTools output at src/agents/clawdbot-tools.ts:74-140."
+    }
+  ],
+  "summary": {
+    "total": 3,
+    "critical": 0,
+    "high": 2,
+    "medium": 1,
+    "low": 0
+  }
+}
