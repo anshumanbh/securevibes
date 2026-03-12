@@ -158,6 +158,10 @@ _DATAFLOW_ASSIGNMENT_PATTERNS = (
     re.compile(r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:=\s*(?P<expr>.+?);?$"),
     re.compile(r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<expr>.+?);?$"),
 )
+_DATAFLOW_OBJECT_SCOPE_RE = re.compile(r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*\{$")
+_DATAFLOW_PROPERTY_ASSIGNMENT_RE = re.compile(
+    r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?P<expr>.+?)(?:,)?$"
+)
 _DATAFLOW_CALL_RE = re.compile(r"(?P<callee>[A-Za-z_][A-Za-z0-9_$.]*)\s*\((?P<args>.*)\)")
 _DATAFLOW_FUNCTION_DECL_RE = re.compile(
     r"^(?:export\s+)?(?:async\s+)?function\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\("
@@ -174,6 +178,7 @@ _DATAFLOW_PREDICATE_HINTS = (
     ".some(",
     ".every(",
     ".includes(",
+    ".has(",
     ".startsWith(",
     ".endsWith(",
     ".test(",
@@ -406,6 +411,37 @@ def _extract_dataflow_function_name(line: str) -> str | None:
     if not match:
         return None
     return match.group("name")
+
+
+def _extract_dataflow_object_scope_name(line: str) -> str | None:
+    """Extract object-literal scope labels such as policy/profile keys."""
+    match = _DATAFLOW_OBJECT_SCOPE_RE.match(line or "")
+    if not match:
+        return None
+    return match.group("name")
+
+
+def _extract_property_dataflow(
+    line: str,
+    *,
+    scope_name: str | None,
+) -> tuple[str, str] | None:
+    """Extract a changed object property assignment from a normalized source line."""
+    if not line:
+        return None
+    match = _DATAFLOW_PROPERTY_ASSIGNMENT_RE.match(line)
+    if not match:
+        return None
+
+    name = match.group("name")
+    expr = match.group("expr").strip().rstrip(",")
+    if not name or not expr:
+        return None
+    if expr in {"{", "["} or expr.endswith("{"):
+        return None
+
+    scoped_name = f"{scope_name}.{name}" if scope_name else name
+    return scoped_name, expr
 
 
 def _extract_call_dataflow(line: str) -> tuple[str, set[str], str] | None:
@@ -687,6 +723,7 @@ def _collect_changed_code_dataflow_facts(
     *,
     max_facts: int = 4,
     helper_semantic_budget: int = 2,
+    property_semantic_budget: int = 2,
 ) -> list[str]:
     """Collect lightweight value-flow facts from changed code and nearby context."""
     tracked_identifiers: set[str] = set()
@@ -701,6 +738,10 @@ def _collect_changed_code_dataflow_facts(
             assignment = _extract_assignment_dataflow(normalized)
             if assignment:
                 tracked_identifiers.add(assignment[0])
+                continue
+            property_assignment = _extract_property_dataflow(normalized, scope_name=None)
+            if property_assignment:
+                tracked_identifiers.update(_extract_dataflow_identifiers(property_assignment[0]))
 
     if not tracked_identifiers:
         return []
@@ -725,6 +766,11 @@ def _collect_changed_code_dataflow_facts(
             function_name = _extract_dataflow_function_name(normalized)
             if function_name:
                 current_scope_name = function_name
+                current_scope_brace_depth = line.content.count("{") - line.content.count("}")
+                continue
+            object_scope_name = _extract_dataflow_object_scope_name(normalized)
+            if object_scope_name:
+                current_scope_name = object_scope_name
                 current_scope_brace_depth = line.content.count("{") - line.content.count("}")
                 continue
             if _looks_like_dataflow_declaration(normalized):
@@ -760,6 +806,41 @@ def _collect_changed_code_dataflow_facts(
                     tracked_identifiers.add(name)
                     tracked_identifiers.update(expr_identifiers)
             else:
+                property_assignment = _extract_property_dataflow(
+                    normalized,
+                    scope_name=current_scope_name,
+                )
+                if property_assignment:
+                    name, expr = property_assignment
+                    expr_identifiers = _extract_dataflow_identifiers(expr)
+                    if line.type == "add" or expr_identifiers.intersection(tracked_identifiers):
+                        fact = f"{line_prefix}: `{name} <- {_shorten_dataflow_excerpt(expr)}`"
+                        if fact not in seen_facts:
+                            candidates.append(
+                                _DataflowFactCandidate(
+                                    index=candidate_index,
+                                    line_no=line_no,
+                                    fact=fact,
+                                    defines=tuple(
+                                        dict.fromkeys([name, *_extract_dataflow_identifiers(name)])
+                                    ),
+                                    uses=tuple(sorted(expr_identifiers)),
+                                    kind="property",
+                                    scope_name=current_scope_name,
+                                )
+                            )
+                            candidate_index += 1
+                            seen_facts.add(fact)
+                        tracked_identifiers.update(_extract_dataflow_identifiers(name))
+                        tracked_identifiers.update(expr_identifiers)
+                    if current_scope_name is not None:
+                        current_scope_brace_depth += line.content.count("{") - line.content.count(
+                            "}"
+                        )
+                        if current_scope_brace_depth <= 0:
+                            current_scope_name = None
+                            current_scope_brace_depth = 0
+                    continue
                 predicate_data = _extract_predicate_dataflow(normalized)
                 call_data = _extract_call_dataflow(normalized)
                 if call_data:
@@ -851,8 +932,29 @@ def _collect_changed_code_dataflow_facts(
             if len(helper_candidates) >= helper_semantic_budget:
                 break
 
+    property_candidates = sorted(
+        (
+            candidate
+            for candidate in candidates
+            if candidate.kind == "property" and candidate.index not in selected_indices
+        ),
+        key=lambda candidate: (
+            1 if "." in candidate.fact else 0,
+            len(candidate.uses),
+            candidate.line_no,
+            candidate.index,
+        ),
+        reverse=True,
+    )
+    selected_property_candidates: list[_DataflowFactCandidate] = []
+    for property_candidate in property_candidates:
+        selected_property_candidates.append(property_candidate)
+        selected_indices.add(property_candidate.index)
+        if len(selected_property_candidates) >= property_semantic_budget:
+            break
+
     ordered_candidates = sorted(
-        [*selected_candidates, *helper_candidates],
+        [*selected_candidates, *helper_candidates, *selected_property_candidates],
         key=lambda candidate: (candidate.line_no, candidate.index),
     )
     return [candidate.fact for candidate in ordered_candidates]
@@ -877,12 +979,13 @@ def _rank_diff_files_for_changed_code_facts(
         facts = _collect_changed_code_dataflow_facts(diff_file, max_facts=max_facts_per_file)
         if not facts:
             continue
+        file_score = score_diff_file_for_security_review(diff_file)
         ranked_entries.append(
             (
                 (
+                    file_score,
                     _count_predicate_facts(facts),
                     len(facts),
-                    score_diff_file_for_security_review(diff_file),
                     path,
                 ),
                 diff_file,

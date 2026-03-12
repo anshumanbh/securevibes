@@ -825,6 +825,363 @@ def test_format_changed_code_dataflow_summary_prioritizes_predicate_cluster_with
     assert "callId <- crypto.randomUUID()" not in summary
 
 
+def test_format_changed_code_dataflow_summary_surfaces_scoped_policy_table_facts():
+    """Policy/config table edits should surface scoped property facts, not just helper internals."""
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/agents/pi-tools.safe-bins.e2e.test.ts",
+                new_path="src/agents/pi-tools.safe-bins.e2e.test.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=90,
+                        old_count=0,
+                        new_start=90,
+                        new_count=5,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="const { createOpenClawCodingTools } = await import('./pi-tools.js');",
+                                old_line_num=None,
+                                new_line_num=91,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), params.tmpPrefix));",
+                                old_line_num=None,
+                                new_line_num=92,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const tools = createOpenClawCodingTools({ config: cfg });",
+                                old_line_num=None,
+                                new_line_num=98,
+                            ),
+                        ],
+                    )
+                ],
+            ),
+            DiffFile(
+                old_path="src/infra/exec-safe-bin-policy.ts",
+                new_path="src/infra/exec-safe-bin-policy.ts",
+                is_new=True,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=0,
+                        old_count=0,
+                        new_start=1,
+                        new_count=12,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="export const SAFE_BIN_PROFILES = {",
+                                old_line_num=None,
+                                new_line_num=1,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="  sort: {",
+                                old_line_num=None,
+                                new_line_num=2,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="    maxPositional: 0,",
+                                old_line_num=None,
+                                new_line_num=3,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content='    blockedFlags: new Set(["--compress-program", "--files0-from", "--output", "-o"]),',
+                                old_line_num=None,
+                                new_line_num=4,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="    if (blockedFlags.has(flag)) {",
+                                old_line_num=None,
+                                new_line_num=5,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="      return false;",
+                                old_line_num=None,
+                                new_line_num=6,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="    }",
+                                old_line_num=None,
+                                new_line_num=7,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="    if (!valueFlags.has(flag)) {",
+                                old_line_num=None,
+                                new_line_num=8,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="  },",
+                                old_line_num=None,
+                                new_line_num=9,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="};",
+                                old_line_num=None,
+                                new_line_num=10,
+                            ),
+                        ],
+                    )
+                ],
+            ),
+        ],
+        added_lines=9,
+        removed_lines=0,
+        changed_files=[
+            "src/agents/pi-tools.safe-bins.e2e.test.ts",
+            "src/infra/exec-safe-bin-policy.ts",
+        ],
+    )
+
+    summary = _format_changed_code_dataflow_summary(diff_context)
+    chains = _format_changed_code_dataflow_chains(diff_context)
+
+    assert summary.splitlines()[0] == "- src/infra/exec-safe-bin-policy.ts"
+    assert "sort.maxPositional <- 0" in summary
+    assert (
+        'sort.blockedFlags <- new Set(["--compress-program", "--files0-from", "--output", "-o"])'
+        in summary
+    )
+    assert "blockedFlags.has(flag)" in summary
+    assert "!valueFlags.has(flag)" in summary
+    assert "sort.maxPositional <- 0" in chains
+    assert "sort.blockedFlags <- new Set(" in chains
+    assert "blockedFlags.has(flag)" in chains
+    assert summary.index("sort.blockedFlags <- new Set(") < summary.index(
+        "createOpenClawCodingTools"
+    )
+
+
+def test_format_changed_code_dataflow_summary_surfaces_denied_flag_fixture_updates():
+    """Fixture refactors should keep explicit deny/allow table entries visible in prompt facts."""
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/infra/exec-safe-bin-policy.ts",
+                new_path="src/infra/exec-safe-bin-policy.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=40,
+                        old_count=0,
+                        new_start=40,
+                        new_count=9,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="export const SAFE_BIN_PROFILE_FIXTURES = {",
+                                old_line_num=None,
+                                new_line_num=40,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="  sort: {",
+                                old_line_num=None,
+                                new_line_num=41,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content='    deniedFlags: ["--compress-program", "--files0-from", "--output", "-o"],',
+                                old_line_num=None,
+                                new_line_num=42,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="  },",
+                                old_line_num=None,
+                                new_line_num=43,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="};",
+                                old_line_num=None,
+                                new_line_num=44,
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ],
+        added_lines=5,
+        removed_lines=0,
+        changed_files=["src/infra/exec-safe-bin-policy.ts"],
+    )
+
+    summary = _format_changed_code_dataflow_summary(diff_context)
+    chains = _format_changed_code_dataflow_chains(diff_context)
+
+    assert (
+        'sort.deniedFlags <- ["--compress-program", "--files0-from", "--output", "-o"]' in summary
+    )
+    assert 'sort.deniedFlags <- ["--compress-program", "--files0-from", "--output", "-o"]' in chains
+
+
+def test_format_changed_code_dataflow_summary_prefers_security_policy_file_over_verbose_tests():
+    """Security-scored policy files should outrank test scaffolding even when tests yield more facts."""
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/agents/pi-tools.safe-bins.e2e.test.ts",
+                new_path="src/agents/pi-tools.safe-bins.e2e.test.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=60,
+                        old_count=0,
+                        new_start=60,
+                        new_count=10,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="type ExecToolResult = {",
+                                old_line_num=None,
+                                new_line_num=60,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="  content: Array<{ type: string; text?: string }>;",
+                                old_line_num=None,
+                                new_line_num=61,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="};",
+                                old_line_num=None,
+                                new_line_num=62,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content=(
+                                    "const tmpDir = "
+                                    "fs.mkdtempSync(path.join(os.tmpdir(), params.tmpPrefix));"
+                                ),
+                                old_line_num=None,
+                                new_line_num=63,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const tools = createOpenClawCodingTools({ config: cfg });",
+                                old_line_num=None,
+                                new_line_num=64,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const execTool = tools.find((tool) => tool.name === 'exec');",
+                                old_line_num=None,
+                                new_line_num=65,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content=(
+                                    "const result = await execTool.execute('call1', "
+                                    "{ command, workdir: tmpDir });"
+                                ),
+                                old_line_num=None,
+                                new_line_num=66,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content=(
+                                    "const text = result.content.find((content) => "
+                                    "content.type === 'text')?.text ?? '';"
+                                ),
+                                old_line_num=None,
+                                new_line_num=67,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="expect(text).toContain(marker);",
+                                old_line_num=None,
+                                new_line_num=68,
+                            ),
+                        ],
+                    )
+                ],
+            ),
+            DiffFile(
+                old_path="src/infra/exec-safe-bin-policy.ts",
+                new_path="src/infra/exec-safe-bin-policy.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=120,
+                        old_count=0,
+                        new_start=120,
+                        new_count=6,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="  sort: {",
+                                old_line_num=None,
+                                new_line_num=120,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content='    blockedFlags: new Set(["--files0-from", "--output", "-o"]),',
+                                old_line_num=None,
+                                new_line_num=121,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="    if (blockedFlags.has(flag)) {",
+                                old_line_num=None,
+                                new_line_num=122,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="      return false;",
+                                old_line_num=None,
+                                new_line_num=123,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="    }",
+                                old_line_num=None,
+                                new_line_num=124,
+                            ),
+                        ],
+                    )
+                ],
+            ),
+        ],
+        added_lines=14,
+        removed_lines=0,
+        changed_files=[
+            "src/agents/pi-tools.safe-bins.e2e.test.ts",
+            "src/infra/exec-safe-bin-policy.ts",
+        ],
+    )
+
+    summary = _format_changed_code_dataflow_summary(diff_context)
+
+    assert summary.splitlines()[0] == "- src/infra/exec-safe-bin-policy.ts"
+    assert "sort.blockedFlags <- new Set(" in summary
+    assert "blockedFlags.has(flag)" in summary
+
+
 def test_enforce_focused_diff_coverage_rejects_dropped_files():
     """PR review should fail closed when focused context drops changed files."""
     diff_files = [
