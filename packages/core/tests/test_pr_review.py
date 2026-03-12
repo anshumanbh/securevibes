@@ -969,6 +969,122 @@ def test_format_changed_code_dataflow_summary_surfaces_scoped_policy_table_facts
     )
 
 
+def test_format_changed_code_dataflow_summary_surfaces_branch_semantics():
+    """Changed-code facts should expose allow/deny branch behavior, not just policy tables."""
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/infra/exec-safe-bin-policy.ts",
+                new_path="src/infra/exec-safe-bin-policy.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=200,
+                        old_count=0,
+                        new_start=200,
+                        new_count=14,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="const flag = eqIndex > 0 ? token.slice(0, eqIndex) : token;",
+                                old_line_num=None,
+                                new_line_num=200,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="if (blockedFlags.has(flag)) {",
+                                old_line_num=None,
+                                new_line_num=201,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="  return false;",
+                                old_line_num=None,
+                                new_line_num=202,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="}",
+                                old_line_num=None,
+                                new_line_num=203,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="if (eqIndex > 0) {",
+                                old_line_num=None,
+                                new_line_num=204,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="  if (!isSafeLiteralToken(token.slice(eqIndex + 1))) {",
+                                old_line_num=None,
+                                new_line_num=205,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="    return false;",
+                                old_line_num=None,
+                                new_line_num=206,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="  }",
+                                old_line_num=None,
+                                new_line_num=207,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="  continue;",
+                                old_line_num=None,
+                                new_line_num=208,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="}",
+                                old_line_num=None,
+                                new_line_num=209,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="if (!allowedValueFlags.has(flag)) {",
+                                old_line_num=None,
+                                new_line_num=210,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="  continue;",
+                                old_line_num=None,
+                                new_line_num=211,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="}",
+                                old_line_num=None,
+                                new_line_num=212,
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ],
+        added_lines=13,
+        removed_lines=0,
+        changed_files=["src/infra/exec-safe-bin-policy.ts"],
+    )
+
+    summary = _format_changed_code_dataflow_summary(diff_context)
+    chains = _format_changed_code_dataflow_chains(diff_context)
+
+    assert "flag <- eqIndex > 0 ? token.slice(0, eqIndex) : token" in summary
+    assert "if blockedFlags.has(flag) -> return false" in summary
+    assert "if eqIndex > 0 -> continue" in summary
+    assert "if !allowedValueFlags.has(flag) -> continue" in summary
+    assert "if blockedFlags.has(flag) -> return false" in chains
+    assert "if eqIndex > 0 -> continue" in chains
+
+
 def test_format_changed_code_dataflow_summary_surfaces_denied_flag_fixture_updates():
     """Fixture refactors should keep explicit deny/allow table entries visible in prompt facts."""
     diff_context = DiffContext(
@@ -1585,6 +1701,78 @@ def test_build_component_focused_passes_prioritizes_baseline_components():
     assert passes[0][0].startswith("focused_baseline-risk:")
     assert passes[0][1].changed_files == ["src/plugins/install.ts"]
     assert any(label.startswith("focused_new-surface:") for label, _ in passes)
+
+
+def test_build_component_focused_passes_skips_test_only_component_subsets():
+    """Focused pass planner should not spend follow-up passes on test-only components."""
+    runtime_file = DiffFile(
+        old_path="src/infra/exec-safe-bin-policy.ts",
+        new_path="src/infra/exec-safe-bin-policy.ts",
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+        hunks=[
+            DiffHunk(
+                old_start=1,
+                old_count=0,
+                new_start=1,
+                new_count=1,
+                lines=[
+                    DiffLine(
+                        type="add",
+                        content="validateSafeBinArgv(args, profile)",
+                        old_line_num=None,
+                        new_line_num=1,
+                    )
+                ],
+            )
+        ],
+    )
+    test_file = DiffFile(
+        old_path="src/agents/pi-tools.safe-bins.e2e.test.ts",
+        new_path="src/agents/pi-tools.safe-bins.e2e.test.ts",
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+        hunks=[
+            DiffHunk(
+                old_start=10,
+                old_count=0,
+                new_start=10,
+                new_count=1,
+                lines=[
+                    DiffLine(
+                        type="add",
+                        content="expect(text).toContain(marker)",
+                        old_line_num=None,
+                        new_line_num=10,
+                    )
+                ],
+            )
+        ],
+    )
+    context = DiffContext(
+        files=[runtime_file, test_file],
+        added_lines=2,
+        removed_lines=0,
+        changed_files=[
+            "src/infra/exec-safe-bin-policy.ts",
+            "src/agents/pi-tools.safe-bins.e2e.test.ts",
+        ],
+    )
+
+    passes = _build_component_focused_passes(
+        context,
+        baseline_component_keys={"src/infra"},
+        max_component_passes=4,
+    )
+
+    assert passes
+    assert passes[0][1].changed_files == ["src/infra/exec-safe-bin-policy.ts"]
+    assert all(
+        "src/agents/pi-tools.safe-bins.e2e.test.ts" not in focused.changed_files
+        for _label, focused in passes
+    )
 
 
 def test_classify_changed_components_splits_baseline_and_new_surface():

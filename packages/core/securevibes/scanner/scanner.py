@@ -166,6 +166,7 @@ _DATAFLOW_CALL_RE = re.compile(r"(?P<callee>[A-Za-z_][A-Za-z0-9_$.]*)\s*\((?P<ar
 _DATAFLOW_FUNCTION_DECL_RE = re.compile(
     r"^(?:export\s+)?(?:async\s+)?function\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\("
 )
+_DATAFLOW_IF_CONDITION_RE = re.compile(r"^(?:else\s+)?if\s*\((?P<condition>.+)\)\s*\{?\s*$")
 _DATAFLOW_PREDICATE_HINTS = (
     "&&",
     "||",
@@ -470,6 +471,39 @@ def _extract_call_dataflow(line: str) -> tuple[str, set[str], str] | None:
     )
 
 
+def _extract_branch_condition(line: str) -> str | None:
+    """Extract a normalized branch condition from a changed control-flow line."""
+    if not line:
+        return None
+    match = _DATAFLOW_IF_CONDITION_RE.match(line.strip())
+    if not match:
+        return None
+    condition = match.group("condition").strip()
+    return condition or None
+
+
+def _extract_branch_action(line: str) -> tuple[str, set[str]] | None:
+    """Extract a compact branch action such as return/continue/break from a line."""
+    if not line:
+        return None
+    normalized = line.strip().rstrip(";").strip()
+    if not normalized:
+        return None
+    if normalized == "continue":
+        return "continue", set()
+    if normalized == "break":
+        return "break", set()
+    if normalized.startswith("return "):
+        expr = normalized[len("return ") :].strip()
+        return f"return {_shorten_dataflow_excerpt(expr)}", _extract_dataflow_identifiers(expr)
+    if normalized == "return":
+        return "return", set()
+    if normalized.startswith("throw "):
+        expr = normalized[len("throw ") :].strip()
+        return f"throw {_shorten_dataflow_excerpt(expr)}", _extract_dataflow_identifiers(expr)
+    return None
+
+
 def _extract_predicate_dataflow(line: str) -> tuple[set[str], str] | None:
     """Extract boolean/predicate logic that can drive policy or sink decisions."""
     if not line:
@@ -528,7 +562,9 @@ def _select_connected_dataflow_facts(
 
     def _candidate_score(candidate: _DataflowFactCandidate) -> tuple[int, int, int, int]:
         kind_bonus = 0
-        if candidate.kind == "predicate":
+        if candidate.kind == "branch":
+            kind_bonus = 6
+        elif candidate.kind == "predicate":
             kind_bonus = 4
         elif candidate.kind == "call":
             kind_bonus = 2
@@ -752,13 +788,20 @@ def _collect_changed_code_dataflow_facts(
     current_scope_name: str | None = None
     current_scope_brace_depth = 0
     for hunk in diff_file.hunks:
+        branch_stack: list[tuple[str, int]] = []
+        branch_brace_depth = 0
         for line in hunk.lines:
             if line.type == "remove":
                 continue
             normalized = _normalize_dataflow_line(line.content)
+            line_open_braces = line.content.count("{")
+            line_close_braces = line.content.count("}")
             if not normalized:
+                branch_brace_depth += line_open_braces - line_close_braces
+                while branch_stack and branch_brace_depth < branch_stack[-1][1]:
+                    branch_stack.pop()
                 if current_scope_name is not None:
-                    current_scope_brace_depth += line.content.count("{") - line.content.count("}")
+                    current_scope_brace_depth += line_open_braces - line_close_braces
                     if current_scope_brace_depth <= 0:
                         current_scope_name = None
                         current_scope_brace_depth = 0
@@ -766,16 +809,25 @@ def _collect_changed_code_dataflow_facts(
             function_name = _extract_dataflow_function_name(normalized)
             if function_name:
                 current_scope_name = function_name
-                current_scope_brace_depth = line.content.count("{") - line.content.count("}")
+                current_scope_brace_depth = line_open_braces - line_close_braces
+                branch_brace_depth += line_open_braces - line_close_braces
+                while branch_stack and branch_brace_depth < branch_stack[-1][1]:
+                    branch_stack.pop()
                 continue
             object_scope_name = _extract_dataflow_object_scope_name(normalized)
             if object_scope_name:
                 current_scope_name = object_scope_name
-                current_scope_brace_depth = line.content.count("{") - line.content.count("}")
+                current_scope_brace_depth = line_open_braces - line_close_braces
+                branch_brace_depth += line_open_braces - line_close_braces
+                while branch_stack and branch_brace_depth < branch_stack[-1][1]:
+                    branch_stack.pop()
                 continue
             if _looks_like_dataflow_declaration(normalized):
+                branch_brace_depth += line_open_braces - line_close_braces
+                while branch_stack and branch_brace_depth < branch_stack[-1][1]:
+                    branch_stack.pop()
                 if current_scope_name is not None:
-                    current_scope_brace_depth += line.content.count("{") - line.content.count("}")
+                    current_scope_brace_depth += line_open_braces - line_close_braces
                     if current_scope_brace_depth <= 0:
                         current_scope_name = None
                         current_scope_brace_depth = 0
@@ -783,6 +835,56 @@ def _collect_changed_code_dataflow_facts(
 
             line_no = int(line.new_line_num or line.old_line_num or 0)
             line_prefix = f"L{line_no}" if line_no > 0 else "L?"
+            branch_condition = _extract_branch_condition(normalized)
+            branch_action = _extract_branch_action(normalized)
+            if branch_condition and branch_action:
+                action_excerpt, action_identifiers = branch_action
+                branch_identifiers = _extract_dataflow_identifiers(branch_condition)
+                fact = (
+                    f"{line_prefix}: `if {_shorten_dataflow_excerpt(branch_condition)}"
+                    f" -> {action_excerpt}`"
+                )
+                if fact not in seen_facts:
+                    candidates.append(
+                        _DataflowFactCandidate(
+                            index=candidate_index,
+                            line_no=line_no,
+                            fact=fact,
+                            defines=tuple(),
+                            uses=tuple(sorted(branch_identifiers.union(action_identifiers))),
+                            kind="branch",
+                            scope_name=current_scope_name,
+                        )
+                    )
+                    candidate_index += 1
+                    seen_facts.add(fact)
+                tracked_identifiers.update(branch_identifiers)
+                tracked_identifiers.update(action_identifiers)
+            elif branch_stack and branch_action:
+                action_excerpt, action_identifiers = branch_action
+                active_condition = branch_stack[-1][0]
+                branch_identifiers = _extract_dataflow_identifiers(active_condition)
+                if line.type == "add" or branch_identifiers.intersection(tracked_identifiers):
+                    fact = (
+                        f"{line_prefix}: `if {_shorten_dataflow_excerpt(active_condition)}"
+                        f" -> {action_excerpt}`"
+                    )
+                    if fact not in seen_facts:
+                        candidates.append(
+                            _DataflowFactCandidate(
+                                index=candidate_index,
+                                line_no=line_no,
+                                fact=fact,
+                                defines=tuple(),
+                                uses=tuple(sorted(branch_identifiers.union(action_identifiers))),
+                                kind="branch",
+                                scope_name=current_scope_name,
+                            )
+                        )
+                        candidate_index += 1
+                        seen_facts.add(fact)
+                    tracked_identifiers.update(branch_identifiers)
+                    tracked_identifiers.update(action_identifiers)
             assignment = _extract_assignment_dataflow(normalized)
             if assignment:
                 name, expr = assignment
@@ -834,12 +936,15 @@ def _collect_changed_code_dataflow_facts(
                         tracked_identifiers.update(_extract_dataflow_identifiers(name))
                         tracked_identifiers.update(expr_identifiers)
                     if current_scope_name is not None:
-                        current_scope_brace_depth += line.content.count("{") - line.content.count(
-                            "}"
-                        )
+                        current_scope_brace_depth += line_open_braces - line_close_braces
                         if current_scope_brace_depth <= 0:
                             current_scope_name = None
                             current_scope_brace_depth = 0
+                    branch_brace_depth += line_open_braces - line_close_braces
+                    if branch_condition and line_open_braces > line_close_braces:
+                        branch_stack.append((branch_condition, branch_brace_depth))
+                    while branch_stack and branch_brace_depth < branch_stack[-1][1]:
+                        branch_stack.pop()
                     continue
                 predicate_data = _extract_predicate_dataflow(normalized)
                 call_data = _extract_call_dataflow(normalized)
@@ -888,11 +993,38 @@ def _collect_changed_code_dataflow_facts(
                             seen_facts.add(fact)
                         tracked_identifiers.update(predicate_identifiers)
 
+            branch_brace_depth += line_open_braces - line_close_braces
+            if branch_condition and line_open_braces > line_close_braces:
+                branch_stack.append((branch_condition, branch_brace_depth))
+            while branch_stack and branch_brace_depth < branch_stack[-1][1]:
+                branch_stack.pop()
+
             if current_scope_name is not None:
-                current_scope_brace_depth += line.content.count("{") - line.content.count("}")
+                current_scope_brace_depth += line_open_braces - line_close_braces
                 if current_scope_brace_depth <= 0:
                     current_scope_name = None
                     current_scope_brace_depth = 0
+
+    branch_candidates = [candidate for candidate in candidates if candidate.kind == "branch"]
+    if branch_candidates:
+        filtered_candidates: list[_DataflowFactCandidate] = []
+        for candidate in candidates:
+            if candidate.kind != "predicate":
+                filtered_candidates.append(candidate)
+                continue
+            duplicate_branch = next(
+                (
+                    branch_candidate
+                    for branch_candidate in branch_candidates
+                    if set(branch_candidate.uses) == set(candidate.uses)
+                    and abs(branch_candidate.line_no - candidate.line_no) <= 2
+                ),
+                None,
+            )
+            if duplicate_branch is not None:
+                continue
+            filtered_candidates.append(candidate)
+        candidates = filtered_candidates
 
     selected_candidates = _select_connected_dataflow_facts(candidates, max_facts=max_facts)
     selected_indices = {candidate.index for candidate in selected_candidates}
@@ -1838,6 +1970,34 @@ def _build_diff_context_subset(
     )
 
 
+def _path_is_non_runtime_review_target(path: str) -> bool:
+    """Return True for doc/test paths that should not get standalone focused passes."""
+    normalized = normalize_repo_path(path).lower()
+    if not normalized:
+        return True
+
+    suffix = Path(normalized).suffix.lower()
+    if suffix in NON_CODE_SUFFIXES:
+        return True
+    if "/docs/" in normalized or normalized.startswith("docs/"):
+        return True
+    if "/test/" in normalized or "/tests/" in normalized or ".test." in normalized:
+        return True
+    if ".spec." in normalized:
+        return True
+    return False
+
+
+def _diff_context_contains_runtime_review_target(diff_context: DiffContext) -> bool:
+    """Return True when a focused subset contains production/runtime code worth re-reviewing."""
+    for path in diff_context.changed_files:
+        if not isinstance(path, str):
+            continue
+        if not _path_is_non_runtime_review_target(path):
+            return True
+    return False
+
+
 def _build_component_focused_passes(
     diff_context: DiffContext,
     *,
@@ -1872,6 +2032,8 @@ def _build_component_focused_passes(
     seen_subsets: set[frozenset[str]] = set()
     for category, component_key, paths, _ in ordered_components:
         subset = _build_diff_context_subset(diff_context, paths)
+        if not _diff_context_contains_runtime_review_target(subset):
+            continue
         subset_key = frozenset(
             normalize_repo_path(path)
             for path in subset.changed_files
