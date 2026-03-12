@@ -265,6 +265,15 @@ def copy_report_if_present(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 
+def checkout_repo_ref(work_repo: Path, ref: str) -> None:
+    """Checkout the repository to the exact ref being reviewed."""
+    code, out, err = run(["git", "checkout", ref], cwd=work_repo)
+    if code != 0:
+        raise RuntimeError(
+            f"git checkout {ref} failed in {work_repo}:\nSTDOUT:\n{out}\nSTDERR:\n{err}"
+        )
+
+
 def report_indicates_success(report_path: Path) -> bool:
     """Treat report existence as success for flaky non-zero CLI exits."""
     return report_path.exists()
@@ -732,6 +741,120 @@ def run_commit_split_diff_reviews(
             reports.append(report_path)
 
     return reports, rate_limited, split_stats
+
+
+def merge_split_review_stats(
+    aggregate: dict[str, Any], split_stats: dict[str, Any]
+) -> None:
+    """Accumulate split-diff review stats into one summary."""
+    for key in (
+        "total_groups",
+        "executed_groups",
+        "skipped_groups",
+        "baseline_touch_groups",
+        "new_surface_groups",
+    ):
+        aggregate[key] += split_stats.get(key, 0)
+    for reason, count in split_stats.get("skipped_reasons", {}).items():
+        aggregate["skipped_reasons"][reason] = (
+            aggregate["skipped_reasons"].get(reason, 0) + count
+        )
+
+
+def run_intro_reviews_by_commit(
+    *,
+    work_repo: Path,
+    intro_commit_shas: list[str],
+    intro_cmd: list[str],
+    intro_env: dict[str, str],
+    intro_repo_report: Path,
+    run_dir: Path,
+    intro_commit_paths: dict[str, list[str]],
+    baseline_risk_components: set[str],
+    skip_low_signal_shards: bool,
+) -> tuple[list[Path], list[str], bool, dict[str, Any]]:
+    """Retry intro PR review one introducing commit at a time.
+
+    Each per-commit review first checks out the repo to the exact commit being
+    reviewed so agent file reads match the diff under analysis.
+    """
+    intro_attempt_reports: list[Path] = []
+    intro_attempt_ranges: list[str] = []
+    intro_rate_limited = False
+    intro_split_summary: dict[str, Any] = {
+        "total_groups": 0,
+        "executed_groups": 0,
+        "skipped_groups": 0,
+        "baseline_touch_groups": 0,
+        "new_surface_groups": 0,
+        "skipped_reasons": {},
+    }
+
+    for sha in intro_commit_shas:
+        checkout_repo_ref(work_repo, sha)
+        commit_range = f"{sha}^..{sha}"
+        commit_cmd = replace_range_arg(intro_cmd, commit_range)
+        commit_paths = intro_commit_paths.get(sha, [])
+        if not commit_paths:
+            commit_paths = list_changed_files_for_commit(work_repo, sha)
+        if should_preemptively_split_commit(commit_paths):
+            split_reports, split_rate_limited, split_stats = (
+                run_commit_split_diff_reviews(
+                    work_repo=work_repo,
+                    base_cmd=intro_cmd,
+                    env=intro_env,
+                    repo_report_path=intro_repo_report,
+                    run_dir=run_dir,
+                    sha=sha,
+                    review_paths=commit_paths,
+                    prioritized_components=baseline_risk_components,
+                    skip_low_signal_shards=skip_low_signal_shards,
+                )
+            )
+            merge_split_review_stats(intro_split_summary, split_stats)
+            intro_rate_limited = intro_rate_limited or split_rate_limited
+            short = sha[:12]
+            commit_report = run_dir / f"intro_pr_review.commit_{short}.json"
+            if split_reports:
+                merge_pr_review_reports(split_reports, commit_report)
+                intro_attempt_reports.append(commit_report)
+                intro_attempt_ranges.append(commit_range)
+                continue
+        if intro_repo_report.exists():
+            intro_repo_report.unlink()
+        code, out, err = run(commit_cmd, env=intro_env)
+        intro_rate_limited = intro_rate_limited or command_hit_rate_limit(out, err)
+        short = sha[:12]
+        commit_log = run_dir / f"intro_pr_review.commit_{short}.log.json"
+        commit_report = run_dir / f"intro_pr_review.commit_{short}.json"
+        persist_command_log(commit_log, commit_cmd, code, out, err)
+        copy_report_if_present(intro_repo_report, commit_report)
+        if report_indicates_success(commit_report):
+            intro_attempt_reports.append(commit_report)
+        elif pr_review_hit_context_limits(out, err):
+            split_reports, split_rate_limited, split_stats = (
+                run_commit_split_diff_reviews(
+                    work_repo=work_repo,
+                    base_cmd=intro_cmd,
+                    env=intro_env,
+                    repo_report_path=intro_repo_report,
+                    run_dir=run_dir,
+                    sha=sha,
+                    prioritized_components=baseline_risk_components,
+                    skip_low_signal_shards=skip_low_signal_shards,
+                )
+            )
+            merge_split_review_stats(intro_split_summary, split_stats)
+            intro_rate_limited = intro_rate_limited or split_rate_limited
+            intro_attempt_reports.extend(split_reports)
+        intro_attempt_ranges.append(commit_range)
+
+    return (
+        intro_attempt_reports,
+        intro_attempt_ranges,
+        intro_rate_limited,
+        intro_split_summary,
+    )
 
 
 def merge_pr_review_reports(report_paths: list[Path], output_path: Path) -> None:
@@ -1254,7 +1377,7 @@ def main(argv: list[str] | None = None) -> None:
                 for sha in intro_commit_shas
             }
 
-        run(["git", "checkout", baseline], cwd=work_repo)
+        checkout_repo_ref(work_repo, baseline)
         if (
             baseline_cache_enabled
             and not args.refresh_baseline_cache
@@ -1330,7 +1453,7 @@ def main(argv: list[str] | None = None) -> None:
                 "",
             )
         else:
-            run(["git", "checkout", intro_head], cwd=work_repo)
+            checkout_repo_ref(work_repo, intro_head)
             preemptive_split_present = any(
                 should_preemptively_split_commit(paths)
                 for paths in intro_commit_paths.values()
@@ -1371,109 +1494,27 @@ def main(argv: list[str] | None = None) -> None:
                 and pr_review_hit_context_limits(out, err)
                 and intro_commit_shas
             ):
-                intro_attempt_reports: list[Path] = []
-                intro_attempt_ranges: list[str] = []
-                for sha in intro_commit_shas:
-                    commit_range = f"{sha}^..{sha}"
-                    commit_cmd = replace_range_arg(intro_cmd, commit_range)
-                    commit_paths = intro_commit_paths.get(sha, [])
-                    if not commit_paths:
-                        commit_paths = list_changed_files_for_commit(work_repo, sha)
-                    if should_preemptively_split_commit(commit_paths):
-                        split_reports, split_rate_limited, split_stats = (
-                            run_commit_split_diff_reviews(
-                                work_repo=work_repo,
-                                base_cmd=intro_cmd,
-                                env=intro_env,
-                                repo_report_path=intro_repo_report,
-                                run_dir=run_dir,
-                                sha=sha,
-                                review_paths=commit_paths,
-                                prioritized_components=baseline_risk_components,
-                                skip_low_signal_shards=args.skip_low_signal_split_shards,
-                            )
-                        )
-                        intro_split_summary["total_groups"] += split_stats.get(
-                            "total_groups", 0
-                        )
-                        intro_split_summary["executed_groups"] += split_stats.get(
-                            "executed_groups", 0
-                        )
-                        intro_split_summary["skipped_groups"] += split_stats.get(
-                            "skipped_groups", 0
-                        )
-                        intro_split_summary["baseline_touch_groups"] += split_stats.get(
-                            "baseline_touch_groups", 0
-                        )
-                        intro_split_summary["new_surface_groups"] += split_stats.get(
-                            "new_surface_groups", 0
-                        )
-                        for reason, count in split_stats.get(
-                            "skipped_reasons", {}
-                        ).items():
-                            intro_split_summary["skipped_reasons"][reason] = (
-                                intro_split_summary["skipped_reasons"].get(reason, 0)
-                                + count
-                            )
-                        intro_rate_limited = intro_rate_limited or split_rate_limited
-                        short = sha[:12]
-                        commit_report = run_dir / f"intro_pr_review.commit_{short}.json"
-                        if split_reports:
-                            merge_pr_review_reports(split_reports, commit_report)
-                            intro_attempt_reports.append(commit_report)
-                            intro_attempt_ranges.append(commit_range)
-                            continue
-                    if intro_repo_report.exists():
-                        intro_repo_report.unlink()
-                    code, out, err = run(commit_cmd, env=intro_env)
-                    intro_rate_limited = intro_rate_limited or command_hit_rate_limit(
-                        out, err
-                    )
-                    short = sha[:12]
-                    commit_log = run_dir / f"intro_pr_review.commit_{short}.log.json"
-                    commit_report = run_dir / f"intro_pr_review.commit_{short}.json"
-                    persist_command_log(commit_log, commit_cmd, code, out, err)
-                    copy_report_if_present(intro_repo_report, commit_report)
-                    if report_indicates_success(commit_report):
-                        intro_attempt_reports.append(commit_report)
-                    elif pr_review_hit_context_limits(out, err):
-                        split_reports, split_rate_limited, split_stats = (
-                            run_commit_split_diff_reviews(
-                                work_repo=work_repo,
-                                base_cmd=intro_cmd,
-                                env=intro_env,
-                                repo_report_path=intro_repo_report,
-                                run_dir=run_dir,
-                                sha=sha,
-                                prioritized_components=baseline_risk_components,
-                                skip_low_signal_shards=args.skip_low_signal_split_shards,
-                            )
-                        )
-                        intro_split_summary["total_groups"] += split_stats.get(
-                            "total_groups", 0
-                        )
-                        intro_split_summary["executed_groups"] += split_stats.get(
-                            "executed_groups", 0
-                        )
-                        intro_split_summary["skipped_groups"] += split_stats.get(
-                            "skipped_groups", 0
-                        )
-                        intro_split_summary["baseline_touch_groups"] += split_stats.get(
-                            "baseline_touch_groups", 0
-                        )
-                        intro_split_summary["new_surface_groups"] += split_stats.get(
-                            "new_surface_groups", 0
-                        )
-                        for reason, count in split_stats.get(
-                            "skipped_reasons", {}
-                        ).items():
-                            intro_split_summary["skipped_reasons"][reason] = (
-                                intro_split_summary["skipped_reasons"].get(reason, 0)
-                                + count
-                            )
-                        intro_rate_limited = intro_rate_limited or split_rate_limited
-                        intro_attempt_reports.extend(split_reports)
-                    intro_attempt_ranges.append(commit_range)
+                (
+                    intro_attempt_reports,
+                    intro_attempt_ranges,
+                    commit_retry_rate_limited,
+                    commit_retry_split_summary,
+                ) = run_intro_reviews_by_commit(
+                    work_repo=work_repo,
+                    intro_commit_shas=intro_commit_shas,
+                    intro_cmd=intro_cmd,
+                    intro_env=intro_env,
+                    intro_repo_report=intro_repo_report,
+                    run_dir=run_dir,
+                    intro_commit_paths=intro_commit_paths,
+                    baseline_risk_components=baseline_risk_components,
+                    skip_low_signal_shards=args.skip_low_signal_split_shards,
+                )
+                intro_rate_limited = intro_rate_limited or commit_retry_rate_limited
+                merge_split_review_stats(
+                    intro_split_summary, commit_retry_split_summary
+                )
+                checkout_repo_ref(work_repo, intro_head)
 
                 if intro_attempt_reports:
                     merge_pr_review_reports(intro_attempt_reports, intro_report)
@@ -1492,7 +1533,7 @@ def main(argv: list[str] | None = None) -> None:
                     "",
                 )
             else:
-                run(["git", "checkout", fix_head], cwd=work_repo)
+                checkout_repo_ref(work_repo, fix_head)
                 if fix_repo_report.exists():
                     fix_repo_report.unlink()
                 code, out, err = run(fix_cmd, env=fix_env)

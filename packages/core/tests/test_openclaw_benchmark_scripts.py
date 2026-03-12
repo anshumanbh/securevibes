@@ -419,6 +419,196 @@ def test_run_case_merge_pr_review_reports(
     assert issue_b in issues
 
 
+def test_run_case_run_intro_reviews_by_commit_checks_out_each_commit(
+    run_case_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    work_repo = tmp_path / "work_repo"
+    run_dir = tmp_path / "run"
+    intro_repo_report = work_repo / ".securevibes" / "benchmark-reports" / "intro.json"
+    intro_repo_report.parent.mkdir(parents=True)
+    run_dir.mkdir()
+
+    checkout_calls: list[str] = []
+    review_ranges: list[str] = []
+
+    def fake_checkout_repo_ref(repo: Path, ref: str) -> None:
+        assert repo == work_repo
+        checkout_calls.append(ref)
+
+    def fake_run(
+        cmd: list[str],
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+    ) -> tuple[int, str, str]:
+        assert cwd is None
+        assert env == {"ENV": "1"}
+        review_range = cmd[cmd.index("--range") + 1]
+        review_ranges.append(review_range)
+        intro_repo_report.write_text(
+            json.dumps(
+                {
+                    "issues": [
+                        {
+                            "title": review_range,
+                            "severity": "high",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        return 0, "", ""
+
+    monkeypatch.setattr(run_case_module, "checkout_repo_ref", fake_checkout_repo_ref)
+    monkeypatch.setattr(run_case_module, "run", fake_run)
+    monkeypatch.setattr(
+        run_case_module,
+        "should_preemptively_split_commit",
+        lambda changed_paths: False,
+    )
+
+    reports, ranges, rate_limited, split_summary = (
+        run_case_module.run_intro_reviews_by_commit(
+            work_repo=work_repo,
+            intro_commit_shas=["abc123", "def456"],
+            intro_cmd=[
+                "python3",
+                "-m",
+                "securevibes.cli.main",
+                "pr-review",
+                ".",
+                "--range",
+                "old",
+            ],
+            intro_env={"ENV": "1"},
+            intro_repo_report=intro_repo_report,
+            run_dir=run_dir,
+            intro_commit_paths={
+                "abc123": ["src/a.ts"],
+                "def456": ["src/b.ts"],
+            },
+            baseline_risk_components=set(),
+            skip_low_signal_shards=False,
+        )
+    )
+
+    assert checkout_calls == ["abc123", "def456"]
+    assert review_ranges == ["abc123^..abc123", "def456^..def456"]
+    assert ranges == review_ranges
+    assert len(reports) == 2
+    assert rate_limited is False
+    assert split_summary == {
+        "total_groups": 0,
+        "executed_groups": 0,
+        "skipped_groups": 0,
+        "baseline_touch_groups": 0,
+        "new_surface_groups": 0,
+        "skipped_reasons": {},
+    }
+
+
+def test_run_case_run_intro_reviews_by_commit_checks_out_before_split_review(
+    run_case_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    work_repo = tmp_path / "work_repo"
+    run_dir = tmp_path / "run"
+    intro_repo_report = work_repo / ".securevibes" / "benchmark-reports" / "intro.json"
+    intro_repo_report.parent.mkdir(parents=True)
+    run_dir.mkdir()
+
+    checkout_calls: list[str] = []
+    split_calls: list[str] = []
+
+    def fake_checkout_repo_ref(repo: Path, ref: str) -> None:
+        assert repo == work_repo
+        checkout_calls.append(ref)
+
+    def fake_split_reviews(
+        **kwargs: object,
+    ) -> tuple[list[Path], bool, dict[str, object]]:
+        sha = kwargs["sha"]
+        assert checkout_calls[-1] == sha
+        split_calls.append(str(sha))
+        split_report = run_dir / f"{sha}.split.json"
+        split_report.write_text(
+            json.dumps(
+                {
+                    "issues": [
+                        {
+                            "title": f"split-{sha}",
+                            "severity": "high",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        return (
+            [split_report],
+            False,
+            {
+                "total_groups": 1,
+                "executed_groups": 1,
+                "skipped_groups": 0,
+                "baseline_touch_groups": 1,
+                "new_surface_groups": 0,
+                "skipped_reasons": {},
+            },
+        )
+
+    monkeypatch.setattr(run_case_module, "checkout_repo_ref", fake_checkout_repo_ref)
+    monkeypatch.setattr(
+        run_case_module,
+        "should_preemptively_split_commit",
+        lambda changed_paths: True,
+    )
+    monkeypatch.setattr(
+        run_case_module,
+        "run_commit_split_diff_reviews",
+        fake_split_reviews,
+    )
+
+    reports, ranges, rate_limited, split_summary = (
+        run_case_module.run_intro_reviews_by_commit(
+            work_repo=work_repo,
+            intro_commit_shas=["abc123"],
+            intro_cmd=[
+                "python3",
+                "-m",
+                "securevibes.cli.main",
+                "pr-review",
+                ".",
+                "--range",
+                "old",
+            ],
+            intro_env={"ENV": "1"},
+            intro_repo_report=intro_repo_report,
+            run_dir=run_dir,
+            intro_commit_paths={"abc123": ["src/a.ts", "src/b.ts"]},
+            baseline_risk_components={"src"},
+            skip_low_signal_shards=True,
+        )
+    )
+
+    assert checkout_calls == ["abc123"]
+    assert split_calls == ["abc123"]
+    assert ranges == ["abc123^..abc123"]
+    assert len(reports) == 1
+    assert rate_limited is False
+    assert split_summary == {
+        "total_groups": 1,
+        "executed_groups": 1,
+        "skipped_groups": 0,
+        "baseline_touch_groups": 1,
+        "new_surface_groups": 0,
+        "skipped_reasons": {},
+    }
+
+
 def test_run_case_find_compatible_baseline_cache_entry_prefers_latest(
     run_case_module: ModuleType, tmp_path: Path
 ) -> None:
