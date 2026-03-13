@@ -1325,6 +1325,7 @@ async def _generate_pr_hypotheses(
     component_delta_summary: str,
     new_surface_threat_delta: str,
     baseline_reachability_summary: str,
+    baseline_sink_code_summary: str,
     threat_context_summary: str,
     vuln_context_summary: str,
     architecture_context: str,
@@ -1392,6 +1393,9 @@ NEW-SURFACE THREAT DELTA:
 
 BASELINE HIGH-IMPACT OPERATIONS THAT MAY BECOME NEWLY REACHABLE:
 {baseline_reachability_summary}
+
+UNCHANGED BASELINE SINK CODE TO CHECK FOR NEW REACHABILITY:
+{baseline_sink_code_summary}
 
 RELEVANT THREATS:
 {threat_context_summary}
@@ -1954,16 +1958,16 @@ def _format_reachability_location(entry: dict, candidate_paths: Sequence[str]) -
     return f"{path}:{line_number}" if line_number > 0 else path
 
 
-def _summarize_auth_reachability_candidates(
+def _select_auth_reachability_candidates(
     baseline_vulns: Sequence[dict],
     changed_files: list[str],
     *,
     auth_privilege_signals: bool,
     max_items: int = 4,
-) -> str:
-    """Summarize existing high-impact baseline sinks that auth changes may newly expose."""
+) -> list[dict[str, Any]]:
+    """Select overlapping high-impact baseline sinks that auth changes may newly expose."""
     if not auth_privilege_signals:
-        return "- No auth/privilege diff signals detected."
+        return []
 
     changed_set = {
         normalize_repo_path(path)
@@ -1976,9 +1980,9 @@ def _summarize_auth_reachability_candidates(
         if component_key
     }
     if not changed_component_keys:
-        return "- No overlapping high-impact baseline operations identified."
+        return []
 
-    ranked_candidates: list[tuple[int, int, int, str, str, str]] = []
+    ranked_candidates: list[dict[str, Any]] = []
     for vuln in baseline_vulns:
         if not isinstance(vuln, dict):
             continue
@@ -2008,35 +2012,166 @@ def _summarize_auth_reachability_candidates(
             vuln.get("title") or vuln.get("threat_id") or "Untitled baseline finding"
         ).strip()
         ranked_candidates.append(
-            (
-                severity_rank,
-                component_overlap,
-                unchanged_sink,
-                severity_label,
-                location,
-                title,
-            )
+            {
+                "severity_rank": severity_rank,
+                "component_overlap": component_overlap,
+                "unchanged_sink": bool(unchanged_sink),
+                "severity_label": severity_label,
+                "location": location,
+                "title": title,
+                "entry": vuln,
+            }
         )
 
+    ranked_candidates.sort(
+        key=lambda item: (
+            item["severity_rank"],
+            item["component_overlap"],
+            int(item["unchanged_sink"]),
+            item["location"],
+            item["title"],
+        ),
+        reverse=True,
+    )
+    return ranked_candidates[:max_items]
+
+
+def _summarize_auth_reachability_candidates(
+    baseline_vulns: Sequence[dict],
+    changed_files: list[str],
+    *,
+    auth_privilege_signals: bool,
+    max_items: int = 4,
+) -> str:
+    """Summarize existing high-impact baseline sinks that auth changes may newly expose."""
+    if not auth_privilege_signals:
+        return "- No auth/privilege diff signals detected."
+
+    ranked_candidates = _select_auth_reachability_candidates(
+        baseline_vulns,
+        changed_files,
+        auth_privilege_signals=auth_privilege_signals,
+        max_items=max_items,
+    )
     if not ranked_candidates:
         return "- No overlapping high-impact baseline operations identified."
 
-    ranked_candidates.sort(
-        key=lambda item: (item[0], item[1], item[2], item[4], item[5]),
-        reverse=True,
-    )
-
     bullets: list[str] = []
-    for _sev_rank, _overlap, unchanged_sink, severity_label, location, title in ranked_candidates[
-        :max_items
-    ]:
-        unchanged_note = "existing unchanged sink" if unchanged_sink else "existing sink"
+    for candidate in ranked_candidates:
+        unchanged_note = (
+            "existing unchanged sink" if candidate["unchanged_sink"] else "existing sink"
+        )
         bullets.append(
-            f"- {severity_label} | {location} | {title} | {unchanged_note}; "
+            f"- {candidate['severity_label']} | {candidate['location']} | {candidate['title']} | "
+            f"{unchanged_note}; "
             "check whether auth/session/role/policy changes make this operation newly "
             "reachable or less restricted."
         )
     return "\n".join(bullets)
+
+
+def _read_repo_file_window(
+    repo: Path,
+    repo_path: str,
+    *,
+    line_number: int,
+    context_lines: int = 4,
+) -> list[str]:
+    """Read a small line-numbered snippet from a repository-relative file."""
+    normalized_path = normalize_repo_path(repo_path)
+    if not normalized_path:
+        return []
+
+    repo_root = repo.resolve(strict=False)
+    candidate = (repo / normalized_path).resolve(strict=False)
+    if candidate != repo_root and repo_root not in candidate.parents:
+        return []
+    if not candidate.is_file():
+        return []
+
+    try:
+        lines = candidate.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return []
+    if not lines:
+        return []
+
+    if line_number > 0:
+        clamped_line = min(line_number, len(lines))
+        start = max(1, clamped_line - context_lines)
+        end = min(len(lines), clamped_line + context_lines)
+    else:
+        start = 1
+        end = min(len(lines), max(6, context_lines * 2 + 1))
+
+    snippet_lines: list[str] = []
+    for current_line in range(start, end + 1):
+        content = lines[current_line - 1].replace("\t", " ").rstrip()
+        if len(content) > 180:
+            content = f"{content[:177]}..."
+        snippet_lines.append(f"  L{current_line}: {content}")
+    return snippet_lines
+
+
+def _summarize_auth_reachability_sink_code(
+    repo: Path,
+    baseline_vulns: Sequence[dict],
+    changed_files: list[str],
+    *,
+    auth_privilege_signals: bool,
+    max_items: int = 2,
+    context_lines: int = 4,
+    max_chars: int = 2400,
+) -> str:
+    """Summarize unchanged baseline sink code that auth-related diffs may newly expose."""
+    if not auth_privilege_signals:
+        return "- No unchanged baseline sink code selected."
+
+    candidates = _select_auth_reachability_candidates(
+        baseline_vulns,
+        changed_files,
+        auth_privilege_signals=auth_privilege_signals,
+        max_items=max_items * 2,
+    )
+    if not candidates:
+        return "- No unchanged baseline sink code selected."
+
+    blocks: list[str] = []
+    for candidate in candidates:
+        if not candidate["unchanged_sink"]:
+            continue
+        location = str(candidate["location"])
+        file_path, _, line_text = location.partition(":")
+        try:
+            line_number = int(line_text) if line_text else 0
+        except ValueError:
+            line_number = 0
+        snippet_lines = _read_repo_file_window(
+            repo,
+            file_path,
+            line_number=line_number,
+            context_lines=context_lines,
+        )
+        if not snippet_lines:
+            continue
+        blocks.append(
+            "\n".join(
+                [
+                    f"- {location} | {candidate['severity_label']} | {candidate['title']}",
+                    *snippet_lines,
+                ]
+            )
+        )
+        if len(blocks) >= max_items:
+            break
+
+    if not blocks:
+        return "- No unchanged baseline sink code selected."
+
+    summary = "\n\n".join(blocks)
+    if len(summary) <= max_chars:
+        return summary
+    return f"{summary[: max_chars - 15].rstrip()}...[truncated]"
 
 
 def _component_matches_baseline(
@@ -3126,6 +3261,12 @@ class Scanner:
             focused_diff_context.changed_files,
             auth_privilege_signals=auth_privilege_signals,
         )
+        baseline_sink_code_summary = _summarize_auth_reachability_sink_code(
+            repo,
+            baseline_vulns,
+            focused_diff_context.changed_files,
+            auth_privilege_signals=auth_privilege_signals,
+        )
         pr_grep_default_scope = _derive_pr_default_grep_scope(focused_diff_context)
         context_phase_timings["prompt_context_summary_seconds"] = round(
             time.time() - phase_start, 2
@@ -3203,6 +3344,7 @@ class Scanner:
                 component_delta_summary=component_delta_summary,
                 new_surface_threat_delta=new_surface_threat_delta,
                 baseline_reachability_summary=baseline_reachability_summary,
+                baseline_sink_code_summary=baseline_sink_code_summary,
                 threat_context_summary=threat_context_summary,
                 vuln_context_summary=vuln_context_summary,
                 architecture_context=architecture_context,
@@ -3257,6 +3399,12 @@ When the diff changes auth, session, role, permission, policy, or trust-boundary
 review whether it makes any existing high-impact operation below newly reachable or less
 restricted, even if the sink file itself is unchanged.
 {baseline_reachability_summary}
+
+## UNCHANGED BASELINE SINK CODE TO CHECK FOR NEW REACHABILITY
+These are compact anchors from existing sink files that were not changed by the PR.
+Use them to validate whether changed auth/session/role/policy logic now reaches the sink or
+makes it less restricted.
+{baseline_sink_code_summary}
 
 ## CHANGED-CODE DATAFLOW FACTS
 Heuristic summaries of value derivation and boundary/API calls introduced or modified by the diff.

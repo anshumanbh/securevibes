@@ -67,6 +67,7 @@ from securevibes.scanner.scanner import (
     _refine_pr_findings_with_llm,
     _split_component_key,
     _summarize_auth_reachability_candidates,
+    _summarize_auth_reachability_sink_code,
     score_diff_file_for_security_review,
     _summarize_diff_hunk_snippets,
     _summarize_diff_line_anchors,
@@ -1893,6 +1894,45 @@ def test_summarize_auth_reachability_candidates_skips_non_auth_diffs():
     assert summary == "- No auth/privilege diff signals detected."
 
 
+def test_summarize_auth_reachability_sink_code_reads_unchanged_sink_window(tmp_path: Path):
+    """Auth diffs should get compact unchanged sink code anchors from baseline findings."""
+    repo = tmp_path / "repo"
+    sink_dir = repo / "src" / "gateway" / "server-methods"
+    sink_dir.mkdir(parents=True)
+    (sink_dir / "config.ts").write_text(
+        "\n".join(
+            [
+                "export function applyConfig(update: unknown) {",
+                "  validateConfig(update);",
+                "  persistConfig(update);",
+                "  restartGateway();",
+                "}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    summary = _summarize_auth_reachability_sink_code(
+        repo,
+        [
+            {
+                "title": "Config apply reaches privileged restart path",
+                "severity": "high",
+                "file_path": "src/gateway/server-methods/config.ts",
+                "line_number": 3,
+            }
+        ],
+        ["src/gateway/server/ws-connection/message-handler.ts"],
+        auth_privilege_signals=True,
+    )
+
+    assert "src/gateway/server-methods/config.ts:3" in summary
+    assert "Config apply reaches privileged restart path" in summary
+    assert "L3:   persistConfig(update);" in summary
+    assert "L4:   restartGateway();" in summary
+
+
 def test_summarize_diff_hunk_snippets_includes_diff_lines():
     """Prompt hunk snippets should preserve +/- diff lines for missing-file analysis."""
     diff_file = DiffFile(
@@ -3515,6 +3555,7 @@ async def test_generate_pr_hypotheses_uses_no_tools_and_default_permissions(
             component_delta_summary="- New-surface changed component: src/plugins -> app.py",
             new_surface_threat_delta="- Path boundary delta",
             baseline_reachability_summary="- No overlapping high-impact baseline operations identified.",
+            baseline_sink_code_summary="- No unchanged baseline sink code selected.",
             threat_context_summary="- none",
             vuln_context_summary="- none",
             architecture_context="- none",
@@ -3913,6 +3954,21 @@ async def test_prepare_pr_review_context_includes_auth_reachability_baseline_sin
     (gateway_dir / "message-handler.ts").write_text(
         "export const handler = true;\n", encoding="utf-8"
     )
+    sink_dir = repo / "src" / "gateway" / "server-methods"
+    sink_dir.mkdir(parents=True)
+    sink_lines = [f"// filler line {idx}" for idx in range(1, 193)]
+    sink_lines.extend(
+        [
+            "  validateConfig(update);",
+            "  writeConfig(update);",
+            "  applyConfig(update);",
+            "  restartGateway();",
+        ]
+    )
+    (sink_dir / "config.ts").write_text(
+        "\n".join(["export function applyConfig(update: unknown) {", *sink_lines, "}"]) + "\n",
+        encoding="utf-8",
+    )
 
     securevibes_dir = repo / ".securevibes"
     securevibes_dir.mkdir()
@@ -4001,8 +4057,12 @@ async def test_prepare_pr_review_context_includes_auth_reachability_baseline_sin
     assert "BASELINE HIGH-IMPACT OPERATIONS THAT MAY BECOME NEWLY REACHABLE" in (
         ctx.contextualized_prompt
     )
+    assert "UNCHANGED BASELINE SINK CODE TO CHECK FOR NEW REACHABILITY" in (
+        ctx.contextualized_prompt
+    )
     assert "src/gateway/server-methods/config.ts:195" in ctx.contextualized_prompt
     assert "Config apply reaches privileged restart path" in ctx.contextualized_prompt
+    assert "L195:" in ctx.contextualized_prompt
     baseline_reachability_summary = mock_hypotheses.await_args.kwargs[
         "baseline_reachability_summary"
     ]
@@ -4010,6 +4070,10 @@ async def test_prepare_pr_review_context_includes_auth_reachability_baseline_sin
         "- high | src/gateway/server-methods/config.ts:195"
     )
     assert "reply-elevated.ts" not in baseline_reachability_summary
+    assert (
+        "src/gateway/server-methods/config.ts:195"
+        in mock_hypotheses.await_args.kwargs["baseline_sink_code_summary"]
+    )
 
 
 @pytest.mark.asyncio
@@ -4871,6 +4935,7 @@ class TestGeneratePrHypotheses:
         component_delta_summary="- New-surface changed component: src/auth -> src/auth.py",
         new_surface_threat_delta="- Auth boundary delta",
         baseline_reachability_summary="- high | src/gateway/server-methods/config.ts:195 | Config apply reaches privileged restart path | existing unchanged sink; check whether auth/session/role/policy changes make this operation newly reachable or less restricted.",
+        baseline_sink_code_summary="- src/gateway/server-methods/config.ts:195 | high | Config apply reaches privileged restart path\n  L193:   validateConfig(update)\n  L194:   writeConfig(update)\n  L195:   applyConfig(update)",
         threat_context_summary="- Auth bypass",
         vuln_context_summary="- None",
         architecture_context="Flask app",
@@ -4985,6 +5050,8 @@ class TestGeneratePrHypotheses:
         assert "- Auth boundary delta" in prompt
         assert "BASELINE HIGH-IMPACT OPERATIONS THAT MAY BECOME NEWLY REACHABLE" in prompt
         assert "Config apply reaches privileged restart path" in prompt
+        assert "UNCHANGED BASELINE SINK CODE TO CHECK FOR NEW REACHABILITY" in prompt
+        assert "L195:" in prompt
         assert "quote at least one identifier or boundary/API" in prompt
         assert "Prefer one hypothesis per explicit changed-code chain" in prompt
         assert "Reason from constraints enforced in the reviewed code path" in prompt
