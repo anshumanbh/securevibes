@@ -1,24 +1,27 @@
 {
   "id": "GHSA-x22m-j5qq-j49m",
-  "status": "baseline_only_completed",
+  "status": "intro_only_completed",
   "model": "sonnet",
   "severity_filter": "medium",
-  "run_id": "20260304T213654Z",
+  "run_id": "20260313T175934Z",
   "securevibes_repo": "/Users/anshumanbhartiya/repos/securevibes",
-  "securevibes_commit": "2f357fb39bae76d8beab78bad628a91e9c3d3041",
+  "securevibes_commit": "05edfa76fd9f15302112cee5d21318e8092f4b7a",
   "baseline_cache": {
     "enabled": true,
-    "refresh_requested": true,
-    "entry_key": "baseline-02842bef9179__sv-2f357fb39bae__model-sonnet__sev-medium",
-    "entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-02842bef9179__sv-2f357fb39bae__model-sonnet__sev-medium",
-    "hit": false,
-    "saved": true
+    "refresh_requested": false,
+    "requested_entry_key": "baseline-02842bef9179__sv-05edfa76fd9f__model-sonnet__sev-medium",
+    "requested_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-02842bef9179__sv-05edfa76fd9f__model-sonnet__sev-medium",
+    "resolved_entry_key": "baseline-02842bef9179__sv-2f357fb39bae__model-sonnet__sev-medium",
+    "resolved_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-02842bef9179__sv-2f357fb39bae__model-sonnet__sev-medium",
+    "compatible_fallback_used": true,
+    "hit": true,
+    "saved": false
   },
   "baseline_scan": {
-    "command_exit": 1,
+    "command_exit": 0,
     "effective_success": true,
     "rate_limited": false,
-    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-x22m-j5qq-j49m/runs/20260304T213654Z/baseline_scan.json",
+    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-x22m-j5qq-j49m/runs/20260313T175934Z/baseline_scan.json",
     "summary": {
       "exists": true,
       "issue_count": 13,
@@ -35,37 +38,56 @@
       "vulnerabilities_json_valid": true,
       "valid": true
     },
-    "used_cache": false
+    "used_cache": true,
+    "risk_component_count": 12
   },
   "intro_pr_review": {
+    "command_exit": 0,
+    "effective_success": true,
+    "rate_limited": false,
+    "range": "2267d58afcc70fe19408b8f0dce108c340f3426d^..2267d58afcc70fe19408b8f0dce108c340f3426d",
+    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-x22m-j5qq-j49m/runs/20260313T175934Z/intro_pr_review.json",
+    "summary": {
+      "exists": true,
+      "issue_count": 6,
+      "severities": {
+        "high": 5,
+        "medium": 1
+      }
+    },
+    "split_shard_filtering": {
+      "enabled": false,
+      "total_groups": 18,
+      "executed_groups": 18,
+      "skipped_groups": 0,
+      "baseline_touch_groups": 2,
+      "new_surface_groups": 16,
+      "skipped_reasons": {}
+    }
+  },
+  "intro_threat_modeling": {
     "command_exit": null,
     "effective_success": null,
-    "rate_limited": null,
-    "range": "2267d58afcc70fe19408b8f0dce108c340f3426d^..2267d58afcc70fe19408b8f0dce108c340f3426d",
-    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-x22m-j5qq-j49m/runs/20260304T213654Z/intro_pr_review.json",
-    "summary": {
-      "exists": false,
-      "issue_count": null,
-      "severities": {}
-    }
+    "auto_triggered": false,
+    "log": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-x22m-j5qq-j49m/runs/20260313T175934Z/intro_threat_modeling.log.json"
   },
   "fix_pr_review": {
     "command_exit": null,
     "effective_success": null,
     "rate_limited": null,
     "range": "5b4121d6011a48c71e747e3c18197f180b872c5d^..5b4121d6011a48c71e747e3c18197f180b872c5d",
-    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-x22m-j5qq-j49m/runs/20260304T213654Z/fix_pr_review.json",
+    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-x22m-j5qq-j49m/runs/20260313T175934Z/fix_pr_review.json",
     "summary": {
       "exists": false,
       "issue_count": null,
       "severities": {}
     }
   },
-  "tier1_detected_from_new_commits": null,
-  "tier2_root_cause_match": null,
-  "tier2_match_basis": null,
-  "tier2_notes": null,
-  "could_propose_fix": null,
+  "tier1_detected_from_new_commits": true,
+  "tier2_root_cause_match": true,
+  "tier2_match_basis": "matched Feishu media and markdown image SSRF root cause",
+  "tier2_notes": "Final intro report preserved multiple advisory-aligned Feishu findings, including SSRF via unvalidated image URL fetches in feishu_doc write/append actions and SSRF via markdown image URLs in the Feishu document tool. Those directly match analysis.md root cause (CWE-918 SSRF via sendMediaFeishu and markdown image fetching in the Feishu extension) introduced by 2267d58afcc7.",
+  "could_propose_fix": true,
   "post_fix_regression_status": null,
-  "notes": "Tier-2 adjudication is manual: compare intro_pr_review findings against cases/<GHSA>/analysis.md root cause."
+  "notes": "Tier-1 pass and Tier-2 pass from direct Feishu SSRF findings in the final intro report."
 }
