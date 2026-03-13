@@ -1,24 +1,27 @@
 {
   "id": "GHSA-r5fq-947m-xm57",
-  "status": "baseline_only_completed",
+  "status": "intro_only_completed",
   "model": "sonnet",
   "severity_filter": "medium",
-  "run_id": "20260304T211657Z",
+  "run_id": "20260313T173541Z",
   "securevibes_repo": "/Users/anshumanbhartiya/repos/securevibes",
-  "securevibes_commit": "2f357fb39bae76d8beab78bad628a91e9c3d3041",
+  "securevibes_commit": "cf3ed205346737f598ff287c4926c9343bdefee8",
   "baseline_cache": {
     "enabled": true,
-    "refresh_requested": true,
-    "entry_key": "baseline-221c0b4cf841__sv-2f357fb39bae__model-sonnet__sev-medium",
-    "entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-221c0b4cf841__sv-2f357fb39bae__model-sonnet__sev-medium",
-    "hit": false,
-    "saved": true
+    "refresh_requested": false,
+    "requested_entry_key": "baseline-221c0b4cf841__sv-cf3ed2053467__model-sonnet__sev-medium",
+    "requested_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-221c0b4cf841__sv-cf3ed2053467__model-sonnet__sev-medium",
+    "resolved_entry_key": "baseline-221c0b4cf841__sv-2f357fb39bae__model-sonnet__sev-medium",
+    "resolved_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-221c0b4cf841__sv-2f357fb39bae__model-sonnet__sev-medium",
+    "compatible_fallback_used": true,
+    "hit": true,
+    "saved": false
   },
   "baseline_scan": {
-    "command_exit": 1,
+    "command_exit": 0,
     "effective_success": true,
     "rate_limited": false,
-    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-r5fq-947m-xm57/runs/20260304T211657Z/baseline_scan.json",
+    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-r5fq-947m-xm57/runs/20260313T173541Z/baseline_scan.json",
     "summary": {
       "exists": true,
       "issue_count": 5,
@@ -35,37 +38,56 @@
       "vulnerabilities_json_valid": true,
       "valid": true
     },
-    "used_cache": false
+    "used_cache": true,
+    "risk_component_count": 13
   },
   "intro_pr_review": {
+    "command_exit": 2,
+    "effective_success": true,
+    "rate_limited": false,
+    "range": "8b4bdaa8a473e6e14cab866a916a407e86ab861a^..8b4bdaa8a473e6e14cab866a916a407e86ab861a",
+    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-r5fq-947m-xm57/runs/20260313T173541Z/intro_pr_review.json",
+    "summary": {
+      "exists": true,
+      "issue_count": 3,
+      "severities": {
+        "critical": 1,
+        "high": 2
+      }
+    },
+    "split_shard_filtering": {
+      "enabled": false,
+      "total_groups": 0,
+      "executed_groups": 0,
+      "skipped_groups": 0,
+      "baseline_touch_groups": 0,
+      "new_surface_groups": 0,
+      "skipped_reasons": {}
+    }
+  },
+  "intro_threat_modeling": {
     "command_exit": null,
     "effective_success": null,
-    "rate_limited": null,
-    "range": "8b4bdaa8a473e6e14cab866a916a407e86ab861a^..8b4bdaa8a473e6e14cab866a916a407e86ab861a",
-    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-r5fq-947m-xm57/runs/20260304T211657Z/intro_pr_review.json",
-    "summary": {
-      "exists": false,
-      "issue_count": null,
-      "severities": {}
-    }
+    "auto_triggered": false,
+    "log": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-r5fq-947m-xm57/runs/20260313T173541Z/intro_threat_modeling.log.json"
   },
   "fix_pr_review": {
     "command_exit": null,
     "effective_success": null,
     "rate_limited": null,
     "range": "5544646a09c0121fca7d7093812dc2de8437c7f1^..5544646a09c0121fca7d7093812dc2de8437c7f1",
-    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-r5fq-947m-xm57/runs/20260304T211657Z/fix_pr_review.json",
+    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-r5fq-947m-xm57/runs/20260313T173541Z/fix_pr_review.json",
     "summary": {
       "exists": false,
       "issue_count": null,
       "severities": {}
     }
   },
-  "tier1_detected_from_new_commits": null,
-  "tier2_root_cause_match": null,
-  "tier2_match_basis": null,
-  "tier2_notes": null,
-  "could_propose_fix": null,
+  "tier1_detected_from_new_commits": true,
+  "tier2_root_cause_match": true,
+  "tier2_match_basis": "matched apply_patch path-traversal root cause allowing filesystem writes outside workspace",
+  "tier2_notes": "Final intro report identified a critical path-traversal issue in src/agents/apply-patch.ts that allows arbitrary filesystem access when apply_patch runs without sandbox containment. That matches analysis.md root cause (CWE-22 path traversal in apply_patch allowing writes/deletes outside the workspace) introduced by 8b4bdaa8a473.",
+  "could_propose_fix": true,
   "post_fix_regression_status": null,
-  "notes": "Tier-2 adjudication is manual: compare intro_pr_review findings against cases/<GHSA>/analysis.md root cause."
+  "notes": "Tier-1 pass and Tier-2 pass from direct apply_patch path-traversal finding in the final intro report."
 }
