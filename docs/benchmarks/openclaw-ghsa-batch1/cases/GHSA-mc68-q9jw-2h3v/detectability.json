@@ -1,24 +1,27 @@
 {
   "id": "GHSA-mc68-q9jw-2h3v",
-  "status": "baseline_only_completed",
+  "status": "intro_only_completed",
   "model": "sonnet",
   "severity_filter": "medium",
-  "run_id": "20260304T213654Z",
+  "run_id": "20260313T080716Z",
   "securevibes_repo": "/Users/anshumanbhartiya/repos/securevibes",
-  "securevibes_commit": "2f357fb39bae76d8beab78bad628a91e9c3d3041",
+  "securevibes_commit": "1af8ee648a4649c11422a0bee7d18060eff91eb5",
   "baseline_cache": {
     "enabled": true,
-    "refresh_requested": true,
-    "entry_key": "baseline-7a839e7eb62b__sv-2f357fb39bae__model-sonnet__sev-medium",
-    "entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-7a839e7eb62b__sv-2f357fb39bae__model-sonnet__sev-medium",
-    "hit": false,
-    "saved": true
+    "refresh_requested": false,
+    "requested_entry_key": "baseline-7a839e7eb62b__sv-1af8ee648a46__model-sonnet__sev-medium",
+    "requested_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-7a839e7eb62b__sv-1af8ee648a46__model-sonnet__sev-medium",
+    "resolved_entry_key": "baseline-7a839e7eb62b__sv-2f357fb39bae__model-sonnet__sev-medium",
+    "resolved_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-7a839e7eb62b__sv-2f357fb39bae__model-sonnet__sev-medium",
+    "compatible_fallback_used": true,
+    "hit": true,
+    "saved": false
   },
   "baseline_scan": {
-    "command_exit": 1,
+    "command_exit": 0,
     "effective_success": true,
     "rate_limited": false,
-    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-mc68-q9jw-2h3v/runs/20260304T213654Z/baseline_scan.json",
+    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-mc68-q9jw-2h3v/runs/20260313T080716Z/baseline_scan.json",
     "summary": {
       "exists": true,
       "issue_count": 5,
@@ -35,37 +38,55 @@
       "vulnerabilities_json_valid": true,
       "valid": true
     },
-    "used_cache": false
+    "used_cache": true,
+    "risk_component_count": 7
   },
   "intro_pr_review": {
+    "command_exit": 1,
+    "effective_success": true,
+    "rate_limited": false,
+    "range": "eaace34233fdf454c526d23cd2fd49de3be8eb32^..eaace34233fdf454c526d23cd2fd49de3be8eb32",
+    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-mc68-q9jw-2h3v/runs/20260313T080716Z/intro_pr_review.json",
+    "summary": {
+      "exists": true,
+      "issue_count": 2,
+      "severities": {
+        "high": 2
+      }
+    },
+    "split_shard_filtering": {
+      "enabled": false,
+      "total_groups": 0,
+      "executed_groups": 0,
+      "skipped_groups": 0,
+      "baseline_touch_groups": 0,
+      "new_surface_groups": 0,
+      "skipped_reasons": {}
+    }
+  },
+  "intro_threat_modeling": {
     "command_exit": null,
     "effective_success": null,
-    "rate_limited": null,
-    "range": "eaace34233fdf454c526d23cd2fd49de3be8eb32^..eaace34233fdf454c526d23cd2fd49de3be8eb32",
-    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-mc68-q9jw-2h3v/runs/20260304T213654Z/intro_pr_review.json",
-    "summary": {
-      "exists": false,
-      "issue_count": null,
-      "severities": {}
-    }
+    "auto_triggered": false,
+    "log": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-mc68-q9jw-2h3v/runs/20260313T080716Z/intro_threat_modeling.log.json"
   },
   "fix_pr_review": {
     "command_exit": null,
     "effective_success": null,
     "rate_limited": null,
     "range": "771f23d36b95ec2204cc9a0054045f5d8439ea75^..771f23d36b95ec2204cc9a0054045f5d8439ea75",
-    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-mc68-q9jw-2h3v/runs/20260304T213654Z/fix_pr_review.json",
+    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-mc68-q9jw-2h3v/runs/20260313T080716Z/fix_pr_review.json",
     "summary": {
       "exists": false,
       "issue_count": null,
       "severities": {}
     }
   },
-  "tier1_detected_from_new_commits": null,
-  "tier2_root_cause_match": null,
-  "tier2_match_basis": null,
-  "tier2_notes": null,
-  "could_propose_fix": null,
+  "tier1_detected_from_new_commits": true,
+  "tier2_root_cause_match": true,
+  "tier2_match_basis": "matched PATH environment variable command-injection root cause in Docker sandbox exec",
+  "tier2_notes": "Final intro report identified a high-severity command injection via the unescaped PATH environment variable in src/agents/bash-tools.shared.ts. That matches analysis.md root cause (CWE-78 command injection in Clawdbot Docker execution via PATH environment variable) introduced by eaace34233fd.",
+  "could_propose_fix": true,
   "post_fix_regression_status": null,
-  "notes": "Tier-2 adjudication is manual: compare intro_pr_review findings against cases/<GHSA>/analysis.md root cause."
+  "notes": "Tier-1 pass and Tier-2 pass from direct PATH-injection finding in the final intro report."
 }
