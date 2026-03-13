@@ -1,24 +1,27 @@
 {
   "id": "GHSA-g8p2-7wf7-98mq",
-  "status": "baseline_only_completed",
+  "status": "intro_only_completed",
   "model": "sonnet",
   "severity_filter": "medium",
-  "run_id": "20260304T213654Z",
+  "run_id": "20260313T071353Z",
   "securevibes_repo": "/Users/anshumanbhartiya/repos/securevibes",
-  "securevibes_commit": "2f357fb39bae76d8beab78bad628a91e9c3d3041",
+  "securevibes_commit": "7974b9b5cce76aa6601e2bbad33605a18bdb78ca",
   "baseline_cache": {
     "enabled": true,
-    "refresh_requested": true,
-    "entry_key": "baseline-51dfd6efdb01__sv-2f357fb39bae__model-sonnet__sev-medium",
-    "entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-51dfd6efdb01__sv-2f357fb39bae__model-sonnet__sev-medium",
-    "hit": false,
-    "saved": true
+    "refresh_requested": false,
+    "requested_entry_key": "baseline-51dfd6efdb01__sv-7974b9b5cce7__model-sonnet__sev-medium",
+    "requested_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-51dfd6efdb01__sv-7974b9b5cce7__model-sonnet__sev-medium",
+    "resolved_entry_key": "baseline-51dfd6efdb01__sv-2f357fb39bae__model-sonnet__sev-medium",
+    "resolved_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-51dfd6efdb01__sv-2f357fb39bae__model-sonnet__sev-medium",
+    "compatible_fallback_used": true,
+    "hit": true,
+    "saved": false
   },
   "baseline_scan": {
-    "command_exit": 2,
+    "command_exit": 0,
     "effective_success": true,
     "rate_limited": false,
-    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-g8p2-7wf7-98mq/runs/20260304T213654Z/baseline_scan.json",
+    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-g8p2-7wf7-98mq/runs/20260313T071353Z/baseline_scan.json",
     "summary": {
       "exists": true,
       "issue_count": 13,
@@ -36,37 +39,55 @@
       "vulnerabilities_json_valid": true,
       "valid": true
     },
-    "used_cache": false
+    "used_cache": true,
+    "risk_component_count": 9
   },
   "intro_pr_review": {
+    "command_exit": 2,
+    "effective_success": true,
+    "rate_limited": false,
+    "range": "c74551c2ae0611f3ef0e691dc93a38372f366765^..c74551c2ae0611f3ef0e691dc93a38372f366765",
+    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-g8p2-7wf7-98mq/runs/20260313T071353Z/intro_pr_review.json",
+    "summary": {
+      "exists": true,
+      "issue_count": 1,
+      "severities": {
+        "critical": 1
+      }
+    },
+    "split_shard_filtering": {
+      "enabled": false,
+      "total_groups": 0,
+      "executed_groups": 0,
+      "skipped_groups": 0,
+      "baseline_touch_groups": 0,
+      "new_surface_groups": 0,
+      "skipped_reasons": {}
+    }
+  },
+  "intro_threat_modeling": {
     "command_exit": null,
     "effective_success": null,
-    "rate_limited": null,
-    "range": "c74551c2ae0611f3ef0e691dc93a38372f366765^..c74551c2ae0611f3ef0e691dc93a38372f366765",
-    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-g8p2-7wf7-98mq/runs/20260304T213654Z/intro_pr_review.json",
-    "summary": {
-      "exists": false,
-      "issue_count": null,
-      "severities": {}
-    }
+    "auto_triggered": false,
+    "log": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-g8p2-7wf7-98mq/runs/20260313T071353Z/intro_threat_modeling.log.json"
   },
   "fix_pr_review": {
     "command_exit": null,
     "effective_success": null,
     "rate_limited": null,
     "range": "a7534dc22382c42465f3676724536a014ce0cbf7^..a7534dc22382c42465f3676724536a014ce0cbf7",
-    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-g8p2-7wf7-98mq/runs/20260304T213654Z/fix_pr_review.json",
+    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-g8p2-7wf7-98mq/runs/20260313T071353Z/fix_pr_review.json",
     "summary": {
       "exists": false,
       "issue_count": null,
       "severities": {}
     }
   },
-  "tier1_detected_from_new_commits": null,
-  "tier2_root_cause_match": null,
-  "tier2_match_basis": null,
-  "tier2_notes": null,
-  "could_propose_fix": null,
+  "tier1_detected_from_new_commits": true,
+  "tier2_root_cause_match": true,
+  "tier2_match_basis": "matched gatewayUrl trust-boundary root cause leading to token exfiltration",
+  "tier2_notes": "Final intro report identified an unvalidated gatewayUrl query parameter that sends authentication data to an attacker-controlled server. That matches analysis.md root cause: 1-click RCE via authentication token exfiltration from gatewayUrl, where the new UI auto-connect trust boundary introduced by c74551c2ae06 exposes credentials to a malicious remote gateway.",
+  "could_propose_fix": true,
   "post_fix_regression_status": null,
-  "notes": "Tier-2 adjudication is manual: compare intro_pr_review findings against cases/<GHSA>/analysis.md root cause."
+  "notes": "Tier-1 pass and Tier-2 pass from direct gatewayUrl trust-boundary finding in the final intro report."
 }
