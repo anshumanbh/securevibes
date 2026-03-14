@@ -56,6 +56,7 @@ from securevibes.scanner.scanner import (
     _derive_baseline_component_keys,
     _enforce_focused_diff_coverage,
     _FOCUSED_DIFF_MAX_HUNK_LINES,
+    _compose_pr_findings_with_baseline_sinks,
     _format_changed_code_dataflow_summary,
     _format_changed_code_dataflow_chains,
     _generate_new_surface_threat_delta,
@@ -5553,6 +5554,146 @@ class TestRefinePrFindingsWithLlm:
         )
         assert "EXPLICIT CHANGED-CODE CHAINS:" in prompt
         assert "- callerId -> normalize -> allow/deny predicate" in prompt
+
+
+class TestComposePrFindingsWithBaselineSinks:
+    """Tests for the sink-composition post-review pass."""
+
+    _DEFAULT_KWARGS = dict(
+        repo=Path("/tmp/repo"),
+        model="sonnet",
+        diff_line_anchors="src/gateway/ws.ts:42",
+        diff_hunk_snippets="+ scopes = connect.scopes",
+        changed_code_chain_summary="- scopes -> authorizeGatewayMethod -> config.apply",
+        baseline_reachability_summary="- high | src/gateway/server-methods/config.ts:195 | Config apply reaches privileged restart path | existing unchanged sink; check whether auth/session/role/policy changes make this operation newly reachable or less restricted.",
+        baseline_sink_code_summary="- src/gateway/server-methods/config.ts:195 | high | Config apply reaches privileged restart path\n  L193:   validateConfig(update)\n  L194:   writeConfig(update)\n  L195:   applyConfig(update)",
+        severity_threshold="medium",
+    )
+
+    @pytest.mark.asyncio
+    async def test_prompt_includes_sink_completion_rules(self):
+        """Sink-composition prompt should include unchanged sink reachability guidance."""
+        from claude_agent_sdk.types import ResultMessage
+
+        result_msg = ResultMessage(
+            subtype="success",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=False,
+            num_turns=1,
+            session_id="test-session",
+        )
+
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=None)
+
+        async def mock_receive():
+            yield result_msg
+
+        mock_client.receive_messages = mock_receive
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
+            await _compose_pr_findings_with_baseline_sinks(
+                findings=[{"title": "Auth bypass"}],
+                focus_areas=["auth_privilege"],
+                **self._DEFAULT_KWARGS,
+            )
+
+        prompt = mock_client.query.await_args.args[0]
+        assert "unchanged high-impact baseline sink" in prompt
+        assert (
+            "Prefer a composed sink finding over an intermediate auth/control-plane finding"
+            in prompt
+        )
+        assert "BASELINE HIGH-IMPACT OPERATIONS THAT MAY BECOME NEWLY REACHABLE" in prompt
+        assert "UNCHANGED BASELINE SINK CODE TO CHECK FOR NEW REACHABILITY" in prompt
+        assert "L195:" in prompt
+
+
+@pytest.mark.asyncio
+async def test_run_pr_refinement_and_verification_invokes_sink_composition_for_auth_diffs(
+    tmp_path: Path,
+):
+    """Auth findings with unchanged sink context should trigger sink-composition pass."""
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+    empty_diff = DiffContext(files=[], added_lines=0, removed_lines=0, changed_files=[])
+    ctx = PRReviewContext(
+        repo=tmp_path,
+        securevibes_dir=tmp_path / ".securevibes",
+        focused_diff_context=empty_diff,
+        diff_context=empty_diff,
+        contextualized_prompt="Review this PR",
+        baseline_vulns=[],
+        pr_review_attempts=1,
+        pr_timeout_seconds=180,
+        pr_vulns_path=tmp_path / "PR_VULNERABILITIES.json",
+        detected_languages={"python"},
+        command_builder_signals=False,
+        path_parser_signals=False,
+        auth_privilege_signals=True,
+        retry_focus_plan=["auth_privilege"],
+        diff_line_anchors="src/gateway/ws.ts:42",
+        diff_hunk_snippets="+ scopes = connect.scopes",
+        pr_grep_default_scope=".",
+        scan_start_time=0.0,
+        severity_threshold="medium",
+        changed_code_chain_summary="- scopes -> authorizeGatewayMethod -> config.apply",
+        baseline_reachability_summary="- high | src/gateway/server-methods/config.ts:195 | Config apply reaches privileged restart path | existing unchanged sink; check whether auth/session/role/policy changes make this operation newly reachable or less restricted.",
+        baseline_sink_code_summary="- src/gateway/server-methods/config.ts:195 | high | Config apply reaches privileged restart path\n  L193:   validateConfig(update)\n  L194:   writeConfig(update)\n  L195:   applyConfig(update)",
+    )
+    auth_finding = {
+        "title": "Client-controlled scopes reach admin methods",
+        "file_path": "src/gateway/ws.ts",
+        "line_number": 42,
+        "cwe_id": "CWE-269",
+        "severity": "critical",
+        "finding_type": "new_threat",
+        "description": "Auth flaw",
+        "attack_scenario": "1) attacker connects 2) admin methods unlocked",
+        "evidence": "scopes -> authorizeGatewayMethod",
+    }
+    composed_finding = {
+        "title": "Auth bypass reaches config.apply and triggers privileged restart path",
+        "file_path": "src/gateway/server-methods/config.ts",
+        "line_number": 195,
+        "cwe_id": "CWE-78",
+        "severity": "critical",
+        "finding_type": "new_threat",
+        "description": "Composed sink finding",
+        "attack_scenario": "1) attacker connects 2) calls config.apply",
+        "evidence": "scopes -> authorizeGatewayMethod -> applyConfig(update)",
+    }
+    state = PRReviewState(
+        collected_pr_vulns=[auth_finding],
+        attempt_chain_ids=[{"auth-chain"}],
+        attempt_chain_exact_ids=[{"auth-chain"}],
+        attempt_chain_family_ids=[{"auth-chain"}],
+        attempt_chain_flow_ids=[{"auth-flow"}],
+        attempt_focus_areas=["auth_privilege"],
+        attempt_finding_counts=[1],
+        attempt_observed_counts=[1],
+        attempt_revalidation_attempted=[False],
+        attempt_core_evidence_present=[True],
+    )
+
+    with (
+        patch(
+            "securevibes.scanner.scanner._refine_pr_findings_with_llm",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "securevibes.scanner.scanner._compose_pr_findings_with_baseline_sinks",
+            new=AsyncMock(return_value=[composed_finding]),
+        ) as mock_compose,
+    ):
+        await scanner._run_pr_refinement_and_verification(ctx, state)
+
+    mock_compose.assert_awaited_once()
+    assert state.pr_vulns
+    assert state.pr_vulns[0]["title"] == composed_finding["title"]
 
     @pytest.mark.asyncio
     async def test_filters_non_dict_entries(self):

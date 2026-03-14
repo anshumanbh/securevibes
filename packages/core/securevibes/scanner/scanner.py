@@ -1568,6 +1568,127 @@ CANDIDATE FINDINGS JSON:
     return [entry for entry in parsed if isinstance(entry, dict)]
 
 
+async def _compose_pr_findings_with_baseline_sinks(
+    *,
+    repo: Path,
+    model: str,
+    timeout_seconds: int = 240,
+    diff_line_anchors: str,
+    diff_hunk_snippets: str,
+    changed_code_chain_summary: str = "- None identified.",
+    baseline_reachability_summary: str,
+    baseline_sink_code_summary: str,
+    findings: list[dict],
+    severity_threshold: str,
+    focus_areas: Optional[list[str]] = None,
+) -> Optional[list[dict]]:
+    """Promote auth/control-plane findings into composed sink findings when proof exists."""
+    if not findings:
+        return None
+    if baseline_reachability_summary.startswith("- No ") and baseline_sink_code_summary.startswith(
+        "- No "
+    ):
+        return None
+
+    focus_area_lines = (
+        "\n".join(f"- {focus_area_label(focus_area)}" for focus_area in (focus_areas or [])).strip()
+        or "- Auth/control-plane sink reachability"
+    )
+    finding_json = json.dumps(findings, indent=2, ensure_ascii=False)
+    composition_prompt = f"""You are an exploit-chain composer for PR security findings.
+
+Primary goal:
+- Determine whether any changed auth/session/role/permission/policy finding below newly exposes
+  or weakens access to an unchanged high-impact baseline sink.
+- When the code supports that composed chain, rewrite the intermediate auth/control-plane finding
+  into the sink-impact finding.
+- Prefer a composed sink finding over an intermediate auth/control-plane finding when both describe
+  the same exploit chain.
+- If no composed sink is supported by the diff and unchanged sink code, preserve the original
+  finding instead of inventing a sink completion.
+
+Rules:
+- Return ONLY a JSON array of findings using the existing schema fields.
+- Keep one canonical finding per exploit chain.
+- Never invent vulnerabilities not supported by the diff and unchanged sink anchors.
+- Do not upgrade a finding unless the changed code plausibly makes the unchanged sink newly
+  reachable, less restricted, or easier to exploit.
+- Treat unchanged sink code as authoritative only for the sink behavior; the changed diff must
+  still supply the new reachability or weakened enforcement.
+- If a composed sink finding is supported, include the unchanged sink file/line in the finding.
+
+Prioritized focus areas:
+{focus_area_lines}
+
+CHANGED LINE ANCHORS:
+{diff_line_anchors}
+
+CHANGED HUNK SNIPPETS:
+{diff_hunk_snippets}
+
+EXPLICIT CHANGED-CODE CHAINS:
+{changed_code_chain_summary}
+
+BASELINE HIGH-IMPACT OPERATIONS THAT MAY BECOME NEWLY REACHABLE:
+{baseline_reachability_summary}
+
+UNCHANGED BASELINE SINK CODE TO CHECK FOR NEW REACHABILITY:
+{baseline_sink_code_summary}
+
+CANDIDATE FINDINGS JSON:
+{finding_json}
+
+SEVERITY THRESHOLD:
+Only report findings at or above: {severity_threshold}
+"""
+
+    options = ClaudeAgentOptions(
+        cwd=str(repo),
+        setting_sources=["project"],
+        allowed_tools=[],
+        max_turns=10,
+        permission_mode=_SAFE_PERMISSION_MODE,
+        model=model,
+    )
+
+    collected_text: list[str] = []
+    try:
+
+        async def _run_client_session() -> None:
+            async with ClaudeSDKClient(options=options) as client:
+                await client.query(composition_prompt)
+                async for message in client.receive_messages():
+                    if isinstance(message, AssistantMessage):
+                        for block in message.content:
+                            if isinstance(block, TextBlock):
+                                collected_text.append(block.text)
+                    elif isinstance(message, ResultMessage):
+                        break
+
+        await asyncio.wait_for(_run_client_session(), timeout=max(1, timeout_seconds))
+    except (OSError, asyncio.TimeoutError, RuntimeError):
+        logger.warning(
+            "PR sink-composition pass timed out or failed — retaining pre-composition findings",
+        )
+        return None
+
+    raw_output = "\n".join(collected_text).strip()
+    if not raw_output:
+        return None
+
+    from securevibes.models.schemas import fix_pr_vulnerabilities_json
+
+    fixed_content, _ = fix_pr_vulnerabilities_json(raw_output)
+    try:
+        parsed = json.loads(fixed_content)
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(parsed, list):
+        return None
+    return [entry for entry in parsed if isinstance(entry, dict)]
+
+
 def _derive_pr_context_timeouts(pr_timeout_seconds: int) -> tuple[int, int]:
     """Bound pre-review context generation so the main PR attempt retains most budget."""
     effective_timeout = max(30, pr_timeout_seconds)
@@ -3483,6 +3604,8 @@ Only report findings at or above: {severity_threshold}
             scan_start_time=scan_start_time,
             severity_threshold=severity_threshold,
             changed_code_chain_summary=changed_code_chain_summary,
+            baseline_reachability_summary=baseline_reachability_summary,
+            baseline_sink_code_summary=baseline_sink_code_summary,
             context_prep_seconds=context_prep_seconds,
             new_surface_delta_seconds=new_surface_delta_seconds,
             hypothesis_generation_seconds=hypothesis_generation_seconds,
@@ -3660,6 +3783,55 @@ Only report findings at or above: {severity_threshold}
                     self.console.print(
                         "  PR exploit-quality refinement returned no canonical findings; "
                         "retaining pre-refinement canonical set.",
+                        style="dim",
+                    )
+
+        should_compose_sinks = (
+            ctx.auth_privilege_signals
+            and bool(state.pr_vulns)
+            and not ctx.baseline_reachability_summary.startswith("- No ")
+            and not ctx.baseline_sink_code_summary.startswith("- No ")
+        )
+        if should_compose_sinks:
+            if self.debug:
+                self.console.print(
+                    "  🔗 Running PR sink-composition pass for newly reachable baseline sinks",
+                    style="dim",
+                )
+            composed_pr_vulns = await _compose_pr_findings_with_baseline_sinks(
+                repo=ctx.repo,
+                model=self.model,
+                timeout_seconds=ctx.pr_timeout_seconds,
+                diff_line_anchors=ctx.diff_line_anchors,
+                diff_hunk_snippets=ctx.diff_hunk_snippets,
+                changed_code_chain_summary=ctx.changed_code_chain_summary,
+                baseline_reachability_summary=ctx.baseline_reachability_summary,
+                baseline_sink_code_summary=ctx.baseline_sink_code_summary,
+                findings=state.pr_vulns,
+                severity_threshold=ctx.severity_threshold,
+                focus_areas=refinement_focus_areas,
+            )
+            if composed_pr_vulns is not None:
+                composed_merge_stats: Dict[str, int] = {}
+                composed_canonical = merge_pr_attempt_findings(
+                    composed_pr_vulns,
+                    merge_stats=composed_merge_stats,
+                    chain_support_counts=state.chain_support_counts,
+                    total_attempts=len(state.attempt_chain_ids),
+                )
+                if composed_canonical:
+                    if self.debug:
+                        self.console.print(
+                            "  PR sink-composition pass updated canonical findings: "
+                            f"{len(state.pr_vulns)} -> {len(composed_canonical)}",
+                            style="dim",
+                        )
+                    state.pr_vulns = composed_canonical
+                    state.merge_stats = composed_merge_stats
+                elif self.debug:
+                    self.console.print(
+                        "  PR sink-composition pass returned no canonical findings; "
+                        "retaining previous canonical set.",
                         style="dim",
                     )
 

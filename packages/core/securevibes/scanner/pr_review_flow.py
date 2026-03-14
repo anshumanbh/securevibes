@@ -79,6 +79,10 @@ class PRReviewContext:
     scan_start_time: float
     severity_threshold: str
     changed_code_chain_summary: str = "- None identified."
+    baseline_reachability_summary: str = (
+        "- No overlapping high-impact baseline operations identified."
+    )
+    baseline_sink_code_summary: str = "- No unchanged baseline sink code selected."
     context_prep_seconds: float = 0.0
     new_surface_delta_seconds: float = 0.0
     hypothesis_generation_seconds: float = 0.0
