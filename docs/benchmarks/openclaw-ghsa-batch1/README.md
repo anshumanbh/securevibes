@@ -108,6 +108,21 @@ python3 docs/benchmarks/openclaw-ghsa-batch1/scripts/run_case.py \
   --intro-only
 ```
 
+Optional for new-attack-surface debugging: refresh threat model at intro head before
+intro PR review:
+
+```bash
+python3 docs/benchmarks/openclaw-ghsa-batch1/scripts/run_case.py \
+  --ghsa GHSA-g55j-c2v4-pjcg \
+  --openclaw-repo ../openclaw \
+  --securevibes-repo . \
+  --model sonnet \
+  --severity medium \
+  --permission-mode bypassPermissions \
+  --intro-only \
+  --intro-threat-model-refresh
+```
+
 `--baseline-only` and `--intro-only` are mutually exclusive in both `run_case.py`
 and `run_sweep.py`.
 

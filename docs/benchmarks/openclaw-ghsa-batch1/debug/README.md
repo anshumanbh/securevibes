@@ -59,6 +59,21 @@ python3 docs/benchmarks/openclaw-ghsa-batch1/scripts/run_case.py \
   --intro-only
 ```
 
+When a case introduces a new attack surface, optionally run intro threat-model refresh
+before intro PR review:
+
+```bash
+python3 docs/benchmarks/openclaw-ghsa-batch1/scripts/run_case.py \
+  --ghsa GHSA-qrq5-wjgg-rvqw \
+  --openclaw-repo ../openclaw \
+  --securevibes-repo . \
+  --model sonnet \
+  --severity medium \
+  --permission-mode bypassPermissions \
+  --intro-only \
+  --intro-threat-model-refresh
+```
+
 `--baseline-only` and `--intro-only` are mutually exclusive.
 
 Per-case artifacts:

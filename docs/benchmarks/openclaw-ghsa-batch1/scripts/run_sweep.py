@@ -97,6 +97,8 @@ def run_case_subprocess(case_id: str, args: argparse.Namespace) -> dict[str, Any
         cmd.append("--baseline-only")
     if args.intro_only:
         cmd.append("--intro-only")
+    if args.skip_low_signal_split_shards:
+        cmd.append("--skip-low-signal-split-shards")
 
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     detect = load_detectability(case_id)
@@ -143,6 +145,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_mode_group.add_argument("--intro-only", action="store_true")
     parser.add_argument("--parallel", type=int, default=2)
     parser.add_argument("--keep-temp", action="store_true")
+    parser.add_argument("--skip-low-signal-split-shards", action="store_true")
     parser.add_argument(
         "--ghsa",
         action="append",
@@ -248,6 +251,7 @@ def main(argv: list[str] | None = None) -> None:
         "baseline_cache_disabled": bool(args.no_baseline_cache),
         "baseline_cache_refresh": bool(args.refresh_baseline_cache),
         "parallel": args.parallel,
+        "skip_low_signal_split_shards": bool(args.skip_low_signal_split_shards),
         "requested_case_count": len(requested_case_ids),
         "executed_case_count": len(case_ids),
         "baseline_dedupe": baseline_dedupe,

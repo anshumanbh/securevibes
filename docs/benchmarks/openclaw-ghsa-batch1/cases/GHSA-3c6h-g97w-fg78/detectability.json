@@ -1,24 +1,27 @@
 {
   "id": "GHSA-3c6h-g97w-fg78",
-  "status": "baseline_only_completed",
+  "status": "intro_only_completed",
   "model": "sonnet",
   "severity_filter": "medium",
-  "run_id": "20260304T211657Z",
+  "run_id": "20260312T061854Z",
   "securevibes_repo": "/Users/anshumanbhartiya/repos/securevibes",
-  "securevibes_commit": "2f357fb39bae76d8beab78bad628a91e9c3d3041",
+  "securevibes_commit": "7949990d3f58a1985666aca43e6c71626e245475",
   "baseline_cache": {
     "enabled": true,
-    "refresh_requested": true,
-    "entry_key": "baseline-0e85380e5634__sv-2f357fb39bae__model-sonnet__sev-medium",
-    "entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-0e85380e5634__sv-2f357fb39bae__model-sonnet__sev-medium",
-    "hit": false,
-    "saved": true
+    "refresh_requested": false,
+    "requested_entry_key": "baseline-0e85380e5634__sv-7949990d3f58__model-sonnet__sev-medium",
+    "requested_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-0e85380e5634__sv-7949990d3f58__model-sonnet__sev-medium",
+    "resolved_entry_key": "baseline-0e85380e5634__sv-2f357fb39bae__model-sonnet__sev-medium",
+    "resolved_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-0e85380e5634__sv-2f357fb39bae__model-sonnet__sev-medium",
+    "compatible_fallback_used": true,
+    "hit": true,
+    "saved": false
   },
   "baseline_scan": {
-    "command_exit": 1,
+    "command_exit": 0,
     "effective_success": true,
     "rate_limited": false,
-    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-3c6h-g97w-fg78/runs/20260304T211657Z/baseline_scan.json",
+    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-3c6h-g97w-fg78/runs/20260312T061854Z/baseline_scan.json",
     "summary": {
       "exists": true,
       "issue_count": 8,
@@ -35,33 +38,49 @@
       "vulnerabilities_json_valid": true,
       "valid": true
     },
-    "used_cache": false
+    "used_cache": true,
+    "risk_component_count": 5
   },
   "intro_pr_review": {
+    "command_exit": 0,
+    "effective_success": true,
+    "rate_limited": false,
+    "range": "2d485cd47a539b083c460f88061fe584deaeb064^..2d485cd47a539b083c460f88061fe584deaeb064,89aad7b922835e40b4df54a9e6195a5f8ee2e5b6^..89aad7b922835e40b4df54a9e6195a5f8ee2e5b6",
+    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-3c6h-g97w-fg78/runs/20260312T061854Z/intro_pr_review.json",
+    "summary": {
+      "exists": true,
+      "issue_count": 0,
+      "severities": {}
+    },
+    "split_shard_filtering": {
+      "enabled": false,
+      "total_groups": 0,
+      "executed_groups": 0,
+      "skipped_groups": 0,
+      "baseline_touch_groups": 0,
+      "new_surface_groups": 0,
+      "skipped_reasons": {}
+    }
+  },
+  "intro_threat_modeling": {
     "command_exit": null,
     "effective_success": null,
-    "rate_limited": null,
-    "range": "2d485cd47a539b083c460f88061fe584deaeb064^..89aad7b922835e40b4df54a9e6195a5f8ee2e5b6",
-    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-3c6h-g97w-fg78/runs/20260304T211657Z/intro_pr_review.json",
-    "summary": {
-      "exists": false,
-      "issue_count": null,
-      "severities": {}
-    }
+    "auto_triggered": false,
+    "log": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-3c6h-g97w-fg78/runs/20260312T061854Z/intro_threat_modeling.log.json"
   },
   "fix_pr_review": {
     "command_exit": null,
     "effective_success": null,
     "rate_limited": null,
     "range": "3b8e33037ae2e12af7beb56fcf0346f1f8cbde6f^..3b8e33037ae2e12af7beb56fcf0346f1f8cbde6f",
-    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-3c6h-g97w-fg78/runs/20260304T211657Z/fix_pr_review.json",
+    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-3c6h-g97w-fg78/runs/20260312T061854Z/fix_pr_review.json",
     "summary": {
       "exists": false,
       "issue_count": null,
       "severities": {}
     }
   },
-  "tier1_detected_from_new_commits": null,
+  "tier1_detected_from_new_commits": false,
   "tier2_root_cause_match": null,
   "tier2_match_basis": null,
   "tier2_notes": null,

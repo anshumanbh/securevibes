@@ -1,24 +1,27 @@
 {
   "id": "GHSA-4rj2-gpmh-qq5x",
-  "status": "baseline_only_completed",
+  "status": "intro_only_completed",
   "model": "sonnet",
   "severity_filter": "medium",
-  "run_id": "20260304T205725Z",
+  "run_id": "20260310T062815Z",
   "securevibes_repo": "/Users/anshumanbhartiya/repos/securevibes",
-  "securevibes_commit": "2f357fb39bae76d8beab78bad628a91e9c3d3041",
+  "securevibes_commit": "6682450d144a993c020f45ac3f9ea7b7527dc639",
   "baseline_cache": {
     "enabled": true,
-    "refresh_requested": true,
-    "entry_key": "baseline-3467b0ba074c__sv-2f357fb39bae__model-sonnet__sev-medium",
-    "entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-3467b0ba074c__sv-2f357fb39bae__model-sonnet__sev-medium",
-    "hit": false,
-    "saved": true
+    "refresh_requested": false,
+    "requested_entry_key": "baseline-3467b0ba074c__sv-6682450d144a__model-sonnet__sev-medium",
+    "requested_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-3467b0ba074c__sv-6682450d144a__model-sonnet__sev-medium",
+    "resolved_entry_key": "baseline-3467b0ba074c__sv-2f357fb39bae__model-sonnet__sev-medium",
+    "resolved_entry_path": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/baseline-cache/baseline-3467b0ba074c__sv-2f357fb39bae__model-sonnet__sev-medium",
+    "compatible_fallback_used": true,
+    "hit": true,
+    "saved": false
   },
   "baseline_scan": {
-    "command_exit": 2,
+    "command_exit": 0,
     "effective_success": true,
     "rate_limited": false,
-    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-4rj2-gpmh-qq5x/runs/20260304T205725Z/baseline_scan.json",
+    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-4rj2-gpmh-qq5x/runs/20260310T060042Z/baseline_scan.json",
     "summary": {
       "exists": true,
       "issue_count": 10,
@@ -36,37 +39,56 @@
       "vulnerabilities_json_valid": true,
       "valid": true
     },
-    "used_cache": false
+    "used_cache": true,
+    "risk_component_count": 6
   },
   "intro_pr_review": {
+    "command_exit": 143,
+    "effective_success": true,
+    "rate_limited": false,
+    "range": "42c17adb5e4d3ea1f9b1d2fd921b9abc183b79df^..42c17adb5e4d3ea1f9b1d2fd921b9abc183b79df",
+    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-4rj2-gpmh-qq5x/runs/20260310T062815Z/intro_pr_review.json",
+    "summary": {
+      "exists": true,
+      "issue_count": 4,
+      "severities": {
+        "high": 3,
+        "medium": 1
+      }
+    },
+    "split_shard_filtering": {
+      "enabled": false,
+      "total_groups": 0,
+      "executed_groups": 0,
+      "skipped_groups": 0,
+      "baseline_touch_groups": 0,
+      "new_surface_groups": 0,
+      "skipped_reasons": {}
+    }
+  },
+  "intro_threat_modeling": {
     "command_exit": null,
     "effective_success": null,
-    "rate_limited": null,
-    "range": "42c17adb5e4d3ea1f9b1d2fd921b9abc183b79df^..42c17adb5e4d3ea1f9b1d2fd921b9abc183b79df",
-    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-4rj2-gpmh-qq5x/runs/20260304T205725Z/intro_pr_review.json",
-    "summary": {
-      "exists": false,
-      "issue_count": null,
-      "severities": {}
-    }
+    "auto_triggered": false,
+    "log": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-4rj2-gpmh-qq5x/runs/20260310T060042Z/intro_threat_modeling.log.json"
   },
   "fix_pr_review": {
     "command_exit": null,
     "effective_success": null,
     "rate_limited": null,
     "range": "f8dfd034f5d9235c5485f492a9e4ccc114e97fdb^..f8dfd034f5d9235c5485f492a9e4ccc114e97fdb",
-    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-4rj2-gpmh-qq5x/runs/20260304T205725Z/fix_pr_review.json",
+    "report": "/Users/anshumanbhartiya/repos/securevibes/docs/benchmarks/openclaw-ghsa-batch1/cases/GHSA-4rj2-gpmh-qq5x/runs/20260310T060042Z/fix_pr_review.json",
     "summary": {
       "exists": false,
       "issue_count": null,
       "severities": {}
     }
   },
-  "tier1_detected_from_new_commits": null,
-  "tier2_root_cause_match": null,
-  "tier2_match_basis": null,
-  "tier2_notes": null,
-  "could_propose_fix": null,
+  "tier1_detected_from_new_commits": true,
+  "tier2_root_cause_match": true,
+  "tier2_match_basis": "specific vulnerable code path/function",
+  "tier2_notes": "Saved checkpoint finding VOICE-003 hits the advisory code path in shouldAcceptInbound (manager.ts) and identifies the suffix-matching allowlist bypass. The advisory also calls out empty caller ID handling, which this finding does not mention.",
+  "could_propose_fix": true,
   "post_fix_regression_status": null,
-  "notes": "Tier-2 adjudication is manual: compare intro_pr_review findings against cases/<GHSA>/analysis.md root cause."
+  "notes": "Manual checkpoint recovery after the outer intro-only runner hung post-persistence; intro_pr_review artifacts were copied from the temp repo after final checkpoint creation. Tier-2 pass by code-path match on shouldAcceptInbound allowlist logic; the finding does not mention the empty-caller-ID edge case."
 }
