@@ -1813,6 +1813,122 @@ Only report findings at or above: {severity_threshold}
     return [entry for entry in parsed if isinstance(entry, dict)]
 
 
+async def _adjudicate_exact_pr_sink_candidate(
+    *,
+    repo: Path,
+    model: str,
+    timeout_seconds: int = 240,
+    diff_line_anchors: str,
+    diff_hunk_snippets: str,
+    changed_code_chain_summary: str = "- None identified.",
+    baseline_reachability_summary: str,
+    exact_sink_code_summary: str,
+    findings: list[dict],
+    severity_threshold: str,
+    focus_areas: Optional[list[str]] = None,
+) -> Optional[list[dict]]:
+    """Adjudicate whether one exact unchanged sink is now newly reachable."""
+    if not findings:
+        return None
+    if exact_sink_code_summary.startswith("- No "):
+        return None
+
+    focus_area_lines = (
+        "\n".join(f"- {focus_area_label(focus_area)}" for focus_area in (focus_areas or [])).strip()
+        or "- Exact unchanged sink adjudication"
+    )
+    finding_json = json.dumps(findings, indent=2, ensure_ascii=False)
+    adjudicator_prompt = f"""You are an exact unchanged-sink adjudicator for PR security findings.
+
+Primary goal:
+- Determine whether the merged findings below prove that changed auth/session/role/permission/
+  policy logic now makes the exact unchanged sink below newly reachable or less restricted.
+- Prefer an exact sink finding only when the evidence supports the specific unchanged sink
+  operation itself, not just a broader namespace or capability family.
+
+Strict rules:
+- Return ONLY a JSON array of findings using the existing schema fields.
+- Return [] if the evidence supports only namespace-level or family-level access
+  (for example `config.*`, `exec.approval.*`, `device.pair.*`) without proving the exact sink.
+- Only emit an exact sink finding if you can name all three:
+  1) the changed entry/control point,
+  2) the exact unchanged sink file/line below,
+  3) the concrete sink impact.
+- If the merged findings stop at broader reachability, return [].
+- Never invent vulnerabilities not supported by the diff, merged findings, and exact sink anchor.
+
+Prioritized focus areas:
+{focus_area_lines}
+
+CHANGED LINE ANCHORS:
+{diff_line_anchors}
+
+CHANGED HUNK SNIPPETS:
+{diff_hunk_snippets}
+
+EXPLICIT CHANGED-CODE CHAINS:
+{changed_code_chain_summary}
+
+BASELINE HIGH-IMPACT OPERATIONS THAT MAY BECOME NEWLY REACHABLE:
+{baseline_reachability_summary}
+
+EXACT UNCHANGED SINK TO ADJUDICATE:
+{exact_sink_code_summary}
+
+MERGED CANDIDATE FINDINGS JSON:
+{finding_json}
+
+SEVERITY THRESHOLD:
+Only report findings at or above: {severity_threshold}
+"""
+
+    options = ClaudeAgentOptions(
+        cwd=str(repo),
+        setting_sources=["project"],
+        allowed_tools=[],
+        max_turns=8,
+        permission_mode=_SAFE_PERMISSION_MODE,
+        model=model,
+    )
+
+    collected_text: list[str] = []
+    try:
+
+        async def _run_client_session() -> None:
+            async with ClaudeSDKClient(options=options) as client:
+                await client.query(adjudicator_prompt)
+                async for message in client.receive_messages():
+                    if isinstance(message, AssistantMessage):
+                        for block in message.content:
+                            if isinstance(block, TextBlock):
+                                collected_text.append(block.text)
+                    elif isinstance(message, ResultMessage):
+                        break
+
+        await asyncio.wait_for(_run_client_session(), timeout=max(1, timeout_seconds))
+    except (OSError, asyncio.TimeoutError, RuntimeError):
+        logger.warning(
+            "PR exact-sink adjudication timed out or failed — retaining prior canonical findings",
+        )
+        return None
+
+    raw_output = "\n".join(collected_text).strip()
+    if not raw_output:
+        return None
+
+    from securevibes.models.schemas import fix_pr_vulnerabilities_json
+
+    fixed_content, _ = fix_pr_vulnerabilities_json(raw_output)
+    try:
+        parsed = json.loads(fixed_content)
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(parsed, list):
+        return None
+    return [entry for entry in parsed if isinstance(entry, dict)]
+
+
 def _derive_pr_context_timeouts(pr_timeout_seconds: int) -> tuple[int, int]:
     """Bound pre-review context generation so the main PR attempt retains most budget."""
     effective_timeout = max(30, pr_timeout_seconds)
@@ -2414,6 +2530,45 @@ def _summarize_auth_reachability_sink_code(
         return "- No unchanged baseline sink code selected."
 
     summary = "\n\n".join(blocks)
+    if len(summary) <= max_chars:
+        return summary
+    return f"{summary[: max_chars - 15].rstrip()}...[truncated]"
+
+
+def _format_exact_sink_candidate_code(
+    repo: Path,
+    candidate: dict[str, Any],
+    *,
+    context_lines: int = 4,
+    max_chars: int = 1200,
+) -> str:
+    """Format one unchanged sink candidate with its exact line window."""
+    location = str(candidate.get("location") or "").strip()
+    if not location or location == "unknown-path":
+        return "- No exact unchanged sink candidate selected."
+
+    file_path, _, line_text = location.partition(":")
+    try:
+        line_number = int(line_text) if line_text else 0
+    except ValueError:
+        line_number = 0
+
+    snippet_lines = _read_repo_file_window(
+        repo,
+        file_path,
+        line_number=line_number,
+        context_lines=context_lines,
+    )
+    if not snippet_lines:
+        return "- No exact unchanged sink candidate selected."
+
+    summary = "\n".join(
+        [
+            f"- {location} | {candidate.get('severity_label', 'unknown')} | "
+            f"{candidate.get('title', 'Untitled baseline finding')}",
+            *snippet_lines,
+        ]
+    )
     if len(summary) <= max_chars:
         return summary
     return f"{summary[: max_chars - 15].rstrip()}...[truncated]"
@@ -3506,6 +3661,15 @@ class Scanner:
             focused_diff_context.changed_files,
             auth_privilege_signals=auth_privilege_signals,
         )
+        baseline_sink_candidates = [
+            candidate
+            for candidate in _select_auth_reachability_candidates(
+                baseline_vulns,
+                focused_diff_context.changed_files,
+                auth_privilege_signals=auth_privilege_signals,
+            )
+            if candidate.get("unchanged_sink")
+        ]
         baseline_sink_code_summary = _summarize_auth_reachability_sink_code(
             repo,
             baseline_vulns,
@@ -3730,6 +3894,7 @@ Only report findings at or above: {severity_threshold}
             changed_code_chain_summary=changed_code_chain_summary,
             baseline_reachability_summary=baseline_reachability_summary,
             baseline_sink_code_summary=baseline_sink_code_summary,
+            baseline_sink_candidates=baseline_sink_candidates,
             context_prep_seconds=context_prep_seconds,
             new_surface_delta_seconds=new_surface_delta_seconds,
             hypothesis_generation_seconds=hypothesis_generation_seconds,
@@ -4085,6 +4250,65 @@ Only report findings at or above: {severity_threshold}
                         "retaining previous canonical set.",
                         style="dim",
                     )
+        should_run_exact_sink_adjudicator = (
+            ctx.auth_privilege_signals
+            and bool(state.pr_vulns)
+            and bool(ctx.baseline_sink_candidates)
+            and not ctx.baseline_reachability_summary.startswith("- No ")
+        )
+        if should_run_exact_sink_adjudicator:
+            exact_sink_selected = False
+            for sink_candidate in ctx.baseline_sink_candidates[:2]:
+                exact_sink_code_summary = _format_exact_sink_candidate_code(
+                    ctx.repo, sink_candidate
+                )
+                if exact_sink_code_summary.startswith("- No "):
+                    continue
+                if self.debug:
+                    self.console.print(
+                        "  🎯 Adjudicating exact unchanged sink reachability for canonical findings",
+                        style="dim",
+                    )
+                exact_pr_vulns = await _adjudicate_exact_pr_sink_candidate(
+                    repo=ctx.repo,
+                    model=self.model,
+                    timeout_seconds=ctx.pr_timeout_seconds,
+                    diff_line_anchors=ctx.diff_line_anchors,
+                    diff_hunk_snippets=ctx.diff_hunk_snippets,
+                    changed_code_chain_summary=ctx.changed_code_chain_summary,
+                    baseline_reachability_summary=ctx.baseline_reachability_summary,
+                    exact_sink_code_summary=exact_sink_code_summary,
+                    findings=state.pr_vulns,
+                    severity_threshold=ctx.severity_threshold,
+                    focus_areas=refinement_focus_areas,
+                )
+                if exact_pr_vulns is None:
+                    continue
+                exact_merge_stats: Dict[str, int] = {}
+                exact_canonical = merge_pr_attempt_findings(
+                    exact_pr_vulns,
+                    merge_stats=exact_merge_stats,
+                    chain_support_counts=state.chain_support_counts,
+                    total_attempts=len(state.attempt_chain_ids),
+                )
+                if not exact_canonical:
+                    continue
+                if self.debug:
+                    self.console.print(
+                        "  Exact unchanged-sink adjudicator updated canonical findings: "
+                        f"{len(state.pr_vulns)} -> {len(exact_canonical)}",
+                        style="dim",
+                    )
+                state.pr_vulns = exact_canonical
+                state.merge_stats = exact_merge_stats
+                exact_sink_selected = True
+                break
+            if self.debug and not exact_sink_selected:
+                self.console.print(
+                    "  Exact unchanged-sink adjudicator did not prove a method-level sink chain; "
+                    "retaining prior canonical set.",
+                    style="dim",
+                )
         core_exact_ids = collect_chain_exact_ids(state.pr_vulns)
         core_family_ids = collect_chain_family_ids(state.pr_vulns)
         core_flow_ids = collect_chain_flow_ids(state.pr_vulns)

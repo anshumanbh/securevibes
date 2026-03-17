@@ -46,6 +46,7 @@ from securevibes.scanner.pr_review_flow import PRReviewContext, PRReviewState
 from securevibes.scanner.scanner import (
     DIFF_FILES_DIR,
     Scanner,
+    _adjudicate_exact_pr_sink_candidate,
     _classify_changed_components,
     _build_component_focused_passes,
     _build_diff_context_subset,
@@ -5667,6 +5668,58 @@ class TestChooseFinalPrFindingsWithSinkPriority:
         assert "MERGED CANDIDATE FINDINGS JSON" in prompt
 
 
+class TestAdjudicateExactPrSinkCandidate:
+    """Tests for the exact unchanged-sink adjudicator."""
+
+    _DEFAULT_KWARGS = dict(
+        repo=Path("/tmp/repo"),
+        model="sonnet",
+        diff_line_anchors="src/gateway/ws.ts:42",
+        diff_hunk_snippets="+ scopes = connect.scopes",
+        changed_code_chain_summary="- scopes -> authorizeGatewayMethod -> config.apply",
+        baseline_reachability_summary="- high | src/gateway/server-methods/config.ts:195 | Config apply reaches privileged restart path | existing unchanged sink; check whether auth/session/role/policy changes make this operation newly reachable or less restricted.",
+        exact_sink_code_summary="- src/gateway/server-methods/config.ts:195 | high | Config apply reaches privileged restart path\n  L193:   validateConfig(update)\n  L194:   writeConfig(update)\n  L195:   applyConfig(update)",
+        severity_threshold="medium",
+    )
+
+    @pytest.mark.asyncio
+    async def test_prompt_requires_exact_sink_not_namespace(self):
+        """Exact adjudicator prompt should reject namespace-only completions."""
+        from claude_agent_sdk.types import ResultMessage
+
+        result_msg = ResultMessage(
+            subtype="success",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=False,
+            num_turns=1,
+            session_id="test-session",
+        )
+
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=None)
+
+        async def mock_receive():
+            yield result_msg
+
+        mock_client.receive_messages = mock_receive
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
+            await _adjudicate_exact_pr_sink_candidate(
+                findings=[{"title": "Config admin methods become reachable"}],
+                focus_areas=["auth_privilege"],
+                **self._DEFAULT_KWARGS,
+            )
+
+        prompt = mock_client.query.await_args.args[0]
+        assert "EXACT UNCHANGED SINK TO ADJUDICATE" in prompt
+        assert "Return [] if the evidence supports only namespace-level" in prompt
+        assert "config.*" in prompt
+        assert "the exact unchanged sink file/line below" in prompt
+
+
 @pytest.mark.asyncio
 async def test_run_pr_refinement_and_verification_invokes_sink_composition_for_auth_diffs(
     tmp_path: Path,
@@ -5848,6 +5901,117 @@ async def test_run_pr_refinement_and_verification_invokes_final_sink_priority_ch
     mock_choose.assert_awaited_once()
     assert state.pr_vulns
     assert state.pr_vulns[0]["title"] == chosen_finding["title"]
+
+
+@pytest.mark.asyncio
+async def test_run_pr_refinement_and_verification_invokes_exact_sink_adjudicator(
+    tmp_path: Path,
+):
+    """Merged auth findings with exact sink candidates should trigger exact adjudication."""
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+    sink_dir = tmp_path / "src" / "gateway" / "server-methods"
+    sink_dir.mkdir(parents=True)
+    sink_lines = [f"// filler line {idx}" for idx in range(1, 193)]
+    sink_lines.extend(
+        [
+            "validateConfig(update)",
+            "writeConfig(update)",
+            "applyConfig(update)",
+        ]
+    )
+    (sink_dir / "config.ts").write_text("\n".join(sink_lines) + "\n", encoding="utf-8")
+    empty_diff = DiffContext(files=[], added_lines=0, removed_lines=0, changed_files=[])
+    ctx = PRReviewContext(
+        repo=tmp_path,
+        securevibes_dir=tmp_path / ".securevibes",
+        focused_diff_context=empty_diff,
+        diff_context=empty_diff,
+        contextualized_prompt="Review this PR",
+        baseline_vulns=[],
+        pr_review_attempts=1,
+        pr_timeout_seconds=180,
+        pr_vulns_path=tmp_path / "PR_VULNERABILITIES.json",
+        detected_languages={"python"},
+        command_builder_signals=False,
+        path_parser_signals=False,
+        auth_privilege_signals=True,
+        retry_focus_plan=["auth_privilege"],
+        diff_line_anchors="src/gateway/ws.ts:42",
+        diff_hunk_snippets="+ scopes = connect.scopes",
+        pr_grep_default_scope=".",
+        scan_start_time=0.0,
+        severity_threshold="medium",
+        changed_code_chain_summary="- scopes -> authorizeGatewayMethod -> config.apply",
+        baseline_reachability_summary="- high | src/gateway/server-methods/config.ts:195 | Config apply reaches privileged restart path | existing unchanged sink; check whether auth/session/role/policy changes make this operation newly reachable or less restricted.",
+        baseline_sink_code_summary="- src/gateway/server-methods/config.ts:195 | high | Config apply reaches privileged restart path\n  L193:   validateConfig(update)\n  L194:   writeConfig(update)\n  L195:   applyConfig(update)",
+        baseline_sink_candidates=[
+            {
+                "severity_label": "high",
+                "location": "src/gateway/server-methods/config.ts:195",
+                "title": "Config apply reaches privileged restart path",
+                "unchanged_sink": True,
+            }
+        ],
+    )
+    intermediate_finding = {
+        "title": "Client-controlled scopes reach config.*",
+        "file_path": "src/gateway/server-methods.ts",
+        "line_number": 47,
+        "cwe_id": "CWE-863",
+        "severity": "critical",
+        "finding_type": "new_threat",
+        "description": "Namespace-level reachability only",
+        "attack_scenario": "1) attacker connects 2) config namespace reachable",
+        "evidence": "scopes -> authorizeGatewayMethod -> config.*",
+    }
+    exact_finding = {
+        "title": "Auth bypass reaches config.apply and triggers privileged restart path",
+        "file_path": "src/gateway/server-methods/config.ts",
+        "line_number": 195,
+        "cwe_id": "CWE-78",
+        "severity": "critical",
+        "finding_type": "new_threat",
+        "description": "Exact sink finding",
+        "attack_scenario": "1) attacker connects 2) calls config.apply",
+        "evidence": "scopes -> authorizeGatewayMethod -> applyConfig(update)",
+    }
+    state = PRReviewState(
+        collected_pr_vulns=[intermediate_finding],
+        attempt_chain_ids=[{"auth-chain"}],
+        attempt_chain_exact_ids=[{"auth-chain"}],
+        attempt_chain_family_ids=[{"auth-chain"}],
+        attempt_chain_flow_ids=[{"auth-flow"}],
+        attempt_focus_areas=["auth_privilege"],
+        attempt_finding_counts=[1],
+        attempt_observed_counts=[1],
+        attempt_revalidation_attempted=[False],
+        attempt_core_evidence_present=[True],
+    )
+
+    with (
+        patch(
+            "securevibes.scanner.scanner._refine_pr_findings_with_llm",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "securevibes.scanner.scanner._compose_pr_findings_with_baseline_sinks",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "securevibes.scanner.scanner._choose_final_pr_findings_with_sink_priority",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "securevibes.scanner.scanner._adjudicate_exact_pr_sink_candidate",
+            new=AsyncMock(return_value=[exact_finding]),
+        ) as mock_adjudicate,
+    ):
+        await scanner._run_pr_refinement_and_verification(ctx, state)
+
+    mock_adjudicate.assert_awaited_once()
+    assert state.pr_vulns
+    assert state.pr_vulns[0]["title"] == exact_finding["title"]
 
     @pytest.mark.asyncio
     async def test_filters_non_dict_entries(self):

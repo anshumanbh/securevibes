@@ -83,6 +83,7 @@ class PRReviewContext:
         "- No overlapping high-impact baseline operations identified."
     )
     baseline_sink_code_summary: str = "- No unchanged baseline sink code selected."
+    baseline_sink_candidates: list[dict[str, Any]] = field(default_factory=list)
     context_prep_seconds: float = 0.0
     new_surface_delta_seconds: float = 0.0
     hypothesis_generation_seconds: float = 0.0
