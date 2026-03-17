@@ -1,9 +1,0 @@
-{
-  "baseline_commit": "7a839e7eb62b9711188cadc88f90b1d8a9a29113",
-  "securevibes_commit": "2f357fb39bae76d8beab78bad628a91e9c3d3041",
-  "model": "sonnet",
-  "severity": "medium",
-  "permission_mode": "bypassPermissions",
-  "created_at": "2026-03-04T21:53:41.345308Z",
-  "source_ghsa": "GHSA-mc68-q9jw-2h3v"
-}
