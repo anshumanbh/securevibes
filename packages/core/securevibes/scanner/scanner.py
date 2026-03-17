@@ -1689,6 +1689,130 @@ Only report findings at or above: {severity_threshold}
     return [entry for entry in parsed if isinstance(entry, dict)]
 
 
+async def _choose_final_pr_findings_with_sink_priority(
+    *,
+    repo: Path,
+    model: str,
+    timeout_seconds: int = 240,
+    diff_line_anchors: str,
+    diff_hunk_snippets: str,
+    changed_code_chain_summary: str = "- None identified.",
+    baseline_reachability_summary: str,
+    baseline_sink_code_summary: str,
+    findings: list[dict],
+    severity_threshold: str,
+    focus_areas: Optional[list[str]] = None,
+) -> Optional[list[dict]]:
+    """Choose final canonical PR findings, preferring proved unchanged-sink chains."""
+    if not findings:
+        return None
+    if baseline_reachability_summary.startswith("- No ") and baseline_sink_code_summary.startswith(
+        "- No "
+    ):
+        return None
+
+    focus_area_lines = (
+        "\n".join(f"- {focus_area_label(focus_area)}" for focus_area in (focus_areas or [])).strip()
+        or "- Auth/control-plane sink prioritization"
+    )
+    finding_json = json.dumps(findings, indent=2, ensure_ascii=False)
+    chooser_prompt = f"""You are the final canonical chooser for PR security findings.
+
+Primary goal:
+- Choose the final canonical set of findings from the merged candidate list below.
+- Prefer a single end-to-end finding when changed auth/session/role/permission/policy logic
+  makes an unchanged high-impact sink newly reachable or less restricted.
+- Collapse intermediate auth/control-plane findings into the end-to-end sink finding when they
+  describe the same exploit chain and the evidence supports the full chain.
+- If the full sink chain is not supported, keep the strongest intermediate finding instead of
+  inventing a sink completion.
+
+Strict rules:
+- Return ONLY a JSON array of findings using the existing schema fields.
+- Keep one canonical finding per exploit chain.
+- You may rewrite or merge candidate findings when multiple candidates describe different steps of
+  the same exploit chain.
+- Only prefer an unchanged-sink finding if you can name all three:
+  1) the changed entry/control point,
+  2) the unchanged sink file/line,
+  3) the concrete sink impact.
+- If any of those are missing, retain the strongest intermediate finding instead.
+- Do not invent vulnerabilities not supported by the diff, merged findings, and unchanged sink
+  anchors.
+- Preserve severity threshold filtering.
+
+Prioritized focus areas:
+{focus_area_lines}
+
+CHANGED LINE ANCHORS:
+{diff_line_anchors}
+
+CHANGED HUNK SNIPPETS:
+{diff_hunk_snippets}
+
+EXPLICIT CHANGED-CODE CHAINS:
+{changed_code_chain_summary}
+
+BASELINE HIGH-IMPACT OPERATIONS THAT MAY BECOME NEWLY REACHABLE:
+{baseline_reachability_summary}
+
+UNCHANGED BASELINE SINK CODE TO CHECK FOR NEW REACHABILITY:
+{baseline_sink_code_summary}
+
+MERGED CANDIDATE FINDINGS JSON:
+{finding_json}
+
+SEVERITY THRESHOLD:
+Only report findings at or above: {severity_threshold}
+"""
+
+    options = ClaudeAgentOptions(
+        cwd=str(repo),
+        setting_sources=["project"],
+        allowed_tools=[],
+        max_turns=10,
+        permission_mode=_SAFE_PERMISSION_MODE,
+        model=model,
+    )
+
+    collected_text: list[str] = []
+    try:
+
+        async def _run_client_session() -> None:
+            async with ClaudeSDKClient(options=options) as client:
+                await client.query(chooser_prompt)
+                async for message in client.receive_messages():
+                    if isinstance(message, AssistantMessage):
+                        for block in message.content:
+                            if isinstance(block, TextBlock):
+                                collected_text.append(block.text)
+                    elif isinstance(message, ResultMessage):
+                        break
+
+        await asyncio.wait_for(_run_client_session(), timeout=max(1, timeout_seconds))
+    except (OSError, asyncio.TimeoutError, RuntimeError):
+        logger.warning(
+            "PR final sink-priority chooser timed out or failed — retaining prior canonical findings",
+        )
+        return None
+
+    raw_output = "\n".join(collected_text).strip()
+    if not raw_output:
+        return None
+
+    from securevibes.models.schemas import fix_pr_vulnerabilities_json
+
+    fixed_content, _ = fix_pr_vulnerabilities_json(raw_output)
+    try:
+        parsed = json.loads(fixed_content)
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(parsed, list):
+        return None
+    return [entry for entry in parsed if isinstance(entry, dict)]
+
+
 def _derive_pr_context_timeouts(pr_timeout_seconds: int) -> tuple[int, int]:
     """Bound pre-review context generation so the main PR attempt retains most budget."""
     effective_timeout = max(30, pr_timeout_seconds)
@@ -3910,6 +4034,54 @@ Only report findings at or above: {severity_threshold}
                 elif self.debug:
                     self.console.print(
                         "  PR verifier pass returned no canonical findings; "
+                        "retaining previous canonical set.",
+                        style="dim",
+                    )
+        should_run_final_sink_chooser = (
+            ctx.auth_privilege_signals
+            and len(state.pr_vulns) > 1
+            and not ctx.baseline_reachability_summary.startswith("- No ")
+            and not ctx.baseline_sink_code_summary.startswith("- No ")
+        )
+        if should_run_final_sink_chooser:
+            if self.debug:
+                self.console.print(
+                    "  🎯 Running final sink-priority chooser for canonical PR findings",
+                    style="dim",
+                )
+            chosen_pr_vulns = await _choose_final_pr_findings_with_sink_priority(
+                repo=ctx.repo,
+                model=self.model,
+                timeout_seconds=ctx.pr_timeout_seconds,
+                diff_line_anchors=ctx.diff_line_anchors,
+                diff_hunk_snippets=ctx.diff_hunk_snippets,
+                changed_code_chain_summary=ctx.changed_code_chain_summary,
+                baseline_reachability_summary=ctx.baseline_reachability_summary,
+                baseline_sink_code_summary=ctx.baseline_sink_code_summary,
+                findings=state.pr_vulns,
+                severity_threshold=ctx.severity_threshold,
+                focus_areas=refinement_focus_areas,
+            )
+            if chosen_pr_vulns is not None:
+                chosen_merge_stats: Dict[str, int] = {}
+                chosen_canonical = merge_pr_attempt_findings(
+                    chosen_pr_vulns,
+                    merge_stats=chosen_merge_stats,
+                    chain_support_counts=state.chain_support_counts,
+                    total_attempts=len(state.attempt_chain_ids),
+                )
+                if chosen_canonical:
+                    if self.debug:
+                        self.console.print(
+                            "  Final sink-priority chooser updated canonical findings: "
+                            f"{len(state.pr_vulns)} -> {len(chosen_canonical)}",
+                            style="dim",
+                        )
+                    state.pr_vulns = chosen_canonical
+                    state.merge_stats = chosen_merge_stats
+                elif self.debug:
+                    self.console.print(
+                        "  Final sink-priority chooser returned no canonical findings; "
                         "retaining previous canonical set.",
                         style="dim",
                     )
