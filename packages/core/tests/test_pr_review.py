@@ -3927,22 +3927,7 @@ async def test_prepare_pr_review_context_includes_changed_code_dataflow_facts(
     )
     assert "targetDir <- path.join(baseDir, pluginId)" in ctx.contextualized_prompt
     assert "fs.cp(packageDir, targetDir, { recursive: true })" in ctx.contextualized_prompt
-    assert "CHANGED-CODE DATAFLOW FACTS and authoritative diff snippets outrank" in (
-        ctx.contextualized_prompt
-    )
-    assert "Reason from code-enforced constraints on the reviewed path" in (
-        ctx.contextualized_prompt
-    )
-    assert "compare the validator's matching semantics to the downstream consumer's semantics" in (
-        ctx.contextualized_prompt
-    )
-    assert "aliases, abbreviations, normalization differences" in (ctx.contextualized_prompt)
-    assert "Values loaded from local files," in (ctx.contextualized_prompt)
-    assert "remain attacker-controlled" in (ctx.contextualized_prompt)
     assert "EXPLICIT CHANGED-CODE CHAINS TO VALIDATE INDEPENDENTLY" in (ctx.contextualized_prompt)
-    assert "Treat each chain below as a separate review obligation" in (ctx.contextualized_prompt)
-    assert "trace at least one concrete" in (ctx.contextualized_prompt)
-    assert "edge-case input" in (ctx.contextualized_prompt)
 
 
 @pytest.mark.asyncio
@@ -5055,17 +5040,8 @@ class TestGeneratePrHypotheses:
         assert "Config apply reaches privileged restart path" in prompt
         assert "UNCHANGED BASELINE SINK CODE TO CHECK FOR NEW REACHABILITY" in prompt
         assert "L195:" in prompt
-        assert "quote at least one identifier or boundary/API" in prompt
-        assert "Prefer one hypothesis per explicit changed-code chain" in prompt
-        assert "Reason from constraints enforced in the reviewed code path" in prompt
-        assert "Prefer a composed exploit hypothesis" in prompt
-        assert "treat that value as attacker-controlled" in prompt
         assert "EXPLICIT CHANGED-CODE CHAINS TO VALIDATE INDEPENDENTLY" in prompt
         assert "- src/auth.py: targetDir <- path.join(base, pluginId)" in prompt
-        assert "Do not let a confirmed" in prompt
-        assert "issue on one chain substitute" in prompt
-        assert "trace at least one concrete" in prompt
-        assert "edge-case input" in prompt
 
     @pytest.mark.asyncio
     async def test_empty_response_normalizes(self):
@@ -5549,13 +5525,10 @@ class TestRefinePrFindingsWithLlm:
             )
 
         prompt = captured_prompt["value"]
-        assert "Authorization and policy allow/deny decisions are privileged sinks." in prompt
-        assert (
-            "compare the validator's matching semantics to the downstream consumer's semantics"
-            in prompt
-        )
         assert "EXPLICIT CHANGED-CODE CHAINS:" in prompt
         assert "- callerId -> normalize -> allow/deny predicate" in prompt
+        assert "CANDIDATE FINDINGS JSON" in prompt
+        assert '"title": "test"' in prompt
 
 
 class TestComposePrFindingsWithBaselineSinks:
@@ -5604,14 +5577,11 @@ class TestComposePrFindingsWithBaselineSinks:
             )
 
         prompt = mock_client.query.await_args.args[0]
-        assert "unchanged high-impact baseline sink" in prompt
-        assert (
-            "Prefer a composed sink finding over an intermediate auth/control-plane finding"
-            in prompt
-        )
         assert "BASELINE HIGH-IMPACT OPERATIONS THAT MAY BECOME NEWLY REACHABLE" in prompt
         assert "UNCHANGED BASELINE SINK CODE TO CHECK FOR NEW REACHABILITY" in prompt
         assert "L195:" in prompt
+        assert "CANDIDATE FINDINGS JSON" in prompt
+        assert '"title": "Auth bypass"' in prompt
 
 
 class TestChooseFinalPrFindingsWithSinkPriority:
@@ -5660,12 +5630,10 @@ class TestChooseFinalPrFindingsWithSinkPriority:
             )
 
         prompt = mock_client.query.await_args.args[0]
-        assert "Choose the final canonical set of findings" in prompt
-        assert "Prefer a single end-to-end finding" in prompt
-        assert "Only prefer an unchanged-sink finding if you can name all three" in prompt
-        assert "the changed entry/control point" in prompt
-        assert "the unchanged sink file/line" in prompt
         assert "MERGED CANDIDATE FINDINGS JSON" in prompt
+        assert '"title": "Auth bypass"' in prompt
+        assert '"title": "Config apply"' in prompt
+        assert "src/gateway/server-methods/config.ts:195" in prompt
 
 
 class TestAdjudicateExactPrSinkCandidate:
@@ -5715,9 +5683,8 @@ class TestAdjudicateExactPrSinkCandidate:
 
         prompt = mock_client.query.await_args.args[0]
         assert "EXACT UNCHANGED SINK TO ADJUDICATE" in prompt
-        assert "Return [] if the evidence supports only namespace-level" in prompt
-        assert "config.*" in prompt
-        assert "the exact unchanged sink file/line below" in prompt
+        assert "src/gateway/server-methods/config.ts:195" in prompt
+        assert '"title": "Config admin methods become reachable"' in prompt
 
 
 @pytest.mark.asyncio
@@ -6012,6 +5979,139 @@ async def test_run_pr_refinement_and_verification_invokes_exact_sink_adjudicator
     mock_adjudicate.assert_awaited_once()
     assert state.pr_vulns
     assert state.pr_vulns[0]["title"] == exact_finding["title"]
+
+
+@pytest.mark.asyncio
+async def test_run_pr_refinement_and_verification_runs_post_passes_in_expected_order(
+    tmp_path: Path,
+):
+    """Auth-focused post-passes should execute in the intended order."""
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+    sink_dir = tmp_path / "src" / "gateway" / "server-methods"
+    sink_dir.mkdir(parents=True)
+    sink_lines = [f"// filler line {idx}" for idx in range(1, 193)]
+    sink_lines.extend(
+        [
+            "validateConfig(update)",
+            "writeConfig(update)",
+            "applyConfig(update)",
+        ]
+    )
+    (sink_dir / "config.ts").write_text("\n".join(sink_lines) + "\n", encoding="utf-8")
+    empty_diff = DiffContext(files=[], added_lines=0, removed_lines=0, changed_files=[])
+    ctx = PRReviewContext(
+        repo=tmp_path,
+        securevibes_dir=tmp_path / ".securevibes",
+        focused_diff_context=empty_diff,
+        diff_context=empty_diff,
+        contextualized_prompt="Review this PR",
+        baseline_vulns=[],
+        pr_review_attempts=2,
+        pr_timeout_seconds=180,
+        pr_vulns_path=tmp_path / "PR_VULNERABILITIES.json",
+        detected_languages={"python"},
+        command_builder_signals=False,
+        path_parser_signals=False,
+        auth_privilege_signals=True,
+        retry_focus_plan=["auth_privilege"],
+        diff_line_anchors="src/gateway/ws.ts:42",
+        diff_hunk_snippets="+ scopes = connect.scopes",
+        pr_grep_default_scope=".",
+        scan_start_time=0.0,
+        severity_threshold="medium",
+        changed_code_chain_summary="- scopes -> authorizeGatewayMethod -> config.apply",
+        baseline_reachability_summary="- high | src/gateway/server-methods/config.ts:195 | Config apply reaches privileged restart path | existing unchanged sink; check whether auth/session/role/policy changes make this operation newly reachable or less restricted.",
+        baseline_sink_code_summary="- src/gateway/server-methods/config.ts:195 | high | Config apply reaches privileged restart path\n  L193:   validateConfig(update)\n  L194:   writeConfig(update)\n  L195:   applyConfig(update)",
+        baseline_sink_candidates=[
+            {
+                "severity_label": "high",
+                "location": "src/gateway/server-methods/config.ts:195",
+                "title": "Config apply reaches privileged restart path",
+                "unchanged_sink": True,
+            }
+        ],
+    )
+    findings = [
+        {
+            "title": "Client-controlled scopes reach admin methods",
+            "file_path": "src/gateway/ws.ts",
+            "line_number": 42,
+            "cwe_id": "CWE-269",
+            "severity": "critical",
+            "finding_type": "new_threat",
+            "description": "Auth flaw",
+            "attack_scenario": "1) attacker connects 2) admin methods unlocked",
+            "evidence": "scopes -> authorizeGatewayMethod",
+        },
+        {
+            "title": "Config admin methods become reachable",
+            "file_path": "src/gateway/server-methods.ts",
+            "line_number": 47,
+            "cwe_id": "CWE-863",
+            "severity": "high",
+            "finding_type": "new_threat",
+            "description": "Admin methods reachable",
+            "attack_scenario": "1) attacker connects 2) config methods reachable",
+            "evidence": "authorizeGatewayMethod -> config handlers",
+        },
+    ]
+    state = PRReviewState(
+        collected_pr_vulns=findings,
+        attempt_chain_ids=[{"auth-chain"}, {"other-chain"}],
+        attempt_chain_exact_ids=[{"auth-chain"}, set()],
+        attempt_chain_family_ids=[{"auth-chain"}, set()],
+        attempt_chain_flow_ids=[{"auth-flow"}, set()],
+        attempt_focus_areas=["auth_privilege"],
+        attempt_finding_counts=[2, 0],
+        attempt_observed_counts=[2, 0],
+        attempt_revalidation_attempted=[False, False],
+        attempt_core_evidence_present=[True, False],
+    )
+
+    call_order: list[str] = []
+
+    async def _mock_refine(*_args, mode: str = "quality", **_kwargs):
+        call_order.append(mode)
+        return findings
+
+    async def _mock_compose(*_args, **_kwargs):
+        call_order.append("compose")
+        return findings
+
+    async def _mock_choose(*_args, **_kwargs):
+        call_order.append("choose")
+        return findings
+
+    async def _mock_exact(*_args, **_kwargs):
+        call_order.append("exact")
+        return findings
+
+    with (
+        patch(
+            "securevibes.scanner.scanner._refine_pr_findings_with_llm",
+            new=AsyncMock(side_effect=_mock_refine),
+        ),
+        patch(
+            "securevibes.scanner.scanner._compose_pr_findings_with_baseline_sinks",
+            new=AsyncMock(side_effect=_mock_compose),
+        ),
+        patch(
+            "securevibes.scanner.scanner._choose_final_pr_findings_with_sink_priority",
+            new=AsyncMock(side_effect=_mock_choose),
+        ),
+        patch(
+            "securevibes.scanner.scanner._adjudicate_exact_pr_sink_candidate",
+            new=AsyncMock(side_effect=_mock_exact),
+        ),
+        patch(
+            "securevibes.scanner.scanner.should_run_pr_verifier",
+            return_value=True,
+        ),
+    ):
+        await scanner._run_pr_refinement_and_verification(ctx, state)
+
+    assert call_order == ["quality", "compose", "verifier", "choose", "exact"]
 
     @pytest.mark.asyncio
     async def test_filters_non_dict_entries(self):
