@@ -211,21 +211,6 @@ Example `risk_map.json` (generated from OpenClaw's threat model):
 
 **Unmapped files** default to Tier 2 (moderate) with context injection via qmd. If they introduce a new attack surface, they also trigger incremental threat modeling (see Tier 2 description).
 
-### Projected Impact
-
-Using OpenClaw's current commit distribution as a benchmark:
-
-| Tier | Chunks | Model | Time/chunk | Total |
-|------|--------|-------|-----------|-------|
-| Critical (Opus) | ~10 | Opus | 600s | 6,000s |
-| Moderate (Sonnet) | ~15 | Sonnet | 300s | 4,500s |
-| Skip | ~33 | — | 0s | 0s |
-| **Total** | **58** | | | **~2.9 hours** |
-
-**vs current:** 58 × 600s = **9.7 hours** (all Sonnet, no triage)
-
-~70% time reduction. Critical findings surface in the first pass instead of being queued behind docs updates.
-
 ## Implementation Plan
 
 ### Phase 1: Risk Map Generation
