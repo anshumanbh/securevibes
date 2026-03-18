@@ -7,7 +7,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any, Callable, Sequence
+from typing import Optional, Dict, Any, Callable, Sequence, Awaitable
 from rich.console import Console
 
 from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
@@ -3943,6 +3943,64 @@ Only report findings at or above: {severity_threshold}
         self.console.print(f"[bold yellow]Timing:[/bold yellow] {timing_summary}\n")
         raise RuntimeError(error_msg)
 
+    def _apply_pr_post_pass_findings(
+        self,
+        *,
+        findings: Optional[list[dict[str, Any]]],
+        state: PRReviewState,
+        updated_message: str,
+        empty_message: str,
+    ) -> bool:
+        """Merge and apply post-pass findings without altering pass behavior."""
+        if findings is None:
+            return False
+
+        merge_stats: Dict[str, int] = {}
+        canonical = merge_pr_attempt_findings(
+            findings,
+            merge_stats=merge_stats,
+            chain_support_counts=state.chain_support_counts,
+            total_attempts=len(state.attempt_chain_ids),
+        )
+        if not canonical:
+            if self.debug:
+                self.console.print(empty_message, style="dim")
+            return False
+
+        previous_count = len(state.pr_vulns)
+        if self.debug:
+            self.console.print(
+                updated_message.format(before=previous_count, after=len(canonical)),
+                style="dim",
+            )
+        state.pr_vulns = canonical
+        state.merge_stats = merge_stats
+        return True
+
+    async def _run_pr_post_pass(
+        self,
+        *,
+        enabled: bool,
+        runner: Callable[[], Awaitable[Optional[list[dict[str, Any]]]]],
+        state: PRReviewState,
+        start_message: str,
+        updated_message: str,
+        empty_message: str,
+    ) -> bool:
+        """Run a standard PR post-pass and update canonical findings if it succeeds."""
+        if not enabled:
+            return False
+
+        if self.debug:
+            self.console.print(start_message, style="dim")
+        findings = await runner()
+        return self._apply_pr_post_pass_findings(
+            findings=findings,
+            state=state,
+            updated_message=updated_message,
+            empty_message=empty_message,
+        )
+
     async def _run_pr_refinement_and_verification(
         self,
         ctx: PRReviewContext,
@@ -4031,13 +4089,9 @@ Only report findings at or above: {severity_threshold}
         should_refine = bool(state.pr_vulns) and (
             high_risk_signal_count > 0 or weak_consensus or len(state.pr_vulns) > 1
         )
-        if should_refine:
-            if self.debug:
-                self.console.print(
-                    "  🔬 Running PR quality refinement pass for concrete chain verification",
-                    style="dim",
-                )
-            refined_pr_vulns = await _refine_pr_findings_with_llm(
+        await self._run_pr_post_pass(
+            enabled=should_refine,
+            runner=lambda: _refine_pr_findings_with_llm(
                 repo=ctx.repo,
                 model=self.model,
                 timeout_seconds=ctx.pr_timeout_seconds,
@@ -4050,30 +4104,18 @@ Only report findings at or above: {severity_threshold}
                 mode="quality",
                 attempt_observability=attempt_observability_notes,
                 consensus_context=candidate_consensus_context,
-            )
-            if refined_pr_vulns is not None:
-                refined_merge_stats: Dict[str, int] = {}
-                refined_canonical = merge_pr_attempt_findings(
-                    refined_pr_vulns,
-                    merge_stats=refined_merge_stats,
-                    chain_support_counts=state.chain_support_counts,
-                    total_attempts=len(state.attempt_chain_ids),
-                )
-                if refined_canonical:
-                    if self.debug:
-                        self.console.print(
-                            "  PR exploit-quality refinement pass updated canonical findings: "
-                            f"{len(state.pr_vulns)} -> {len(refined_canonical)}",
-                            style="dim",
-                        )
-                    state.pr_vulns = refined_canonical
-                    state.merge_stats = refined_merge_stats
-                elif self.debug:
-                    self.console.print(
-                        "  PR exploit-quality refinement returned no canonical findings; "
-                        "retaining pre-refinement canonical set.",
-                        style="dim",
-                    )
+            ),
+            state=state,
+            start_message="  🔬 Running PR quality refinement pass for concrete chain verification",
+            updated_message=(
+                "  PR exploit-quality refinement pass updated canonical findings: "
+                "{before} -> {after}"
+            ),
+            empty_message=(
+                "  PR exploit-quality refinement returned no canonical findings; "
+                "retaining pre-refinement canonical set."
+            ),
+        )
 
         should_compose_sinks = (
             ctx.auth_privilege_signals
@@ -4081,13 +4123,9 @@ Only report findings at or above: {severity_threshold}
             and not ctx.baseline_reachability_summary.startswith("- No ")
             and not ctx.baseline_sink_code_summary.startswith("- No ")
         )
-        if should_compose_sinks:
-            if self.debug:
-                self.console.print(
-                    "  🔗 Running PR sink-composition pass for newly reachable baseline sinks",
-                    style="dim",
-                )
-            composed_pr_vulns = await _compose_pr_findings_with_baseline_sinks(
+        await self._run_pr_post_pass(
+            enabled=should_compose_sinks,
+            runner=lambda: _compose_pr_findings_with_baseline_sinks(
                 repo=ctx.repo,
                 model=self.model,
                 timeout_seconds=ctx.pr_timeout_seconds,
@@ -4099,30 +4137,17 @@ Only report findings at or above: {severity_threshold}
                 findings=state.pr_vulns,
                 severity_threshold=ctx.severity_threshold,
                 focus_areas=refinement_focus_areas,
-            )
-            if composed_pr_vulns is not None:
-                composed_merge_stats: Dict[str, int] = {}
-                composed_canonical = merge_pr_attempt_findings(
-                    composed_pr_vulns,
-                    merge_stats=composed_merge_stats,
-                    chain_support_counts=state.chain_support_counts,
-                    total_attempts=len(state.attempt_chain_ids),
-                )
-                if composed_canonical:
-                    if self.debug:
-                        self.console.print(
-                            "  PR sink-composition pass updated canonical findings: "
-                            f"{len(state.pr_vulns)} -> {len(composed_canonical)}",
-                            style="dim",
-                        )
-                    state.pr_vulns = composed_canonical
-                    state.merge_stats = composed_merge_stats
-                elif self.debug:
-                    self.console.print(
-                        "  PR sink-composition pass returned no canonical findings; "
-                        "retaining previous canonical set.",
-                        style="dim",
-                    )
+            ),
+            state=state,
+            start_message="  🔗 Running PR sink-composition pass for newly reachable baseline sinks",
+            updated_message=(
+                "  PR sink-composition pass updated canonical findings: {before} -> {after}"
+            ),
+            empty_message=(
+                "  PR sink-composition pass returned no canonical findings; "
+                "retaining previous canonical set."
+            ),
+        )
 
         core_exact_ids = collect_chain_exact_ids(state.pr_vulns)
         core_family_ids = collect_chain_family_ids(state.pr_vulns)
@@ -4153,14 +4178,9 @@ Only report findings at or above: {severity_threshold}
             has_findings=bool(state.pr_vulns),
             weak_consensus=weak_consensus,
         )
-        if should_run_verifier:
-            if self.debug:
-                self.console.print(
-                    "  🧪 Running verifier pass to adjudicate chain evidence "
-                    f"(reason: {verifier_reason or 'unspecified'})",
-                    style="dim",
-                )
-            verified_pr_vulns = await _refine_pr_findings_with_llm(
+        await self._run_pr_post_pass(
+            enabled=should_run_verifier,
+            runner=lambda: _refine_pr_findings_with_llm(
                 repo=ctx.repo,
                 model=self.model,
                 timeout_seconds=ctx.pr_timeout_seconds,
@@ -4178,43 +4198,27 @@ Only report findings at or above: {severity_threshold}
                     len(state.attempt_chain_ids),
                     flow_support_counts=state.flow_support_counts,
                 ),
-            )
-            if verified_pr_vulns is not None:
-                verified_merge_stats: Dict[str, int] = {}
-                verified_canonical = merge_pr_attempt_findings(
-                    verified_pr_vulns,
-                    merge_stats=verified_merge_stats,
-                    chain_support_counts=state.chain_support_counts,
-                    total_attempts=len(state.attempt_chain_ids),
-                )
-                if verified_canonical:
-                    if self.debug:
-                        self.console.print(
-                            "  PR verifier pass updated canonical findings: "
-                            f"{len(state.pr_vulns)} -> {len(verified_canonical)}",
-                            style="dim",
-                        )
-                    state.pr_vulns = verified_canonical
-                    state.merge_stats = verified_merge_stats
-                elif self.debug:
-                    self.console.print(
-                        "  PR verifier pass returned no canonical findings; "
-                        "retaining previous canonical set.",
-                        style="dim",
-                    )
+            ),
+            state=state,
+            start_message=(
+                "  🧪 Running verifier pass to adjudicate chain evidence "
+                f"(reason: {verifier_reason or 'unspecified'})"
+            ),
+            updated_message="  PR verifier pass updated canonical findings: {before} -> {after}",
+            empty_message=(
+                "  PR verifier pass returned no canonical findings; "
+                "retaining previous canonical set."
+            ),
+        )
         should_run_final_sink_chooser = (
             ctx.auth_privilege_signals
             and len(state.pr_vulns) > 1
             and not ctx.baseline_reachability_summary.startswith("- No ")
             and not ctx.baseline_sink_code_summary.startswith("- No ")
         )
-        if should_run_final_sink_chooser:
-            if self.debug:
-                self.console.print(
-                    "  🎯 Running final sink-priority chooser for canonical PR findings",
-                    style="dim",
-                )
-            chosen_pr_vulns = await _choose_final_pr_findings_with_sink_priority(
+        await self._run_pr_post_pass(
+            enabled=should_run_final_sink_chooser,
+            runner=lambda: _choose_final_pr_findings_with_sink_priority(
                 repo=ctx.repo,
                 model=self.model,
                 timeout_seconds=ctx.pr_timeout_seconds,
@@ -4226,30 +4230,17 @@ Only report findings at or above: {severity_threshold}
                 findings=state.pr_vulns,
                 severity_threshold=ctx.severity_threshold,
                 focus_areas=refinement_focus_areas,
-            )
-            if chosen_pr_vulns is not None:
-                chosen_merge_stats: Dict[str, int] = {}
-                chosen_canonical = merge_pr_attempt_findings(
-                    chosen_pr_vulns,
-                    merge_stats=chosen_merge_stats,
-                    chain_support_counts=state.chain_support_counts,
-                    total_attempts=len(state.attempt_chain_ids),
-                )
-                if chosen_canonical:
-                    if self.debug:
-                        self.console.print(
-                            "  Final sink-priority chooser updated canonical findings: "
-                            f"{len(state.pr_vulns)} -> {len(chosen_canonical)}",
-                            style="dim",
-                        )
-                    state.pr_vulns = chosen_canonical
-                    state.merge_stats = chosen_merge_stats
-                elif self.debug:
-                    self.console.print(
-                        "  Final sink-priority chooser returned no canonical findings; "
-                        "retaining previous canonical set.",
-                        style="dim",
-                    )
+            ),
+            state=state,
+            start_message="  🎯 Running final sink-priority chooser for canonical PR findings",
+            updated_message=(
+                "  Final sink-priority chooser updated canonical findings: {before} -> {after}"
+            ),
+            empty_message=(
+                "  Final sink-priority chooser returned no canonical findings; "
+                "retaining previous canonical set."
+            ),
+        )
         should_run_exact_sink_adjudicator = (
             ctx.auth_privilege_signals
             and bool(state.pr_vulns)
