@@ -8,7 +8,6 @@ import json
 import os
 import re
 import secrets
-import shlex
 import signal
 import shutil
 import subprocess
@@ -21,6 +20,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping
+
+from securevibes.diff.context import normalize_repo_path
+from securevibes.diff.extractor import get_diff_from_commits
+from securevibes.diff.parser import parse_unified_diff
 
 try:
     import fcntl
@@ -508,138 +511,6 @@ def get_diff_stats(
     return (file_count, total_lines)
 
 
-def get_diff_patch(
-    repo: Path,
-    base: str,
-    head: str,
-    timeout_seconds: int = DEFAULT_GIT_TIMEOUT_SECONDS,
-) -> str:
-    """Return unified diff patch for a commit range."""
-    try:
-        result = subprocess.run(
-            ["git", "diff", "--no-color", f"{base}..{head}"],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"git diff timed out after {timeout_seconds}s") from exc
-    if result.returncode != 0:
-        stderr = result.stderr.strip() or "git diff failed"
-        raise RuntimeError(stderr)
-    return result.stdout
-
-
-def _normalize_repo_path(path: str) -> str:
-    normalized = path.strip().replace("\\", "/")
-    while normalized.startswith("./"):
-        normalized = normalized[2:]
-    normalized = re.sub(r"/+", "/", normalized)
-    return normalized.strip("/")
-
-
-def _decode_diff_path(raw_path: str) -> str:
-    """Decode a git diff path token that may be shell-quoted."""
-    candidate = raw_path.strip()
-    if not candidate:
-        return ""
-    try:
-        split_parts = shlex.split(candidate)
-        if len(split_parts) == 1:
-            candidate = split_parts[0]
-    except ValueError:
-        pass
-    return candidate.strip()
-
-
-def _parse_changed_files_from_patch(patch: str) -> list[dict[str, Any]]:
-    """Parse changed file metadata from unified patch text."""
-    changed: list[dict[str, Any]] = []
-    current: dict[str, Any] | None = None
-
-    for raw_line in patch.splitlines():
-        line = raw_line.rstrip("\n")
-        if line.startswith("diff --git "):
-            if current and current.get("path"):
-                changed.append(current)
-            try:
-                parts = shlex.split(line)
-            except ValueError:
-                parts = line.split()
-            old_path = ""
-            new_path = ""
-            if len(parts) >= 4:
-                old_path = _normalize_repo_path(
-                    parts[2][2:] if parts[2].startswith("a/") else parts[2]
-                )
-                new_path = _normalize_repo_path(
-                    parts[3][2:] if parts[3].startswith("b/") else parts[3]
-                )
-            current = {
-                "old_path": old_path,
-                "new_path": new_path,
-                "path": new_path or old_path,
-                "is_new": False,
-                "is_deleted": False,
-                "is_renamed": False,
-                "added_lines": [],
-            }
-            continue
-
-        if current is None:
-            continue
-
-        if line.startswith("new file mode"):
-            current["is_new"] = True
-            continue
-        if line.startswith("deleted file mode"):
-            current["is_deleted"] = True
-            continue
-        if line.startswith("rename from "):
-            current["is_renamed"] = True
-            current["old_path"] = _normalize_repo_path(
-                _decode_diff_path(line[len("rename from ") :])
-            )
-            continue
-        if line.startswith("rename to "):
-            current["is_renamed"] = True
-            new_path = _normalize_repo_path(
-                _decode_diff_path(line[len("rename to ") :])
-            )
-            current["new_path"] = new_path
-            current["path"] = new_path or current.get("old_path", "")
-            continue
-        if line.startswith("+++ "):
-            raw_path = _decode_diff_path(line[4:])
-            if raw_path.startswith("b/"):
-                raw_path = raw_path[2:]
-            if raw_path not in {"/dev/null", "dev/null"}:
-                new_path = _normalize_repo_path(raw_path)
-                if new_path:
-                    current["new_path"] = new_path
-                    current["path"] = new_path
-            continue
-        if line.startswith("--- "):
-            raw_path = _decode_diff_path(line[4:])
-            if raw_path.startswith("a/"):
-                raw_path = raw_path[2:]
-            if raw_path not in {"/dev/null", "dev/null"}:
-                old_path = _normalize_repo_path(raw_path)
-                if old_path:
-                    current["old_path"] = old_path
-                    if not current.get("path"):
-                        current["path"] = old_path
-            continue
-        if line.startswith("+") and not line.startswith("+++"):
-            current["added_lines"].append(line[1:])
-
-    if current and current.get("path"):
-        changed.append(current)
-    return changed
-
-
 def _resolve_component_patterns(repo: Path, component: str) -> list[str]:
     """Resolve non-path component names into file globs."""
     from securevibes.scanner.risk_scorer import resolve_component_globs
@@ -706,7 +577,9 @@ def determine_chunk_risk(
     from securevibes.scanner.risk_scorer import ChangedFile, classify_chunk
 
     try:
-        patch = get_diff_patch(repo, base, head, timeout_seconds)
+        patch = get_diff_from_commits(
+            repo, f"{base}..{head}", timeout_seconds=timeout_seconds
+        )
     except RuntimeError:
         return ChunkRiskDecision(
             tier="moderate",
@@ -718,21 +591,26 @@ def determine_chunk_risk(
             new_attack_surface=False,
         )
 
+    diff_context = parse_unified_diff(patch)
     changed_files: list[ChangedFile] = []
-    for item in _parse_changed_files_from_patch(patch):
-        path = item.get("path")
-        if not isinstance(path, str) or not path:
+    for diff_file in diff_context.files:
+        path = normalize_repo_path(diff_file.new_path or diff_file.old_path)
+        if not path:
             continue
 
         status = "M"
-        if item.get("is_new"):
+        if diff_file.is_new:
             status = "A"
-        elif item.get("is_deleted"):
+        elif diff_file.is_deleted:
             status = "D"
-        elif item.get("is_renamed"):
+        elif diff_file.is_renamed:
             status = "R"
-        added_lines_raw = item.get("added_lines", [])
-        added_lines = tuple(line for line in added_lines_raw if isinstance(line, str))
+        added_lines = tuple(
+            line.content
+            for hunk in diff_file.hunks
+            for line in hunk.lines
+            if line.type == "add"
+        )
         changed_files.append(
             ChangedFile(path=path, status=status, added_lines=added_lines)
         )

@@ -326,7 +326,9 @@ def test_run_subprocess_with_progress_timeout_does_not_recommunicate(
     monkeypatch.setattr(inc, "_terminate_child_process", lambda *_args, **_kwargs: None)
 
     with pytest.raises(subprocess.TimeoutExpired):
-        inc._run_subprocess_with_progress(["securevibes", "pr-review"], timeout_seconds=3)
+        inc._run_subprocess_with_progress(
+            ["securevibes", "pr-review"], timeout_seconds=3
+        )
 
     assert proc.communicate_calls == [3]
 
@@ -349,7 +351,9 @@ def test_run_subprocess_with_progress_starts_new_session(
         return DummyProc()
 
     monkeypatch.setattr(inc.subprocess, "Popen", fake_popen)
-    result = inc._run_subprocess_with_progress(["securevibes", "pr-review"], timeout_seconds=3)
+    result = inc._run_subprocess_with_progress(
+        ["securevibes", "pr-review"], timeout_seconds=3
+    )
 
     assert seen["kwargs"]["start_new_session"] is True
     assert result.returncode == 0
@@ -1355,27 +1359,6 @@ def test_compute_chunks_adaptive_handles_single_oversized_commit(
     assert chunks == [("base", "c1")]
 
 
-def test_parse_changed_files_from_patch_handles_quoted_paths_with_spaces() -> None:
-    patch = """diff --git "a/src/old name.py" "b/src/new name.py"
-similarity index 100%
-rename from src/old name.py
-rename to src/new name.py
-index 1111111..2222222 100644
---- "a/src/old name.py"
-+++ "b/src/new name.py"
-@@ -1 +1 @@
--print("old")
-+print("new")
-"""
-    changed = inc._parse_changed_files_from_patch(patch)
-
-    assert len(changed) == 1
-    assert changed[0]["is_renamed"] is True
-    assert changed[0]["old_path"] == "src/old name.py"
-    assert changed[0]["new_path"] == "src/new name.py"
-    assert changed[0]["path"] == "src/new name.py"
-
-
 def test_determine_chunk_risk_uses_parsed_patch_classification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1394,7 +1377,7 @@ index 3333333..4444444 100644
 -allow = False
 +allow = True
 """
-    monkeypatch.setattr(inc, "get_diff_patch", lambda *_args, **_kwargs: patch)
+    monkeypatch.setattr(inc, "get_diff_from_commits", lambda *_args, **_kwargs: patch)
     risk_map = {
         "critical": ["src/security/*"],
         "moderate": [],
@@ -1424,7 +1407,7 @@ index 1111111..2222222 100644
 -all:
 +all: build
 """
-    monkeypatch.setattr(inc, "get_diff_patch", lambda *_args, **_kwargs: patch)
+    monkeypatch.setattr(inc, "get_diff_from_commits", lambda *_args, **_kwargs: patch)
     risk_map = {
         "critical": [],
         "moderate": [],

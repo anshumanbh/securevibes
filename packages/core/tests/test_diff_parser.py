@@ -16,7 +16,10 @@ from securevibes.diff.extractor import (
     get_last_n_commits,
     get_diff_from_commit_list,
 )
-from securevibes.diff.parser import extract_changed_code_with_context, parse_unified_diff
+from securevibes.diff.parser import (
+    extract_changed_code_with_context,
+    parse_unified_diff,
+)
 
 
 def test_parse_unified_diff_basic():
@@ -61,6 +64,28 @@ new file mode 100644
     assert file_change.is_new is True
     assert file_change.old_path is None
     assert file_change.new_path == "new.py"
+
+
+def test_parse_unified_diff_handles_quoted_paths_with_spaces():
+    """Quoted diff headers should decode into normalized old/new paths."""
+    diff = """diff --git "a/src/old name.py" "b/src/new name.py"
+similarity index 100%
+rename from src/old name.py
+rename to src/new name.py
+index 1111111..2222222 100644
+--- "a/src/old name.py"
++++ "b/src/new name.py"
+@@ -1 +1 @@
+-print("old")
++print("new")
+"""
+    context = parse_unified_diff(diff)
+
+    assert context.changed_files == ["src/new name.py"]
+    file_change = context.files[0]
+    assert file_change.is_renamed is True
+    assert file_change.old_path == "src/old name.py"
+    assert file_change.new_path == "src/new name.py"
 
 
 def test_extract_changed_code_with_context(tmp_path: Path):
@@ -221,7 +246,9 @@ def test_get_diff_from_commit_list_with_commits(monkeypatch):
 
     monkeypatch.setattr("securevibes.diff.extractor.subprocess.run", fake_run)
 
-    result = get_diff_from_commit_list(Path("/repo"), ["oldest_sha", "mid_sha", "newest_sha"])
+    result = get_diff_from_commit_list(
+        Path("/repo"), ["oldest_sha", "mid_sha", "newest_sha"]
+    )
 
     assert "diff --git" in result
     # Should have called rev-parse for parent of oldest commit
@@ -328,7 +355,9 @@ class TestGitRefValidation:
         with pytest.raises(ValueError, match="malformed range syntax"):
             _validate_git_ref(ref)
 
-    @pytest.mark.parametrize("ref", ["--name-only", "-U0", "--help", "main..--name-only"])
+    @pytest.mark.parametrize(
+        "ref", ["--name-only", "-U0", "--help", "main..--name-only"]
+    )
     def test_invalid_option_style_refs(self, ref):
         """Refs that look like CLI options should be rejected."""
         with pytest.raises(ValueError, match="option-style refs are not allowed"):
