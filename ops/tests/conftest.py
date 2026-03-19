@@ -17,6 +17,10 @@ def repo_dir(tmp_path: Path) -> Path:
     securevibes_dir.mkdir()
     (securevibes_dir / "SECURITY.md").write_text("# baseline", encoding="utf-8")
     (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+    (securevibes_dir / "risk_map.json").write_text(
+        json.dumps({"critical": [], "moderate": [], "skip": []}),
+        encoding="utf-8",
+    )
     return repo
 
 

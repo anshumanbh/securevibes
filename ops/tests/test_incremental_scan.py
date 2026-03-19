@@ -1425,28 +1425,13 @@ index 1111111..2222222 100644
     assert "skip_safeguard:extensionless_file" in result.reasons
 
 
-def test_prepare_risk_map_generates_when_missing(tmp_path: Path) -> None:
+def test_resolve_prepared_risk_map_path_requires_explicit_prep(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     securevibes_dir = repo / ".securevibes"
     securevibes_dir.mkdir(parents=True)
-    (securevibes_dir / "THREAT_MODEL.json").write_text(
-        json.dumps(
-            [
-                {
-                    "severity": "high",
-                    "affected_components": ["src/gateway/*"],
-                }
-            ]
-        ),
-        encoding="utf-8",
-    )
 
-    risk_map_path, generated = inc.prepare_risk_map(repo, securevibes_dir)
-
-    assert generated is True
-    assert risk_map_path == securevibes_dir / "risk_map.json"
-    payload = json.loads(risk_map_path.read_text(encoding="utf-8"))
-    assert "src/gateway/*" in payload["critical"]
+    with pytest.raises(RuntimeError, match="python ops/prepare_risk_map.py"):
+        inc.resolve_prepared_risk_map_path(securevibes_dir)
 
 
 def test_load_risk_map_or_raise_rejects_invalid_payload(tmp_path: Path) -> None:
@@ -1795,8 +1780,8 @@ def test_run_skip_tier_chunk_advances_anchor_without_pr_review(
     monkeypatch.setattr(inc, "generate_run_id", lambda: "RUN_SKIP_TIER")
     monkeypatch.setattr(
         inc,
-        "prepare_risk_map",
-        lambda repo, securevibes_dir: (securevibes_dir / "risk_map.json", False),
+        "resolve_prepared_risk_map_path",
+        lambda securevibes_dir: securevibes_dir / "risk_map.json",
     )
     monkeypatch.setattr(inc, "load_risk_map_or_raise", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(
@@ -1854,8 +1839,8 @@ def test_run_critical_tier_routes_chunk_to_opus_model(
     monkeypatch.setattr(inc, "generate_run_id", lambda: "RUN_CRITICAL_TIER")
     monkeypatch.setattr(
         inc,
-        "prepare_risk_map",
-        lambda repo, securevibes_dir: (securevibes_dir / "risk_map.json", False),
+        "resolve_prepared_risk_map_path",
+        lambda securevibes_dir: securevibes_dir / "risk_map.json",
     )
     monkeypatch.setattr(inc, "load_risk_map_or_raise", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(
