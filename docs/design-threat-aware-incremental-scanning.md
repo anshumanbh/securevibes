@@ -582,6 +582,19 @@ These safeguards are deterministic pattern/regex checks, not LLM-based checks.
 3. **Step 3 (deprecation)** — remove wrapper-owned orchestration after parity and soak period; keep behavior contract and logs in the core command.
 4. **Step 4 (context + memory layers)** — roll out Phases 4-8 (design decisions, context injection, decision traces, compounding telemetry, user feedback loop) incrementally.
 
+### Recommended Implementation Order For Phases 4-8
+
+To preserve deterministic routing, Phases 4-8 should be implemented as review-context and memory layers only. They must not affect tier classification, skip decisions, or anchor advancement.
+
+1. **Phase 4 first, exact-match only** — add `design_decisions.json` loading, validation, exact path/component matching, and prompt injection. Do not add semantic retrieval yet.
+2. **Phase 6 second, exact-match only** — add decision trace storage under `.securevibes/decisions/`, exact matching by changed paths/components/`mitigated_by`, and prompt injection. Do not block this on Agent Trace support.
+3. **Introduce a retrieval abstraction** — add a shared retrieval layer that returns relevant threats, findings, design decisions, and decision traces. Start with exact-match providers only so `scanner.py` depends on an interface rather than a qmd-specific implementation.
+4. **Phase 5 after the abstraction exists** — add qmd-backed semantic retrieval behind the retrieval layer. Use it only for contextual retrieval during prompt assembly, not for tiering or review-depth suppression.
+5. **Phase 7 next** — add freshness/reindexing and compounding-memory mechanics: refresh contextual artifacts after updates, re-surface traces when `mitigated_by` files change, and record minimal context-injection telemetry.
+6. **Phase 8 last** — add a simple user-feedback flow that writes decision traces from explicit triage actions (`false_positive`, `accepted_risk`, `mitigated_by`, `deferred`, `fixed`). Start with a narrow CLI-backed flow rather than a full conversational UX.
+
+**Agent Trace sequencing:** add Agent Trace provenance as a follow-up enrichment to Phase 6 once the core decision-trace model is stable. It should extend trace provenance, not block the first usable memory layer.
+
 ## Dependencies
 
 - **THREAT_MODEL.json** — must exist from baseline scan (source of truth for risk map generation)
