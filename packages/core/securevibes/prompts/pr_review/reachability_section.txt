@@ -1,0 +1,11 @@
+## BASELINE HIGH-IMPACT OPERATIONS THAT MAY BECOME NEWLY REACHABLE
+When the diff changes auth, session, role, permission, policy, or trust-boundary logic,
+review whether it makes any existing high-impact operation below newly reachable or less
+restricted, even if the sink file itself is unchanged.
+{baseline_reachability_summary}
+
+## UNCHANGED BASELINE SINK CODE TO CHECK FOR NEW REACHABILITY
+These are compact anchors from existing sink files that were not changed by the PR.
+Use them to validate whether changed auth/session/role/policy logic now reaches the sink or
+makes it less restricted.
+{baseline_sink_code_summary}

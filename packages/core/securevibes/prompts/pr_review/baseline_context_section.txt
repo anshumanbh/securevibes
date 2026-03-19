@@ -1,0 +1,16 @@
+## ARCHITECTURE CONTEXT (from SECURITY.md)
+{architecture_context}
+
+## RELEVANT EXISTING THREATS (from THREAT_MODEL.json)
+{threat_context_summary}
+
+## RELEVANT BASELINE VULNERABILITIES (from VULNERABILITIES.json)
+{vuln_context_summary}
+
+## CHANGED COMPONENT COVERAGE VS BASELINE ARTIFACTS
+{component_delta_summary}
+
+## NEW-SURFACE THREAT DELTA
+Use these only as hypotheses for components that lack baseline coverage.
+Validate or falsify them with concrete code evidence before reporting.
+{new_surface_threat_delta}
