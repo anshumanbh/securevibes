@@ -280,6 +280,14 @@ class TestScannerInit:
 
         assert scanner.debug is True
 
+    def test_initialization_resolves_permission_mode_at_runtime(self, monkeypatch):
+        """Scanner should resolve permission mode when the instance is created."""
+        monkeypatch.setenv("SECUREVIBES_PERMISSION_MODE", "bypassPermissions")
+
+        scanner = Scanner()
+
+        assert scanner.permission_mode == "bypassPermissions"
+
     def test_api_key_sets_env_var(self):
         """Test API key is set in environment"""
         # API key is no longer set by the scanner - delegated to claude CLI

@@ -43,7 +43,6 @@ from securevibes.scanner.pr_review_merge import (
 )
 
 logger = logging.getLogger(__name__)
-_SAFE_PERMISSION_MODE = resolve_permission_mode()
 
 
 @dataclass
@@ -151,6 +150,7 @@ class PRReviewAttemptRunner:
         self._progress_tracker_cls = progress_tracker_cls
         self._claude_client_cls = claude_client_cls
         self._hook_matcher_cls = hook_matcher_cls
+        self._permission_mode = resolve_permission_mode()
 
     @property
     def console(self) -> Any:
@@ -459,7 +459,7 @@ class PRReviewAttemptRunner:
                 setting_sources=["project"],
                 allowed_tools=["Read", "Write", "Grep", "Glob", "LS"],
                 max_turns=config.get_max_turns(),
-                permission_mode=_SAFE_PERMISSION_MODE,
+                permission_mode=self._permission_mode,
                 model=self.model,
                 hooks={
                     "PreToolUse": [

@@ -176,6 +176,13 @@ class TestRunnerProperties:
         runner = _make_runner()
         assert runner.model == "test-model"
 
+    def test_runner_resolves_permission_mode_at_runtime(self, monkeypatch):
+        monkeypatch.setenv("SECUREVIBES_PERMISSION_MODE", "bypassPermissions")
+
+        runner = _make_runner()
+
+        assert runner._permission_mode == "bypassPermissions"
+
 
 class TestRecordAttemptChains:
     def test_records_ids_and_increments_support(self):

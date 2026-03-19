@@ -118,7 +118,6 @@ _NEW_FILE_ANCHOR_MAX_LINES = 120  # Same rationale — new files need higher anc
 DIFF_FILES_DIR = "DIFF_FILES"  # Subdirectory for agent-readable diff content
 _MAX_FOCUSED_COMPONENT_PASSES = 6
 _MAX_FOCUSED_PASS_ATTEMPTS = 2
-_SAFE_PERMISSION_MODE = resolve_permission_mode()
 _BASE_ALLOWED_TOOLS = ("Task", "Skill", "Read", "Write", "Grep", "Glob", "LS")
 _PR_CANONICAL_VULNERABILITIES_SUFFIX = ".canonical"
 _HIGH_IMPACT_BASELINE_SEVERITY_RANKS = {
@@ -1533,10 +1532,16 @@ def _normalize_hypothesis_output(
     return f"{normalized[: max_chars - 15].rstrip()}...[truncated]"
 
 
+def _runtime_permission_mode(permission_mode: Optional[str] = None) -> str:
+    """Resolve permission mode at runtime instead of module import time."""
+    return permission_mode or resolve_permission_mode()
+
+
 async def _generate_pr_hypotheses(
     *,
     repo: Path,
     model: str,
+    permission_mode: Optional[str] = None,
     timeout_seconds: int = 240,
     changed_files: list[str],
     diff_line_anchors: str,
@@ -1633,7 +1638,7 @@ ARCHITECTURE CONTEXT:
         setting_sources=["project"],
         allowed_tools=[],
         max_turns=8,
-        permission_mode=_SAFE_PERMISSION_MODE,
+        permission_mode=_runtime_permission_mode(permission_mode),
         model=model,
     )
 
@@ -1665,6 +1670,7 @@ async def _refine_pr_findings_with_llm(
     *,
     repo: Path,
     model: str,
+    permission_mode: Optional[str] = None,
     timeout_seconds: int = 240,
     diff_line_anchors: str,
     diff_hunk_snippets: str,
@@ -1747,7 +1753,7 @@ CANDIDATE FINDINGS JSON:
         setting_sources=["project"],
         allowed_tools=[],
         max_turns=10,
-        permission_mode=_SAFE_PERMISSION_MODE,
+        permission_mode=_runtime_permission_mode(permission_mode),
         model=model,
     )
 
@@ -1793,6 +1799,7 @@ async def _compose_pr_findings_with_baseline_sinks(
     *,
     repo: Path,
     model: str,
+    permission_mode: Optional[str] = None,
     timeout_seconds: int = 240,
     diff_line_anchors: str,
     diff_hunk_snippets: str,
@@ -1868,7 +1875,7 @@ Only report findings at or above: {severity_threshold}
         setting_sources=["project"],
         allowed_tools=[],
         max_turns=10,
-        permission_mode=_SAFE_PERMISSION_MODE,
+        permission_mode=_runtime_permission_mode(permission_mode),
         model=model,
     )
 
@@ -1914,6 +1921,7 @@ async def _choose_final_pr_findings_with_sink_priority(
     *,
     repo: Path,
     model: str,
+    permission_mode: Optional[str] = None,
     timeout_seconds: int = 240,
     diff_line_anchors: str,
     diff_hunk_snippets: str,
@@ -1992,7 +2000,7 @@ Only report findings at or above: {severity_threshold}
         setting_sources=["project"],
         allowed_tools=[],
         max_turns=10,
-        permission_mode=_SAFE_PERMISSION_MODE,
+        permission_mode=_runtime_permission_mode(permission_mode),
         model=model,
     )
 
@@ -2038,6 +2046,7 @@ async def _adjudicate_exact_pr_sink_candidate(
     *,
     repo: Path,
     model: str,
+    permission_mode: Optional[str] = None,
     timeout_seconds: int = 240,
     diff_line_anchors: str,
     diff_hunk_snippets: str,
@@ -2108,7 +2117,7 @@ Only report findings at or above: {severity_threshold}
         setting_sources=["project"],
         allowed_tools=[],
         max_turns=8,
-        permission_mode=_SAFE_PERMISSION_MODE,
+        permission_mode=_runtime_permission_mode(permission_mode),
         model=model,
     )
 
@@ -2959,6 +2968,7 @@ async def _generate_new_surface_threat_delta(
     *,
     repo: Path,
     model: str,
+    permission_mode: Optional[str] = None,
     timeout_seconds: int,
     changed_files: list[str],
     component_delta_summary: str,
@@ -3020,7 +3030,7 @@ ARCHITECTURE CONTEXT:
         setting_sources=["project"],
         allowed_tools=[],
         max_turns=8,
-        permission_mode=_SAFE_PERMISSION_MODE,
+        permission_mode=_runtime_permission_mode(permission_mode),
         model=model,
     )
 
@@ -3070,6 +3080,7 @@ class Scanner:
         self.debug = debug
         self.total_cost = 0.0
         self.console = Console()
+        self.permission_mode = resolve_permission_mode()
 
         # DAST configuration
         self.dast_enabled = False
@@ -4024,6 +4035,7 @@ class Scanner:
             new_surface_threat_delta = await _generate_new_surface_threat_delta(
                 repo=repo,
                 model=self.model,
+                permission_mode=self.permission_mode,
                 timeout_seconds=new_surface_delta_timeout,
                 changed_files=(
                     new_surface_diff_context.changed_files
@@ -4054,6 +4066,7 @@ class Scanner:
             pr_hypotheses = await _generate_pr_hypotheses(
                 repo=repo,
                 model=self.model,
+                permission_mode=self.permission_mode,
                 timeout_seconds=hypothesis_generation_timeout,
                 changed_files=diff_artifacts.focused_diff_context.changed_files,
                 diff_line_anchors=diff_artifacts.diff_line_anchors,
@@ -4331,6 +4344,7 @@ class Scanner:
             exact_pr_vulns = await _adjudicate_exact_pr_sink_candidate(
                 repo=ctx.repo,
                 model=self.model,
+                permission_mode=self.permission_mode,
                 timeout_seconds=ctx.pr_timeout_seconds,
                 diff_line_anchors=ctx.diff_line_anchors,
                 diff_hunk_snippets=ctx.diff_hunk_snippets,
@@ -4392,6 +4406,7 @@ class Scanner:
                     _refine_pr_findings_with_llm,
                     repo=ctx.repo,
                     model=self.model,
+                    permission_mode=self.permission_mode,
                     timeout_seconds=ctx.pr_timeout_seconds,
                     diff_line_anchors=ctx.diff_line_anchors,
                     diff_hunk_snippets=ctx.diff_hunk_snippets,
@@ -4425,6 +4440,7 @@ class Scanner:
                     _compose_pr_findings_with_baseline_sinks,
                     repo=ctx.repo,
                     model=self.model,
+                    permission_mode=self.permission_mode,
                     timeout_seconds=ctx.pr_timeout_seconds,
                     diff_line_anchors=ctx.diff_line_anchors,
                     diff_hunk_snippets=ctx.diff_hunk_snippets,
@@ -4454,6 +4470,7 @@ class Scanner:
                     _refine_pr_findings_with_llm,
                     repo=ctx.repo,
                     model=self.model,
+                    permission_mode=self.permission_mode,
                     timeout_seconds=ctx.pr_timeout_seconds,
                     diff_line_anchors=ctx.diff_line_anchors,
                     diff_hunk_snippets=ctx.diff_hunk_snippets,
@@ -4492,6 +4509,7 @@ class Scanner:
                     _choose_final_pr_findings_with_sink_priority,
                     repo=ctx.repo,
                     model=self.model,
+                    permission_mode=self.permission_mode,
                     timeout_seconds=ctx.pr_timeout_seconds,
                     diff_line_anchors=ctx.diff_line_anchors,
                     diff_hunk_snippets=ctx.diff_hunk_snippets,
@@ -4983,7 +5001,7 @@ class Scanner:
             # Task is required for the orchestrator to dispatch to subagents defined via --agents
             allowed_tools=allowed_tools,
             max_turns=config.get_max_turns(),
-            permission_mode=_SAFE_PERMISSION_MODE,
+            permission_mode=self.permission_mode,
             model=self.model,
             hooks={
                 "PreToolUse": [
