@@ -1425,6 +1425,38 @@ index 1111111..2222222 100644
     assert "skip_safeguard:extensionless_file" in result.reasons
 
 
+def test_prepare_risk_map_generates_when_missing(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir(parents=True)
+    (securevibes_dir / "THREAT_MODEL.json").write_text(
+        json.dumps(
+            [
+                {
+                    "severity": "high",
+                    "affected_components": ["src/gateway/*"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    risk_map_path, generated = inc.prepare_risk_map(repo, securevibes_dir)
+
+    assert generated is True
+    assert risk_map_path == securevibes_dir / "risk_map.json"
+    payload = json.loads(risk_map_path.read_text(encoding="utf-8"))
+    assert "src/gateway/*" in payload["critical"]
+
+
+def test_load_risk_map_or_raise_rejects_invalid_payload(tmp_path: Path) -> None:
+    risk_map_path = tmp_path / "risk_map.json"
+    risk_map_path.write_text(json.dumps({"critical": []}), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="Invalid risk map"):
+        inc.load_risk_map_or_raise(risk_map_path)
+
+
 def test_recover_stale_runs_only_updates_primary_run_records(tmp_path: Path) -> None:
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()
@@ -1761,7 +1793,12 @@ def test_run_skip_tier_chunk_advances_anchor_without_pr_review(
     monkeypatch.setattr(inc, "is_ancestor", lambda *_args: True)
     monkeypatch.setattr(inc, "get_commit_list", lambda *_args: ["c1"])
     monkeypatch.setattr(inc, "generate_run_id", lambda: "RUN_SKIP_TIER")
-    monkeypatch.setattr(inc, "load_or_generate_risk_map", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        inc,
+        "prepare_risk_map",
+        lambda repo, securevibes_dir: (securevibes_dir / "risk_map.json", False),
+    )
+    monkeypatch.setattr(inc, "load_risk_map_or_raise", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(
         inc,
         "determine_chunk_risk",
@@ -1815,7 +1852,12 @@ def test_run_critical_tier_routes_chunk_to_opus_model(
     monkeypatch.setattr(inc, "is_ancestor", lambda *_args: True)
     monkeypatch.setattr(inc, "get_commit_list", lambda *_args: ["c1"])
     monkeypatch.setattr(inc, "generate_run_id", lambda: "RUN_CRITICAL_TIER")
-    monkeypatch.setattr(inc, "load_or_generate_risk_map", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        inc,
+        "prepare_risk_map",
+        lambda repo, securevibes_dir: (securevibes_dir / "risk_map.json", False),
+    )
+    monkeypatch.setattr(inc, "load_risk_map_or_raise", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(
         inc,
         "determine_chunk_risk",

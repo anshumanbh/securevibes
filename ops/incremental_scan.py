@@ -529,24 +529,20 @@ def _default_model_for_tier(tier: str) -> str | None:
     return None
 
 
-def load_or_generate_risk_map(
+def prepare_risk_map(
     repo: Path,
     securevibes_dir: Path,
-) -> dict[str, object]:
-    """Load ``risk_map.json`` or generate it from THREAT_MODEL.json."""
+) -> tuple[Path, bool]:
+    """Ensure ``risk_map.json`` exists and return its path plus generation status."""
     from securevibes.scanner.risk_scorer import (
         build_risk_map_from_threat_model,
-        load_risk_map,
         load_threat_model_entries,
         save_risk_map,
     )
 
     risk_map_path = securevibes_dir / "risk_map.json"
     if risk_map_path.exists():
-        try:
-            return load_risk_map(risk_map_path)
-        except (OSError, json.JSONDecodeError, ValueError) as exc:
-            raise RuntimeError(f"Invalid risk map at {risk_map_path}: {exc}") from exc
+        return (risk_map_path, False)
 
     threat_model_path = securevibes_dir / "THREAT_MODEL.json"
     try:
@@ -563,7 +559,17 @@ def load_or_generate_risk_map(
         ),
     )
     save_risk_map(risk_map_path, risk_map)
-    return risk_map
+    return (risk_map_path, True)
+
+
+def load_risk_map_or_raise(risk_map_path: Path) -> dict[str, object]:
+    """Load a prepared ``risk_map.json`` with validation."""
+    from securevibes.scanner.risk_scorer import load_risk_map
+
+    try:
+        return load_risk_map(risk_map_path)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeError(f"Invalid risk map at {risk_map_path}: {exc}") from exc
 
 
 def determine_chunk_risk(
@@ -1333,7 +1339,13 @@ def run(args: argparse.Namespace) -> int:
         # Detect stale/interrupted runs from previous invocations
         _recover_stale_runs(runs_dir, log_file)
 
-        risk_map = load_or_generate_risk_map(repo, securevibes_dir)
+        risk_map_path, risk_map_generated = prepare_risk_map(repo, securevibes_dir)
+        if risk_map_generated:
+            append_log(
+                log_file,
+                f"prepared risk map from {securevibes_dir / 'THREAT_MODEL.json'}",
+            )
+        risk_map = load_risk_map_or_raise(risk_map_path)
 
         run_id = generate_run_id()
         run_record_path = runs_dir / f"{run_id}.json"

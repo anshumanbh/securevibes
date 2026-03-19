@@ -168,11 +168,15 @@ _DATAFLOW_OBJECT_SCOPE_RE = re.compile(r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s
 _DATAFLOW_PROPERTY_ASSIGNMENT_RE = re.compile(
     r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?P<expr>.+?)(?:,)?$"
 )
-_DATAFLOW_CALL_RE = re.compile(r"(?P<callee>[A-Za-z_][A-Za-z0-9_$.]*)\s*\((?P<args>.*)\)")
+_DATAFLOW_CALL_RE = re.compile(
+    r"(?P<callee>[A-Za-z_][A-Za-z0-9_$.]*)\s*\((?P<args>.*)\)"
+)
 _DATAFLOW_FUNCTION_DECL_RE = re.compile(
     r"^(?:export\s+)?(?:async\s+)?function\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\("
 )
-_DATAFLOW_IF_CONDITION_RE = re.compile(r"^(?:else\s+)?if\s*\((?P<condition>.+)\)\s*\{?\s*$")
+_DATAFLOW_IF_CONDITION_RE = re.compile(
+    r"^(?:else\s+)?if\s*\((?P<condition>.+)\)\s*\{?\s*$"
+)
 _DATAFLOW_PREDICATE_HINTS = (
     "&&",
     "||",
@@ -226,7 +230,14 @@ _DATAFLOW_IGNORED_IDENTIFIERS = {
     "while",
     "yield",
 }
-_DATAFLOW_LINE_PREFIXES_TO_SKIP = ("if ", "for ", "while ", "switch ", "catch ", "except ")
+_DATAFLOW_LINE_PREFIXES_TO_SKIP = (
+    "if ",
+    "for ",
+    "while ",
+    "switch ",
+    "catch ",
+    "except ",
+)
 _DATAFLOW_DECLARATION_PREFIXES = (
     "function ",
     "export function ",
@@ -252,6 +263,73 @@ class _DataflowFactCandidate:
     scope_name: str | None
 
 
+@dataclass(frozen=True)
+class _PRPreparedDiffArtifacts:
+    """Prepared diff-derived artifacts used during PR context assembly."""
+
+    focused_diff_context: DiffContext
+    diff_file_paths: list[str]
+    adjacent_file_hints: str
+    changed_code_dataflow_summary: str
+    changed_code_chain_summary: str
+    diff_line_anchors: str
+    diff_hunk_snippets: str
+    pr_grep_default_scope: str
+    command_builder_signals: bool
+    path_parser_signals: bool
+    auth_privilege_signals: bool
+
+
+@dataclass(frozen=True)
+class _PRBaselineContext:
+    """Baseline-derived prompt context for PR review preparation."""
+
+    architecture_context: str
+    threat_context_summary: str
+    vuln_context_summary: str
+    baseline_vulns: list[dict]
+    component_delta_summary: str
+    new_surface_components: list[tuple[str, list[str], int]]
+    baseline_reachability_summary: str
+    baseline_sink_code_summary: str
+    baseline_sink_candidates: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class _PRGeneratedContext:
+    """Generated PR context that depends on budgets, retries, and LLM passes."""
+
+    pr_review_attempts: int
+    pr_timeout_seconds: int
+    retry_focus_plan: list[str]
+    new_surface_threat_delta: str
+    new_surface_delta_seconds: float
+    pr_hypotheses: str
+    hypothesis_generation_seconds: float
+
+
+@dataclass(frozen=True)
+class _PRConsensusSnapshot:
+    """Consensus state for canonical PR findings across attempts."""
+
+    weak_consensus: bool
+    detected_reason: str | None
+    passes_with_core_chain: int
+    consensus_mode_used: str
+    support_counts_snapshot: dict[str, int]
+
+
+@dataclass(frozen=True)
+class _PRPostPassDefinition:
+    """Declarative definition of one PR-review post-processing pass."""
+
+    enabled: Callable[[], bool]
+    runner: Callable[[], Awaitable[Optional[list[dict[str, Any]]]]]
+    start_message: Callable[[], str]
+    updated_message: str
+    empty_message: str
+
+
 def _summarize_diff_line_anchors(
     diff_context: DiffContext,
     max_files: int = 16,
@@ -271,14 +349,21 @@ def _summarize_diff_line_anchors(
             (int(line.new_line_num or 0), line.content.strip())
             for hunk in diff_file.hunks
             for line in hunk.lines
-            if line.type == "add" and isinstance(line.content, str) and line.content.strip()
+            if line.type == "add"
+            and isinstance(line.content, str)
+            and line.content.strip()
         ]
         removed_count = sum(
-            1 for hunk in diff_file.hunks for line in hunk.lines if line.type == "remove"
+            1
+            for hunk in diff_file.hunks
+            for line in hunk.lines
+            if line.type == "remove"
         )
         lines.append(f"- {path}")
         # New files can't be Read from disk — use a higher anchor limit
-        effective_max = _NEW_FILE_ANCHOR_MAX_LINES if diff_file.is_new else max_lines_per_file
+        effective_max = (
+            _NEW_FILE_ANCHOR_MAX_LINES if diff_file.is_new else max_lines_per_file
+        )
         for line_no, content in added[:effective_max]:
             snippet = content.replace("\t", " ").strip()
             if len(snippet) > 180:
@@ -323,7 +408,9 @@ def _summarize_diff_hunk_snippets(
         output.append(f"--- {path}{meta_suffix}")
 
         # New files can't be Read from disk — use a higher hunk line limit
-        effective_max_lines = _NEW_FILE_HUNK_MAX_LINES if diff_file.is_new else max_lines_per_hunk
+        effective_max_lines = (
+            _NEW_FILE_HUNK_MAX_LINES if diff_file.is_new else max_lines_per_hunk
+        )
         for hunk in diff_file.hunks[:max_hunks_per_file]:
             output.append(
                 f"@@ -{hunk.old_start},{hunk.old_count} +{hunk.new_start},{hunk.new_count} @@"
@@ -341,7 +428,9 @@ def _summarize_diff_hunk_snippets(
                 output.append(f"{prefix}{content}")
 
             if len(hunk.lines) > effective_max_lines:
-                output.append(f"... [truncated {len(hunk.lines) - effective_max_lines} hunk lines]")
+                output.append(
+                    f"... [truncated {len(hunk.lines) - effective_max_lines} hunk lines]"
+                )
 
         if len(diff_file.hunks) > max_hunks_per_file:
             output.append(
@@ -501,12 +590,18 @@ def _extract_branch_action(line: str) -> tuple[str, set[str]] | None:
         return "break", set()
     if normalized.startswith("return "):
         expr = normalized[len("return ") :].strip()
-        return f"return {_shorten_dataflow_excerpt(expr)}", _extract_dataflow_identifiers(expr)
+        return (
+            f"return {_shorten_dataflow_excerpt(expr)}",
+            _extract_dataflow_identifiers(expr),
+        )
     if normalized == "return":
         return "return", set()
     if normalized.startswith("throw "):
         expr = normalized[len("throw ") :].strip()
-        return f"throw {_shorten_dataflow_excerpt(expr)}", _extract_dataflow_identifiers(expr)
+        return (
+            f"throw {_shorten_dataflow_excerpt(expr)}",
+            _extract_dataflow_identifiers(expr),
+        )
     return None
 
 
@@ -554,7 +649,9 @@ def _select_connected_dataflow_facts(
         indices: set[int] = set()
         for used in candidate.uses:
             indices.update(
-                index for index in define_indexes.get(used, []) if index < candidate.index
+                index
+                for index in define_indexes.get(used, [])
+                if index < candidate.index
             )
         return indices
 
@@ -562,11 +659,15 @@ def _select_connected_dataflow_facts(
         indices: set[int] = set()
         for defined in candidate.defines:
             indices.update(
-                index for index in use_indexes.get(defined, []) if index > candidate.index
+                index
+                for index in use_indexes.get(defined, [])
+                if index > candidate.index
             )
         return indices
 
-    def _candidate_score(candidate: _DataflowFactCandidate) -> tuple[int, int, int, int]:
+    def _candidate_score(
+        candidate: _DataflowFactCandidate,
+    ) -> tuple[int, int, int, int]:
         kind_bonus = 0
         if candidate.kind == "branch":
             kind_bonus = 6
@@ -584,7 +685,9 @@ def _select_connected_dataflow_facts(
             candidate.index,
         )
 
-    local_neighbor_map: dict[int, set[int]] = {candidate.index: set() for candidate in candidates}
+    local_neighbor_map: dict[int, set[int]] = {
+        candidate.index: set() for candidate in candidates
+    }
     ordered_candidates = sorted(
         candidates, key=lambda candidate: (candidate.line_no, candidate.index)
     )
@@ -607,7 +710,10 @@ def _select_connected_dataflow_facts(
         for neighbor in window:
             if neighbor.kind != "predicate":
                 continue
-            if abs(neighbor.line_no - candidate.line_no) > _DATAFLOW_PREDICATE_NEIGHBOR_LINE_WINDOW:
+            if (
+                abs(neighbor.line_no - candidate.line_no)
+                > _DATAFLOW_PREDICATE_NEIGHBOR_LINE_WINDOW
+            ):
                 continue
             local_neighbor_map[candidate.index].add(neighbor.index)
             local_neighbor_map[neighbor.index].add(candidate.index)
@@ -638,7 +744,9 @@ def _select_connected_dataflow_facts(
             while frontier and len(selected) < limit:
                 current_index = frontier.pop()
                 current = candidate_lookup[current_index]
-                selected_earlier_neighbors = _earlier_def_indices(current).intersection(selected)
+                selected_earlier_neighbors = _earlier_def_indices(current).intersection(
+                    selected
+                )
 
                 earlier_neighbors = sorted(
                     (
@@ -725,7 +833,8 @@ def _select_connected_dataflow_facts(
         def_use_count = sum(
             1
             for candidate in component_candidates
-            if candidate.defines and _later_use_indices(candidate).intersection(component_indices)
+            if candidate.defines
+            and _later_use_indices(candidate).intersection(component_indices)
         )
         best_candidate_score = max(
             _candidate_score(candidate)[0] for candidate in component_candidates
@@ -781,9 +890,13 @@ def _collect_changed_code_dataflow_facts(
             if assignment:
                 tracked_identifiers.add(assignment[0])
                 continue
-            property_assignment = _extract_property_dataflow(normalized, scope_name=None)
+            property_assignment = _extract_property_dataflow(
+                normalized, scope_name=None
+            )
             if property_assignment:
-                tracked_identifiers.update(_extract_dataflow_identifiers(property_assignment[0]))
+                tracked_identifiers.update(
+                    _extract_dataflow_identifiers(property_assignment[0])
+                )
 
     if not tracked_identifiers:
         return []
@@ -857,7 +970,9 @@ def _collect_changed_code_dataflow_facts(
                             line_no=line_no,
                             fact=fact,
                             defines=tuple(),
-                            uses=tuple(sorted(branch_identifiers.union(action_identifiers))),
+                            uses=tuple(
+                                sorted(branch_identifiers.union(action_identifiers))
+                            ),
                             kind="branch",
                             scope_name=current_scope_name,
                         )
@@ -870,7 +985,9 @@ def _collect_changed_code_dataflow_facts(
                 action_excerpt, action_identifiers = branch_action
                 active_condition = branch_stack[-1][0]
                 branch_identifiers = _extract_dataflow_identifiers(active_condition)
-                if line.type == "add" or branch_identifiers.intersection(tracked_identifiers):
+                if line.type == "add" or branch_identifiers.intersection(
+                    tracked_identifiers
+                ):
                     fact = (
                         f"{line_prefix}: `if {_shorten_dataflow_excerpt(active_condition)}"
                         f" -> {action_excerpt}`"
@@ -882,7 +999,9 @@ def _collect_changed_code_dataflow_facts(
                                 line_no=line_no,
                                 fact=fact,
                                 defines=tuple(),
-                                uses=tuple(sorted(branch_identifiers.union(action_identifiers))),
+                                uses=tuple(
+                                    sorted(branch_identifiers.union(action_identifiers))
+                                ),
                                 kind="branch",
                                 scope_name=current_scope_name,
                             )
@@ -895,8 +1014,12 @@ def _collect_changed_code_dataflow_facts(
             if assignment:
                 name, expr = assignment
                 expr_identifiers = _extract_dataflow_identifiers(expr)
-                if line.type == "add" or expr_identifiers.intersection(tracked_identifiers):
-                    fact = f"{line_prefix}: `{name} <- {_shorten_dataflow_excerpt(expr)}`"
+                if line.type == "add" or expr_identifiers.intersection(
+                    tracked_identifiers
+                ):
+                    fact = (
+                        f"{line_prefix}: `{name} <- {_shorten_dataflow_excerpt(expr)}`"
+                    )
                     if fact not in seen_facts:
                         candidates.append(
                             _DataflowFactCandidate(
@@ -921,7 +1044,9 @@ def _collect_changed_code_dataflow_facts(
                 if property_assignment:
                     name, expr = property_assignment
                     expr_identifiers = _extract_dataflow_identifiers(expr)
-                    if line.type == "add" or expr_identifiers.intersection(tracked_identifiers):
+                    if line.type == "add" or expr_identifiers.intersection(
+                        tracked_identifiers
+                    ):
                         fact = f"{line_prefix}: `{name} <- {_shorten_dataflow_excerpt(expr)}`"
                         if fact not in seen_facts:
                             candidates.append(
@@ -930,7 +1055,9 @@ def _collect_changed_code_dataflow_facts(
                                     line_no=line_no,
                                     fact=fact,
                                     defines=tuple(
-                                        dict.fromkeys([name, *_extract_dataflow_identifiers(name)])
+                                        dict.fromkeys(
+                                            [name, *_extract_dataflow_identifiers(name)]
+                                        )
                                     ),
                                     uses=tuple(sorted(expr_identifiers)),
                                     kind="property",
@@ -942,7 +1069,9 @@ def _collect_changed_code_dataflow_facts(
                         tracked_identifiers.update(_extract_dataflow_identifiers(name))
                         tracked_identifiers.update(expr_identifiers)
                     if current_scope_name is not None:
-                        current_scope_brace_depth += line_open_braces - line_close_braces
+                        current_scope_brace_depth += (
+                            line_open_braces - line_close_braces
+                        )
                         if current_scope_brace_depth <= 0:
                             current_scope_name = None
                             current_scope_brace_depth = 0
@@ -960,7 +1089,9 @@ def _collect_changed_code_dataflow_facts(
                         call_data = None
                 if call_data:
                     _callee, arg_identifiers, call_excerpt = call_data
-                    if line.type == "add" or arg_identifiers.intersection(tracked_identifiers):
+                    if line.type == "add" or arg_identifiers.intersection(
+                        tracked_identifiers
+                    ):
                         fact = f"{line_prefix}: `{call_excerpt}`"
                         if fact not in seen_facts:
                             candidates.append(
@@ -1011,7 +1142,9 @@ def _collect_changed_code_dataflow_facts(
                     current_scope_name = None
                     current_scope_brace_depth = 0
 
-    branch_candidates = [candidate for candidate in candidates if candidate.kind == "branch"]
+    branch_candidates = [
+        candidate for candidate in candidates if candidate.kind == "branch"
+    ]
     if branch_candidates:
         filtered_candidates: list[_DataflowFactCandidate] = []
         for candidate in candidates:
@@ -1032,7 +1165,9 @@ def _collect_changed_code_dataflow_facts(
             filtered_candidates.append(candidate)
         candidates = filtered_candidates
 
-    selected_candidates = _select_connected_dataflow_facts(candidates, max_facts=max_facts)
+    selected_candidates = _select_connected_dataflow_facts(
+        candidates, max_facts=max_facts
+    )
     selected_indices = {candidate.index for candidate in selected_candidates}
 
     helper_candidates_by_name: dict[str, list[_DataflowFactCandidate]] = {}
@@ -1100,7 +1235,9 @@ def _collect_changed_code_dataflow_facts(
 
 def _count_predicate_facts(facts: list[str]) -> int:
     """Count extracted facts that describe changed decision predicates."""
-    return sum(1 for fact in facts if any(hint in fact for hint in _DATAFLOW_PREDICATE_HINTS))
+    return sum(
+        1 for fact in facts if any(hint in fact for hint in _DATAFLOW_PREDICATE_HINTS)
+    )
 
 
 def _rank_diff_files_for_changed_code_facts(
@@ -1114,7 +1251,9 @@ def _rank_diff_files_for_changed_code_facts(
         path = diff_file_path(diff_file)
         if not path:
             continue
-        facts = _collect_changed_code_dataflow_facts(diff_file, max_facts=max_facts_per_file)
+        facts = _collect_changed_code_dataflow_facts(
+            diff_file, max_facts=max_facts_per_file
+        )
         if not facts:
             continue
         file_score = score_diff_file_for_security_review(diff_file)
@@ -1189,7 +1328,9 @@ def _format_changed_code_dataflow_chains(
             continue
         chain_lines.append(f"- {path}: " + " -> ".join(chain_parts))
 
-    summary = "\n".join(chain_lines).strip() or "- None identified from changed-code chains."
+    summary = (
+        "\n".join(chain_lines).strip() or "- None identified from changed-code chains."
+    )
     if len(summary) <= max_chars:
         return summary
     return f"{summary[: max_chars - 15].rstrip()}...[truncated]"
@@ -1248,7 +1389,9 @@ def _format_diff_file_hints(diff_file_paths: list[str]) -> str:
     ]
     for rel_path in diff_file_paths:
         lines.append(f"  - .securevibes/{rel_path}")
-    lines.append("Use the Read tool on these files when the snippets above seem incomplete.")
+    lines.append(
+        "Use the Read tool on these files when the snippets above seem incomplete."
+    )
     return "\n".join(lines)
 
 
@@ -1356,7 +1499,9 @@ Prioritized changed files: {focused_diff_context.changed_files}
 {diff_hunk_snippets}"""
 
 
-def _build_pr_prompt_hypothesis_section(*, pr_hypotheses: str, severity_threshold: str) -> str:
+def _build_pr_prompt_hypothesis_section(
+    *, pr_hypotheses: str, severity_threshold: str
+) -> str:
     """Build the final hypothesis and threshold prompt section for PR review."""
     return f"""## HYPOTHESES TO VALIDATE (LLM-generated)
 Treat these as lower-confidence brainstorming, not ground truth.
@@ -1634,7 +1779,9 @@ async def _refine_pr_findings_with_llm(
         return None
 
     focus_area_lines = (
-        "\n".join(f"- {focus_area_label(focus_area)}" for focus_area in (focus_areas or [])).strip()
+        "\n".join(
+            f"- {focus_area_label(focus_area)}" for focus_area in (focus_areas or [])
+        ).strip()
         or "- General exploit-chain verification"
     )
     verification_mode = "verifier" if mode == "verifier" else "quality"
@@ -1759,13 +1906,15 @@ async def _compose_pr_findings_with_baseline_sinks(
     """Promote auth/control-plane findings into composed sink findings when proof exists."""
     if not findings:
         return None
-    if baseline_reachability_summary.startswith("- No ") and baseline_sink_code_summary.startswith(
+    if baseline_reachability_summary.startswith(
         "- No "
-    ):
+    ) and baseline_sink_code_summary.startswith("- No "):
         return None
 
     focus_area_lines = (
-        "\n".join(f"- {focus_area_label(focus_area)}" for focus_area in (focus_areas or [])).strip()
+        "\n".join(
+            f"- {focus_area_label(focus_area)}" for focus_area in (focus_areas or [])
+        ).strip()
         or "- Auth/control-plane sink reachability"
     )
     finding_json = json.dumps(findings, indent=2, ensure_ascii=False)
@@ -1880,13 +2029,15 @@ async def _choose_final_pr_findings_with_sink_priority(
     """Choose final canonical PR findings, preferring proved unchanged-sink chains."""
     if not findings:
         return None
-    if baseline_reachability_summary.startswith("- No ") and baseline_sink_code_summary.startswith(
+    if baseline_reachability_summary.startswith(
         "- No "
-    ):
+    ) and baseline_sink_code_summary.startswith("- No "):
         return None
 
     focus_area_lines = (
-        "\n".join(f"- {focus_area_label(focus_area)}" for focus_area in (focus_areas or [])).strip()
+        "\n".join(
+            f"- {focus_area_label(focus_area)}" for focus_area in (focus_areas or [])
+        ).strip()
         or "- Auth/control-plane sink prioritization"
     )
     finding_json = json.dumps(findings, indent=2, ensure_ascii=False)
@@ -2008,7 +2159,9 @@ async def _adjudicate_exact_pr_sink_candidate(
         return None
 
     focus_area_lines = (
-        "\n".join(f"- {focus_area_label(focus_area)}" for focus_area in (focus_areas or [])).strip()
+        "\n".join(
+            f"- {focus_area_label(focus_area)}" for focus_area in (focus_areas or [])
+        ).strip()
         or "- Exact unchanged sink adjudication"
     )
     finding_json = json.dumps(findings, indent=2, ensure_ascii=False)
@@ -2185,7 +2338,9 @@ def _build_focused_diff_context(diff_context: DiffContext) -> DiffContext:
             )
         )
 
-    changed_files = [path for path in (diff_file_path(file) for file in focused_files) if path]
+    changed_files = [
+        path for path in (diff_file_path(file) for file in focused_files) if path
+    ]
     added_lines = sum(
         1
         for file in focused_files
@@ -2218,7 +2373,9 @@ def _enforce_focused_diff_coverage(
     # score <= 0 (docs, changelogs, etc.) are intentionally filtered out by
     # _build_focused_diff_context — excluding them is not a coverage gap.
     security_relevant_count = sum(
-        1 for f in original_diff_context.files if score_diff_file_for_security_review(f) > 0
+        1
+        for f in original_diff_context.files
+        if score_diff_file_for_security_review(f) > 0
     )
     focused_file_count = len(focused_diff_context.files)
     dropped_file_count = max(0, security_relevant_count - focused_file_count)
@@ -2353,7 +2510,9 @@ def _derive_baseline_component_keys(securevibes_dir: Path) -> set[str]:
         if not artifact_path.exists():
             continue
         try:
-            payload = json.loads(artifact_path.read_text(encoding="utf-8", errors="ignore"))
+            payload = json.loads(
+                artifact_path.read_text(encoding="utf-8", errors="ignore")
+            )
         except (OSError, json.JSONDecodeError):
             continue
         _collect_path_candidates_from_payload(payload, path_candidates)
@@ -2409,8 +2568,12 @@ def _classify_changed_components(
         else:
             novel_components.append(row)
 
-    risk_components.sort(key=lambda item: (item[2], len(item[1]), item[0]), reverse=True)
-    novel_components.sort(key=lambda item: (item[2], len(item[1]), item[0]), reverse=True)
+    risk_components.sort(
+        key=lambda item: (item[2], len(item[1]), item[0]), reverse=True
+    )
+    novel_components.sort(
+        key=lambda item: (item[2], len(item[1]), item[0]), reverse=True
+    )
     return risk_components, novel_components
 
 
@@ -2432,7 +2595,9 @@ def _format_component_delta_summary(
         for component_key, paths, _ in rows:
             preview = ", ".join(paths[:max_paths_per_component])
             if len(paths) > max_paths_per_component:
-                preview = f"{preview}, ... (+{len(paths) - max_paths_per_component} more)"
+                preview = (
+                    f"{preview}, ... (+{len(paths) - max_paths_per_component} more)"
+                )
             formatted.append(f"- {label}: {component_key} -> {preview}")
         return formatted
 
@@ -2456,7 +2621,9 @@ def _baseline_vuln_component_keys(entry: dict) -> set[str]:
     _collect_path_candidates_from_payload(entry, path_candidates)
     return {
         component_key
-        for component_key in (_split_component_key(candidate) for candidate in path_candidates)
+        for component_key in (
+            _split_component_key(candidate) for candidate in path_candidates
+        )
         if component_key
     }
 
@@ -2528,7 +2695,9 @@ def _select_auth_reachability_candidates(
 
         candidate_paths: set[str] = set()
         _collect_path_candidates_from_payload(vuln, candidate_paths)
-        normalized_paths = sorted(normalize_repo_path(path) for path in candidate_paths if path)
+        normalized_paths = sorted(
+            normalize_repo_path(path) for path in candidate_paths if path
+        )
         component_overlap = _component_overlap_rank(
             _baseline_vuln_component_keys(vuln),
             changed_component_keys,
@@ -2542,7 +2711,9 @@ def _select_auth_reachability_candidates(
             and location != "unknown-path"
             and location.split(":", 1)[0] not in changed_set
         )
-        severity_label = str(vuln.get("severity") or "unknown").strip().lower() or "unknown"
+        severity_label = (
+            str(vuln.get("severity") or "unknown").strip().lower() or "unknown"
+        )
         title = str(
             vuln.get("title") or vuln.get("threat_id") or "Untitled baseline finding"
         ).strip()
@@ -2594,7 +2765,9 @@ def _summarize_auth_reachability_candidates(
     bullets: list[str] = []
     for candidate in ranked_candidates:
         unchanged_note = (
-            "existing unchanged sink" if candidate["unchanged_sink"] else "existing sink"
+            "existing unchanged sink"
+            if candidate["unchanged_sink"]
+            else "existing sink"
         )
         bullets.append(
             f"- {candidate['severity_label']} | {candidate['location']} | {candidate['title']} | "
@@ -3074,10 +3247,18 @@ class Scanner:
         run_only_value = single_subagent or "none"
         resume_value = resume_from or "none"
         skip_value = ",".join(skip_subagents) if skip_subagents else "none"
-        dast_url = self.dast_config.get("target_url") if dast_enabled_for_run else "none"
-        dast_timeout = str(self.dast_config.get("timeout", 120)) if dast_enabled_for_run else "none"
+        dast_url = (
+            self.dast_config.get("target_url") if dast_enabled_for_run else "none"
+        )
+        dast_timeout = (
+            str(self.dast_config.get("timeout", 120))
+            if dast_enabled_for_run
+            else "none"
+        )
         dast_accounts = (
-            str(self.dast_config.get("accounts_path") or "none") if dast_enabled_for_run else "none"
+            str(self.dast_config.get("accounts_path") or "none")
+            if dast_enabled_for_run
+            else "none"
         )
 
         return (
@@ -3136,7 +3317,9 @@ class Scanner:
         """Return the sidecar path used to preserve canonical PR findings across passes."""
         suffix = pr_vulns_path.suffix
         stem = pr_vulns_path.stem
-        return pr_vulns_path.with_name(f"{stem}{_PR_CANONICAL_VULNERABILITIES_SUFFIX}{suffix}")
+        return pr_vulns_path.with_name(
+            f"{stem}{_PR_CANONICAL_VULNERABILITIES_SUFFIX}{suffix}"
+        )
 
     def _persist_pr_review_findings_snapshot(
         self,
@@ -3210,7 +3393,9 @@ class Scanner:
         try:
             progress_writer(checkpoint_result)
         except Exception as exc:  # pragma: no cover - defensive guard around caller I/O
-            warnings.append(f"Unable to write {checkpoint_label} PR review checkpoint: {exc}")
+            warnings.append(
+                f"Unable to write {checkpoint_label} PR review checkpoint: {exc}"
+            )
 
     def _sync_dast_accounts_file(self, repo: Path) -> None:
         """Copy optional DAST accounts file into `.securevibes/` for agent access."""
@@ -3233,7 +3418,9 @@ class Scanner:
             Path(SECUREVIBES_DIR) / "DAST_TEST_ACCOUNTS.json",
             operation="DAST accounts output file",
         )
-        target_accounts.write_text(accounts_file.read_text(encoding="utf-8"), encoding="utf-8")
+        target_accounts.write_text(
+            accounts_file.read_text(encoding="utf-8"), encoding="utf-8"
+        )
 
     def _setup_skills(self, repo: Path, skill_type: str, *, required: bool = True):
         """
@@ -3347,13 +3534,17 @@ class Scanner:
 
                 # Offer to run prerequisites
                 self.console.print("Options:")
-                self.console.print(f"  1. Run from prerequisite sub-agents (includes {subagent})")
+                self.console.print(
+                    f"  1. Run from prerequisite sub-agents (includes {subagent})"
+                )
                 self.console.print("  2. Run full scan (all sub-agents)")
                 self.console.print("  3. Cancel")
 
                 import click
 
-                choice = click.prompt("\nChoice", type=int, default=3, show_default=False)
+                choice = click.prompt(
+                    "\nChoice", type=int, default=3, show_default=False
+                )
 
                 if choice == 1:
                     # Find which sub-agent creates the required artifact
@@ -3361,8 +3552,12 @@ class Scanner:
 
                     for sa_name in SUBAGENT_ORDER:
                         if SUBAGENT_ARTIFACTS[sa_name]["creates"] == required:
-                            return await self.scan_resume(repo_path, sa_name, force, skip_checks)
-                    raise RuntimeError(f"Could not find sub-agent that creates {required}")
+                            return await self.scan_resume(
+                                repo_path, sa_name, force, skip_checks
+                            )
+                    raise RuntimeError(
+                        f"Could not find sub-agent that creates {required}"
+                    )
                 elif choice == 2:
                     return await self.scan(repo_path)
                 else:
@@ -3440,7 +3635,9 @@ class Scanner:
 
             self.console.print(f"\nWill run: {' → '.join(subagents_to_run)}")
             if "dast" not in subagents_to_run and not self.dast_enabled:
-                self.console.print("(DAST not enabled - use --dast --target-url to include)")
+                self.console.print(
+                    "(DAST not enabled - use --dast --target-url to include)"
+                )
 
             if not force:
                 import click
@@ -3550,7 +3747,9 @@ class Scanner:
         try:
             securevibes_dir.mkdir(exist_ok=True)
         except (OSError, PermissionError) as e:
-            raise RuntimeError(f"Failed to create output directory {securevibes_dir}: {e}")
+            raise RuntimeError(
+                f"Failed to create output directory {securevibes_dir}: {e}"
+            )
 
         # Start with explicit overrides; _prepare_pr_review_context applies config fallback.
         effective_attempts = pr_review_attempts
@@ -3675,9 +3874,7 @@ class Scanner:
                     pr_timeout_seconds_override=focused_timeout,
                 )
             except RuntimeError as exc:
-                warning = (
-                    f"Focused PR review pass '{pass_label}' failed closed and was skipped: {exc}"
-                )
+                warning = f"Focused PR review pass '{pass_label}' failed closed and was skipped: {exc}"
                 aggregated_warnings.append(warning)
                 if self.debug:
                     logger.debug(warning)
@@ -3729,25 +3926,21 @@ class Scanner:
             progress_writer=progress_writer,
         )
 
-    async def _prepare_pr_review_context(
+    def _prepare_pr_diff_artifacts(
         self,
+        *,
         repo: Path,
         securevibes_dir: Path,
         diff_context: DiffContext,
-        known_vulns_path: Optional[Path],
-        severity_threshold: str,
-        pr_review_attempts_override: Optional[int] = None,
-        pr_timeout_seconds_override: Optional[int] = None,
-    ) -> PRReviewContext:
-        """Assemble all context needed before the PR review attempt loop."""
-        scan_start_time = time.time()
-        context_prep_start_time = time.time()
-        context_phase_timings: Dict[str, float] = {}
-
+        context_phase_timings: dict[str, float],
+    ) -> _PRPreparedDiffArtifacts:
+        """Prepare focused diff artifacts and changed-code summaries."""
         phase_start = time.time()
         focused_diff_context = _build_focused_diff_context(diff_context)
         _enforce_focused_diff_coverage(diff_context, focused_diff_context)
-        context_phase_timings["focused_diff_seconds"] = round(time.time() - phase_start, 2)
+        context_phase_timings["focused_diff_seconds"] = round(
+            time.time() - phase_start, 2
+        )
 
         phase_start = time.time()
         diff_context_path = self._repo_output_path(
@@ -3755,64 +3948,16 @@ class Scanner:
             Path(SECUREVIBES_DIR) / DIFF_CONTEXT_FILE,
             operation="PR diff context artifact",
         )
-        diff_context_path.write_text(json.dumps(focused_diff_context.to_json(), indent=2))
-
-        # Write individual diff files so the LLM agent can Read them when
-        # prompt snippets are truncated (especially for large new files).
-        diff_file_paths = _write_diff_files_for_agent(securevibes_dir, focused_diff_context)
-        context_phase_timings["diff_artifact_write_seconds"] = round(time.time() - phase_start, 2)
-
-        phase_start = time.time()
-        architecture_context = extract_relevant_architecture(
-            securevibes_dir / SECURITY_FILE,
-            focused_diff_context.changed_files,
+        diff_context_path.write_text(
+            json.dumps(focused_diff_context.to_json(), indent=2)
         )
-        context_phase_timings["architecture_context_seconds"] = round(time.time() - phase_start, 2)
-
-        phase_start = time.time()
-        relevant_threats = filter_relevant_threats(
-            securevibes_dir / THREAT_MODEL_FILE,
-            focused_diff_context.changed_files,
+        diff_file_paths = _write_diff_files_for_agent(
+            securevibes_dir, focused_diff_context
         )
-        context_phase_timings["threat_filter_seconds"] = round(time.time() - phase_start, 2)
-
-        phase_start = time.time()
-        known_vulns = []
-        if known_vulns_path and known_vulns_path.exists():
-            try:
-                raw_known = known_vulns_path.read_text(encoding="utf-8")
-                parsed = json.loads(raw_known)
-                if isinstance(parsed, list):
-                    known_vulns = parsed
-            except (OSError, json.JSONDecodeError):
-                known_vulns = []
-        context_phase_timings["known_vuln_load_seconds"] = round(time.time() - phase_start, 2)
-
-        phase_start = time.time()
-        baseline_vulns = filter_baseline_vulns(known_vulns)
-        relevant_baseline_vulns = filter_relevant_vulnerabilities(
-            baseline_vulns,
-            focused_diff_context.changed_files,
-        )
-        context_phase_timings["baseline_vuln_filter_seconds"] = round(time.time() - phase_start, 2)
-
-        phase_start = time.time()
-        baseline_component_keys = _derive_baseline_component_keys(securevibes_dir)
-        risk_components, new_surface_components = _classify_changed_components(
-            focused_diff_context,
-            baseline_component_keys=baseline_component_keys,
-        )
-        context_phase_timings["component_classification_seconds"] = round(
+        context_phase_timings["diff_artifact_write_seconds"] = round(
             time.time() - phase_start, 2
         )
 
-        phase_start = time.time()
-        component_delta_summary = _format_component_delta_summary(
-            risk_components,
-            new_surface_components,
-        )
-        threat_context_summary = summarize_threats_for_prompt(relevant_threats)
-        vuln_context_summary = summarize_vulnerabilities_for_prompt(relevant_baseline_vulns)
         security_adjacent_files = suggest_security_adjacent_files(
             repo,
             focused_diff_context.changed_files,
@@ -3823,38 +3968,155 @@ class Scanner:
             if security_adjacent_files
             else "- None identified from changed-file neighborhoods"
         )
-        changed_code_dataflow_summary = _format_changed_code_dataflow_summary(focused_diff_context)
-        changed_code_chain_summary = _format_changed_code_dataflow_chains(focused_diff_context)
+        changed_code_dataflow_summary = _format_changed_code_dataflow_summary(
+            focused_diff_context
+        )
+        changed_code_chain_summary = _format_changed_code_dataflow_chains(
+            focused_diff_context
+        )
         diff_line_anchors = _summarize_diff_line_anchors(focused_diff_context)
         diff_hunk_snippets = _summarize_diff_hunk_snippets(focused_diff_context)
-        command_builder_signals = diff_has_command_builder_signals(focused_diff_context)
-        path_parser_signals = diff_has_path_parser_signals(focused_diff_context)
-        auth_privilege_signals = diff_has_auth_privilege_signals(focused_diff_context)
-        baseline_reachability_summary = _summarize_auth_reachability_candidates(
-            baseline_vulns,
-            focused_diff_context.changed_files,
-            auth_privilege_signals=auth_privilege_signals,
+
+        return _PRPreparedDiffArtifacts(
+            focused_diff_context=focused_diff_context,
+            diff_file_paths=diff_file_paths,
+            adjacent_file_hints=adjacent_file_hints,
+            changed_code_dataflow_summary=changed_code_dataflow_summary,
+            changed_code_chain_summary=changed_code_chain_summary,
+            diff_line_anchors=diff_line_anchors,
+            diff_hunk_snippets=diff_hunk_snippets,
+            pr_grep_default_scope=_derive_pr_default_grep_scope(focused_diff_context),
+            command_builder_signals=diff_has_command_builder_signals(
+                focused_diff_context
+            ),
+            path_parser_signals=diff_has_path_parser_signals(focused_diff_context),
+            auth_privilege_signals=diff_has_auth_privilege_signals(
+                focused_diff_context
+            ),
         )
+
+    def _load_known_pr_vulns(
+        self,
+        known_vulns_path: Optional[Path],
+    ) -> list[dict]:
+        """Load known vulnerabilities artifact used as PR-review baseline context."""
+        if not known_vulns_path or not known_vulns_path.exists():
+            return []
+        try:
+            raw_known = known_vulns_path.read_text(encoding="utf-8")
+            parsed = json.loads(raw_known)
+        except (OSError, json.JSONDecodeError):
+            return []
+        if not isinstance(parsed, list):
+            return []
+        return [entry for entry in parsed if isinstance(entry, dict)]
+
+    def _prepare_pr_baseline_context(
+        self,
+        *,
+        repo: Path,
+        securevibes_dir: Path,
+        known_vulns_path: Optional[Path],
+        diff_artifacts: _PRPreparedDiffArtifacts,
+        context_phase_timings: dict[str, float],
+    ) -> _PRBaselineContext:
+        """Prepare architecture, threat, baseline-vuln, and sink context."""
+        phase_start = time.time()
+        architecture_context = extract_relevant_architecture(
+            securevibes_dir / SECURITY_FILE,
+            diff_artifacts.focused_diff_context.changed_files,
+        )
+        context_phase_timings["architecture_context_seconds"] = round(
+            time.time() - phase_start, 2
+        )
+
+        phase_start = time.time()
+        relevant_threats = filter_relevant_threats(
+            securevibes_dir / THREAT_MODEL_FILE,
+            diff_artifacts.focused_diff_context.changed_files,
+        )
+        context_phase_timings["threat_filter_seconds"] = round(
+            time.time() - phase_start, 2
+        )
+
+        phase_start = time.time()
+        known_vulns = self._load_known_pr_vulns(known_vulns_path)
+        context_phase_timings["known_vuln_load_seconds"] = round(
+            time.time() - phase_start, 2
+        )
+
+        phase_start = time.time()
+        baseline_vulns = filter_baseline_vulns(known_vulns)
+        relevant_baseline_vulns = filter_relevant_vulnerabilities(
+            baseline_vulns,
+            diff_artifacts.focused_diff_context.changed_files,
+        )
+        context_phase_timings["baseline_vuln_filter_seconds"] = round(
+            time.time() - phase_start, 2
+        )
+
+        phase_start = time.time()
+        baseline_component_keys = _derive_baseline_component_keys(securevibes_dir)
+        risk_components, new_surface_components = _classify_changed_components(
+            diff_artifacts.focused_diff_context,
+            baseline_component_keys=baseline_component_keys,
+        )
+        context_phase_timings["component_classification_seconds"] = round(
+            time.time() - phase_start, 2
+        )
+
+        phase_start = time.time()
         baseline_sink_candidates = [
             candidate
             for candidate in _select_auth_reachability_candidates(
                 baseline_vulns,
-                focused_diff_context.changed_files,
-                auth_privilege_signals=auth_privilege_signals,
+                diff_artifacts.focused_diff_context.changed_files,
+                auth_privilege_signals=diff_artifacts.auth_privilege_signals,
             )
             if candidate.get("unchanged_sink")
         ]
-        baseline_sink_code_summary = _summarize_auth_reachability_sink_code(
-            repo,
-            baseline_vulns,
-            focused_diff_context.changed_files,
-            auth_privilege_signals=auth_privilege_signals,
-        )
-        pr_grep_default_scope = _derive_pr_default_grep_scope(focused_diff_context)
         context_phase_timings["prompt_context_summary_seconds"] = round(
             time.time() - phase_start, 2
         )
 
+        return _PRBaselineContext(
+            architecture_context=architecture_context,
+            threat_context_summary=summarize_threats_for_prompt(relevant_threats),
+            vuln_context_summary=summarize_vulnerabilities_for_prompt(
+                relevant_baseline_vulns
+            ),
+            baseline_vulns=baseline_vulns,
+            component_delta_summary=_format_component_delta_summary(
+                risk_components,
+                new_surface_components,
+            ),
+            new_surface_components=new_surface_components,
+            baseline_reachability_summary=_summarize_auth_reachability_candidates(
+                baseline_vulns,
+                diff_artifacts.focused_diff_context.changed_files,
+                auth_privilege_signals=diff_artifacts.auth_privilege_signals,
+            ),
+            baseline_sink_code_summary=_summarize_auth_reachability_sink_code(
+                repo,
+                baseline_vulns,
+                diff_artifacts.focused_diff_context.changed_files,
+                auth_privilege_signals=diff_artifacts.auth_privilege_signals,
+            ),
+            baseline_sink_candidates=baseline_sink_candidates,
+        )
+
+    async def _prepare_pr_generated_context(
+        self,
+        *,
+        repo: Path,
+        severity_threshold: str,
+        pr_review_attempts_override: Optional[int],
+        pr_timeout_seconds_override: Optional[int],
+        diff_artifacts: _PRPreparedDiffArtifacts,
+        baseline_context: _PRBaselineContext,
+        context_phase_timings: dict[str, float],
+    ) -> _PRGeneratedContext:
+        """Prepare retry planning plus LLM-generated threat and hypothesis context."""
         phase_start = time.time()
         pr_review_attempts = (
             pr_review_attempts_override
@@ -3872,147 +4134,211 @@ class Scanner:
         ) = _derive_pr_context_timeouts(pr_timeout_seconds)
         retry_focus_plan = build_pr_retry_focus_plan(
             pr_review_attempts,
-            command_builder_signals=command_builder_signals,
-            path_parser_signals=path_parser_signals,
-            auth_privilege_signals=auth_privilege_signals,
+            command_builder_signals=diff_artifacts.command_builder_signals,
+            path_parser_signals=diff_artifacts.path_parser_signals,
+            auth_privilege_signals=diff_artifacts.auth_privilege_signals,
         )
-        context_phase_timings["budget_and_retry_plan_seconds"] = round(time.time() - phase_start, 2)
+        context_phase_timings["budget_and_retry_plan_seconds"] = round(
+            time.time() - phase_start, 2
+        )
+
         new_surface_threat_delta = "- No new-surface threat delta generated."
         new_surface_delta_seconds = 0.0
-        if new_surface_components:
+        if baseline_context.new_surface_components:
             new_surface_delta_start = time.time()
             new_surface_paths = [
-                path for _component_key, paths, _weight in new_surface_components for path in paths
+                path
+                for _component_key, paths, _weight in baseline_context.new_surface_components
+                for path in paths
             ]
             new_surface_diff_context = _build_diff_context_subset(
-                focused_diff_context,
+                diff_artifacts.focused_diff_context,
                 new_surface_paths,
             )
             new_surface_threat_delta = await _generate_new_surface_threat_delta(
                 repo=repo,
                 model=self.model,
                 timeout_seconds=new_surface_delta_timeout,
-                changed_files=new_surface_diff_context.changed_files
-                or focused_diff_context.changed_files,
-                component_delta_summary=component_delta_summary,
+                changed_files=(
+                    new_surface_diff_context.changed_files
+                    or diff_artifacts.focused_diff_context.changed_files
+                ),
+                component_delta_summary=baseline_context.component_delta_summary,
                 diff_line_anchors=(
                     _summarize_diff_line_anchors(new_surface_diff_context)
                     if new_surface_diff_context.files
-                    else diff_line_anchors
+                    else diff_artifacts.diff_line_anchors
                 ),
                 diff_hunk_snippets=(
                     _summarize_diff_hunk_snippets(new_surface_diff_context)
                     if new_surface_diff_context.files
-                    else diff_hunk_snippets
+                    else diff_artifacts.diff_hunk_snippets
                 ),
-                architecture_context=architecture_context,
-                threat_context_summary=threat_context_summary,
-                vuln_context_summary=vuln_context_summary,
+                architecture_context=baseline_context.architecture_context,
+                threat_context_summary=baseline_context.threat_context_summary,
+                vuln_context_summary=baseline_context.vuln_context_summary,
             )
             new_surface_delta_seconds = round(time.time() - new_surface_delta_start, 2)
-            context_phase_timings["new_surface_delta_seconds"] = new_surface_delta_seconds
+            context_phase_timings["new_surface_delta_seconds"] = (
+                new_surface_delta_seconds
+            )
+
         pr_hypotheses = "- None generated."
         hypothesis_generation_seconds = 0.0
-        if focused_diff_context.files:
+        if diff_artifacts.focused_diff_context.files:
             hypothesis_generation_start = time.time()
             pr_hypotheses = await _generate_pr_hypotheses(
                 repo=repo,
                 model=self.model,
                 timeout_seconds=hypothesis_generation_timeout,
-                changed_files=focused_diff_context.changed_files,
-                diff_line_anchors=diff_line_anchors,
-                diff_hunk_snippets=diff_hunk_snippets,
-                changed_code_dataflow_summary=changed_code_dataflow_summary,
-                changed_code_chain_summary=changed_code_chain_summary,
-                component_delta_summary=component_delta_summary,
+                changed_files=diff_artifacts.focused_diff_context.changed_files,
+                diff_line_anchors=diff_artifacts.diff_line_anchors,
+                diff_hunk_snippets=diff_artifacts.diff_hunk_snippets,
+                changed_code_dataflow_summary=diff_artifacts.changed_code_dataflow_summary,
+                changed_code_chain_summary=diff_artifacts.changed_code_chain_summary,
+                component_delta_summary=baseline_context.component_delta_summary,
                 new_surface_threat_delta=new_surface_threat_delta,
-                baseline_reachability_summary=baseline_reachability_summary,
-                baseline_sink_code_summary=baseline_sink_code_summary,
-                threat_context_summary=threat_context_summary,
-                vuln_context_summary=vuln_context_summary,
-                architecture_context=architecture_context,
+                baseline_reachability_summary=baseline_context.baseline_reachability_summary,
+                baseline_sink_code_summary=baseline_context.baseline_sink_code_summary,
+                threat_context_summary=baseline_context.threat_context_summary,
+                vuln_context_summary=baseline_context.vuln_context_summary,
+                architecture_context=baseline_context.architecture_context,
             )
-            hypothesis_generation_seconds = round(time.time() - hypothesis_generation_start, 2)
-            context_phase_timings["hypothesis_generation_seconds"] = hypothesis_generation_seconds
+            hypothesis_generation_seconds = round(
+                time.time() - hypothesis_generation_start, 2
+            )
+            context_phase_timings["hypothesis_generation_seconds"] = (
+                hypothesis_generation_seconds
+            )
+
+        return _PRGeneratedContext(
+            pr_review_attempts=pr_review_attempts,
+            pr_timeout_seconds=pr_timeout_seconds,
+            retry_focus_plan=retry_focus_plan,
+            new_surface_threat_delta=new_surface_threat_delta,
+            new_surface_delta_seconds=new_surface_delta_seconds,
+            pr_hypotheses=pr_hypotheses,
+            hypothesis_generation_seconds=hypothesis_generation_seconds,
+        )
+
+    async def _prepare_pr_review_context(
+        self,
+        repo: Path,
+        securevibes_dir: Path,
+        diff_context: DiffContext,
+        known_vulns_path: Optional[Path],
+        severity_threshold: str,
+        pr_review_attempts_override: Optional[int] = None,
+        pr_timeout_seconds_override: Optional[int] = None,
+    ) -> PRReviewContext:
+        """Assemble all context needed before the PR review attempt loop."""
+        scan_start_time = time.time()
+        context_prep_start_time = time.time()
+        context_phase_timings: Dict[str, float] = {}
+
+        diff_artifacts = self._prepare_pr_diff_artifacts(
+            repo=repo,
+            securevibes_dir=securevibes_dir,
+            diff_context=diff_context,
+            context_phase_timings=context_phase_timings,
+        )
+        baseline_context = self._prepare_pr_baseline_context(
+            repo=repo,
+            securevibes_dir=securevibes_dir,
+            known_vulns_path=known_vulns_path,
+            diff_artifacts=diff_artifacts,
+            context_phase_timings=context_phase_timings,
+        )
+        generated_context = await self._prepare_pr_generated_context(
+            repo=repo,
+            severity_threshold=severity_threshold,
+            pr_review_attempts_override=pr_review_attempts_override,
+            pr_timeout_seconds_override=pr_timeout_seconds_override,
+            diff_artifacts=diff_artifacts,
+            baseline_context=baseline_context,
+            context_phase_timings=context_phase_timings,
+        )
+
         context_prep_seconds = round(time.time() - context_prep_start_time, 2)
         context_phase_timings["context_prep_total_seconds"] = context_prep_seconds
+
         if self.debug:
             logger.debug("PR exploit hypotheses prepared")
             logger.debug(
                 "PR diff risk signals: command_builder=%s, path_parser=%s, auth_privilege=%s",
-                command_builder_signals,
-                path_parser_signals,
-                auth_privilege_signals,
+                diff_artifacts.command_builder_signals,
+                diff_artifacts.path_parser_signals,
+                diff_artifacts.auth_privilege_signals,
             )
             logger.debug(
-                "PR component delta coverage: baseline_components=%d new_surface_components=%d",
-                len(risk_components),
-                len(new_surface_components),
+                "PR component delta coverage: new_surface_components=%d",
+                len(baseline_context.new_surface_components),
             )
-            if retry_focus_plan:
+            if generated_context.retry_focus_plan:
                 focus_preview = " -> ".join(
-                    focus_area_label(focus_area) for focus_area in retry_focus_plan
+                    focus_area_label(focus_area)
+                    for focus_area in generated_context.retry_focus_plan
                 )
                 logger.debug("PR retry focus plan: %s", focus_preview)
 
         base_agents = create_agent_definitions(cli_model=self.model)
         base_pr_prompt = base_agents["pr-code-review"].prompt
-
         contextualized_prompt = _build_contextualized_pr_review_prompt(
             base_pr_prompt=base_pr_prompt,
-            architecture_context=architecture_context,
-            threat_context_summary=threat_context_summary,
-            vuln_context_summary=vuln_context_summary,
-            component_delta_summary=component_delta_summary,
-            new_surface_threat_delta=new_surface_threat_delta,
-            baseline_reachability_summary=baseline_reachability_summary,
-            baseline_sink_code_summary=baseline_sink_code_summary,
-            changed_code_dataflow_summary=changed_code_dataflow_summary,
-            changed_code_chain_summary=changed_code_chain_summary,
-            adjacent_file_hints=adjacent_file_hints,
+            architecture_context=baseline_context.architecture_context,
+            threat_context_summary=baseline_context.threat_context_summary,
+            vuln_context_summary=baseline_context.vuln_context_summary,
+            component_delta_summary=baseline_context.component_delta_summary,
+            new_surface_threat_delta=generated_context.new_surface_threat_delta,
+            baseline_reachability_summary=baseline_context.baseline_reachability_summary,
+            baseline_sink_code_summary=baseline_context.baseline_sink_code_summary,
+            changed_code_dataflow_summary=diff_artifacts.changed_code_dataflow_summary,
+            changed_code_chain_summary=diff_artifacts.changed_code_chain_summary,
+            adjacent_file_hints=diff_artifacts.adjacent_file_hints,
             diff_context=diff_context,
-            focused_diff_context=focused_diff_context,
-            diff_file_paths=diff_file_paths,
-            diff_line_anchors=diff_line_anchors,
-            diff_hunk_snippets=diff_hunk_snippets,
-            pr_hypotheses=pr_hypotheses,
+            focused_diff_context=diff_artifacts.focused_diff_context,
+            diff_file_paths=diff_artifacts.diff_file_paths,
+            diff_line_anchors=diff_artifacts.diff_line_anchors,
+            diff_hunk_snippets=diff_artifacts.diff_hunk_snippets,
+            pr_hypotheses=generated_context.pr_hypotheses,
             severity_threshold=severity_threshold,
         )
 
         pr_vulns_path = securevibes_dir / PR_VULNERABILITIES_FILE
         detected_languages = LanguageConfig.detect_languages(repo) if repo else set()
-
         return PRReviewContext(
             repo=repo,
             securevibes_dir=securevibes_dir,
-            focused_diff_context=focused_diff_context,
+            focused_diff_context=diff_artifacts.focused_diff_context,
             diff_context=diff_context,
             contextualized_prompt=contextualized_prompt,
-            baseline_vulns=baseline_vulns,
-            pr_review_attempts=pr_review_attempts,
-            pr_timeout_seconds=pr_timeout_seconds,
+            baseline_vulns=baseline_context.baseline_vulns,
+            pr_review_attempts=generated_context.pr_review_attempts,
+            pr_timeout_seconds=generated_context.pr_timeout_seconds,
             pr_vulns_path=pr_vulns_path,
             detected_languages=detected_languages,
-            command_builder_signals=command_builder_signals,
-            path_parser_signals=path_parser_signals,
-            auth_privilege_signals=auth_privilege_signals,
-            retry_focus_plan=retry_focus_plan,
-            diff_line_anchors=diff_line_anchors,
-            diff_hunk_snippets=diff_hunk_snippets,
-            pr_grep_default_scope=pr_grep_default_scope,
+            command_builder_signals=diff_artifacts.command_builder_signals,
+            path_parser_signals=diff_artifacts.path_parser_signals,
+            auth_privilege_signals=diff_artifacts.auth_privilege_signals,
+            retry_focus_plan=generated_context.retry_focus_plan,
+            diff_line_anchors=diff_artifacts.diff_line_anchors,
+            diff_hunk_snippets=diff_artifacts.diff_hunk_snippets,
+            pr_grep_default_scope=diff_artifacts.pr_grep_default_scope,
             scan_start_time=scan_start_time,
             severity_threshold=severity_threshold,
-            changed_code_chain_summary=changed_code_chain_summary,
-            baseline_reachability_summary=baseline_reachability_summary,
-            baseline_sink_code_summary=baseline_sink_code_summary,
-            baseline_sink_candidates=baseline_sink_candidates,
+            changed_code_chain_summary=diff_artifacts.changed_code_chain_summary,
+            baseline_reachability_summary=baseline_context.baseline_reachability_summary,
+            baseline_sink_code_summary=baseline_context.baseline_sink_code_summary,
+            baseline_sink_candidates=baseline_context.baseline_sink_candidates,
             context_prep_seconds=context_prep_seconds,
-            new_surface_delta_seconds=new_surface_delta_seconds,
-            hypothesis_generation_seconds=hypothesis_generation_seconds,
+            new_surface_delta_seconds=generated_context.new_surface_delta_seconds,
+            hypothesis_generation_seconds=generated_context.hypothesis_generation_seconds,
             context_phase_timings=context_phase_timings,
         )
 
-    def _format_pr_timing_summary(self, ctx: PRReviewContext, state: PRReviewState) -> str:
+    def _format_pr_timing_summary(
+        self, ctx: PRReviewContext, state: PRReviewState
+    ) -> str:
         """Return a concise PR timing summary for fail-closed debugging."""
         attempt_summary = (
             ", ".join(f"{elapsed:.2f}s" for elapsed in state.attempt_elapsed_seconds)
@@ -4088,13 +4414,30 @@ class Scanner:
         state.merge_stats = merge_stats
         return True
 
+    def _collect_pr_consensus_snapshot(
+        self,
+        state: PRReviewState,
+    ) -> _PRConsensusSnapshot:
+        """Summarize cross-attempt support for the current canonical PR findings."""
+        return _PRConsensusSnapshot(
+            *adjudicate_consensus_support(
+                required_support=state.required_core_chain_pass_support,
+                core_exact_ids=collect_chain_exact_ids(state.pr_vulns),
+                pass_exact_ids=state.attempt_chain_exact_ids,
+                core_family_ids=collect_chain_family_ids(state.pr_vulns),
+                pass_family_ids=state.attempt_chain_family_ids,
+                core_flow_ids=collect_chain_flow_ids(state.pr_vulns),
+                pass_flow_ids=state.attempt_chain_flow_ids,
+            )
+        )
+
     async def _run_pr_post_pass(
         self,
         *,
         enabled: bool,
         runner: Callable[[], Awaitable[Optional[list[dict[str, Any]]]]],
         state: PRReviewState,
-        start_message: str,
+        start_message: Callable[[], str],
         updated_message: str,
         empty_message: str,
     ) -> bool:
@@ -4103,7 +4446,7 @@ class Scanner:
             return False
 
         if self.debug:
-            self.console.print(start_message, style="dim")
+            self.console.print(start_message(), style="dim")
         findings = await runner()
         return self._apply_pr_post_pass_findings(
             findings=findings,
@@ -4111,6 +4454,217 @@ class Scanner:
             updated_message=updated_message,
             empty_message=empty_message,
         )
+
+    async def _run_exact_sink_adjudicator_pass(
+        self,
+        *,
+        ctx: PRReviewContext,
+        state: PRReviewState,
+        refinement_focus_areas: list[str],
+    ) -> Optional[list[dict[str, Any]]]:
+        """Try exact unchanged sink candidates and return the first non-empty result."""
+        for sink_candidate in ctx.baseline_sink_candidates[:2]:
+            exact_sink_code_summary = _format_exact_sink_candidate_code(
+                ctx.repo,
+                sink_candidate,
+            )
+            if exact_sink_code_summary.startswith("- No "):
+                continue
+            exact_pr_vulns = await _adjudicate_exact_pr_sink_candidate(
+                repo=ctx.repo,
+                model=self.model,
+                timeout_seconds=ctx.pr_timeout_seconds,
+                diff_line_anchors=ctx.diff_line_anchors,
+                diff_hunk_snippets=ctx.diff_hunk_snippets,
+                changed_code_chain_summary=ctx.changed_code_chain_summary,
+                baseline_reachability_summary=ctx.baseline_reachability_summary,
+                exact_sink_code_summary=exact_sink_code_summary,
+                findings=state.pr_vulns,
+                severity_threshold=ctx.severity_threshold,
+                focus_areas=refinement_focus_areas,
+            )
+            if exact_pr_vulns is not None:
+                return exact_pr_vulns
+
+        if self.debug:
+            self.console.print(
+                "  Exact unchanged-sink adjudicator did not prove a method-level sink chain; "
+                "retaining prior canonical set.",
+                style="dim",
+            )
+        return None
+
+    def _build_pr_post_passes(
+        self,
+        *,
+        ctx: PRReviewContext,
+        state: PRReviewState,
+        high_risk_signal_count: int,
+        initial_consensus: _PRConsensusSnapshot,
+        refinement_focus_areas: list[str],
+        attempt_observability_notes: str,
+        candidate_consensus_context: str,
+    ) -> list[_PRPostPassDefinition]:
+        """Build declarative post-pass definitions for canonical PR findings."""
+
+        def _current_consensus() -> _PRConsensusSnapshot:
+            return self._collect_pr_consensus_snapshot(state)
+
+        return [
+            _PRPostPassDefinition(
+                enabled=lambda: bool(state.pr_vulns)
+                and (
+                    high_risk_signal_count > 0
+                    or initial_consensus.weak_consensus
+                    or len(state.pr_vulns) > 1
+                ),
+                runner=lambda: _refine_pr_findings_with_llm(
+                    repo=ctx.repo,
+                    model=self.model,
+                    timeout_seconds=ctx.pr_timeout_seconds,
+                    diff_line_anchors=ctx.diff_line_anchors,
+                    diff_hunk_snippets=ctx.diff_hunk_snippets,
+                    changed_code_chain_summary=ctx.changed_code_chain_summary,
+                    findings=state.pr_vulns,
+                    severity_threshold=ctx.severity_threshold,
+                    focus_areas=refinement_focus_areas,
+                    mode="quality",
+                    attempt_observability=attempt_observability_notes,
+                    consensus_context=candidate_consensus_context,
+                ),
+                start_message=lambda: (
+                    "  🔬 Running PR quality refinement pass for concrete chain verification"
+                ),
+                updated_message=(
+                    "  PR exploit-quality refinement pass updated canonical findings: "
+                    "{before} -> {after}"
+                ),
+                empty_message=(
+                    "  PR exploit-quality refinement returned no canonical findings; "
+                    "retaining pre-refinement canonical set."
+                ),
+            ),
+            _PRPostPassDefinition(
+                enabled=lambda: (
+                    ctx.auth_privilege_signals
+                    and bool(state.pr_vulns)
+                    and not ctx.baseline_reachability_summary.startswith("- No ")
+                    and not ctx.baseline_sink_code_summary.startswith("- No ")
+                ),
+                runner=lambda: _compose_pr_findings_with_baseline_sinks(
+                    repo=ctx.repo,
+                    model=self.model,
+                    timeout_seconds=ctx.pr_timeout_seconds,
+                    diff_line_anchors=ctx.diff_line_anchors,
+                    diff_hunk_snippets=ctx.diff_hunk_snippets,
+                    changed_code_chain_summary=ctx.changed_code_chain_summary,
+                    baseline_reachability_summary=ctx.baseline_reachability_summary,
+                    baseline_sink_code_summary=ctx.baseline_sink_code_summary,
+                    findings=state.pr_vulns,
+                    severity_threshold=ctx.severity_threshold,
+                    focus_areas=refinement_focus_areas,
+                ),
+                start_message=lambda: (
+                    "  🔗 Running PR sink-composition pass for newly reachable baseline sinks"
+                ),
+                updated_message=(
+                    "  PR sink-composition pass updated canonical findings: {before} -> {after}"
+                ),
+                empty_message=(
+                    "  PR sink-composition pass returned no canonical findings; "
+                    "retaining previous canonical set."
+                ),
+            ),
+            _PRPostPassDefinition(
+                enabled=lambda: should_run_pr_verifier(
+                    has_findings=bool(state.pr_vulns),
+                    weak_consensus=_current_consensus().weak_consensus,
+                ),
+                runner=lambda: _refine_pr_findings_with_llm(
+                    repo=ctx.repo,
+                    model=self.model,
+                    timeout_seconds=ctx.pr_timeout_seconds,
+                    diff_line_anchors=ctx.diff_line_anchors,
+                    diff_hunk_snippets=ctx.diff_hunk_snippets,
+                    changed_code_chain_summary=ctx.changed_code_chain_summary,
+                    findings=state.pr_vulns,
+                    severity_threshold=ctx.severity_threshold,
+                    focus_areas=refinement_focus_areas,
+                    mode="verifier",
+                    attempt_observability=attempt_observability_notes,
+                    consensus_context=summarize_chain_candidates_for_prompt(
+                        state.pr_vulns,
+                        state.chain_support_counts,
+                        len(state.attempt_chain_ids),
+                        flow_support_counts=state.flow_support_counts,
+                    ),
+                ),
+                start_message=lambda: (
+                    "  🧪 Running verifier pass to adjudicate chain evidence "
+                    f"(reason: {state.weak_consensus_reason or _current_consensus().detected_reason or 'unspecified'})"
+                ),
+                updated_message="  PR verifier pass updated canonical findings: {before} -> {after}",
+                empty_message=(
+                    "  PR verifier pass returned no canonical findings; "
+                    "retaining previous canonical set."
+                ),
+            ),
+            _PRPostPassDefinition(
+                enabled=lambda: (
+                    ctx.auth_privilege_signals
+                    and len(state.pr_vulns) > 1
+                    and not ctx.baseline_reachability_summary.startswith("- No ")
+                    and not ctx.baseline_sink_code_summary.startswith("- No ")
+                ),
+                runner=lambda: _choose_final_pr_findings_with_sink_priority(
+                    repo=ctx.repo,
+                    model=self.model,
+                    timeout_seconds=ctx.pr_timeout_seconds,
+                    diff_line_anchors=ctx.diff_line_anchors,
+                    diff_hunk_snippets=ctx.diff_hunk_snippets,
+                    changed_code_chain_summary=ctx.changed_code_chain_summary,
+                    baseline_reachability_summary=ctx.baseline_reachability_summary,
+                    baseline_sink_code_summary=ctx.baseline_sink_code_summary,
+                    findings=state.pr_vulns,
+                    severity_threshold=ctx.severity_threshold,
+                    focus_areas=refinement_focus_areas,
+                ),
+                start_message=lambda: (
+                    "  🎯 Running final sink-priority chooser for canonical PR findings"
+                ),
+                updated_message=(
+                    "  Final sink-priority chooser updated canonical findings: {before} -> {after}"
+                ),
+                empty_message=(
+                    "  Final sink-priority chooser returned no canonical findings; "
+                    "retaining previous canonical set."
+                ),
+            ),
+            _PRPostPassDefinition(
+                enabled=lambda: (
+                    ctx.auth_privilege_signals
+                    and bool(state.pr_vulns)
+                    and bool(ctx.baseline_sink_candidates)
+                    and not ctx.baseline_reachability_summary.startswith("- No ")
+                ),
+                runner=lambda: self._run_exact_sink_adjudicator_pass(
+                    ctx=ctx,
+                    state=state,
+                    refinement_focus_areas=refinement_focus_areas,
+                ),
+                start_message=lambda: (
+                    "  🎯 Adjudicating exact unchanged sink reachability for canonical findings"
+                ),
+                updated_message=(
+                    "  Exact unchanged-sink adjudicator updated canonical findings: "
+                    "{before} -> {after}"
+                ),
+                empty_message=(
+                    "  Exact unchanged-sink adjudicator returned no canonical findings; "
+                    "retaining previous canonical set."
+                ),
+            ),
+        ]
 
     async def _run_pr_refinement_and_verification(
         self,
@@ -4128,7 +4682,9 @@ class Scanner:
             total_attempts=len(state.attempt_chain_ids),
         )
 
-        attempt_outcome_counts = state.attempt_observed_counts or state.attempt_finding_counts
+        attempt_outcome_counts = (
+            state.attempt_observed_counts or state.attempt_finding_counts
+        )
         attempt_disagreement = attempts_show_pr_disagreement(attempt_outcome_counts)
         high_risk_signal_count = sum(
             [
@@ -4137,30 +4693,25 @@ class Scanner:
                 ctx.auth_privilege_signals,
             ]
         )
-        initial_core_exact_ids = collect_chain_exact_ids(state.pr_vulns)
-        initial_core_family_ids = collect_chain_family_ids(state.pr_vulns)
-        initial_core_flow_ids = collect_chain_flow_ids(state.pr_vulns)
-        (
-            weak_consensus,
-            detected_reason,
-            passes_with_core_chain,
-            consensus_mode_used,
-            support_counts_snapshot,
-        ) = adjudicate_consensus_support(
-            required_support=state.required_core_chain_pass_support,
-            core_exact_ids=initial_core_exact_ids,
-            pass_exact_ids=state.attempt_chain_exact_ids,
-            core_family_ids=initial_core_family_ids,
-            pass_family_ids=state.attempt_chain_family_ids,
-            core_flow_ids=initial_core_flow_ids,
-            pass_flow_ids=state.attempt_chain_flow_ids,
+        initial_consensus = self._collect_pr_consensus_snapshot(state)
+        if (
+            initial_consensus.weak_consensus
+            and initial_consensus.detected_reason
+            and not state.weak_consensus_reason
+        ):
+            state.weak_consensus_reason = initial_consensus.detected_reason
+        state.weak_consensus_triggered = (
+            state.weak_consensus_triggered or initial_consensus.weak_consensus
         )
-        if weak_consensus and detected_reason and not state.weak_consensus_reason:
-            state.weak_consensus_reason = detected_reason
-        state.weak_consensus_triggered = state.weak_consensus_triggered or weak_consensus
-        passes_with_core_chain_exact = support_counts_snapshot.get("exact", 0)
-        passes_with_core_chain_family = support_counts_snapshot.get("family", 0)
-        passes_with_core_chain_flow = support_counts_snapshot.get("flow", 0)
+        passes_with_core_chain_exact = initial_consensus.support_counts_snapshot.get(
+            "exact", 0
+        )
+        passes_with_core_chain_family = initial_consensus.support_counts_snapshot.get(
+            "family", 0
+        )
+        passes_with_core_chain_flow = initial_consensus.support_counts_snapshot.get(
+            "flow", 0
+        )
         candidate_consensus_context = summarize_chain_candidates_for_prompt(
             state.pr_vulns,
             state.chain_support_counts,
@@ -4189,249 +4740,48 @@ class Scanner:
             f"- Attempt core-evidence-present flags: {state.attempt_core_evidence_present}\n"
             f"- Revalidation support: attempts={revalidation_attempts}, "
             f"hits={revalidation_core_hits}, misses={revalidation_core_misses}\n"
-            f"- Core-chain pass support ({consensus_mode_used}): {passes_with_core_chain}/{len(state.attempt_chain_ids)} "
+            f"- Core-chain pass support ({initial_consensus.consensus_mode_used}): "
+            f"{initial_consensus.passes_with_core_chain}/{len(state.attempt_chain_ids)} "
             f"(required >= {state.required_core_chain_pass_support})\n"
             f"- Core-chain support by mode: exact={passes_with_core_chain_exact}, "
             f"family={passes_with_core_chain_family}, flow={passes_with_core_chain_flow}\n"
-            f"- Weak consensus trigger: {weak_consensus} ({state.weak_consensus_reason or detected_reason})"
+            f"- Weak consensus trigger: {initial_consensus.weak_consensus} "
+            f"({state.weak_consensus_reason or initial_consensus.detected_reason})"
         )
         refinement_focus_areas = state.attempt_focus_areas or ctx.retry_focus_plan
 
-        should_refine = bool(state.pr_vulns) and (
-            high_risk_signal_count > 0 or weak_consensus or len(state.pr_vulns) > 1
-        )
-        await self._run_pr_post_pass(
-            enabled=should_refine,
-            runner=lambda: _refine_pr_findings_with_llm(
-                repo=ctx.repo,
-                model=self.model,
-                timeout_seconds=ctx.pr_timeout_seconds,
-                diff_line_anchors=ctx.diff_line_anchors,
-                diff_hunk_snippets=ctx.diff_hunk_snippets,
-                changed_code_chain_summary=ctx.changed_code_chain_summary,
-                findings=state.pr_vulns,
-                severity_threshold=ctx.severity_threshold,
-                focus_areas=refinement_focus_areas,
-                mode="quality",
-                attempt_observability=attempt_observability_notes,
-                consensus_context=candidate_consensus_context,
-            ),
+        post_passes = self._build_pr_post_passes(
+            ctx=ctx,
             state=state,
-            start_message="  🔬 Running PR quality refinement pass for concrete chain verification",
-            updated_message=(
-                "  PR exploit-quality refinement pass updated canonical findings: "
-                "{before} -> {after}"
-            ),
-            empty_message=(
-                "  PR exploit-quality refinement returned no canonical findings; "
-                "retaining pre-refinement canonical set."
-            ),
+            high_risk_signal_count=high_risk_signal_count,
+            initial_consensus=initial_consensus,
+            refinement_focus_areas=refinement_focus_areas,
+            attempt_observability_notes=attempt_observability_notes,
+            candidate_consensus_context=candidate_consensus_context,
         )
+        for post_pass in post_passes:
+            await self._run_pr_post_pass(
+                enabled=post_pass.enabled(),
+                runner=post_pass.runner,
+                state=state,
+                start_message=post_pass.start_message,
+                updated_message=post_pass.updated_message,
+                empty_message=post_pass.empty_message,
+            )
 
-        should_compose_sinks = (
-            ctx.auth_privilege_signals
-            and bool(state.pr_vulns)
-            and not ctx.baseline_reachability_summary.startswith("- No ")
-            and not ctx.baseline_sink_code_summary.startswith("- No ")
+        final_consensus = self._collect_pr_consensus_snapshot(state)
+        if final_consensus.weak_consensus and final_consensus.detected_reason:
+            state.weak_consensus_reason = final_consensus.detected_reason
+        state.weak_consensus_triggered = (
+            state.weak_consensus_triggered or final_consensus.weak_consensus
         )
-        await self._run_pr_post_pass(
-            enabled=should_compose_sinks,
-            runner=lambda: _compose_pr_findings_with_baseline_sinks(
-                repo=ctx.repo,
-                model=self.model,
-                timeout_seconds=ctx.pr_timeout_seconds,
-                diff_line_anchors=ctx.diff_line_anchors,
-                diff_hunk_snippets=ctx.diff_hunk_snippets,
-                changed_code_chain_summary=ctx.changed_code_chain_summary,
-                baseline_reachability_summary=ctx.baseline_reachability_summary,
-                baseline_sink_code_summary=ctx.baseline_sink_code_summary,
-                findings=state.pr_vulns,
-                severity_threshold=ctx.severity_threshold,
-                focus_areas=refinement_focus_areas,
-            ),
-            state=state,
-            start_message="  🔗 Running PR sink-composition pass for newly reachable baseline sinks",
-            updated_message=(
-                "  PR sink-composition pass updated canonical findings: {before} -> {after}"
-            ),
-            empty_message=(
-                "  PR sink-composition pass returned no canonical findings; "
-                "retaining previous canonical set."
-            ),
-        )
-
-        core_exact_ids = collect_chain_exact_ids(state.pr_vulns)
-        core_family_ids = collect_chain_family_ids(state.pr_vulns)
-        core_flow_ids = collect_chain_flow_ids(state.pr_vulns)
-        (
-            weak_consensus,
-            detected_reason,
-            passes_with_core_chain,
-            consensus_mode_used,
-            support_counts_snapshot,
-        ) = adjudicate_consensus_support(
-            required_support=state.required_core_chain_pass_support,
-            core_exact_ids=core_exact_ids,
-            pass_exact_ids=state.attempt_chain_exact_ids,
-            core_family_ids=core_family_ids,
-            pass_family_ids=state.attempt_chain_family_ids,
-            core_flow_ids=core_flow_ids,
-            pass_flow_ids=state.attempt_chain_flow_ids,
-        )
-        if weak_consensus and detected_reason:
-            state.weak_consensus_reason = detected_reason
-        state.weak_consensus_triggered = state.weak_consensus_triggered or weak_consensus
-        passes_with_core_chain_exact = support_counts_snapshot.get("exact", 0)
-        passes_with_core_chain_family = support_counts_snapshot.get("family", 0)
-        passes_with_core_chain_flow = support_counts_snapshot.get("flow", 0)
-        verifier_reason = state.weak_consensus_reason or detected_reason
         should_run_verifier = should_run_pr_verifier(
             has_findings=bool(state.pr_vulns),
-            weak_consensus=weak_consensus,
+            weak_consensus=final_consensus.weak_consensus,
         )
-        await self._run_pr_post_pass(
-            enabled=should_run_verifier,
-            runner=lambda: _refine_pr_findings_with_llm(
-                repo=ctx.repo,
-                model=self.model,
-                timeout_seconds=ctx.pr_timeout_seconds,
-                diff_line_anchors=ctx.diff_line_anchors,
-                diff_hunk_snippets=ctx.diff_hunk_snippets,
-                changed_code_chain_summary=ctx.changed_code_chain_summary,
-                findings=state.pr_vulns,
-                severity_threshold=ctx.severity_threshold,
-                focus_areas=refinement_focus_areas,
-                mode="verifier",
-                attempt_observability=attempt_observability_notes,
-                consensus_context=summarize_chain_candidates_for_prompt(
-                    state.pr_vulns,
-                    state.chain_support_counts,
-                    len(state.attempt_chain_ids),
-                    flow_support_counts=state.flow_support_counts,
-                ),
-            ),
-            state=state,
-            start_message=(
-                "  🧪 Running verifier pass to adjudicate chain evidence "
-                f"(reason: {verifier_reason or 'unspecified'})"
-            ),
-            updated_message="  PR verifier pass updated canonical findings: {before} -> {after}",
-            empty_message=(
-                "  PR verifier pass returned no canonical findings; "
-                "retaining previous canonical set."
-            ),
-        )
-        should_run_final_sink_chooser = (
-            ctx.auth_privilege_signals
-            and len(state.pr_vulns) > 1
-            and not ctx.baseline_reachability_summary.startswith("- No ")
-            and not ctx.baseline_sink_code_summary.startswith("- No ")
-        )
-        await self._run_pr_post_pass(
-            enabled=should_run_final_sink_chooser,
-            runner=lambda: _choose_final_pr_findings_with_sink_priority(
-                repo=ctx.repo,
-                model=self.model,
-                timeout_seconds=ctx.pr_timeout_seconds,
-                diff_line_anchors=ctx.diff_line_anchors,
-                diff_hunk_snippets=ctx.diff_hunk_snippets,
-                changed_code_chain_summary=ctx.changed_code_chain_summary,
-                baseline_reachability_summary=ctx.baseline_reachability_summary,
-                baseline_sink_code_summary=ctx.baseline_sink_code_summary,
-                findings=state.pr_vulns,
-                severity_threshold=ctx.severity_threshold,
-                focus_areas=refinement_focus_areas,
-            ),
-            state=state,
-            start_message="  🎯 Running final sink-priority chooser for canonical PR findings",
-            updated_message=(
-                "  Final sink-priority chooser updated canonical findings: {before} -> {after}"
-            ),
-            empty_message=(
-                "  Final sink-priority chooser returned no canonical findings; "
-                "retaining previous canonical set."
-            ),
-        )
-        should_run_exact_sink_adjudicator = (
-            ctx.auth_privilege_signals
-            and bool(state.pr_vulns)
-            and bool(ctx.baseline_sink_candidates)
-            and not ctx.baseline_reachability_summary.startswith("- No ")
-        )
-        if should_run_exact_sink_adjudicator:
-            exact_sink_selected = False
-            for sink_candidate in ctx.baseline_sink_candidates[:2]:
-                exact_sink_code_summary = _format_exact_sink_candidate_code(
-                    ctx.repo, sink_candidate
-                )
-                if exact_sink_code_summary.startswith("- No "):
-                    continue
-                if self.debug:
-                    self.console.print(
-                        "  🎯 Adjudicating exact unchanged sink reachability for canonical findings",
-                        style="dim",
-                    )
-                exact_pr_vulns = await _adjudicate_exact_pr_sink_candidate(
-                    repo=ctx.repo,
-                    model=self.model,
-                    timeout_seconds=ctx.pr_timeout_seconds,
-                    diff_line_anchors=ctx.diff_line_anchors,
-                    diff_hunk_snippets=ctx.diff_hunk_snippets,
-                    changed_code_chain_summary=ctx.changed_code_chain_summary,
-                    baseline_reachability_summary=ctx.baseline_reachability_summary,
-                    exact_sink_code_summary=exact_sink_code_summary,
-                    findings=state.pr_vulns,
-                    severity_threshold=ctx.severity_threshold,
-                    focus_areas=refinement_focus_areas,
-                )
-                if exact_pr_vulns is None:
-                    continue
-                exact_merge_stats: Dict[str, int] = {}
-                exact_canonical = merge_pr_attempt_findings(
-                    exact_pr_vulns,
-                    merge_stats=exact_merge_stats,
-                    chain_support_counts=state.chain_support_counts,
-                    total_attempts=len(state.attempt_chain_ids),
-                )
-                if not exact_canonical:
-                    continue
-                if self.debug:
-                    self.console.print(
-                        "  Exact unchanged-sink adjudicator updated canonical findings: "
-                        f"{len(state.pr_vulns)} -> {len(exact_canonical)}",
-                        style="dim",
-                    )
-                state.pr_vulns = exact_canonical
-                state.merge_stats = exact_merge_stats
-                exact_sink_selected = True
-                break
-            if self.debug and not exact_sink_selected:
-                self.console.print(
-                    "  Exact unchanged-sink adjudicator did not prove a method-level sink chain; "
-                    "retaining prior canonical set.",
-                    style="dim",
-                )
-        core_exact_ids = collect_chain_exact_ids(state.pr_vulns)
-        core_family_ids = collect_chain_family_ids(state.pr_vulns)
-        core_flow_ids = collect_chain_flow_ids(state.pr_vulns)
-        (
-            weak_consensus,
-            detected_reason,
-            passes_with_core_chain,
-            state.consensus_mode_used,
-            state.support_counts_snapshot,
-        ) = adjudicate_consensus_support(
-            required_support=state.required_core_chain_pass_support,
-            core_exact_ids=core_exact_ids,
-            pass_exact_ids=state.attempt_chain_exact_ids,
-            core_family_ids=core_family_ids,
-            pass_family_ids=state.attempt_chain_family_ids,
-            core_flow_ids=core_flow_ids,
-            pass_flow_ids=state.attempt_chain_flow_ids,
-        )
-        if weak_consensus and detected_reason:
-            state.weak_consensus_reason = detected_reason
-        state.weak_consensus_triggered = state.weak_consensus_triggered or weak_consensus
+        passes_with_core_chain = final_consensus.passes_with_core_chain
+        state.consensus_mode_used = final_consensus.consensus_mode_used
+        state.support_counts_snapshot = final_consensus.support_counts_snapshot
 
         # Store final values needed by _build_pr_review_result into state attributes
         # that are used for debug logging.
@@ -4474,7 +4824,9 @@ class Scanner:
             speculative_dropped = merge_stats.get("speculative_dropped", 0)
             subchain_collapsed = merge_stats.get("subchain_collapsed", 0)
             low_support_dropped = merge_stats.get("low_support_dropped", 0)
-            dropped_as_secondary_chain = merge_stats.get("dropped_as_secondary_chain", 0)
+            dropped_as_secondary_chain = merge_stats.get(
+                "dropped_as_secondary_chain", 0
+            )
             canonical_chain_count = merge_stats.get(
                 "canonical_chain_count", merged_pr_finding_count
             )
@@ -4486,7 +4838,9 @@ class Scanner:
             )
             passes_with_core_chain = state.passes_with_core_chain
             passes_with_core_chain_exact = state.support_counts_snapshot.get("exact", 0)
-            passes_with_core_chain_family = state.support_counts_snapshot.get("family", 0)
+            passes_with_core_chain_family = state.support_counts_snapshot.get(
+                "family", 0
+            )
             passes_with_core_chain_flow = state.support_counts_snapshot.get("flow", 0)
             consensus_score = (
                 passes_with_core_chain / len(state.attempt_chain_ids)
@@ -4528,7 +4882,9 @@ class Scanner:
 
         if update_artifacts and isinstance(pr_vulns, list):
             try:
-                update_result = update_pr_review_artifacts(ctx.securevibes_dir, pr_vulns)
+                update_result = update_pr_review_artifacts(
+                    ctx.securevibes_dir, pr_vulns
+                )
             except ArtifactLoadError as exc:
                 raise RuntimeError(
                     "Failed to update PR-review artifacts due to malformed baseline data: "
@@ -4583,7 +4939,9 @@ class Scanner:
         try:
             securevibes_dir.mkdir(exist_ok=True)
         except (OSError, PermissionError) as e:
-            raise RuntimeError(f"Failed to create output directory {securevibes_dir}: {e}")
+            raise RuntimeError(
+                f"Failed to create output directory {securevibes_dir}: {e}"
+            )
 
         # Track scan timing
         scan_start_time = time.time()
@@ -4622,7 +4980,9 @@ class Scanner:
         if self.agentic_override is not None:
             is_agentic = self.agentic_override
 
-        signals_preview = "\n".join(f"- {s}" for s in detection_result.signals[:8]) or "- (none)"
+        signals_preview = (
+            "\n".join(f"- {s}" for s in detection_result.signals[:8]) or "- (none)"
+        )
         if is_agentic:
             threat_modeling_context = (
                 "<deterministic_agentic_detection>\n"
@@ -4699,12 +5059,16 @@ class Scanner:
         self.console.print("=" * 60)
 
         # Initialize progress tracker
-        tracker = ProgressTracker(self.console, debug=self.debug, single_subagent=single_subagent)
+        tracker = ProgressTracker(
+            self.console, debug=self.debug, single_subagent=single_subagent
+        )
 
         # Reuse detected_languages from earlier in this method
 
         # Create hooks using hook creator functions
-        dast_security_hook = create_dast_security_hook(tracker, self.console, self.debug)
+        dast_security_hook = create_dast_security_hook(
+            tracker, self.console, self.debug
+        )
         pre_tool_hook = create_pre_tool_hook(
             tracker,
             self.console,
@@ -4726,7 +5090,9 @@ class Scanner:
         # This allows --model flag to cascade to all agents while respecting env vars
         # The DAST target URL is passed to substitute {target_url} placeholders in the prompt
         dast_url = (
-            self.dast_config.get("target_url") if (needs_dast and self.dast_enabled) else None
+            self.dast_config.get("target_url")
+            if (needs_dast and self.dast_enabled)
+            else None
         )
         agents = create_agent_definitions(
             cli_model=self.model,
@@ -4898,12 +5264,16 @@ class Scanner:
             return None
 
         except Exception as e:
-            warning_msg = f"Failed to regenerate scan artifacts with DAST validation data: {e}"
+            warning_msg = (
+                f"Failed to regenerate scan artifacts with DAST validation data: {e}"
+            )
             if self.debug:
                 self.console.print(f"⚠️  Warning: {warning_msg}", style="yellow")
             return warning_msg
 
-    def _merge_dast_results(self, scan_result: ScanResult, securevibes_dir: Path) -> ScanResult:
+    def _merge_dast_results(
+        self, scan_result: ScanResult, securevibes_dir: Path
+    ) -> ScanResult:
         """
         Merge DAST validation data into scan results.
 
@@ -4947,7 +5317,9 @@ class Scanner:
                     )
                 return scan_result
 
-            validations = [entry for entry in validations_raw if isinstance(entry, dict)]
+            validations = [
+                entry for entry in validations_raw if isinstance(entry, dict)
+            ]
 
             if not validations:
                 return scan_result
@@ -5016,12 +5388,18 @@ class Scanner:
             scan_result.issues = updated_issues
 
             # Update DAST metrics
-            total_tested = metadata.get("total_vulnerabilities_tested", len(validations))
+            total_tested = metadata.get(
+                "total_vulnerabilities_tested", len(validations)
+            )
             if total_tested > 0:
                 scan_result.dast_enabled = True
                 scan_result.dast_validation_rate = validated_count / total_tested
-                scan_result.dast_false_positive_rate = false_positive_count / total_tested
-                scan_result.dast_scan_time_seconds = metadata.get("scan_duration_seconds", 0)
+                scan_result.dast_false_positive_rate = (
+                    false_positive_count / total_tested
+                )
+                scan_result.dast_scan_time_seconds = metadata.get(
+                    "scan_duration_seconds", 0
+                )
 
             if self.debug:
                 self.console.print(
@@ -5034,7 +5412,9 @@ class Scanner:
 
         except (OSError, json.JSONDecodeError) as e:
             if self.debug:
-                self.console.print(f"⚠️  Warning: Failed to merge DAST results: {e}", style="yellow")
+                self.console.print(
+                    f"⚠️  Warning: Failed to merge DAST results: {e}", style="yellow"
+                )
             return scan_result
 
     def _load_subagent_results(
@@ -5231,7 +5611,9 @@ class Scanner:
                         code_snippet=code_snippet or "",
                         cwe_id=vuln.cwe_id,
                         recommendation=vuln.recommendation,
-                        evidence=(str(vuln.evidence) if vuln.evidence is not None else None),
+                        evidence=(
+                            str(vuln.evidence) if vuln.evidence is not None else None
+                        ),
                     )
                 )
 

@@ -19,8 +19,9 @@ and writes structured run records under `.securevibes/incremental_runs/`.
   - `--pr-timeout` — override per-attempt timeout in seconds (default from env or `240`)
   - `--auto-triage` — deterministic triage pre-filter to reduce budget for low-risk diffs (docs, tests, config-only changes)
 - Maintains a threat-aware `risk_map.json`:
-  - Loads `.securevibes/risk_map.json` when present.
-  - Generates it from `THREAT_MODEL.json` when missing.
+  - Performs an explicit preparation step for `.securevibes/risk_map.json`.
+  - Loads the prepared file for deterministic chunk routing.
+  - Generates it from `THREAT_MODEL.json` only when the preparation step finds it missing.
 - Scores each chunk by risk tier before invoking `securevibes pr-review`:
   - `critical` → routes to `opus`
   - `moderate` → routes to `sonnet`
