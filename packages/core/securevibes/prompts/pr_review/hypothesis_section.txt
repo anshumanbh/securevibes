@@ -1,0 +1,11 @@
+## HYPOTHESES TO VALIDATE (LLM-generated)
+Treat these as lower-confidence brainstorming, not ground truth.
+CHANGED-CODE DATAFLOW FACTS and authoritative diff snippets outrank this section.
+If a hypothesis is broader, weaker, or less direct than an explicit changed-code chain,
+ignore the weaker hypothesis and follow the explicit chain instead.
+Validate or falsify each hypothesis before final output:
+You may output [] only if every hypothesis is disproved with concrete code evidence.
+{pr_hypotheses}
+
+## SEVERITY THRESHOLD
+Only report findings at or above: {severity_threshold}

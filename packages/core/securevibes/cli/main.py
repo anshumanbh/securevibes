@@ -7,7 +7,7 @@ import subprocess
 import sys
 from datetime import datetime, time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
@@ -20,6 +20,7 @@ from rich import box
 
 from securevibes import __version__
 from securevibes.models.issue import SEVERITY_RANK, Severity
+from securevibes.models.result import ScanResult
 from securevibes.scanner.scanner import Scanner
 from securevibes.diff.extractor import (
     validate_git_ref,
@@ -160,6 +161,43 @@ def _write_output(
         return
 
     _display_text_results(result)
+
+
+def _build_progress_output_writer(
+    *,
+    repo_path: Path,
+    output_format: str,
+    output: Optional[str],
+    markdown_default_filename: str,
+) -> Optional[Callable[[ScanResult], None]]:
+    """Build a silent checkpoint writer for long-running PR reviews."""
+    if output_format == "json":
+        if not output:
+            return None
+        output_path = _repo_output_path(
+            repo_path,
+            Path(output),
+            operation="JSON output file",
+        )
+
+        def _write_json_checkpoint(result) -> None:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
+
+        return _write_json_checkpoint
+
+    if output_format == "markdown":
+        from securevibes.reporters.markdown_reporter import MarkdownReporter
+
+        output_path = _resolve_markdown_output_path(repo_path, output, markdown_default_filename)
+
+        def _write_markdown_checkpoint(result) -> None:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            MarkdownReporter.save(result, output_path)
+
+        return _write_markdown_checkpoint
+
+    return None
 
 
 def _validate_target_url(target_url: str) -> bool:
@@ -635,6 +673,12 @@ def pr_review(
             operation="PR review baseline vulnerabilities artifact",
         )
         known_vulns = known_vulns_path if known_vulns_path.exists() else None
+        progress_writer = _build_progress_output_writer(
+            repo_path=repo,
+            output_format=output_format,
+            output=output,
+            markdown_default_filename="pr_review_report.md",
+        )
 
         result = asyncio.run(
             _run_pr_review(
@@ -648,6 +692,7 @@ def pr_review(
                 pr_review_attempts=pr_attempts,
                 pr_timeout_seconds=pr_timeout,
                 auto_triage=auto_triage,
+                progress_writer=progress_writer,
             )
         )
 
@@ -995,6 +1040,7 @@ async def _run_pr_review(
     pr_review_attempts: Optional[int] = None,
     pr_timeout_seconds: Optional[int] = None,
     auto_triage: bool = False,
+    progress_writer: Optional[Callable[[ScanResult], None]] = None,
 ):
     """Run the PR review with the configured scanner."""
     scanner = Scanner(model=model, debug=debug)
@@ -1007,6 +1053,7 @@ async def _run_pr_review(
         pr_review_attempts=pr_review_attempts,
         pr_timeout_seconds=pr_timeout_seconds,
         auto_triage=auto_triage,
+        progress_writer=progress_writer,
     )
 
 

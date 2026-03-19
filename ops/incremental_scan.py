@@ -19,7 +19,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
+
+from securevibes.diff.context import normalize_repo_path
+from securevibes.diff.extractor import get_diff_from_commits
+from securevibes.diff.parser import parse_unified_diff
 
 try:
     import fcntl
@@ -40,6 +44,12 @@ REQUIRED_REPORT_FIELDS = (
 COMPLETED = "completed"
 INFRA_FAILURE = "infra_failure"
 DIFF_TOO_LARGE = "diff_too_large"
+FAILURE_REASON_TIMEOUT = "timeout"
+FAILURE_REASON_UNEXPECTED_EXIT = "unexpected_exit_code"
+FAILURE_REASON_MISSING_OUTPUT = "missing_output_report"
+FAILURE_REASON_INVALID_OUTPUT_JSON = "invalid_output_json"
+FAILURE_REASON_INVALID_OUTPUT_SCHEMA = "invalid_output_schema"
+FAILURE_REASON_DIFF_TOO_LARGE = "diff_too_large"
 DEFAULT_GIT_TIMEOUT_SECONDS = 60
 DEFAULT_SCAN_TIMEOUT_SECONDS = 900
 DEFAULT_PR_REVIEW_TIMEOUT_SECONDS = 240
@@ -50,6 +60,19 @@ DIFF_TOO_LARGE_MARKERS = (
     "diff context exceeds",
 )
 RUN_RECORD_NAME_RE = re.compile(r"^\d{8}T\d{6}Z-[0-9a-f]{6}\.json$")
+
+
+@dataclass(frozen=True)
+class ChunkRiskDecision:
+    """Chunk-level risk routing metadata."""
+
+    tier: str
+    model: str | None
+    reasons: tuple[str, ...]
+    dependency_only: bool
+    dependency_files: tuple[str, ...]
+    unmapped_files: tuple[str, ...]
+    new_attack_surface: bool
 
 
 @dataclass
@@ -77,10 +100,7 @@ class RunContext:
         self.interrupted = True
         self.interrupted_signal = signum
         if self._child_process is not None:
-            try:
-                self._child_process.kill()
-            except OSError:
-                pass
+            _terminate_child_process(self._child_process, grace_seconds=1.0)
 
 
 # Global run context for signal handler access
@@ -110,6 +130,8 @@ class ScanCommandResult:
     classification: str
     stderr_tail: str
     output_path: Path
+    stdout_tail: str = ""
+    failure_reason: str | None = None
 
 
 @dataclass
@@ -328,6 +350,7 @@ def ensure_baseline_artifacts(repo: Path) -> None:
     required = [
         securevibes_dir / "SECURITY.md",
         securevibes_dir / "THREAT_MODEL.json",
+        securevibes_dir / "VULNERABILITIES.json",
     ]
     missing = [str(path) for path in required if not path.exists()]
     if missing:
@@ -488,6 +511,110 @@ def get_diff_stats(
     return (file_count, total_lines)
 
 
+def _resolve_component_patterns(repo: Path, component: str) -> list[str]:
+    """Resolve non-path component names into file globs."""
+    from securevibes.scanner.risk_scorer import resolve_component_globs
+
+    try:
+        return resolve_component_globs(repo, component)
+    except OSError:
+        return []
+
+
+def _default_model_for_tier(tier: str) -> str | None:
+    from securevibes.scanner.risk_scorer import RISK_MODEL_BY_TIER
+
+    if tier in RISK_MODEL_BY_TIER:
+        return RISK_MODEL_BY_TIER[tier]
+    return None
+
+
+def resolve_prepared_risk_map_path(securevibes_dir: Path) -> Path:
+    """Return the prepared ``risk_map.json`` path or raise with operator guidance."""
+    risk_map_path = securevibes_dir / "risk_map.json"
+    if risk_map_path.exists():
+        return risk_map_path
+
+    raise RuntimeError(
+        "Missing prepared risk map at "
+        f"{risk_map_path}. Run `python ops/prepare_risk_map.py --repo {securevibes_dir.parent}` "
+        "before incremental scanning."
+    )
+
+
+def load_risk_map_or_raise(risk_map_path: Path) -> dict[str, object]:
+    """Load a prepared ``risk_map.json`` with validation."""
+    from securevibes.scanner.risk_scorer import load_risk_map
+
+    try:
+        return load_risk_map(risk_map_path)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeError(f"Invalid risk map at {risk_map_path}: {exc}") from exc
+
+
+def determine_chunk_risk(
+    repo: Path,
+    base: str,
+    head: str,
+    risk_map: Mapping[str, object],
+    timeout_seconds: int = DEFAULT_GIT_TIMEOUT_SECONDS,
+) -> ChunkRiskDecision:
+    """Classify a chunk risk tier using deterministic file/path signals."""
+    from securevibes.scanner.risk_scorer import ChangedFile, classify_chunk
+
+    try:
+        patch = get_diff_from_commits(
+            repo, f"{base}..{head}", timeout_seconds=timeout_seconds
+        )
+    except RuntimeError:
+        return ChunkRiskDecision(
+            tier="moderate",
+            model=_default_model_for_tier("moderate"),
+            reasons=("risk_classification_unavailable",),
+            dependency_only=False,
+            dependency_files=(),
+            unmapped_files=(),
+            new_attack_surface=False,
+        )
+
+    diff_context = parse_unified_diff(patch)
+    changed_files: list[ChangedFile] = []
+    for diff_file in diff_context.files:
+        path = normalize_repo_path(diff_file.new_path or diff_file.old_path)
+        if not path:
+            continue
+
+        status = "M"
+        if diff_file.is_new:
+            status = "A"
+        elif diff_file.is_deleted:
+            status = "D"
+        elif diff_file.is_renamed:
+            status = "R"
+        added_lines = tuple(
+            line.content
+            for hunk in diff_file.hunks
+            for line in hunk.lines
+            if line.type == "add"
+        )
+        changed_files.append(
+            ChangedFile(path=path, status=status, added_lines=added_lines)
+        )
+
+    chunk_risk = classify_chunk(changed_files, risk_map)
+    model = chunk_risk.model or _default_model_for_tier(chunk_risk.tier)
+
+    return ChunkRiskDecision(
+        tier=chunk_risk.tier,
+        model=model,
+        reasons=chunk_risk.reasons,
+        dependency_only=chunk_risk.dependency_only,
+        dependency_files=chunk_risk.dependency_files,
+        unmapped_files=chunk_risk.unmapped_files,
+        new_attack_surface=chunk_risk.new_attack_surface,
+    )
+
+
 def compute_chunks_by_count(
     commits: list[str],
     base_sha: str,
@@ -588,17 +715,25 @@ def determine_chunk_strategy(
     return "per_commit"
 
 
-def _is_valid_report_json(path: Path) -> bool:
-    """Check that a securevibes JSON output file is present and minimally valid."""
-    if not path.exists() or not path.is_file():
-        return False
+def _validate_report_json(path: Path | None) -> tuple[bool, str | None]:
+    """Validate securevibes JSON output and return (is_valid, failure_reason)."""
+    if path is None or not path.exists() or not path.is_file():
+        return (False, FAILURE_REASON_MISSING_OUTPUT)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return False
+        return (False, FAILURE_REASON_INVALID_OUTPUT_JSON)
     if not isinstance(payload, dict):
-        return False
-    return all(field in payload for field in REQUIRED_REPORT_FIELDS)
+        return (False, FAILURE_REASON_INVALID_OUTPUT_SCHEMA)
+    if not all(field in payload for field in REQUIRED_REPORT_FIELDS):
+        return (False, FAILURE_REASON_INVALID_OUTPUT_SCHEMA)
+    return (True, None)
+
+
+def _is_valid_report_json(path: Path) -> bool:
+    """Backward-compatible wrapper for tests/helpers that only need a boolean."""
+    is_valid, _ = _validate_report_json(path)
+    return is_valid
 
 
 def _stderr_indicates_diff_too_large(stderr: str) -> bool:
@@ -611,13 +746,23 @@ def classify_scan_result(
     exit_code: int, output_path: Path | None, stderr: str = ""
 ) -> str:
     """Classify command outcome into completed, diff_too_large, or infrastructure failure."""
+    classification, _ = classify_scan_result_with_reason(exit_code, output_path, stderr)
+    return classification
+
+
+def classify_scan_result_with_reason(
+    exit_code: int, output_path: Path | None, stderr: str = ""
+) -> tuple[str, str | None]:
+    """Classify command outcome and provide a stable failure reason code."""
     if exit_code not in {0, 1, 2}:
-        return INFRA_FAILURE
-    if output_path is None or not _is_valid_report_json(output_path):
+        return (INFRA_FAILURE, FAILURE_REASON_UNEXPECTED_EXIT)
+
+    is_valid_report, report_reason = _validate_report_json(output_path)
+    if not is_valid_report:
         if exit_code == 1 and _stderr_indicates_diff_too_large(stderr):
-            return DIFF_TOO_LARGE
-        return INFRA_FAILURE
-    return COMPLETED
+            return (DIFF_TOO_LARGE, FAILURE_REASON_DIFF_TOO_LARGE)
+        return (INFRA_FAILURE, report_reason)
+    return (COMPLETED, None)
 
 
 def _stderr_tail(stderr: str, max_lines: int = 8) -> str:
@@ -626,6 +771,61 @@ def _stderr_tail(stderr: str, max_lines: int = 8) -> str:
     if not lines:
         return ""
     return "\n".join(lines[-max_lines:])
+
+
+def _stdout_tail(stdout: str, max_lines: int = 8) -> str:
+    """Trim stdout to a short diagnostic snippet."""
+    lines = [line for line in stdout.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    return "\n".join(lines[-max_lines:])
+
+
+def _terminate_child_process(
+    proc: subprocess.Popen[Any],
+    grace_seconds: float = 5.0,
+) -> None:
+    """Terminate a child process with best-effort descendant cleanup."""
+    if proc.returncode is not None:
+        return
+
+    supports_process_groups = hasattr(os, "killpg") and os.name != "nt"
+    pid = proc.pid
+
+    if supports_process_groups and pid is not None:
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass
+    else:
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+
+    try:
+        proc.wait(timeout=grace_seconds)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    except OSError:
+        return
+
+    if supports_process_groups and pid is not None:
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+    else:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+    try:
+        proc.wait(timeout=1.0)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
 
 
 def _run_subprocess_with_progress(
@@ -640,12 +840,16 @@ def _run_subprocess_with_progress(
     Stores the child process in _run_ctx so signal handlers can kill it.
     """
     start = time.monotonic()
+    popen_kwargs = dict(kwargs)
+    # Child process runs in a separate session so terminal Ctrl-C does not auto-propagate.
+    # Wrapper signal handlers explicitly terminate this process group.
+    popen_kwargs.setdefault("start_new_session", True)
     proc = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        **kwargs,
+        **popen_kwargs,
     )
     _run_ctx._child_process = proc
 
@@ -668,10 +872,7 @@ def _run_subprocess_with_progress(
     try:
         stdout, stderr = proc.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
-        proc.kill()
-        stdout, stderr = proc.communicate()
-        _run_ctx._child_process = None
-        stop_event.set()
+        _terminate_child_process(proc)
         raise
     finally:
         _run_ctx._child_process = None
@@ -746,11 +947,20 @@ def run_scan(
             exit_code=124,
             classification=INFRA_FAILURE,
             stderr_tail=f"scan timed out after {timeout_seconds}s",
+            stdout_tail="",
+            failure_reason=FAILURE_REASON_TIMEOUT,
             output_path=output_path,
         )
 
-    tail = _stderr_tail(result.stderr)
-    classification = classify_scan_result(result.returncode, output_path, result.stderr)
+    stderr_tail = _stderr_tail(result.stderr)
+    stdout_tail = _stdout_tail(result.stdout)
+    classification, failure_reason = classify_scan_result_with_reason(
+        result.returncode,
+        output_path,
+        result.stderr,
+    )
+    if classification != INFRA_FAILURE:
+        stdout_tail = ""
     print(
         f"[incremental-scan] Finished {label} → {classification} (exit={result.returncode})",
         file=sys.stderr,
@@ -760,7 +970,9 @@ def run_scan(
         command=command,
         exit_code=result.returncode,
         classification=classification,
-        stderr_tail=tail,
+        stderr_tail=stderr_tail,
+        stdout_tail=stdout_tail,
+        failure_reason=failure_reason,
         output_path=output_path,
     )
 
@@ -825,11 +1037,20 @@ def run_since_date_scan(
             exit_code=124,
             classification=INFRA_FAILURE,
             stderr_tail=f"scan timed out after {timeout_seconds}s",
+            stdout_tail="",
+            failure_reason=FAILURE_REASON_TIMEOUT,
             output_path=output_path,
         )
 
-    tail = _stderr_tail(result.stderr)
-    classification = classify_scan_result(result.returncode, output_path, result.stderr)
+    stderr_tail = _stderr_tail(result.stderr)
+    stdout_tail = _stdout_tail(result.stdout)
+    classification, failure_reason = classify_scan_result_with_reason(
+        result.returncode,
+        output_path,
+        result.stderr,
+    )
+    if classification != INFRA_FAILURE:
+        stdout_tail = ""
     print(
         f"[incremental-scan] Finished {label} → {classification} (exit={result.returncode})",
         file=sys.stderr,
@@ -839,7 +1060,9 @@ def run_since_date_scan(
         command=command,
         exit_code=result.returncode,
         classification=classification,
-        stderr_tail=tail,
+        stderr_tail=stderr_tail,
+        stdout_tail=stdout_tail,
+        failure_reason=failure_reason,
         output_path=output_path,
     )
 
@@ -1076,6 +1299,7 @@ def run(args: argparse.Namespace) -> int:
 
     securevibes_dir = repo / ".securevibes"
     securevibes_dir.mkdir(parents=True, exist_ok=True)
+    risk_map: dict[str, object] = {}
 
     state_path = resolve_repo_path(repo, args.state_file)
     log_file = resolve_repo_path(repo, args.log_file)
@@ -1094,6 +1318,9 @@ def run(args: argparse.Namespace) -> int:
 
         # Detect stale/interrupted runs from previous invocations
         _recover_stale_runs(runs_dir, log_file)
+
+        risk_map_path = resolve_prepared_risk_map_path(securevibes_dir)
+        risk_map = load_risk_map_or_raise(risk_map_path)
 
         run_id = generate_run_id()
         run_record_path = runs_dir / f"{run_id}.json"
@@ -1274,9 +1501,19 @@ def run(args: argparse.Namespace) -> int:
                         "classification": since_result.classification,
                         "output_path": str(since_output),
                         "stderr_tail": since_result.stderr_tail,
+                        "stdout_tail": since_result.stdout_tail,
+                        "failure_reason": since_result.failure_reason,
                         "command": since_result.command,
                     }
                 )
+                if since_result.classification == INFRA_FAILURE:
+                    append_log(
+                        log_file,
+                        (
+                            f"run_id={run_id} mode=since_date infra_failure "
+                            f"reason={since_result.failure_reason or 'unspecified'}"
+                        ),
+                    )
                 if since_result.classification == COMPLETED:
                     failure = {
                         "phase": "history_validation",
@@ -1441,12 +1678,61 @@ def run(args: argparse.Namespace) -> int:
                     f"range={base[:8]}..{head[:8]} files={fc} lines={tl}",
                 )
 
+                chunk_risk = determine_chunk_risk(
+                    repo,
+                    base,
+                    head,
+                    risk_map,
+                    timeout_seconds=git_timeout,
+                )
+                effective_model = chunk_risk.model or args.model
+                print(
+                    f"[incremental-scan] Chunk {idx}/{len(chunks)} tier={chunk_risk.tier} "
+                    f"model={effective_model if chunk_risk.tier != 'skip' else 'none'}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                append_log(
+                    log_file,
+                    f"run_id={run_id} chunk={idx}/{len(chunks)} tier={chunk_risk.tier} "
+                    f"reasons={','.join(chunk_risk.reasons)}",
+                )
+
+                if chunk_risk.tier == "skip":
+                    run_record["chunks"].append(
+                        {
+                            "index": idx,
+                            "base": base,
+                            "head": head,
+                            "mode": "skip_no_llm",
+                            "chunk_tier": "skip",
+                            "chunk_model": None,
+                            "tier_reasons": list(chunk_risk.reasons),
+                            "dependency_only": chunk_risk.dependency_only,
+                            "dependency_files": list(chunk_risk.dependency_files),
+                            "unmapped_files": list(chunk_risk.unmapped_files),
+                            "new_attack_surface": chunk_risk.new_attack_surface,
+                            "chunk_timeout_seconds": per_chunk_timeout,
+                            "timeout_reason": timeout_reason,
+                            "exit_code": 0,
+                            "classification": COMPLETED,
+                            "output_path": None,
+                            "stderr_tail": "",
+                            "stdout_tail": "",
+                            "failure_reason": None,
+                            "command": [],
+                        }
+                    )
+                    last_successful_anchor = head
+                    _run_ctx.last_successful_anchor = head
+                    continue
+
                 chunk_output = runs_dir / f"{run_id}-chunk-{idx}.json"
                 result = run_scan(
                     repo,
                     base,
                     head,
-                    args.model,
+                    effective_model,
                     args.severity,
                     args.debug,
                     chunk_output,
@@ -1460,16 +1746,32 @@ def run(args: argparse.Namespace) -> int:
                         "index": idx,
                         "base": base,
                         "head": head,
-                        "chunk_tier": None,
+                        "chunk_tier": chunk_risk.tier,
+                        "chunk_model": effective_model,
+                        "tier_reasons": list(chunk_risk.reasons),
+                        "dependency_only": chunk_risk.dependency_only,
+                        "dependency_files": list(chunk_risk.dependency_files),
+                        "unmapped_files": list(chunk_risk.unmapped_files),
+                        "new_attack_surface": chunk_risk.new_attack_surface,
                         "chunk_timeout_seconds": per_chunk_timeout,
                         "timeout_reason": timeout_reason,
                         "exit_code": result.exit_code,
                         "classification": result.classification,
                         "output_path": str(chunk_output),
                         "stderr_tail": result.stderr_tail,
+                        "stdout_tail": result.stdout_tail,
+                        "failure_reason": result.failure_reason,
                         "command": result.command,
                     }
                 )
+                if result.classification == INFRA_FAILURE:
+                    append_log(
+                        log_file,
+                        (
+                            f"run_id={run_id} chunk={idx}/{len(chunks)} infra_failure "
+                            f"reason={result.failure_reason or 'unspecified'}"
+                        ),
+                    )
                 if result.classification == COMPLETED:
                     last_successful_anchor = head
                     _run_ctx.last_successful_anchor = head
@@ -1493,6 +1795,45 @@ def run(args: argparse.Namespace) -> int:
                     fallback_triggered = True
                     for sub_idx, sub_sha in enumerate(sub_commits, start=1):
                         sub_base = base if sub_idx == 1 else sub_commits[sub_idx - 2]
+                        sub_risk = determine_chunk_risk(
+                            repo,
+                            sub_base,
+                            sub_sha,
+                            risk_map,
+                            timeout_seconds=git_timeout,
+                        )
+                        sub_model = sub_risk.model or args.model
+
+                        if sub_risk.tier == "skip":
+                            run_record["chunks"].append(
+                                {
+                                    "index": idx,
+                                    "sub_index": sub_idx,
+                                    "mode": "fallback_per_commit_skip_no_llm",
+                                    "base": sub_base,
+                                    "head": sub_sha,
+                                    "chunk_tier": "skip",
+                                    "chunk_model": None,
+                                    "tier_reasons": list(sub_risk.reasons),
+                                    "dependency_only": sub_risk.dependency_only,
+                                    "dependency_files": list(sub_risk.dependency_files),
+                                    "unmapped_files": list(sub_risk.unmapped_files),
+                                    "new_attack_surface": sub_risk.new_attack_surface,
+                                    "chunk_timeout_seconds": per_chunk_timeout,
+                                    "timeout_reason": timeout_reason,
+                                    "exit_code": 0,
+                                    "classification": COMPLETED,
+                                    "output_path": None,
+                                    "stderr_tail": "",
+                                    "stdout_tail": "",
+                                    "failure_reason": None,
+                                    "command": [],
+                                }
+                            )
+                            last_successful_anchor = sub_sha
+                            _run_ctx.last_successful_anchor = sub_sha
+                            continue
+
                         sub_output = (
                             runs_dir / f"{run_id}-chunk-{idx}-sub-{sub_idx}.json"
                         )
@@ -1500,7 +1841,7 @@ def run(args: argparse.Namespace) -> int:
                             repo,
                             sub_base,
                             sub_sha,
-                            args.model,
+                            sub_model,
                             args.severity,
                             args.debug,
                             sub_output,
@@ -1516,16 +1857,33 @@ def run(args: argparse.Namespace) -> int:
                                 "mode": "fallback_per_commit",
                                 "base": sub_base,
                                 "head": sub_sha,
-                                "chunk_tier": None,
+                                "chunk_tier": sub_risk.tier,
+                                "chunk_model": sub_model,
+                                "tier_reasons": list(sub_risk.reasons),
+                                "dependency_only": sub_risk.dependency_only,
+                                "dependency_files": list(sub_risk.dependency_files),
+                                "unmapped_files": list(sub_risk.unmapped_files),
+                                "new_attack_surface": sub_risk.new_attack_surface,
                                 "chunk_timeout_seconds": per_chunk_timeout,
                                 "timeout_reason": timeout_reason,
                                 "exit_code": sub_result.exit_code,
                                 "classification": sub_result.classification,
                                 "output_path": str(sub_output),
                                 "stderr_tail": sub_result.stderr_tail,
+                                "stdout_tail": sub_result.stdout_tail,
+                                "failure_reason": sub_result.failure_reason,
                                 "command": sub_result.command,
                             }
                         )
+                        if sub_result.classification == INFRA_FAILURE:
+                            append_log(
+                                log_file,
+                                (
+                                    f"run_id={run_id} chunk={idx}/{len(chunks)} "
+                                    f"sub={sub_idx}/{len(sub_commits)} infra_failure "
+                                    f"reason={sub_result.failure_reason or 'unspecified'}"
+                                ),
+                            )
                         if sub_result.classification == COMPLETED:
                             last_successful_anchor = sub_sha
                             _run_ctx.last_successful_anchor = sub_sha

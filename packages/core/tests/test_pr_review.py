@@ -42,18 +42,35 @@ from securevibes.scanner.pr_review_merge import (
     dedupe_pr_vulns,
     filter_baseline_vulns,
 )
+from securevibes.scanner.pr_review_flow import PRReviewContext, PRReviewState
 from securevibes.scanner.scanner import (
     DIFF_FILES_DIR,
     Scanner,
+    _adjudicate_exact_pr_sink_candidate,
+    _classify_changed_components,
+    _build_component_focused_passes,
+    _build_diff_context_subset,
     _build_focused_diff_context,
+    _component_matches_baseline,
     _derive_pr_default_grep_scope,
+    _derive_pr_context_timeouts,
+    _derive_baseline_component_keys,
     _enforce_focused_diff_coverage,
+    _FOCUSED_DIFF_MAX_HUNK_LINES,
+    _choose_final_pr_findings_with_sink_priority,
+    _compose_pr_findings_with_baseline_sinks,
+    _format_changed_code_dataflow_summary,
+    _format_changed_code_dataflow_chains,
+    _generate_new_surface_threat_delta,
     _generate_pr_hypotheses,
     _NEW_FILE_HUNK_MAX_LINES,
     _NEW_FILE_ANCHOR_MAX_LINES,
     _normalize_hypothesis_output,
     _PROMPT_HUNK_MAX_LINES_PER_HUNK,
     _refine_pr_findings_with_llm,
+    _split_component_key,
+    _summarize_auth_reachability_candidates,
+    _summarize_auth_reachability_sink_code,
     score_diff_file_for_security_review,
     _summarize_diff_hunk_snippets,
     _summarize_diff_line_anchors,
@@ -246,7 +263,12 @@ def test_build_focused_diff_context_prioritizes_source_over_docs():
                 new_start=1,
                 new_count=1,
                 lines=[
-                    DiffLine(type="add", content="doc update", old_line_num=None, new_line_num=1)
+                    DiffLine(
+                        type="add",
+                        content="doc update",
+                        old_line_num=None,
+                        new_line_num=1,
+                    )
                 ],
             )
         ],
@@ -264,7 +286,12 @@ def test_build_focused_diff_context_prioritizes_source_over_docs():
                 new_start=10,
                 new_count=1,
                 lines=[
-                    DiffLine(type="add", content="config.apply", old_line_num=None, new_line_num=10)
+                    DiffLine(
+                        type="add",
+                        content="config.apply",
+                        old_line_num=None,
+                        new_line_num=10,
+                    )
                 ],
             )
         ],
@@ -286,7 +313,7 @@ def test_build_focused_diff_context_trims_oversized_hunks():
     """Focused diff should cap hunk size to keep prompts tractable."""
     many_lines = [
         DiffLine(type="add", content=f"line {idx}", old_line_num=None, new_line_num=idx)
-        for idx in range(1, 280)
+        for idx in range(1, _FOCUSED_DIFF_MAX_HUNK_LINES + 80)
     ]
     noisy_file = DiffFile(
         old_path="src/gateway/server.ts",
@@ -297,9 +324,9 @@ def test_build_focused_diff_context_trims_oversized_hunks():
         hunks=[
             DiffHunk(
                 old_start=1,
-                old_count=200,
+                old_count=_FOCUSED_DIFF_MAX_HUNK_LINES,
                 new_start=1,
-                new_count=200,
+                new_count=_FOCUSED_DIFF_MAX_HUNK_LINES,
                 lines=many_lines,
             )
         ],
@@ -315,7 +342,965 @@ def test_build_focused_diff_context_trims_oversized_hunks():
 
     assert len(focused.files) == 1
     assert len(focused.files[0].hunks) == 1
-    assert len(focused.files[0].hunks[0].lines) == 200
+    assert len(focused.files[0].hunks[0].lines) == _FOCUSED_DIFF_MAX_HUNK_LINES
+
+
+def test_format_changed_code_dataflow_summary_tracks_connected_assignments_and_calls():
+    """Changed-code summary should surface connected value-flow facts from the diff."""
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/plugins/install.ts",
+                new_path="src/plugins/install.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=140,
+                        old_count=3,
+                        new_start=140,
+                        new_count=3,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content=(
+                                    "const pluginId = "
+                                    "safeDirName(unscopedPackageName(manifest.name));"
+                                ),
+                                old_line_num=None,
+                                new_line_num=146,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const targetDir = path.join(baseDir, pluginId);",
+                                old_line_num=None,
+                                new_line_num=148,
+                            ),
+                            DiffLine(
+                                type="context",
+                                content="await fs.cp(packageDir, targetDir, { recursive: true });",
+                                old_line_num=150,
+                                new_line_num=150,
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ],
+        added_lines=2,
+        removed_lines=0,
+        changed_files=["src/plugins/install.ts"],
+    )
+
+    summary = _format_changed_code_dataflow_summary(diff_context)
+
+    assert "src/plugins/install.ts" in summary
+    assert "pluginId <- safeDirName(unscopedPackageName(manifest.name))" in summary
+    assert "targetDir <- path.join(baseDir, pluginId)" in summary
+    assert "fs.cp(packageDir, targetDir, { recursive: true })" in summary
+
+
+def test_format_changed_code_dataflow_chains_tracks_explicit_chain():
+    """Changed-code chains should preserve the concrete source-to-sink path."""
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/plugins/install.ts",
+                new_path="src/plugins/install.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=130,
+                        old_count=5,
+                        new_start=130,
+                        new_count=8,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content='const manifestPath = path.join(packageDir, "package.json");',
+                                old_line_num=None,
+                                new_line_num=130,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const manifest = await readJsonFile<PackageManifest>(manifestPath);",
+                                old_line_num=None,
+                                new_line_num=137,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content='const pkgName = typeof manifest.name === "string" ? manifest.name : "";',
+                                old_line_num=None,
+                                new_line_num=149,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content='const pluginId = pkgName ? unscopedPackageName(pkgName) : "plugin";',
+                                old_line_num=None,
+                                new_line_num=150,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const targetDir = path.join(extensionsDir, safeDirName(pluginId));",
+                                old_line_num=None,
+                                new_line_num=151,
+                            ),
+                            DiffLine(
+                                type="context",
+                                content="await fs.cp(packageDir, targetDir, { recursive: true });",
+                                old_line_num=161,
+                                new_line_num=161,
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ],
+        added_lines=5,
+        removed_lines=0,
+        changed_files=["src/plugins/install.ts"],
+    )
+
+    summary = _format_changed_code_dataflow_chains(diff_context)
+
+    assert "src/plugins/install.ts:" in summary
+    assert "manifest <- await readJsonFile<PackageManifest>(manifestPath)" in summary
+    assert 'pluginId <- pkgName ? unscopedPackageName(pkgName) : "plugin"' in summary
+    assert "targetDir <- path.join(extensionsDir, safeDirName(pluginId))" in summary
+    assert "fs.cp(packageDir, targetDir, { recursive: true })" in summary
+
+
+def test_format_changed_code_dataflow_summary_prioritizes_connected_sink_chain():
+    """Connected sink chains should outrank helper declarations and test scaffolding."""
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/plugins/install.test.ts",
+                new_path="src/plugins/install.test.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=170,
+                        old_count=0,
+                        new_start=170,
+                        new_count=4,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content='it("installs from a zip archive", async () => {',
+                                old_line_num=None,
+                                new_line_num=176,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const stateDir = makeTempDir();",
+                                old_line_num=None,
+                                new_line_num=177,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const workDir = makeTempDir();",
+                                old_line_num=None,
+                                new_line_num=178,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content='const archivePath = path.join(workDir, "plugin.zip");',
+                                old_line_num=None,
+                                new_line_num=179,
+                            ),
+                        ],
+                    )
+                ],
+            ),
+            DiffFile(
+                old_path="src/plugins/install.ts",
+                new_path="src/plugins/install.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=25,
+                        old_count=0,
+                        new_start=25,
+                        new_count=20,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="function unscopedPackageName(name: string): string {",
+                                old_line_num=None,
+                                new_line_num=30,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const trimmed = name.trim();",
+                                old_line_num=None,
+                                new_line_num=31,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content=(
+                                    'return trimmed.includes("/") ? '
+                                    '(trimmed.split("/").pop() ?? trimmed) : trimmed;'
+                                ),
+                                old_line_num=None,
+                                new_line_num=33,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="function safeDirName(input: string): string {",
+                                old_line_num=None,
+                                new_line_num=39,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content='return trimmed.replaceAll("/", "__");',
+                                old_line_num=None,
+                                new_line_num=41,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content=(
+                                    'const pkgName = typeof manifest.name === "string" '
+                                    '? manifest.name : "";'
+                                ),
+                                old_line_num=None,
+                                new_line_num=181,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content=(
+                                    "const pluginId = pkgName ? "
+                                    'unscopedPackageName(pkgName) : "plugin";'
+                                ),
+                                old_line_num=None,
+                                new_line_num=182,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content=(
+                                    "const targetDir = "
+                                    "path.join(extensionsDir, safeDirName(pluginId));"
+                                ),
+                                old_line_num=None,
+                                new_line_num=183,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="await fs.cp(packageDir, targetDir, { recursive: true });",
+                                old_line_num=None,
+                                new_line_num=193,
+                            ),
+                        ],
+                    )
+                ],
+            ),
+        ],
+        added_lines=14,
+        removed_lines=0,
+        changed_files=["src/plugins/install.test.ts", "src/plugins/install.ts"],
+    )
+
+    summary = _format_changed_code_dataflow_summary(diff_context)
+
+    assert summary.splitlines()[0] == "- src/plugins/install.ts"
+    assert 'trimmed.includes("/") ? (trimmed.split("/").pop() ?? trimmed)' in summary
+    assert 'trimmed.replaceAll("/", "__")' in summary
+    assert 'pkgName <- typeof manifest.name === "string" ? manifest.name : ""' in summary
+    assert 'pluginId <- pkgName ? unscopedPackageName(pkgName) : "plugin"' in summary
+    assert "targetDir <- path.join(extensionsDir, safeDirName(pluginId))" in summary
+    assert "fs.cp(packageDir, targetDir, { recursive: true })" in summary
+    assert "unscopedPackageName(name: string)" not in summary
+
+
+def test_derive_pr_context_timeouts_bounds_context_budget():
+    """Pre-review context budgets should stay well below the main attempt budget."""
+    assert _derive_pr_context_timeouts(60) == (15, 20)
+    assert _derive_pr_context_timeouts(120) == (20, 30)
+    assert _derive_pr_context_timeouts(180) == (30, 45)
+
+
+def test_format_changed_code_dataflow_chains_prioritizes_policy_predicates():
+    """Policy decision chains should outrank generic plumbing files in prompt summaries."""
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/webhook.ts",
+                new_path="src/webhook.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=10,
+                        old_count=0,
+                        new_start=10,
+                        new_count=3,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="const call = this.manager.getCallByProviderCallId(providerCallId);",
+                                old_line_num=None,
+                                new_line_num=10,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="console.log(`listening on ${url}`);",
+                                old_line_num=None,
+                                new_line_num=11,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content='console.warn("webhook started");',
+                                old_line_num=None,
+                                new_line_num=12,
+                            ),
+                        ],
+                    )
+                ],
+            ),
+            DiffFile(
+                old_path="src/manager.ts",
+                new_path="src/manager.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=470,
+                        old_count=0,
+                        new_start=470,
+                        new_count=6,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content='const normalized = from?.replace(/\\D/g, "") || "";',
+                                old_line_num=None,
+                                new_line_num=477,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const allowed = (allowFrom || []).some((num) => {",
+                                old_line_num=None,
+                                new_line_num=478,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content='const normalizedAllow = num.replace(/\\D/g, "");',
+                                old_line_num=None,
+                                new_line_num=479,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="return normalized.endsWith(normalizedAllow) ||",
+                                old_line_num=None,
+                                new_line_num=481,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="normalizedAllow.endsWith(normalized);",
+                                old_line_num=None,
+                                new_line_num=482,
+                            ),
+                        ],
+                    )
+                ],
+            ),
+        ],
+        added_lines=8,
+        removed_lines=0,
+        changed_files=["src/webhook.ts", "src/manager.ts"],
+    )
+
+    summary = _format_changed_code_dataflow_chains(diff_context, max_files=1)
+
+    assert summary.splitlines()[0].startswith("- src/manager.ts:")
+    assert 'normalized <- from?.replace(/\\D/g, "") || ""' in summary
+    assert "allowed <- (allowFrom || []).some((num) => {" in summary
+    assert "normalized.endsWith(normalizedAllow) ||" in summary
+
+
+def test_format_changed_code_dataflow_summary_prioritizes_predicate_cluster_within_file():
+    """Predicate-rich clusters should outrank disconnected plumbing facts in the same file."""
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/manager.ts",
+                new_path="src/manager.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=100,
+                        old_count=0,
+                        new_start=100,
+                        new_count=4,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="const activeCalls = this.getActiveCalls();",
+                                old_line_num=None,
+                                new_line_num=104,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const callId = crypto.randomUUID();",
+                                old_line_num=None,
+                                new_line_num=113,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="this.activeCalls.set(callId, call);",
+                                old_line_num=None,
+                                new_line_num=120,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="this.providerCallIdMap.set(call.providerCallId, callId);",
+                                old_line_num=None,
+                                new_line_num=121,
+                            ),
+                        ],
+                    ),
+                    DiffHunk(
+                        old_start=470,
+                        old_count=0,
+                        new_start=470,
+                        new_count=8,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content='const normalized = from?.replace(/\\D/g, "") || "";',
+                                old_line_num=None,
+                                new_line_num=477,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const allowed = (allowFrom || []).some((num) => {",
+                                old_line_num=None,
+                                new_line_num=478,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content='const normalizedAllow = num.replace(/\\D/g, "");',
+                                old_line_num=None,
+                                new_line_num=479,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="return normalized.endsWith(normalizedAllow) ||",
+                                old_line_num=None,
+                                new_line_num=481,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="normalizedAllow.endsWith(normalized);",
+                                old_line_num=None,
+                                new_line_num=482,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content='const status = allowed ? "accepted" : "rejected";',
+                                old_line_num=None,
+                                new_line_num=485,
+                            ),
+                        ],
+                    ),
+                ],
+            )
+        ],
+        added_lines=10,
+        removed_lines=0,
+        changed_files=["src/manager.ts"],
+    )
+
+    summary = _format_changed_code_dataflow_summary(diff_context)
+
+    assert 'normalized <- from?.replace(/\\D/g, "") || ""' in summary
+    assert "allowed <- (allowFrom || []).some((num) => {" in summary
+    assert "normalized.endsWith(normalizedAllow) ||" in summary
+    assert "activeCalls <- this.getActiveCalls()" not in summary
+    assert "callId <- crypto.randomUUID()" not in summary
+
+
+def test_format_changed_code_dataflow_summary_surfaces_scoped_policy_table_facts():
+    """Policy/config table edits should surface scoped property facts, not just helper internals."""
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/agents/pi-tools.safe-bins.e2e.test.ts",
+                new_path="src/agents/pi-tools.safe-bins.e2e.test.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=90,
+                        old_count=0,
+                        new_start=90,
+                        new_count=5,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="const { createOpenClawCodingTools } = await import('./pi-tools.js');",
+                                old_line_num=None,
+                                new_line_num=91,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), params.tmpPrefix));",
+                                old_line_num=None,
+                                new_line_num=92,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const tools = createOpenClawCodingTools({ config: cfg });",
+                                old_line_num=None,
+                                new_line_num=98,
+                            ),
+                        ],
+                    )
+                ],
+            ),
+            DiffFile(
+                old_path="src/infra/exec-safe-bin-policy.ts",
+                new_path="src/infra/exec-safe-bin-policy.ts",
+                is_new=True,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=0,
+                        old_count=0,
+                        new_start=1,
+                        new_count=12,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="export const SAFE_BIN_PROFILES = {",
+                                old_line_num=None,
+                                new_line_num=1,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="  sort: {",
+                                old_line_num=None,
+                                new_line_num=2,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="    maxPositional: 0,",
+                                old_line_num=None,
+                                new_line_num=3,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content='    blockedFlags: new Set(["--compress-program", "--files0-from", "--output", "-o"]),',
+                                old_line_num=None,
+                                new_line_num=4,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="    if (blockedFlags.has(flag)) {",
+                                old_line_num=None,
+                                new_line_num=5,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="      return false;",
+                                old_line_num=None,
+                                new_line_num=6,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="    }",
+                                old_line_num=None,
+                                new_line_num=7,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="    if (!valueFlags.has(flag)) {",
+                                old_line_num=None,
+                                new_line_num=8,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="  },",
+                                old_line_num=None,
+                                new_line_num=9,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="};",
+                                old_line_num=None,
+                                new_line_num=10,
+                            ),
+                        ],
+                    )
+                ],
+            ),
+        ],
+        added_lines=9,
+        removed_lines=0,
+        changed_files=[
+            "src/agents/pi-tools.safe-bins.e2e.test.ts",
+            "src/infra/exec-safe-bin-policy.ts",
+        ],
+    )
+
+    summary = _format_changed_code_dataflow_summary(diff_context)
+    chains = _format_changed_code_dataflow_chains(diff_context)
+
+    assert summary.splitlines()[0] == "- src/infra/exec-safe-bin-policy.ts"
+    assert "sort.maxPositional <- 0" in summary
+    assert (
+        'sort.blockedFlags <- new Set(["--compress-program", "--files0-from", "--output", "-o"])'
+        in summary
+    )
+    assert "blockedFlags.has(flag)" in summary
+    assert "!valueFlags.has(flag)" in summary
+    assert "sort.maxPositional <- 0" in chains
+    assert "sort.blockedFlags <- new Set(" in chains
+    assert "blockedFlags.has(flag)" in chains
+    assert summary.index("sort.blockedFlags <- new Set(") < summary.index(
+        "createOpenClawCodingTools"
+    )
+
+
+def test_format_changed_code_dataflow_summary_surfaces_branch_semantics():
+    """Changed-code facts should expose allow/deny branch behavior, not just policy tables."""
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/infra/exec-safe-bin-policy.ts",
+                new_path="src/infra/exec-safe-bin-policy.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=200,
+                        old_count=0,
+                        new_start=200,
+                        new_count=14,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="const flag = eqIndex > 0 ? token.slice(0, eqIndex) : token;",
+                                old_line_num=None,
+                                new_line_num=200,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="if (blockedFlags.has(flag)) {",
+                                old_line_num=None,
+                                new_line_num=201,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="  return false;",
+                                old_line_num=None,
+                                new_line_num=202,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="}",
+                                old_line_num=None,
+                                new_line_num=203,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="if (eqIndex > 0) {",
+                                old_line_num=None,
+                                new_line_num=204,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="  if (!isSafeLiteralToken(token.slice(eqIndex + 1))) {",
+                                old_line_num=None,
+                                new_line_num=205,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="    return false;",
+                                old_line_num=None,
+                                new_line_num=206,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="  }",
+                                old_line_num=None,
+                                new_line_num=207,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="  continue;",
+                                old_line_num=None,
+                                new_line_num=208,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="}",
+                                old_line_num=None,
+                                new_line_num=209,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="if (!allowedValueFlags.has(flag)) {",
+                                old_line_num=None,
+                                new_line_num=210,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="  continue;",
+                                old_line_num=None,
+                                new_line_num=211,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="}",
+                                old_line_num=None,
+                                new_line_num=212,
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ],
+        added_lines=13,
+        removed_lines=0,
+        changed_files=["src/infra/exec-safe-bin-policy.ts"],
+    )
+
+    summary = _format_changed_code_dataflow_summary(diff_context)
+    chains = _format_changed_code_dataflow_chains(diff_context)
+
+    assert "flag <- eqIndex > 0 ? token.slice(0, eqIndex) : token" in summary
+    assert "if blockedFlags.has(flag) -> return false" in summary
+    assert "if eqIndex > 0 -> continue" in summary
+    assert "if !allowedValueFlags.has(flag) -> continue" in summary
+    assert "if blockedFlags.has(flag) -> return false" in chains
+    assert "if eqIndex > 0 -> continue" in chains
+
+
+def test_format_changed_code_dataflow_summary_surfaces_denied_flag_fixture_updates():
+    """Fixture refactors should keep explicit deny/allow table entries visible in prompt facts."""
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/infra/exec-safe-bin-policy.ts",
+                new_path="src/infra/exec-safe-bin-policy.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=40,
+                        old_count=0,
+                        new_start=40,
+                        new_count=9,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="export const SAFE_BIN_PROFILE_FIXTURES = {",
+                                old_line_num=None,
+                                new_line_num=40,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="  sort: {",
+                                old_line_num=None,
+                                new_line_num=41,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content='    deniedFlags: ["--compress-program", "--files0-from", "--output", "-o"],',
+                                old_line_num=None,
+                                new_line_num=42,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="  },",
+                                old_line_num=None,
+                                new_line_num=43,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="};",
+                                old_line_num=None,
+                                new_line_num=44,
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ],
+        added_lines=5,
+        removed_lines=0,
+        changed_files=["src/infra/exec-safe-bin-policy.ts"],
+    )
+
+    summary = _format_changed_code_dataflow_summary(diff_context)
+    chains = _format_changed_code_dataflow_chains(diff_context)
+
+    assert (
+        'sort.deniedFlags <- ["--compress-program", "--files0-from", "--output", "-o"]' in summary
+    )
+    assert 'sort.deniedFlags <- ["--compress-program", "--files0-from", "--output", "-o"]' in chains
+
+
+def test_format_changed_code_dataflow_summary_prefers_security_policy_file_over_verbose_tests():
+    """Security-scored policy files should outrank test scaffolding even when tests yield more facts."""
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/agents/pi-tools.safe-bins.e2e.test.ts",
+                new_path="src/agents/pi-tools.safe-bins.e2e.test.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=60,
+                        old_count=0,
+                        new_start=60,
+                        new_count=10,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="type ExecToolResult = {",
+                                old_line_num=None,
+                                new_line_num=60,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="  content: Array<{ type: string; text?: string }>;",
+                                old_line_num=None,
+                                new_line_num=61,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="};",
+                                old_line_num=None,
+                                new_line_num=62,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content=(
+                                    "const tmpDir = "
+                                    "fs.mkdtempSync(path.join(os.tmpdir(), params.tmpPrefix));"
+                                ),
+                                old_line_num=None,
+                                new_line_num=63,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const tools = createOpenClawCodingTools({ config: cfg });",
+                                old_line_num=None,
+                                new_line_num=64,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const execTool = tools.find((tool) => tool.name === 'exec');",
+                                old_line_num=None,
+                                new_line_num=65,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content=(
+                                    "const result = await execTool.execute('call1', "
+                                    "{ command, workdir: tmpDir });"
+                                ),
+                                old_line_num=None,
+                                new_line_num=66,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content=(
+                                    "const text = result.content.find((content) => "
+                                    "content.type === 'text')?.text ?? '';"
+                                ),
+                                old_line_num=None,
+                                new_line_num=67,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="expect(text).toContain(marker);",
+                                old_line_num=None,
+                                new_line_num=68,
+                            ),
+                        ],
+                    )
+                ],
+            ),
+            DiffFile(
+                old_path="src/infra/exec-safe-bin-policy.ts",
+                new_path="src/infra/exec-safe-bin-policy.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=120,
+                        old_count=0,
+                        new_start=120,
+                        new_count=6,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="  sort: {",
+                                old_line_num=None,
+                                new_line_num=120,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content='    blockedFlags: new Set(["--files0-from", "--output", "-o"]),',
+                                old_line_num=None,
+                                new_line_num=121,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="    if (blockedFlags.has(flag)) {",
+                                old_line_num=None,
+                                new_line_num=122,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="      return false;",
+                                old_line_num=None,
+                                new_line_num=123,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="    }",
+                                old_line_num=None,
+                                new_line_num=124,
+                            ),
+                        ],
+                    )
+                ],
+            ),
+        ],
+        added_lines=14,
+        removed_lines=0,
+        changed_files=[
+            "src/agents/pi-tools.safe-bins.e2e.test.ts",
+            "src/infra/exec-safe-bin-policy.ts",
+        ],
+    )
+
+    summary = _format_changed_code_dataflow_summary(diff_context)
+
+    assert summary.splitlines()[0] == "- src/infra/exec-safe-bin-policy.ts"
+    assert "sort.blockedFlags <- new Set(" in summary
+    assert "blockedFlags.has(flag)" in summary
 
 
 def test_enforce_focused_diff_coverage_rejects_dropped_files():
@@ -334,18 +1319,23 @@ def test_enforce_focused_diff_coverage_rejects_dropped_files():
                     new_start=1,
                     new_count=1,
                     lines=[
-                        DiffLine(type="add", content="x = 1", old_line_num=None, new_line_num=1)
+                        DiffLine(
+                            type="add",
+                            content="x = 1",
+                            old_line_num=None,
+                            new_line_num=1,
+                        )
                     ],
                 )
             ],
         )
-        for idx in range(17)
+        for idx in range(26)
     ]
     context = DiffContext(
         files=diff_files,
-        added_lines=17,
+        added_lines=26,
         removed_lines=0,
-        changed_files=[f"src/file_{idx}.py" for idx in range(17)],
+        changed_files=[f"src/file_{idx}.py" for idx in range(26)],
     )
 
     focused = _build_focused_diff_context(context)
@@ -358,7 +1348,7 @@ def test_enforce_focused_diff_coverage_rejects_severely_truncated_hunks():
     """PR review should fail closed when any hunk is severely truncated (>2x max)."""
     many_lines = [
         DiffLine(type="add", content=f"line {idx}", old_line_num=None, new_line_num=idx)
-        for idx in range(1, 450)  # 449 lines, well above 2*200=400 threshold
+        for idx in range(1, (2 * _FOCUSED_DIFF_MAX_HUNK_LINES) + 50)
     ]
     noisy_file = DiffFile(
         old_path="src/gateway/server.ts",
@@ -369,9 +1359,9 @@ def test_enforce_focused_diff_coverage_rejects_severely_truncated_hunks():
         hunks=[
             DiffHunk(
                 old_start=1,
-                old_count=200,
+                old_count=_FOCUSED_DIFF_MAX_HUNK_LINES,
                 new_start=1,
-                new_count=200,
+                new_count=_FOCUSED_DIFF_MAX_HUNK_LINES,
                 lines=many_lines,
             )
         ],
@@ -392,7 +1382,7 @@ def test_enforce_focused_diff_coverage_allows_mildly_truncated_hunks():
     """Hunks just above max but below severe threshold should not trigger fail-closed."""
     mild_lines = [
         DiffLine(type="add", content=f"line {idx}", old_line_num=None, new_line_num=idx)
-        for idx in range(1, 280)  # 279 lines — above 200 but below 400
+        for idx in range(1, _FOCUSED_DIFF_MAX_HUNK_LINES + 80)
     ]
     file_with_mild_hunk = DiffFile(
         old_path="src/agents/credentials.ts",
@@ -403,9 +1393,9 @@ def test_enforce_focused_diff_coverage_allows_mildly_truncated_hunks():
         hunks=[
             DiffHunk(
                 old_start=1,
-                old_count=200,
+                old_count=_FOCUSED_DIFF_MAX_HUNK_LINES,
                 new_start=1,
-                new_count=200,
+                new_count=_FOCUSED_DIFF_MAX_HUNK_LINES,
                 lines=mild_lines,
             )
         ],
@@ -418,7 +1408,7 @@ def test_enforce_focused_diff_coverage_allows_mildly_truncated_hunks():
     )
     focused = _build_focused_diff_context(context)
 
-    # Should NOT raise — truncation is mild (keeps 200 of 279 lines = 72%)
+    # Should NOT raise — truncation is mild (keeps majority of the hunk body).
     _enforce_focused_diff_coverage(context, focused)
 
 
@@ -438,7 +1428,12 @@ def test_enforce_focused_diff_coverage_allows_boundary_diff():
                     new_start=1,
                     new_count=1,
                     lines=[
-                        DiffLine(type="add", content="x = 1", old_line_num=None, new_line_num=1)
+                        DiffLine(
+                            type="add",
+                            content="x = 1",
+                            old_line_num=None,
+                            new_line_num=1,
+                        )
                     ],
                 )
             ],
@@ -462,26 +1457,483 @@ def test_enforce_focused_diff_coverage_ignores_non_security_files():
     one_hunk = [DiffHunk(old_start=1, old_count=1, new_start=1, new_count=1, lines=one_line)]
     diff_files = [
         # security-relevant source files
-        DiffFile(old_path="src/auth.ts", new_path="src/auth.ts", hunks=one_hunk,
-                 is_new=False, is_deleted=False, is_renamed=False),
-        DiffFile(old_path="src/config.ts", new_path="src/config.ts", hunks=one_hunk,
-                 is_new=False, is_deleted=False, is_renamed=False),
+        DiffFile(
+            old_path="src/auth.ts",
+            new_path="src/auth.ts",
+            hunks=one_hunk,
+            is_new=False,
+            is_deleted=False,
+            is_renamed=False,
+        ),
+        DiffFile(
+            old_path="src/config.ts",
+            new_path="src/config.ts",
+            hunks=one_hunk,
+            is_new=False,
+            is_deleted=False,
+            is_renamed=False,
+        ),
         # non-security files (score <= 0)
-        DiffFile(old_path="CHANGELOG.md", new_path="CHANGELOG.md", hunks=one_hunk,
-                 is_new=False, is_deleted=False, is_renamed=False),
-        DiffFile(old_path="docs/install/setup.md", new_path="docs/install/setup.md", hunks=one_hunk,
-                 is_new=False, is_deleted=False, is_renamed=False),
+        DiffFile(
+            old_path="CHANGELOG.md",
+            new_path="CHANGELOG.md",
+            hunks=one_hunk,
+            is_new=False,
+            is_deleted=False,
+            is_renamed=False,
+        ),
+        DiffFile(
+            old_path="docs/install/setup.md",
+            new_path="docs/install/setup.md",
+            hunks=one_hunk,
+            is_new=False,
+            is_deleted=False,
+            is_renamed=False,
+        ),
     ]
     context = DiffContext(
         files=diff_files,
         added_lines=4,
         removed_lines=0,
-        changed_files=["src/auth.ts", "src/config.ts", "CHANGELOG.md", "docs/install/setup.md"],
+        changed_files=[
+            "src/auth.ts",
+            "src/config.ts",
+            "CHANGELOG.md",
+            "docs/install/setup.md",
+        ],
     )
     focused = _build_focused_diff_context(context)
 
     # Should NOT raise — only 2 security-relevant files remain, matching the focused count
     _enforce_focused_diff_coverage(context, focused)
+
+
+def test_split_component_key_uses_stable_path_buckets():
+    """Component keys should be stable across nested and shallow paths."""
+    assert _split_component_key("src/plugins/install.ts") == "src/plugins"
+    assert _split_component_key("src/main.ts") == "src"
+    assert _split_component_key("README.md") == "readme.md"
+
+
+def test_derive_baseline_component_keys_reads_threat_and_vuln_artifacts(tmp_path: Path):
+    """Baseline component extraction should include path-like entries from artifacts."""
+    securevibes_dir = tmp_path / ".securevibes"
+    securevibes_dir.mkdir()
+
+    threat_model = [
+        {
+            "id": "THREAT-1",
+            "affected_components": ["src/plugins", "extensions/voice-call"],
+            "affected_files": [{"file_path": "src/hooks/archive.ts"}],
+        }
+    ]
+    vulnerabilities = [
+        {
+            "threat_id": "VULN-1",
+            "file_path": "src/plugins/install.ts",
+            "source": "src/plugins/install.ts",
+            "sink": "src/plugins/install.ts",
+        }
+    ]
+    (securevibes_dir / "THREAT_MODEL.json").write_text(json.dumps(threat_model), encoding="utf-8")
+    (securevibes_dir / "VULNERABILITIES.json").write_text(
+        json.dumps(vulnerabilities), encoding="utf-8"
+    )
+
+    components = _derive_baseline_component_keys(securevibes_dir)
+
+    assert "src/plugins" in components
+    assert "src/hooks" in components
+    assert "extensions/voice-call" in components
+
+
+def test_component_matches_baseline_allows_prefix_overlap():
+    """Baseline component matching should support parent/child overlap."""
+    baseline = {"src/plugins"}
+
+    assert _component_matches_baseline("src/plugins", baseline)
+    assert _component_matches_baseline("src/plugins/installers", baseline)
+    assert not _component_matches_baseline("src/hooks", baseline)
+
+
+def test_build_diff_context_subset_keeps_only_selected_paths():
+    """Subset builder should preserve only selected files and recompute counters."""
+    plugin_file = DiffFile(
+        old_path="src/plugins/install.ts",
+        new_path="src/plugins/install.ts",
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+        hunks=[
+            DiffHunk(
+                old_start=1,
+                old_count=1,
+                new_start=1,
+                new_count=2,
+                lines=[
+                    DiffLine(type="remove", content="old", old_line_num=1, new_line_num=None),
+                    DiffLine(type="add", content="new", old_line_num=None, new_line_num=1),
+                ],
+            )
+        ],
+    )
+    hook_file = DiffFile(
+        old_path="src/hooks/archive.ts",
+        new_path="src/hooks/archive.ts",
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+        hunks=[
+            DiffHunk(
+                old_start=10,
+                old_count=0,
+                new_start=10,
+                new_count=1,
+                lines=[
+                    DiffLine(
+                        type="add",
+                        content="archive.write",
+                        old_line_num=None,
+                        new_line_num=10,
+                    )
+                ],
+            )
+        ],
+    )
+    context = DiffContext(
+        files=[plugin_file, hook_file],
+        added_lines=2,
+        removed_lines=1,
+        changed_files=["src/plugins/install.ts", "src/hooks/archive.ts"],
+    )
+
+    subset = _build_diff_context_subset(context, ["src/plugins/install.ts"])
+
+    assert subset.changed_files == ["src/plugins/install.ts"]
+    assert subset.added_lines == 1
+    assert subset.removed_lines == 1
+
+
+def test_build_component_focused_passes_prioritizes_baseline_components():
+    """Focused pass planner should prioritize baseline-risk components first."""
+    plugin_file = DiffFile(
+        old_path="src/plugins/install.ts",
+        new_path="src/plugins/install.ts",
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+        hunks=[
+            DiffHunk(
+                old_start=1,
+                old_count=1,
+                new_start=1,
+                new_count=1,
+                lines=[
+                    DiffLine(
+                        type="add",
+                        content="install(userInput)",
+                        old_line_num=None,
+                        new_line_num=1,
+                    )
+                ],
+            )
+        ],
+    )
+    hook_file = DiffFile(
+        old_path="src/hooks/archive.ts",
+        new_path="src/hooks/archive.ts",
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+        hunks=[
+            DiffHunk(
+                old_start=5,
+                old_count=0,
+                new_start=5,
+                new_count=1,
+                lines=[
+                    DiffLine(
+                        type="add",
+                        content="zip.extract",
+                        old_line_num=None,
+                        new_line_num=5,
+                    )
+                ],
+            )
+        ],
+    )
+    docs_file = DiffFile(
+        old_path="docs/readme.md",
+        new_path="docs/readme.md",
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+        hunks=[
+            DiffHunk(
+                old_start=1,
+                old_count=1,
+                new_start=1,
+                new_count=1,
+                lines=[
+                    DiffLine(
+                        type="add",
+                        content="docs update",
+                        old_line_num=None,
+                        new_line_num=1,
+                    )
+                ],
+            )
+        ],
+    )
+    context = DiffContext(
+        files=[plugin_file, hook_file, docs_file],
+        added_lines=3,
+        removed_lines=0,
+        changed_files=[
+            "src/plugins/install.ts",
+            "src/hooks/archive.ts",
+            "docs/readme.md",
+        ],
+    )
+
+    passes = _build_component_focused_passes(
+        context,
+        baseline_component_keys={"src/plugins"},
+        max_component_passes=3,
+    )
+
+    assert passes
+    assert passes[0][0].startswith("focused_baseline-risk:")
+    assert passes[0][1].changed_files == ["src/plugins/install.ts"]
+    assert any(label.startswith("focused_new-surface:") for label, _ in passes)
+
+
+def test_build_component_focused_passes_skips_test_only_component_subsets():
+    """Focused pass planner should not spend follow-up passes on test-only components."""
+    runtime_file = DiffFile(
+        old_path="src/infra/exec-safe-bin-policy.ts",
+        new_path="src/infra/exec-safe-bin-policy.ts",
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+        hunks=[
+            DiffHunk(
+                old_start=1,
+                old_count=0,
+                new_start=1,
+                new_count=1,
+                lines=[
+                    DiffLine(
+                        type="add",
+                        content="validateSafeBinArgv(args, profile)",
+                        old_line_num=None,
+                        new_line_num=1,
+                    )
+                ],
+            )
+        ],
+    )
+    test_file = DiffFile(
+        old_path="src/agents/pi-tools.safe-bins.e2e.test.ts",
+        new_path="src/agents/pi-tools.safe-bins.e2e.test.ts",
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+        hunks=[
+            DiffHunk(
+                old_start=10,
+                old_count=0,
+                new_start=10,
+                new_count=1,
+                lines=[
+                    DiffLine(
+                        type="add",
+                        content="expect(text).toContain(marker)",
+                        old_line_num=None,
+                        new_line_num=10,
+                    )
+                ],
+            )
+        ],
+    )
+    context = DiffContext(
+        files=[runtime_file, test_file],
+        added_lines=2,
+        removed_lines=0,
+        changed_files=[
+            "src/infra/exec-safe-bin-policy.ts",
+            "src/agents/pi-tools.safe-bins.e2e.test.ts",
+        ],
+    )
+
+    passes = _build_component_focused_passes(
+        context,
+        baseline_component_keys={"src/infra"},
+        max_component_passes=4,
+    )
+
+    assert passes
+    assert passes[0][1].changed_files == ["src/infra/exec-safe-bin-policy.ts"]
+    assert all(
+        "src/agents/pi-tools.safe-bins.e2e.test.ts" not in focused.changed_files
+        for _label, focused in passes
+    )
+
+
+def test_classify_changed_components_splits_baseline_and_new_surface():
+    """Changed components should be classified by baseline overlap."""
+    plugin_file = DiffFile(
+        old_path="src/plugins/install.ts",
+        new_path="src/plugins/install.ts",
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+        hunks=[
+            DiffHunk(
+                old_start=1,
+                old_count=0,
+                new_start=1,
+                new_count=1,
+                lines=[
+                    DiffLine(
+                        type="add",
+                        content="install(userInput)",
+                        old_line_num=None,
+                        new_line_num=1,
+                    )
+                ],
+            )
+        ],
+    )
+    hook_file = DiffFile(
+        old_path="src/hooks/install.ts",
+        new_path="src/hooks/install.ts",
+        is_new=False,
+        is_deleted=False,
+        is_renamed=False,
+        hunks=[
+            DiffHunk(
+                old_start=5,
+                old_count=0,
+                new_start=5,
+                new_count=1,
+                lines=[
+                    DiffLine(
+                        type="add",
+                        content="installHook(userInput)",
+                        old_line_num=None,
+                        new_line_num=5,
+                    )
+                ],
+            )
+        ],
+    )
+    context = DiffContext(
+        files=[plugin_file, hook_file],
+        added_lines=2,
+        removed_lines=0,
+        changed_files=["src/plugins/install.ts", "src/hooks/install.ts"],
+    )
+
+    baseline_rows, new_surface_rows = _classify_changed_components(
+        context,
+        baseline_component_keys={"src/plugins"},
+    )
+
+    assert [row[0] for row in baseline_rows] == ["src/plugins"]
+    assert [row[0] for row in new_surface_rows] == ["src/hooks"]
+
+
+def test_summarize_auth_reachability_candidates_prefers_overlapping_unchanged_sinks():
+    """Auth diffs should pull in overlapping high-impact baseline sinks from unchanged files."""
+    baseline_vulns = [
+        {
+            "title": "Config apply reaches privileged restart path",
+            "severity": "high",
+            "file_path": "src/gateway/server-methods/config.ts",
+            "line_number": 195,
+        },
+        {
+            "title": "Unrelated elevated shell path",
+            "severity": "critical",
+            "file_path": "src/auto-reply/reply/reply-elevated.ts",
+            "line_number": 64,
+        },
+        {
+            "title": "Low-signal timing detail",
+            "severity": "medium",
+            "file_path": "src/gateway/auth.ts",
+            "line_number": 175,
+        },
+    ]
+
+    summary = _summarize_auth_reachability_candidates(
+        baseline_vulns,
+        ["src/gateway/server/ws-connection/message-handler.ts"],
+        auth_privilege_signals=True,
+    )
+
+    assert "src/gateway/server-methods/config.ts:195" in summary
+    assert "Config apply reaches privileged restart path" in summary
+    assert "existing unchanged sink" in summary
+    assert "reply-elevated.ts" not in summary
+    assert "Low-signal timing detail" not in summary
+
+
+def test_summarize_auth_reachability_candidates_skips_non_auth_diffs():
+    """Without auth/privilege signals, no composed baseline sink summary should be injected."""
+    summary = _summarize_auth_reachability_candidates(
+        [
+            {
+                "title": "Config apply reaches privileged restart path",
+                "severity": "high",
+                "file_path": "src/gateway/server-methods/config.ts",
+            }
+        ],
+        ["src/gateway/server/ws-connection/message-handler.ts"],
+        auth_privilege_signals=False,
+    )
+
+    assert summary == "- No auth/privilege diff signals detected."
+
+
+def test_summarize_auth_reachability_sink_code_reads_unchanged_sink_window(tmp_path: Path):
+    """Auth diffs should get compact unchanged sink code anchors from baseline findings."""
+    repo = tmp_path / "repo"
+    sink_dir = repo / "src" / "gateway" / "server-methods"
+    sink_dir.mkdir(parents=True)
+    (sink_dir / "config.ts").write_text(
+        "\n".join(
+            [
+                "export function applyConfig(update: unknown) {",
+                "  validateConfig(update);",
+                "  persistConfig(update);",
+                "  restartGateway();",
+                "}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    summary = _summarize_auth_reachability_sink_code(
+        repo,
+        [
+            {
+                "title": "Config apply reaches privileged restart path",
+                "severity": "high",
+                "file_path": "src/gateway/server-methods/config.ts",
+                "line_number": 3,
+            }
+        ],
+        ["src/gateway/server/ws-connection/message-handler.ts"],
+        auth_privilege_signals=True,
+    )
+
+    assert "src/gateway/server-methods/config.ts:3" in summary
+    assert "Config apply reaches privileged restart path" in summary
+    assert "L3:   persistConfig(update);" in summary
+    assert "L4:   restartGateway();" in summary
 
 
 def test_summarize_diff_hunk_snippets_includes_diff_lines():
@@ -1362,7 +2814,12 @@ def test_detect_weak_chain_consensus_accepts_family_variant_agreement():
 
     weak, reason, support = detect_weak_chain_consensus(
         core_chain_ids={core_family},
-        pass_chain_ids=[{core_family}, {variant_family}, {core_family}, {variant_family}],
+        pass_chain_ids=[
+            {core_family},
+            {variant_family},
+            {core_family},
+            {variant_family},
+        ],
         required_support=2,
     )
     assert not weak
@@ -1436,7 +2893,11 @@ def test_dedupe_with_baseline_filter_marks_real_baseline_as_known():
     """Baseline THREAT entries without finding_type should be tagged known_vuln."""
     pr_vulns = [{"file_path": "app.ts", "threat_id": "THREAT-001", "title": "SQLi"}]
     known_vulns = [
-        {"file_path": "app.ts", "threat_id": "THREAT-001", "title": "SQLi"},  # no finding_type
+        {
+            "file_path": "app.ts",
+            "threat_id": "THREAT-001",
+            "title": "SQLi",
+        },  # no finding_type
     ]
     baseline = filter_baseline_vulns(known_vulns)
     result = dedupe_pr_vulns(pr_vulns, baseline)
@@ -1533,6 +2994,204 @@ async def test_pr_review_missing_artifact_fails_closed(tmp_path: Path, mock_scan
             known_vulns_path=None,
             severity_threshold="low",
         )
+
+
+def _make_test_pr_review_context(
+    repo: Path,
+    securevibes_dir: Path,
+    diff_context: DiffContext,
+) -> PRReviewContext:
+    """Build a minimal PRReviewContext for scanner.pr_review regression tests."""
+    return PRReviewContext(
+        repo=repo,
+        securevibes_dir=securevibes_dir,
+        focused_diff_context=diff_context,
+        diff_context=diff_context,
+        contextualized_prompt="test prompt",
+        baseline_vulns=[],
+        pr_review_attempts=1,
+        pr_timeout_seconds=60,
+        pr_vulns_path=securevibes_dir / "PR_VULNERABILITIES.json",
+        detected_languages=set(),
+        command_builder_signals=False,
+        path_parser_signals=False,
+        auth_privilege_signals=False,
+        retry_focus_plan=[],
+        diff_line_anchors="- src/app.py:1",
+        diff_hunk_snippets="+ danger()",
+        pr_grep_default_scope="src",
+        scan_start_time=0.0,
+        severity_threshold="low",
+    )
+
+
+@pytest.mark.asyncio
+async def test_pr_review_persists_final_canonical_artifact_without_baseline_vulns(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """Final PR review should persist canonical findings even without baseline vuln dedupe."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    (securevibes_dir / "SECURITY.md").write_text("# Security\n", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+
+    diff_context = DiffContext(
+        files=[], added_lines=1, removed_lines=0, changed_files=["src/app.py"]
+    )
+    ctx = _make_test_pr_review_context(repo, securevibes_dir, diff_context)
+    finding = {
+        "threat_id": "PR-100",
+        "finding_type": "new_threat",
+        "title": "Persisted finding",
+        "description": "A merged PR finding.",
+        "severity": "high",
+        "file_path": "src/app.py",
+        "line_number": 7,
+        "code_snippet": "danger()",
+        "attack_scenario": "1) user input reaches sink",
+        "evidence": "src/app.py:7",
+        "cwe_id": "CWE-94",
+        "recommendation": "Add validation.",
+    }
+    state = PRReviewState(
+        pr_vulns=[finding],
+        collected_pr_vulns=[finding],
+        artifact_loaded=True,
+        attempts_run=1,
+        raw_pr_finding_count=1,
+    )
+
+    async def mock_single_pass(self, **_kwargs):
+        (securevibes_dir / "PR_VULNERABILITIES.json").write_text(
+            json.dumps([finding]),
+            encoding="utf-8",
+        )
+        return ctx, state
+
+    monkeypatch.setattr(Scanner, "_run_single_pr_review_pass", mock_single_pass)
+    monkeypatch.setattr(
+        "securevibes.scanner.scanner._build_component_focused_passes",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        "securevibes.scanner.scanner._derive_baseline_component_keys",
+        lambda *_args, **_kwargs: set(),
+    )
+
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+
+    result = await scanner.pr_review(
+        str(repo),
+        diff_context,
+        known_vulns_path=None,
+        severity_threshold="low",
+    )
+
+    primary_artifact = securevibes_dir / "PR_VULNERABILITIES.json"
+    canonical_artifact = securevibes_dir / "PR_VULNERABILITIES.canonical.json"
+
+    assert result.issues
+    assert json.loads(primary_artifact.read_text(encoding="utf-8")) == [finding]
+    assert json.loads(canonical_artifact.read_text(encoding="utf-8")) == [finding]
+
+
+@pytest.mark.asyncio
+async def test_pr_review_focused_pass_empty_artifact_does_not_clobber_aggregate_findings(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """Later focused passes should not erase findings from earlier passes."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    (securevibes_dir / "SECURITY.md").write_text("# Security\n", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+
+    diff_context = DiffContext(
+        files=[], added_lines=1, removed_lines=0, changed_files=["src/app.py"]
+    )
+    primary_ctx = _make_test_pr_review_context(repo, securevibes_dir, diff_context)
+    focused_ctx = _make_test_pr_review_context(repo, securevibes_dir, diff_context)
+
+    finding = {
+        "threat_id": "PR-200",
+        "finding_type": "new_threat",
+        "title": "Primary pass finding",
+        "description": "First pass found the issue.",
+        "severity": "high",
+        "file_path": "src/app.py",
+        "line_number": 11,
+        "code_snippet": "danger()",
+        "attack_scenario": "1) user input reaches sink",
+        "evidence": "src/app.py:11",
+        "cwe_id": "CWE-94",
+        "recommendation": "Add validation.",
+    }
+    primary_state = PRReviewState(
+        pr_vulns=[finding],
+        collected_pr_vulns=[finding],
+        artifact_loaded=True,
+        attempts_run=1,
+        raw_pr_finding_count=1,
+    )
+    focused_state = PRReviewState(
+        pr_vulns=[],
+        collected_pr_vulns=[],
+        artifact_loaded=True,
+        attempts_run=1,
+        raw_pr_finding_count=0,
+    )
+
+    call_counter = {"count": 0}
+
+    async def mock_single_pass(self, **_kwargs):
+        call_counter["count"] += 1
+        artifact = securevibes_dir / "PR_VULNERABILITIES.json"
+        if call_counter["count"] == 1:
+            artifact.write_text(json.dumps([finding]), encoding="utf-8")
+            return primary_ctx, primary_state
+        artifact.write_text("[]", encoding="utf-8")
+        return focused_ctx, focused_state
+
+    monkeypatch.setattr(Scanner, "_run_single_pr_review_pass", mock_single_pass)
+    monkeypatch.setattr(
+        "securevibes.scanner.scanner._build_component_focused_passes",
+        lambda *_args, **_kwargs: [("focused_new-surface:src", diff_context)],
+    )
+    monkeypatch.setattr(
+        "securevibes.scanner.scanner._derive_baseline_component_keys",
+        lambda *_args, **_kwargs: set(),
+    )
+
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+    checkpoint_payloads: list[dict] = []
+
+    result = await scanner.pr_review(
+        str(repo),
+        diff_context,
+        known_vulns_path=None,
+        severity_threshold="low",
+        progress_writer=lambda checkpoint_result: checkpoint_payloads.append(
+            checkpoint_result.to_dict()
+        ),
+    )
+
+    primary_artifact = securevibes_dir / "PR_VULNERABILITIES.json"
+    canonical_artifact = securevibes_dir / "PR_VULNERABILITIES.canonical.json"
+
+    assert call_counter["count"] == 2
+    assert result.issues
+    assert result.issues[0].title == "Primary pass finding"
+    assert checkpoint_payloads
+    assert checkpoint_payloads[-1]["issues"][0]["title"] == "Primary pass finding"
+    assert json.loads(primary_artifact.read_text(encoding="utf-8")) == [finding]
+    assert json.loads(canonical_artifact.read_text(encoding="utf-8")) == [finding]
 
 
 @pytest.mark.asyncio
@@ -1868,7 +3527,9 @@ async def test_pr_review_uses_direct_tools_without_task(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_generate_pr_hypotheses_uses_no_tools_and_default_permissions(tmp_path: Path):
+async def test_generate_pr_hypotheses_uses_no_tools_and_default_permissions(
+    tmp_path: Path,
+):
     """Hypothesis generation helper should run LLM-only with safe default permissions."""
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -1888,9 +3549,16 @@ async def test_generate_pr_hypotheses_uses_no_tools_and_default_permissions(tmp_
         await _generate_pr_hypotheses(
             repo=repo,
             model="sonnet",
+            timeout_seconds=120,
             changed_files=["app.py"],
             diff_line_anchors="- app.py",
             diff_hunk_snippets="--- app.py",
+            changed_code_dataflow_summary="- targetDir <- path.join(base, pluginId)",
+            changed_code_chain_summary="- app.py: targetDir <- path.join(base, pluginId)",
+            component_delta_summary="- New-surface changed component: src/plugins -> app.py",
+            new_surface_threat_delta="- Path boundary delta",
+            baseline_reachability_summary="- No overlapping high-impact baseline operations identified.",
+            baseline_sink_code_summary="- No unchanged baseline sink code selected.",
             threat_context_summary="- none",
             vuln_context_summary="- none",
             architecture_context="- none",
@@ -1899,6 +3567,91 @@ async def test_generate_pr_hypotheses_uses_no_tools_and_default_permissions(tmp_
     options = mock_client.call_args[1]["options"]
     assert options.allowed_tools == []
     assert options.permission_mode == "default"
+
+
+@pytest.mark.asyncio
+async def test_generate_new_surface_threat_delta_uses_no_tools_and_default_permissions(
+    tmp_path: Path,
+):
+    """New-surface threat delta helper should run LLM-only with safe default permissions."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
+        mock_instance = MagicMock()
+        mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.query = AsyncMock()
+
+        async def async_gen():
+            return
+            yield  # pragma: no cover
+
+        mock_instance.receive_messages = async_gen
+
+        await _generate_new_surface_threat_delta(
+            repo=repo,
+            model="sonnet",
+            timeout_seconds=45,
+            changed_files=["src/plugins/install.ts"],
+            component_delta_summary="- New-surface changed component: src/plugins -> src/plugins/install.ts",
+            diff_line_anchors="- src/plugins/install.ts:42",
+            diff_hunk_snippets="+ const targetDir = path.join(base, pluginId);",
+            architecture_context="- Existing gateway and CLI components",
+            threat_context_summary="- None",
+            vuln_context_summary="- None",
+        )
+
+    options = mock_client.call_args[1]["options"]
+    assert options.allowed_tools == []
+    assert options.permission_mode == "default"
+
+
+@pytest.mark.asyncio
+async def test_generate_new_surface_threat_delta_timeout_includes_client_setup(tmp_path: Path):
+    """New-surface threat delta timeout should cover slow client setup."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    class _SlowClientCtx:
+        async def __aenter__(self):
+            await asyncio.sleep(0.05)
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def query(self, prompt):
+            return None
+
+        async def receive_messages(self):
+            if False:  # pragma: no cover
+                yield None
+
+    with patch(
+        "securevibes.scanner.scanner.ClaudeSDKClient",
+        return_value=_SlowClientCtx(),
+    ):
+        real_wait_for = asyncio.wait_for
+
+        async def short_wait_for(awaitable, timeout):
+            return await real_wait_for(awaitable, timeout=0.01)
+
+        with patch("securevibes.scanner.scanner.asyncio.wait_for", new=short_wait_for):
+            result = await _generate_new_surface_threat_delta(
+                repo=repo,
+                model="sonnet",
+                timeout_seconds=1,
+                changed_files=["src/plugins/install.ts"],
+                component_delta_summary="- New-surface changed component: src/plugins -> src/plugins/install.ts",
+                diff_line_anchors="- src/plugins/install.ts:42",
+                diff_hunk_snippets="+ const targetDir = path.join(base, pluginId);",
+                architecture_context="- Existing gateway and CLI components",
+                threat_context_summary="- None",
+                vuln_context_summary="- None",
+            )
+
+    assert result == "- No new-surface threat delta generated."
 
 
 @pytest.mark.asyncio
@@ -1922,6 +3675,7 @@ async def test_refine_pr_findings_uses_no_tools_and_default_permissions(tmp_path
         await _refine_pr_findings_with_llm(
             repo=repo,
             model="sonnet",
+            timeout_seconds=120,
             diff_line_anchors="- app.py",
             diff_hunk_snippets="--- app.py",
             findings=[
@@ -1980,6 +3734,422 @@ async def test_pr_review_has_subagent_hook(tmp_path: Path):
     options = mock_client.call_args[1]["options"]
     assert "SubagentStop" in options.hooks, "SubagentStop hook must be configured"
     assert len(options.hooks["SubagentStop"]) > 0, "SubagentStop must have at least one hook"
+
+
+@pytest.mark.asyncio
+async def test_prepare_pr_review_context_includes_new_surface_delta_for_novel_components(
+    tmp_path: Path,
+):
+    """PR context should inject delta threats when changed components lack baseline overlap."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    src_dir = repo / "src" / "plugins"
+    src_dir.mkdir(parents=True)
+    (src_dir / "install.ts").write_text("export const install = true;\n", encoding="utf-8")
+
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    (securevibes_dir / "SECURITY.md").write_text("# Security\nGateway only\n", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "THREAT-001",
+                    "title": "Gateway auth issue",
+                    "affected_components": ["src/gateway/server.ts"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    known_vulns_path = securevibes_dir / "VULNERABILITIES.json"
+    known_vulns_path.write_text("[]", encoding="utf-8")
+
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/plugins/install.ts",
+                new_path="src/plugins/install.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=1,
+                        old_count=0,
+                        new_start=1,
+                        new_count=1,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="const targetDir = path.join(base, pluginId);",
+                                old_line_num=None,
+                                new_line_num=1,
+                            )
+                        ],
+                    )
+                ],
+            )
+        ],
+        added_lines=1,
+        removed_lines=0,
+        changed_files=["src/plugins/install.ts"],
+    )
+
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+
+    with (
+        patch(
+            "securevibes.scanner.scanner._generate_pr_hypotheses",
+            new=AsyncMock(return_value="- Generic hypothesis"),
+        ) as mock_hypotheses,
+        patch(
+            "securevibes.scanner.scanner._generate_new_surface_threat_delta",
+            new=AsyncMock(return_value="- Installer boundary delta"),
+        ) as mock_delta,
+    ):
+        ctx = await scanner._prepare_pr_review_context(
+            repo=repo,
+            securevibes_dir=securevibes_dir,
+            diff_context=diff_context,
+            known_vulns_path=known_vulns_path,
+            severity_threshold="medium",
+            pr_timeout_seconds_override=120,
+        )
+
+    assert mock_delta.await_count == 1
+    assert mock_hypotheses.await_count == 1
+    assert "CHANGED COMPONENT COVERAGE VS BASELINE ARTIFACTS" in ctx.contextualized_prompt
+    assert "New-surface changed component: src/plugins -> src/plugins/install.ts" in (
+        ctx.contextualized_prompt
+    )
+    assert "NEW-SURFACE THREAT DELTA" in ctx.contextualized_prompt
+    assert "- Installer boundary delta" in ctx.contextualized_prompt
+    assert mock_delta.await_args.kwargs["timeout_seconds"] == 20
+    assert mock_hypotheses.await_args.kwargs["timeout_seconds"] == 30
+    assert ctx.context_prep_seconds >= 0
+    assert ctx.new_surface_delta_seconds >= 0
+    assert ctx.hypothesis_generation_seconds >= 0
+    assert "component_classification_seconds" in ctx.context_phase_timings
+    assert "context_prep_total_seconds" in ctx.context_phase_timings
+
+
+@pytest.mark.asyncio
+async def test_prepare_pr_review_context_includes_changed_code_dataflow_facts(
+    tmp_path: Path,
+):
+    """PR context should inject generic changed-code value-flow facts."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    src_dir = repo / "src" / "plugins"
+    src_dir.mkdir(parents=True)
+    (src_dir / "install.ts").write_text("export const install = true;\n", encoding="utf-8")
+
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    (securevibes_dir / "SECURITY.md").write_text("# Security\n", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+    known_vulns_path = securevibes_dir / "VULNERABILITIES.json"
+    known_vulns_path.write_text("[]", encoding="utf-8")
+
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/plugins/install.ts",
+                new_path="src/plugins/install.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=140,
+                        old_count=3,
+                        new_start=140,
+                        new_count=3,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content=(
+                                    "const pluginId = "
+                                    "safeDirName(unscopedPackageName(manifest.name));"
+                                ),
+                                old_line_num=None,
+                                new_line_num=146,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="const targetDir = path.join(baseDir, pluginId);",
+                                old_line_num=None,
+                                new_line_num=148,
+                            ),
+                            DiffLine(
+                                type="context",
+                                content="await fs.cp(packageDir, targetDir, { recursive: true });",
+                                old_line_num=150,
+                                new_line_num=150,
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ],
+        added_lines=2,
+        removed_lines=0,
+        changed_files=["src/plugins/install.ts"],
+    )
+
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+
+    with (
+        patch(
+            "securevibes.scanner.scanner._generate_pr_hypotheses",
+            new=AsyncMock(return_value="- Generic hypothesis"),
+        ),
+        patch(
+            "securevibes.scanner.scanner._generate_new_surface_threat_delta",
+            new=AsyncMock(return_value="- Installer boundary delta"),
+        ),
+    ):
+        ctx = await scanner._prepare_pr_review_context(
+            repo=repo,
+            securevibes_dir=securevibes_dir,
+            diff_context=diff_context,
+            known_vulns_path=known_vulns_path,
+            severity_threshold="medium",
+            pr_timeout_seconds_override=120,
+        )
+
+    assert "CHANGED-CODE DATAFLOW FACTS" in ctx.contextualized_prompt
+    assert "pluginId <- safeDirName(unscopedPackageName(manifest.name))" in (
+        ctx.contextualized_prompt
+    )
+    assert "targetDir <- path.join(baseDir, pluginId)" in ctx.contextualized_prompt
+    assert "fs.cp(packageDir, targetDir, { recursive: true })" in ctx.contextualized_prompt
+    assert "EXPLICIT CHANGED-CODE CHAINS TO VALIDATE INDEPENDENTLY" in (ctx.contextualized_prompt)
+
+
+@pytest.mark.asyncio
+async def test_prepare_pr_review_context_includes_auth_reachability_baseline_sinks(
+    tmp_path: Path,
+):
+    """Auth diffs should pull baseline high-impact sinks from overlapping unchanged files."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    gateway_dir = repo / "src" / "gateway" / "server" / "ws-connection"
+    gateway_dir.mkdir(parents=True)
+    (gateway_dir / "message-handler.ts").write_text(
+        "export const handler = true;\n", encoding="utf-8"
+    )
+    sink_dir = repo / "src" / "gateway" / "server-methods"
+    sink_dir.mkdir(parents=True)
+    sink_lines = [f"// filler line {idx}" for idx in range(1, 193)]
+    sink_lines.extend(
+        [
+            "  validateConfig(update);",
+            "  writeConfig(update);",
+            "  applyConfig(update);",
+            "  restartGateway();",
+        ]
+    )
+    (sink_dir / "config.ts").write_text(
+        "\n".join(["export function applyConfig(update: unknown) {", *sink_lines, "}"]) + "\n",
+        encoding="utf-8",
+    )
+
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    (securevibes_dir / "SECURITY.md").write_text("# Security\nGateway\n", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+    known_vulns_path = securevibes_dir / "VULNERABILITIES.json"
+    known_vulns_path.write_text(
+        json.dumps(
+            [
+                {
+                    "title": "Config apply reaches privileged restart path",
+                    "severity": "high",
+                    "file_path": "src/gateway/server-methods/config.ts",
+                    "line_number": 195,
+                },
+                {
+                    "title": "Unrelated elevated shell path",
+                    "severity": "critical",
+                    "file_path": "src/auto-reply/reply/reply-elevated.ts",
+                    "line_number": 64,
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/gateway/server/ws-connection/message-handler.ts",
+                new_path="src/gateway/server/ws-connection/message-handler.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=250,
+                        old_count=2,
+                        new_start=250,
+                        new_count=2,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="const role = frame.role ?? 'user';",
+                                old_line_num=None,
+                                new_line_num=253,
+                            ),
+                            DiffLine(
+                                type="add",
+                                content="if (role === 'admin') session.role = role;",
+                                old_line_num=None,
+                                new_line_num=254,
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ],
+        added_lines=2,
+        removed_lines=0,
+        changed_files=["src/gateway/server/ws-connection/message-handler.ts"],
+    )
+
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+
+    with (
+        patch(
+            "securevibes.scanner.scanner._generate_pr_hypotheses",
+            new=AsyncMock(return_value="- Gateway auth hypothesis"),
+        ) as mock_hypotheses,
+        patch(
+            "securevibes.scanner.scanner._generate_new_surface_threat_delta",
+            new=AsyncMock(return_value="- No new-surface threat delta generated."),
+        ),
+    ):
+        ctx = await scanner._prepare_pr_review_context(
+            repo=repo,
+            securevibes_dir=securevibes_dir,
+            diff_context=diff_context,
+            known_vulns_path=known_vulns_path,
+            severity_threshold="medium",
+            pr_timeout_seconds_override=120,
+        )
+
+    assert "BASELINE HIGH-IMPACT OPERATIONS THAT MAY BECOME NEWLY REACHABLE" in (
+        ctx.contextualized_prompt
+    )
+    assert "UNCHANGED BASELINE SINK CODE TO CHECK FOR NEW REACHABILITY" in (
+        ctx.contextualized_prompt
+    )
+    assert "src/gateway/server-methods/config.ts:195" in ctx.contextualized_prompt
+    assert "Config apply reaches privileged restart path" in ctx.contextualized_prompt
+    assert "L195:" in ctx.contextualized_prompt
+    baseline_reachability_summary = mock_hypotheses.await_args.kwargs[
+        "baseline_reachability_summary"
+    ]
+    assert baseline_reachability_summary.startswith(
+        "- high | src/gateway/server-methods/config.ts:195"
+    )
+    assert "reply-elevated.ts" not in baseline_reachability_summary
+    assert (
+        "src/gateway/server-methods/config.ts:195"
+        in mock_hypotheses.await_args.kwargs["baseline_sink_code_summary"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_prepare_pr_review_context_skips_new_surface_delta_for_baseline_components(
+    tmp_path: Path,
+):
+    """PR context should skip delta generation when baseline already covers the changed component."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    src_dir = repo / "src" / "plugins"
+    src_dir.mkdir(parents=True)
+    (src_dir / "install.ts").write_text("export const install = true;\n", encoding="utf-8")
+
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    (securevibes_dir / "SECURITY.md").write_text("# Security\nPlugins\n", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "THREAT-001",
+                    "title": "Plugin install issue",
+                    "affected_components": ["src/plugins/install.ts"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    known_vulns_path = securevibes_dir / "VULNERABILITIES.json"
+    known_vulns_path.write_text("[]", encoding="utf-8")
+
+    diff_context = DiffContext(
+        files=[
+            DiffFile(
+                old_path="src/plugins/install.ts",
+                new_path="src/plugins/install.ts",
+                is_new=False,
+                is_deleted=False,
+                is_renamed=False,
+                hunks=[
+                    DiffHunk(
+                        old_start=1,
+                        old_count=0,
+                        new_start=1,
+                        new_count=1,
+                        lines=[
+                            DiffLine(
+                                type="add",
+                                content="const targetDir = path.join(base, pluginId);",
+                                old_line_num=None,
+                                new_line_num=1,
+                            )
+                        ],
+                    )
+                ],
+            )
+        ],
+        added_lines=1,
+        removed_lines=0,
+        changed_files=["src/plugins/install.ts"],
+    )
+
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+
+    with (
+        patch(
+            "securevibes.scanner.scanner._generate_pr_hypotheses",
+            new=AsyncMock(return_value="- Generic hypothesis"),
+        ),
+        patch(
+            "securevibes.scanner.scanner._generate_new_surface_threat_delta",
+            new=AsyncMock(return_value="- Should not appear"),
+        ) as mock_delta,
+    ):
+        ctx = await scanner._prepare_pr_review_context(
+            repo=repo,
+            securevibes_dir=securevibes_dir,
+            diff_context=diff_context,
+            known_vulns_path=known_vulns_path,
+            severity_threshold="medium",
+        )
+
+    assert mock_delta.await_count == 0
+    assert "Baseline-covered changed component: src/plugins -> src/plugins/install.ts" in (
+        ctx.contextualized_prompt
+    )
+    assert "- No new-surface threat delta generated." in ctx.contextualized_prompt
 
 
 def test_pr_code_review_prompt_requires_chain_analysis_text():
@@ -2169,8 +4339,7 @@ def test_score_diff_file_new_file_bonus():
     regular = _make_diff_file("src/handler.py")
     new = _make_diff_file("src/handler.py", is_new=True)
     assert (
-        score_diff_file_for_security_review(new)
-        == score_diff_file_for_security_review(regular) + 8
+        score_diff_file_for_security_review(new) == score_diff_file_for_security_review(regular) + 8
     )
 
 
@@ -2237,11 +4406,24 @@ def test_summarize_diff_line_anchors_basic():
                 new_start=1,
                 new_count=4,
                 lines=[
-                    DiffLine(type="add", content="import os", old_line_num=None, new_line_num=2),
                     DiffLine(
-                        type="remove", content="import sys", old_line_num=1, new_line_num=None
+                        type="add",
+                        content="import os",
+                        old_line_num=None,
+                        new_line_num=2,
                     ),
-                    DiffLine(type="context", content="# header", old_line_num=2, new_line_num=3),
+                    DiffLine(
+                        type="remove",
+                        content="import sys",
+                        old_line_num=1,
+                        new_line_num=None,
+                    ),
+                    DiffLine(
+                        type="context",
+                        content="# header",
+                        old_line_num=2,
+                        new_line_num=3,
+                    ),
                 ],
             )
         ],
@@ -2274,7 +4456,12 @@ def test_summarize_diff_line_anchors_truncates_long_snippets():
                 new_start=1,
                 new_count=1,
                 lines=[
-                    DiffLine(type="add", content=long_content, old_line_num=None, new_line_num=1),
+                    DiffLine(
+                        type="add",
+                        content=long_content,
+                        old_line_num=None,
+                        new_line_num=1,
+                    ),
                 ],
             )
         ],
@@ -2440,7 +4627,12 @@ def test_summarize_diff_hunk_snippets_truncates_long_lines():
                 new_start=1,
                 new_count=1,
                 lines=[
-                    DiffLine(type="add", content=long_content, old_line_num=None, new_line_num=1)
+                    DiffLine(
+                        type="add",
+                        content=long_content,
+                        old_line_num=None,
+                        new_line_num=1,
+                    )
                 ],
             )
         ],
@@ -2468,7 +4660,12 @@ def test_summarize_diff_hunk_snippets_truncates_hunks():
             new_start=i * 10,
             new_count=1,
             lines=[
-                DiffLine(type="add", content=f"line {i}", old_line_num=None, new_line_num=i * 10)
+                DiffLine(
+                    type="add",
+                    content=f"line {i}",
+                    old_line_num=None,
+                    new_line_num=i * 10,
+                )
             ],
         )
         for i in range(6)
@@ -2493,7 +4690,7 @@ def test_summarize_diff_hunk_snippets_truncates_hunks():
 
 def test_summarize_diff_hunk_snippets_new_file_uses_higher_limit():
     """New files should use _NEW_FILE_HUNK_MAX_LINES instead of the standard 80-line cap."""
-    # Create a new file with 150 lines — well beyond 80 but within 200
+    # Create a new file with 150 lines — well beyond 80 but within _NEW_FILE_HUNK_MAX_LINES.
     lines = [
         DiffLine(type="add", content=f"line {i}", old_line_num=None, new_line_num=i)
         for i in range(1, 151)
@@ -2519,7 +4716,7 @@ def test_summarize_diff_hunk_snippets_new_file_uses_higher_limit():
     # The new-file logic should include them.
     assert "line 100" in result
     assert "line 150" in result
-    # Should NOT show truncation since 150 < _NEW_FILE_HUNK_MAX_LINES (200)
+    # Should NOT show truncation since 150 < _NEW_FILE_HUNK_MAX_LINES.
     assert "truncated" not in result
 
 
@@ -2555,7 +4752,12 @@ def test_summarize_diff_hunk_snippets_modified_file_uses_standard_limit():
 def test_summarize_diff_line_anchors_new_file_uses_higher_limit():
     """New files should use _NEW_FILE_ANCHOR_MAX_LINES instead of the standard 48-line cap."""
     lines = [
-        DiffLine(type="add", content=f"content at line {i}", old_line_num=None, new_line_num=i)
+        DiffLine(
+            type="add",
+            content=f"content at line {i}",
+            old_line_num=None,
+            new_line_num=i,
+        )
         for i in range(1, 101)
     ]
     diff_file = DiffFile(
@@ -2586,7 +4788,12 @@ def test_summarize_diff_line_anchors_new_file_uses_higher_limit():
 def test_summarize_diff_line_anchors_modified_file_uses_standard_limit():
     """Modified (non-new) files should still use the standard 48-line cap."""
     lines = [
-        DiffLine(type="add", content=f"content at line {i}", old_line_num=None, new_line_num=i)
+        DiffLine(
+            type="add",
+            content=f"content at line {i}",
+            old_line_num=None,
+            new_line_num=i,
+        )
         for i in range(1, 101)
     ]
     diff_file = DiffFile(
@@ -2711,6 +4918,12 @@ class TestGeneratePrHypotheses:
         changed_files=["src/auth.py"],
         diff_line_anchors="src/auth.py:42",
         diff_hunk_snippets="+ if user.is_admin:",
+        changed_code_dataflow_summary="- targetDir <- path.join(base, pluginId)",
+        changed_code_chain_summary="- src/auth.py: targetDir <- path.join(base, pluginId)",
+        component_delta_summary="- New-surface changed component: src/auth -> src/auth.py",
+        new_surface_threat_delta="- Auth boundary delta",
+        baseline_reachability_summary="- high | src/gateway/server-methods/config.ts:195 | Config apply reaches privileged restart path | existing unchanged sink; check whether auth/session/role/policy changes make this operation newly reachable or less restricted.",
+        baseline_sink_code_summary="- src/gateway/server-methods/config.ts:195 | high | Config apply reaches privileged restart path\n  L193:   validateConfig(update)\n  L194:   writeConfig(update)\n  L195:   applyConfig(update)",
         threat_context_summary="- Auth bypass",
         vuln_context_summary="- None",
         architecture_context="Flask app",
@@ -2790,6 +5003,47 @@ class TestGeneratePrHypotheses:
         assert "SSRF in proxy" in result
 
     @pytest.mark.asyncio
+    async def test_prompt_includes_changed_code_and_new_surface_context(self):
+        """Hypothesis prompt should include structured changed-code and component delta context."""
+        from claude_agent_sdk.types import ResultMessage
+
+        result_msg = ResultMessage(
+            subtype="success",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=False,
+            num_turns=1,
+            session_id="test-session",
+        )
+
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=None)
+
+        async def mock_receive():
+            yield result_msg
+
+        mock_client.receive_messages = mock_receive
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
+            await _generate_pr_hypotheses(**self._DEFAULT_KWARGS)
+
+        prompt = mock_client.query.await_args.args[0]
+        assert "CHANGED-CODE DATAFLOW FACTS" in prompt
+        assert "- targetDir <- path.join(base, pluginId)" in prompt
+        assert "CHANGED COMPONENT COVERAGE VS BASELINE ARTIFACTS" in prompt
+        assert "- New-surface changed component: src/auth -> src/auth.py" in prompt
+        assert "NEW-SURFACE THREAT DELTA" in prompt
+        assert "- Auth boundary delta" in prompt
+        assert "BASELINE HIGH-IMPACT OPERATIONS THAT MAY BECOME NEWLY REACHABLE" in prompt
+        assert "Config apply reaches privileged restart path" in prompt
+        assert "UNCHANGED BASELINE SINK CODE TO CHECK FOR NEW REACHABILITY" in prompt
+        assert "L195:" in prompt
+        assert "EXPLICIT CHANGED-CODE CHAINS TO VALIDATE INDEPENDENTLY" in prompt
+        assert "- src/auth.py: targetDir <- path.join(base, pluginId)" in prompt
+
+    @pytest.mark.asyncio
     async def test_empty_response_normalizes(self):
         """Empty LLM response should be normalized (empty string from normalizer)."""
         from claude_agent_sdk.types import ResultMessage
@@ -2866,6 +5120,81 @@ class TestGeneratePrHypotheses:
 
         assert result == "- Unable to generate hypotheses."
         mock_logger.warning.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_timeout_includes_client_setup(self):
+        """Hypothesis timeout should cover slow client setup."""
+
+        class _SlowClientCtx:
+            async def __aenter__(self):
+                await asyncio.sleep(0.05)
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def query(self, prompt):
+                return None
+
+            async def receive_messages(self):
+                if False:  # pragma: no cover
+                    yield None
+
+        with patch(
+            "securevibes.scanner.scanner.ClaudeSDKClient",
+            return_value=_SlowClientCtx(),
+        ):
+            real_wait_for = asyncio.wait_for
+
+            async def short_wait_for(awaitable, timeout):
+                return await real_wait_for(awaitable, timeout=0.01)
+
+            with patch("securevibes.scanner.scanner.asyncio.wait_for", new=short_wait_for):
+                result = await _generate_pr_hypotheses(
+                    timeout_seconds=1,
+                    **self._DEFAULT_KWARGS,
+                )
+
+        assert result == "- Unable to generate hypotheses."
+
+    @pytest.mark.asyncio
+    async def test_explicit_timeout_seconds_are_honored(self):
+        """Hypothesis generation should honor the caller-provided timeout budget."""
+        from claude_agent_sdk.types import ResultMessage
+
+        result_msg = ResultMessage(
+            subtype="success",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=False,
+            num_turns=1,
+            session_id="test-session",
+        )
+
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=None)
+
+        async def mock_receive():
+            yield result_msg
+
+        mock_client.receive_messages = mock_receive
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        captured: dict[str, float] = {}
+        real_wait_for = asyncio.wait_for
+
+        async def capture_wait_for(awaitable, timeout):
+            captured["timeout"] = timeout
+            return await real_wait_for(awaitable, timeout=timeout)
+
+        with (
+            patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client),
+            patch("securevibes.scanner.scanner.asyncio.wait_for", new=capture_wait_for),
+        ):
+            await _generate_pr_hypotheses(timeout_seconds=17, **self._DEFAULT_KWARGS)
+
+        assert captured["timeout"] == 17
 
 
 # ---------------------------------------------------------------------------
@@ -2956,6 +5285,43 @@ class TestRefinePrFindingsWithLlm:
 
         assert result is None
         mock_logger.warning.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_timeout_includes_client_setup(self):
+        """Refinement timeout should cover slow client setup."""
+
+        class _SlowClientCtx:
+            async def __aenter__(self):
+                await asyncio.sleep(0.05)
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def query(self, prompt):
+                return None
+
+            async def receive_messages(self):
+                if False:  # pragma: no cover
+                    yield None
+
+        with patch(
+            "securevibes.scanner.scanner.ClaudeSDKClient",
+            return_value=_SlowClientCtx(),
+        ):
+            real_wait_for = asyncio.wait_for
+
+            async def short_wait_for(awaitable, timeout):
+                return await real_wait_for(awaitable, timeout=0.01)
+
+            with patch("securevibes.scanner.scanner.asyncio.wait_for", new=short_wait_for):
+                result = await _refine_pr_findings_with_llm(
+                    findings=[{"title": "test"}],
+                    timeout_seconds=1,
+                    **self._DEFAULT_KWARGS,
+                )
+
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_os_error_returns_none(self):
@@ -3118,6 +5484,636 @@ class TestRefinePrFindingsWithLlm:
         assert result[1]["title"] == "SSRF"
 
     @pytest.mark.asyncio
+    async def test_refinement_prompt_includes_changed_code_chains_and_auth_sink_guidance(self):
+        """Verifier prompt should retain explicit changed-code chains and auth-sink guidance."""
+        from claude_agent_sdk.types import AssistantMessage, TextBlock, ResultMessage
+
+        captured_prompt: dict[str, str] = {}
+        text_block = TextBlock(text="[]")
+        assistant_msg = AssistantMessage(content=[text_block], model="sonnet")
+        result_msg = ResultMessage(
+            subtype="success",
+            total_cost_usd=0.01,
+            duration_ms=1000,
+            duration_api_ms=800,
+            is_error=False,
+            num_turns=1,
+            session_id="test-session",
+        )
+
+        mock_client = AsyncMock()
+
+        async def _capture_query(prompt: str):
+            captured_prompt["value"] = prompt
+
+        mock_client.query = AsyncMock(side_effect=_capture_query)
+
+        async def mock_receive():
+            yield assistant_msg
+            yield result_msg
+
+        mock_client.receive_messages = mock_receive
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
+            await _refine_pr_findings_with_llm(
+                findings=[{"title": "test"}],
+                changed_code_chain_summary="- callerId -> normalize -> allow/deny predicate",
+                mode="verifier",
+                **self._DEFAULT_KWARGS,
+            )
+
+        prompt = captured_prompt["value"]
+        assert "EXPLICIT CHANGED-CODE CHAINS:" in prompt
+        assert "- callerId -> normalize -> allow/deny predicate" in prompt
+        assert "CANDIDATE FINDINGS JSON" in prompt
+        assert '"title": "test"' in prompt
+
+
+class TestComposePrFindingsWithBaselineSinks:
+    """Tests for the sink-composition post-review pass."""
+
+    _DEFAULT_KWARGS = dict(
+        repo=Path("/tmp/repo"),
+        model="sonnet",
+        diff_line_anchors="src/gateway/ws.ts:42",
+        diff_hunk_snippets="+ scopes = connect.scopes",
+        changed_code_chain_summary="- scopes -> authorizeGatewayMethod -> config.apply",
+        baseline_reachability_summary="- high | src/gateway/server-methods/config.ts:195 | Config apply reaches privileged restart path | existing unchanged sink; check whether auth/session/role/policy changes make this operation newly reachable or less restricted.",
+        baseline_sink_code_summary="- src/gateway/server-methods/config.ts:195 | high | Config apply reaches privileged restart path\n  L193:   validateConfig(update)\n  L194:   writeConfig(update)\n  L195:   applyConfig(update)",
+        severity_threshold="medium",
+    )
+
+    @pytest.mark.asyncio
+    async def test_prompt_includes_sink_completion_rules(self):
+        """Sink-composition prompt should include unchanged sink reachability guidance."""
+        from claude_agent_sdk.types import ResultMessage
+
+        result_msg = ResultMessage(
+            subtype="success",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=False,
+            num_turns=1,
+            session_id="test-session",
+        )
+
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=None)
+
+        async def mock_receive():
+            yield result_msg
+
+        mock_client.receive_messages = mock_receive
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
+            await _compose_pr_findings_with_baseline_sinks(
+                findings=[{"title": "Auth bypass"}],
+                focus_areas=["auth_privilege"],
+                **self._DEFAULT_KWARGS,
+            )
+
+        prompt = mock_client.query.await_args.args[0]
+        assert "BASELINE HIGH-IMPACT OPERATIONS THAT MAY BECOME NEWLY REACHABLE" in prompt
+        assert "UNCHANGED BASELINE SINK CODE TO CHECK FOR NEW REACHABILITY" in prompt
+        assert "L195:" in prompt
+        assert "CANDIDATE FINDINGS JSON" in prompt
+        assert '"title": "Auth bypass"' in prompt
+
+
+class TestChooseFinalPrFindingsWithSinkPriority:
+    """Tests for the final sink-priority chooser."""
+
+    _DEFAULT_KWARGS = dict(
+        repo=Path("/tmp/repo"),
+        model="sonnet",
+        diff_line_anchors="src/gateway/ws.ts:42",
+        diff_hunk_snippets="+ scopes = connect.scopes",
+        changed_code_chain_summary="- scopes -> authorizeGatewayMethod -> config.apply",
+        baseline_reachability_summary="- high | src/gateway/server-methods/config.ts:195 | Config apply reaches privileged restart path | existing unchanged sink; check whether auth/session/role/policy changes make this operation newly reachable or less restricted.",
+        baseline_sink_code_summary="- src/gateway/server-methods/config.ts:195 | high | Config apply reaches privileged restart path\n  L193:   validateConfig(update)\n  L194:   writeConfig(update)\n  L195:   applyConfig(update)",
+        severity_threshold="medium",
+    )
+
+    @pytest.mark.asyncio
+    async def test_prompt_includes_final_sink_selection_rules(self):
+        """Final chooser prompt should require explicit changed-entry and sink evidence."""
+        from claude_agent_sdk.types import ResultMessage
+
+        result_msg = ResultMessage(
+            subtype="success",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=False,
+            num_turns=1,
+            session_id="test-session",
+        )
+
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=None)
+
+        async def mock_receive():
+            yield result_msg
+
+        mock_client.receive_messages = mock_receive
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
+            await _choose_final_pr_findings_with_sink_priority(
+                findings=[{"title": "Auth bypass"}, {"title": "Config apply"}],
+                focus_areas=["auth_privilege"],
+                **self._DEFAULT_KWARGS,
+            )
+
+        prompt = mock_client.query.await_args.args[0]
+        assert "MERGED CANDIDATE FINDINGS JSON" in prompt
+        assert '"title": "Auth bypass"' in prompt
+        assert '"title": "Config apply"' in prompt
+        assert "src/gateway/server-methods/config.ts:195" in prompt
+
+
+class TestAdjudicateExactPrSinkCandidate:
+    """Tests for the exact unchanged-sink adjudicator."""
+
+    _DEFAULT_KWARGS = dict(
+        repo=Path("/tmp/repo"),
+        model="sonnet",
+        diff_line_anchors="src/gateway/ws.ts:42",
+        diff_hunk_snippets="+ scopes = connect.scopes",
+        changed_code_chain_summary="- scopes -> authorizeGatewayMethod -> config.apply",
+        baseline_reachability_summary="- high | src/gateway/server-methods/config.ts:195 | Config apply reaches privileged restart path | existing unchanged sink; check whether auth/session/role/policy changes make this operation newly reachable or less restricted.",
+        exact_sink_code_summary="- src/gateway/server-methods/config.ts:195 | high | Config apply reaches privileged restart path\n  L193:   validateConfig(update)\n  L194:   writeConfig(update)\n  L195:   applyConfig(update)",
+        severity_threshold="medium",
+    )
+
+    @pytest.mark.asyncio
+    async def test_prompt_requires_exact_sink_not_namespace(self):
+        """Exact adjudicator prompt should reject namespace-only completions."""
+        from claude_agent_sdk.types import ResultMessage
+
+        result_msg = ResultMessage(
+            subtype="success",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=False,
+            num_turns=1,
+            session_id="test-session",
+        )
+
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=None)
+
+        async def mock_receive():
+            yield result_msg
+
+        mock_client.receive_messages = mock_receive
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client):
+            await _adjudicate_exact_pr_sink_candidate(
+                findings=[{"title": "Config admin methods become reachable"}],
+                focus_areas=["auth_privilege"],
+                **self._DEFAULT_KWARGS,
+            )
+
+        prompt = mock_client.query.await_args.args[0]
+        assert "EXACT UNCHANGED SINK TO ADJUDICATE" in prompt
+        assert "src/gateway/server-methods/config.ts:195" in prompt
+        assert '"title": "Config admin methods become reachable"' in prompt
+
+
+@pytest.mark.asyncio
+async def test_run_pr_refinement_and_verification_invokes_sink_composition_for_auth_diffs(
+    tmp_path: Path,
+):
+    """Auth findings with unchanged sink context should trigger sink-composition pass."""
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+    empty_diff = DiffContext(files=[], added_lines=0, removed_lines=0, changed_files=[])
+    ctx = PRReviewContext(
+        repo=tmp_path,
+        securevibes_dir=tmp_path / ".securevibes",
+        focused_diff_context=empty_diff,
+        diff_context=empty_diff,
+        contextualized_prompt="Review this PR",
+        baseline_vulns=[],
+        pr_review_attempts=1,
+        pr_timeout_seconds=180,
+        pr_vulns_path=tmp_path / "PR_VULNERABILITIES.json",
+        detected_languages={"python"},
+        command_builder_signals=False,
+        path_parser_signals=False,
+        auth_privilege_signals=True,
+        retry_focus_plan=["auth_privilege"],
+        diff_line_anchors="src/gateway/ws.ts:42",
+        diff_hunk_snippets="+ scopes = connect.scopes",
+        pr_grep_default_scope=".",
+        scan_start_time=0.0,
+        severity_threshold="medium",
+        changed_code_chain_summary="- scopes -> authorizeGatewayMethod -> config.apply",
+        baseline_reachability_summary="- high | src/gateway/server-methods/config.ts:195 | Config apply reaches privileged restart path | existing unchanged sink; check whether auth/session/role/policy changes make this operation newly reachable or less restricted.",
+        baseline_sink_code_summary="- src/gateway/server-methods/config.ts:195 | high | Config apply reaches privileged restart path\n  L193:   validateConfig(update)\n  L194:   writeConfig(update)\n  L195:   applyConfig(update)",
+    )
+    auth_finding = {
+        "title": "Client-controlled scopes reach admin methods",
+        "file_path": "src/gateway/ws.ts",
+        "line_number": 42,
+        "cwe_id": "CWE-269",
+        "severity": "critical",
+        "finding_type": "new_threat",
+        "description": "Auth flaw",
+        "attack_scenario": "1) attacker connects 2) admin methods unlocked",
+        "evidence": "scopes -> authorizeGatewayMethod",
+    }
+    composed_finding = {
+        "title": "Auth bypass reaches config.apply and triggers privileged restart path",
+        "file_path": "src/gateway/server-methods/config.ts",
+        "line_number": 195,
+        "cwe_id": "CWE-78",
+        "severity": "critical",
+        "finding_type": "new_threat",
+        "description": "Composed sink finding",
+        "attack_scenario": "1) attacker connects 2) calls config.apply",
+        "evidence": "scopes -> authorizeGatewayMethod -> applyConfig(update)",
+    }
+    state = PRReviewState(
+        collected_pr_vulns=[auth_finding],
+        attempt_chain_ids=[{"auth-chain"}],
+        attempt_chain_exact_ids=[{"auth-chain"}],
+        attempt_chain_family_ids=[{"auth-chain"}],
+        attempt_chain_flow_ids=[{"auth-flow"}],
+        attempt_focus_areas=["auth_privilege"],
+        attempt_finding_counts=[1],
+        attempt_observed_counts=[1],
+        attempt_revalidation_attempted=[False],
+        attempt_core_evidence_present=[True],
+    )
+
+    with (
+        patch(
+            "securevibes.scanner.scanner._refine_pr_findings_with_llm",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "securevibes.scanner.scanner._compose_pr_findings_with_baseline_sinks",
+            new=AsyncMock(return_value=[composed_finding]),
+        ) as mock_compose,
+    ):
+        await scanner._run_pr_refinement_and_verification(ctx, state)
+
+    mock_compose.assert_awaited_once()
+    assert state.pr_vulns
+    assert state.pr_vulns[0]["title"] == composed_finding["title"]
+
+
+@pytest.mark.asyncio
+async def test_run_pr_refinement_and_verification_invokes_final_sink_priority_chooser(
+    tmp_path: Path,
+):
+    """Merged auth findings with sink context should trigger the final chooser."""
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+    empty_diff = DiffContext(files=[], added_lines=0, removed_lines=0, changed_files=[])
+    ctx = PRReviewContext(
+        repo=tmp_path,
+        securevibes_dir=tmp_path / ".securevibes",
+        focused_diff_context=empty_diff,
+        diff_context=empty_diff,
+        contextualized_prompt="Review this PR",
+        baseline_vulns=[],
+        pr_review_attempts=1,
+        pr_timeout_seconds=180,
+        pr_vulns_path=tmp_path / "PR_VULNERABILITIES.json",
+        detected_languages={"python"},
+        command_builder_signals=False,
+        path_parser_signals=False,
+        auth_privilege_signals=True,
+        retry_focus_plan=["auth_privilege"],
+        diff_line_anchors="src/gateway/ws.ts:42",
+        diff_hunk_snippets="+ scopes = connect.scopes",
+        pr_grep_default_scope=".",
+        scan_start_time=0.0,
+        severity_threshold="medium",
+        changed_code_chain_summary="- scopes -> authorizeGatewayMethod -> config.apply",
+        baseline_reachability_summary="- high | src/gateway/server-methods/config.ts:195 | Config apply reaches privileged restart path | existing unchanged sink; check whether auth/session/role/policy changes make this operation newly reachable or less restricted.",
+        baseline_sink_code_summary="- src/gateway/server-methods/config.ts:195 | high | Config apply reaches privileged restart path\n  L193:   validateConfig(update)\n  L194:   writeConfig(update)\n  L195:   applyConfig(update)",
+    )
+    auth_finding = {
+        "title": "Client-controlled scopes reach admin methods",
+        "file_path": "src/gateway/ws.ts",
+        "line_number": 42,
+        "cwe_id": "CWE-269",
+        "severity": "critical",
+        "finding_type": "new_threat",
+        "description": "Auth flaw",
+        "attack_scenario": "1) attacker connects 2) admin methods unlocked",
+        "evidence": "scopes -> authorizeGatewayMethod",
+    }
+    intermediate_finding = {
+        "title": "Config admin methods become reachable",
+        "file_path": "src/gateway/server-methods.ts",
+        "line_number": 47,
+        "cwe_id": "CWE-863",
+        "severity": "high",
+        "finding_type": "new_threat",
+        "description": "Admin methods reachable",
+        "attack_scenario": "1) attacker connects 2) config methods reachable",
+        "evidence": "authorizeGatewayMethod -> config handlers",
+    }
+    chosen_finding = {
+        "title": "Auth bypass reaches config.apply and triggers privileged restart path",
+        "file_path": "src/gateway/server-methods/config.ts",
+        "line_number": 195,
+        "cwe_id": "CWE-78",
+        "severity": "critical",
+        "finding_type": "new_threat",
+        "description": "End-to-end sink finding",
+        "attack_scenario": "1) attacker connects 2) calls config.apply",
+        "evidence": "scopes -> authorizeGatewayMethod -> applyConfig(update)",
+    }
+    state = PRReviewState(
+        collected_pr_vulns=[auth_finding, intermediate_finding],
+        attempt_chain_ids=[{"auth-chain"}],
+        attempt_chain_exact_ids=[{"auth-chain"}],
+        attempt_chain_family_ids=[{"auth-chain"}],
+        attempt_chain_flow_ids=[{"auth-flow"}],
+        attempt_focus_areas=["auth_privilege"],
+        attempt_finding_counts=[2],
+        attempt_observed_counts=[2],
+        attempt_revalidation_attempted=[False],
+        attempt_core_evidence_present=[True],
+    )
+
+    with (
+        patch(
+            "securevibes.scanner.scanner._refine_pr_findings_with_llm",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "securevibes.scanner.scanner._compose_pr_findings_with_baseline_sinks",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "securevibes.scanner.scanner._choose_final_pr_findings_with_sink_priority",
+            new=AsyncMock(return_value=[chosen_finding]),
+        ) as mock_choose,
+    ):
+        await scanner._run_pr_refinement_and_verification(ctx, state)
+
+    mock_choose.assert_awaited_once()
+    assert state.pr_vulns
+    assert state.pr_vulns[0]["title"] == chosen_finding["title"]
+
+
+@pytest.mark.asyncio
+async def test_run_pr_refinement_and_verification_invokes_exact_sink_adjudicator(
+    tmp_path: Path,
+):
+    """Merged auth findings with exact sink candidates should trigger exact adjudication."""
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+    sink_dir = tmp_path / "src" / "gateway" / "server-methods"
+    sink_dir.mkdir(parents=True)
+    sink_lines = [f"// filler line {idx}" for idx in range(1, 193)]
+    sink_lines.extend(
+        [
+            "validateConfig(update)",
+            "writeConfig(update)",
+            "applyConfig(update)",
+        ]
+    )
+    (sink_dir / "config.ts").write_text("\n".join(sink_lines) + "\n", encoding="utf-8")
+    empty_diff = DiffContext(files=[], added_lines=0, removed_lines=0, changed_files=[])
+    ctx = PRReviewContext(
+        repo=tmp_path,
+        securevibes_dir=tmp_path / ".securevibes",
+        focused_diff_context=empty_diff,
+        diff_context=empty_diff,
+        contextualized_prompt="Review this PR",
+        baseline_vulns=[],
+        pr_review_attempts=1,
+        pr_timeout_seconds=180,
+        pr_vulns_path=tmp_path / "PR_VULNERABILITIES.json",
+        detected_languages={"python"},
+        command_builder_signals=False,
+        path_parser_signals=False,
+        auth_privilege_signals=True,
+        retry_focus_plan=["auth_privilege"],
+        diff_line_anchors="src/gateway/ws.ts:42",
+        diff_hunk_snippets="+ scopes = connect.scopes",
+        pr_grep_default_scope=".",
+        scan_start_time=0.0,
+        severity_threshold="medium",
+        changed_code_chain_summary="- scopes -> authorizeGatewayMethod -> config.apply",
+        baseline_reachability_summary="- high | src/gateway/server-methods/config.ts:195 | Config apply reaches privileged restart path | existing unchanged sink; check whether auth/session/role/policy changes make this operation newly reachable or less restricted.",
+        baseline_sink_code_summary="- src/gateway/server-methods/config.ts:195 | high | Config apply reaches privileged restart path\n  L193:   validateConfig(update)\n  L194:   writeConfig(update)\n  L195:   applyConfig(update)",
+        baseline_sink_candidates=[
+            {
+                "severity_label": "high",
+                "location": "src/gateway/server-methods/config.ts:195",
+                "title": "Config apply reaches privileged restart path",
+                "unchanged_sink": True,
+            }
+        ],
+    )
+    intermediate_finding = {
+        "title": "Client-controlled scopes reach config.*",
+        "file_path": "src/gateway/server-methods.ts",
+        "line_number": 47,
+        "cwe_id": "CWE-863",
+        "severity": "critical",
+        "finding_type": "new_threat",
+        "description": "Namespace-level reachability only",
+        "attack_scenario": "1) attacker connects 2) config namespace reachable",
+        "evidence": "scopes -> authorizeGatewayMethod -> config.*",
+    }
+    exact_finding = {
+        "title": "Auth bypass reaches config.apply and triggers privileged restart path",
+        "file_path": "src/gateway/server-methods/config.ts",
+        "line_number": 195,
+        "cwe_id": "CWE-78",
+        "severity": "critical",
+        "finding_type": "new_threat",
+        "description": "Exact sink finding",
+        "attack_scenario": "1) attacker connects 2) calls config.apply",
+        "evidence": "scopes -> authorizeGatewayMethod -> applyConfig(update)",
+    }
+    state = PRReviewState(
+        collected_pr_vulns=[intermediate_finding],
+        attempt_chain_ids=[{"auth-chain"}],
+        attempt_chain_exact_ids=[{"auth-chain"}],
+        attempt_chain_family_ids=[{"auth-chain"}],
+        attempt_chain_flow_ids=[{"auth-flow"}],
+        attempt_focus_areas=["auth_privilege"],
+        attempt_finding_counts=[1],
+        attempt_observed_counts=[1],
+        attempt_revalidation_attempted=[False],
+        attempt_core_evidence_present=[True],
+    )
+
+    with (
+        patch(
+            "securevibes.scanner.scanner._refine_pr_findings_with_llm",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "securevibes.scanner.scanner._compose_pr_findings_with_baseline_sinks",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "securevibes.scanner.scanner._choose_final_pr_findings_with_sink_priority",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "securevibes.scanner.scanner._adjudicate_exact_pr_sink_candidate",
+            new=AsyncMock(return_value=[exact_finding]),
+        ) as mock_adjudicate,
+    ):
+        await scanner._run_pr_refinement_and_verification(ctx, state)
+
+    mock_adjudicate.assert_awaited_once()
+    assert state.pr_vulns
+    assert state.pr_vulns[0]["title"] == exact_finding["title"]
+
+
+@pytest.mark.asyncio
+async def test_run_pr_refinement_and_verification_runs_post_passes_in_expected_order(
+    tmp_path: Path,
+):
+    """Auth-focused post-passes should execute in the intended order."""
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+    sink_dir = tmp_path / "src" / "gateway" / "server-methods"
+    sink_dir.mkdir(parents=True)
+    sink_lines = [f"// filler line {idx}" for idx in range(1, 193)]
+    sink_lines.extend(
+        [
+            "validateConfig(update)",
+            "writeConfig(update)",
+            "applyConfig(update)",
+        ]
+    )
+    (sink_dir / "config.ts").write_text("\n".join(sink_lines) + "\n", encoding="utf-8")
+    empty_diff = DiffContext(files=[], added_lines=0, removed_lines=0, changed_files=[])
+    ctx = PRReviewContext(
+        repo=tmp_path,
+        securevibes_dir=tmp_path / ".securevibes",
+        focused_diff_context=empty_diff,
+        diff_context=empty_diff,
+        contextualized_prompt="Review this PR",
+        baseline_vulns=[],
+        pr_review_attempts=2,
+        pr_timeout_seconds=180,
+        pr_vulns_path=tmp_path / "PR_VULNERABILITIES.json",
+        detected_languages={"python"},
+        command_builder_signals=False,
+        path_parser_signals=False,
+        auth_privilege_signals=True,
+        retry_focus_plan=["auth_privilege"],
+        diff_line_anchors="src/gateway/ws.ts:42",
+        diff_hunk_snippets="+ scopes = connect.scopes",
+        pr_grep_default_scope=".",
+        scan_start_time=0.0,
+        severity_threshold="medium",
+        changed_code_chain_summary="- scopes -> authorizeGatewayMethod -> config.apply",
+        baseline_reachability_summary="- high | src/gateway/server-methods/config.ts:195 | Config apply reaches privileged restart path | existing unchanged sink; check whether auth/session/role/policy changes make this operation newly reachable or less restricted.",
+        baseline_sink_code_summary="- src/gateway/server-methods/config.ts:195 | high | Config apply reaches privileged restart path\n  L193:   validateConfig(update)\n  L194:   writeConfig(update)\n  L195:   applyConfig(update)",
+        baseline_sink_candidates=[
+            {
+                "severity_label": "high",
+                "location": "src/gateway/server-methods/config.ts:195",
+                "title": "Config apply reaches privileged restart path",
+                "unchanged_sink": True,
+            }
+        ],
+    )
+    findings = [
+        {
+            "title": "Client-controlled scopes reach admin methods",
+            "file_path": "src/gateway/ws.ts",
+            "line_number": 42,
+            "cwe_id": "CWE-269",
+            "severity": "critical",
+            "finding_type": "new_threat",
+            "description": "Auth flaw",
+            "attack_scenario": "1) attacker connects 2) admin methods unlocked",
+            "evidence": "scopes -> authorizeGatewayMethod",
+        },
+        {
+            "title": "Config admin methods become reachable",
+            "file_path": "src/gateway/server-methods.ts",
+            "line_number": 47,
+            "cwe_id": "CWE-863",
+            "severity": "high",
+            "finding_type": "new_threat",
+            "description": "Admin methods reachable",
+            "attack_scenario": "1) attacker connects 2) config methods reachable",
+            "evidence": "authorizeGatewayMethod -> config handlers",
+        },
+    ]
+    state = PRReviewState(
+        collected_pr_vulns=findings,
+        attempt_chain_ids=[{"auth-chain"}, {"other-chain"}],
+        attempt_chain_exact_ids=[{"auth-chain"}, set()],
+        attempt_chain_family_ids=[{"auth-chain"}, set()],
+        attempt_chain_flow_ids=[{"auth-flow"}, set()],
+        attempt_focus_areas=["auth_privilege"],
+        attempt_finding_counts=[2, 0],
+        attempt_observed_counts=[2, 0],
+        attempt_revalidation_attempted=[False, False],
+        attempt_core_evidence_present=[True, False],
+    )
+
+    call_order: list[str] = []
+
+    async def _mock_refine(*_args, mode: str = "quality", **_kwargs):
+        call_order.append(mode)
+        return findings
+
+    async def _mock_compose(*_args, **_kwargs):
+        call_order.append("compose")
+        return findings
+
+    async def _mock_choose(*_args, **_kwargs):
+        call_order.append("choose")
+        return findings
+
+    async def _mock_exact(*_args, **_kwargs):
+        call_order.append("exact")
+        return findings
+
+    with (
+        patch(
+            "securevibes.scanner.scanner._refine_pr_findings_with_llm",
+            new=AsyncMock(side_effect=_mock_refine),
+        ),
+        patch(
+            "securevibes.scanner.scanner._compose_pr_findings_with_baseline_sinks",
+            new=AsyncMock(side_effect=_mock_compose),
+        ),
+        patch(
+            "securevibes.scanner.scanner._choose_final_pr_findings_with_sink_priority",
+            new=AsyncMock(side_effect=_mock_choose),
+        ),
+        patch(
+            "securevibes.scanner.scanner._adjudicate_exact_pr_sink_candidate",
+            new=AsyncMock(side_effect=_mock_exact),
+        ),
+        patch(
+            "securevibes.scanner.scanner.should_run_pr_verifier",
+            return_value=True,
+        ),
+    ):
+        await scanner._run_pr_refinement_and_verification(ctx, state)
+
+    assert call_order == ["quality", "compose", "verifier", "choose", "exact"]
+
+    @pytest.mark.asyncio
     async def test_filters_non_dict_entries(self):
         """Non-dict entries in the JSON array should be filtered out."""
         from claude_agent_sdk.types import AssistantMessage, TextBlock, ResultMessage
@@ -3152,8 +6148,49 @@ class TestRefinePrFindingsWithLlm:
             )
 
         assert result is not None
-        assert len(result) == 1
-        assert result[0]["title"] == "valid"
+
+    @pytest.mark.asyncio
+    async def test_explicit_timeout_seconds_are_honored(self):
+        """Finding refinement should honor the caller-provided timeout budget."""
+        from claude_agent_sdk.types import ResultMessage
+
+        result_msg = ResultMessage(
+            subtype="success",
+            duration_ms=100,
+            duration_api_ms=80,
+            is_error=False,
+            num_turns=1,
+            session_id="test-session",
+        )
+
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=None)
+
+        async def mock_receive():
+            yield result_msg
+
+        mock_client.receive_messages = mock_receive
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        captured: dict[str, float] = {}
+        real_wait_for = asyncio.wait_for
+
+        async def capture_wait_for(awaitable, timeout):
+            captured["timeout"] = timeout
+            return await real_wait_for(awaitable, timeout=timeout)
+
+        with (
+            patch("securevibes.scanner.scanner.ClaudeSDKClient", return_value=mock_client),
+            patch("securevibes.scanner.scanner.asyncio.wait_for", new=capture_wait_for),
+        ):
+            await _refine_pr_findings_with_llm(
+                findings=[{"title": "test"}],
+                timeout_seconds=19,
+                **self._DEFAULT_KWARGS,
+            )
+
+        assert captured["timeout"] == 19
 
 
 # ---------------------------------------------------------------------------
@@ -3224,15 +6261,17 @@ class TestTriageWiring:
 
         scanner = Scanner(model="sonnet", debug=False)
         with pytest.raises(RuntimeError, match="short-circuit"):
-            asyncio.run(scanner.pr_review(
-                str(repo),
-                self._make_simple_diff_context(),
-                None,
-                "medium",
-                auto_triage=False,
-                pr_review_attempts=3,
-                pr_timeout_seconds=120,
-            ))
+            asyncio.run(
+                scanner.pr_review(
+                    str(repo),
+                    self._make_simple_diff_context(),
+                    None,
+                    "medium",
+                    auto_triage=False,
+                    pr_review_attempts=3,
+                    pr_timeout_seconds=120,
+                )
+            )
 
         assert captured["attempts"] == 3
         assert captured["timeout"] == 120
@@ -3246,13 +6285,15 @@ class TestTriageWiring:
 
         scanner = Scanner(model="sonnet", debug=False)
         with pytest.raises(RuntimeError, match="short-circuit"):
-            asyncio.run(scanner.pr_review(
-                str(repo),
-                self._make_simple_diff_context(),
-                None,
-                "medium",
-                auto_triage=True,
-            ))
+            asyncio.run(
+                scanner.pr_review(
+                    str(repo),
+                    self._make_simple_diff_context(),
+                    None,
+                    "medium",
+                    auto_triage=True,
+                )
+            )
 
         assert captured["attempts"] == 1
         assert captured["timeout"] == 60
@@ -3266,14 +6307,16 @@ class TestTriageWiring:
 
         scanner = Scanner(model="sonnet", debug=False)
         with pytest.raises(RuntimeError, match="short-circuit"):
-            asyncio.run(scanner.pr_review(
-                str(repo),
-                self._make_simple_diff_context(),
-                None,
-                "medium",
-                auto_triage=True,
-                pr_review_attempts=3,
-            ))
+            asyncio.run(
+                scanner.pr_review(
+                    str(repo),
+                    self._make_simple_diff_context(),
+                    None,
+                    "medium",
+                    auto_triage=True,
+                    pr_review_attempts=3,
+                )
+            )
 
         # Explicit attempts=3 preserved; timeout reduced by triage since not explicitly set
         assert captured["attempts"] == 3
@@ -3288,15 +6331,66 @@ class TestTriageWiring:
 
         scanner = Scanner(model="sonnet", debug=False)
         with pytest.raises(RuntimeError, match="short-circuit"):
-            asyncio.run(scanner.pr_review(
-                str(repo),
-                self._make_simple_diff_context(),
-                None,
-                "medium",
-                auto_triage=True,
-                pr_timeout_seconds=200,
-            ))
+            asyncio.run(
+                scanner.pr_review(
+                    str(repo),
+                    self._make_simple_diff_context(),
+                    None,
+                    "medium",
+                    auto_triage=True,
+                    pr_timeout_seconds=200,
+                )
+            )
 
         # Timeout=200 preserved; attempts reduced by triage since not explicitly set
         assert captured["attempts"] == 1
         assert captured["timeout"] == 200
+
+
+def test_raise_pr_review_execution_failure_adds_timing_summary(tmp_path: Path):
+    """Fail-closed PR review errors should include timing context for debugging."""
+    scanner = Scanner(model="sonnet", debug=False)
+    scanner.console = Console(file=StringIO())
+    empty_diff = DiffContext(files=[], added_lines=0, removed_lines=0, changed_files=[])
+    ctx = PRReviewContext(
+        repo=tmp_path,
+        securevibes_dir=tmp_path / ".securevibes",
+        focused_diff_context=empty_diff,
+        diff_context=empty_diff,
+        contextualized_prompt="Review this PR",
+        baseline_vulns=[],
+        pr_review_attempts=1,
+        pr_timeout_seconds=180,
+        pr_vulns_path=tmp_path / "PR_VULNERABILITIES.json",
+        detected_languages={"python"},
+        command_builder_signals=False,
+        path_parser_signals=False,
+        auth_privilege_signals=False,
+        retry_focus_plan=[],
+        diff_line_anchors="",
+        diff_hunk_snippets="",
+        pr_grep_default_scope=".",
+        scan_start_time=0.0,
+        severity_threshold="medium",
+        context_prep_seconds=241.5,
+        new_surface_delta_seconds=60.0,
+        hypothesis_generation_seconds=180.0,
+        context_phase_timings={
+            "focused_diff_seconds": 1.2,
+            "component_classification_seconds": 0.4,
+            "new_surface_delta_seconds": 60.0,
+            "hypothesis_generation_seconds": 180.0,
+            "context_prep_total_seconds": 241.5,
+        },
+    )
+    state = PRReviewState(attempt_elapsed_seconds=[179.9])
+
+    with pytest.raises(
+        RuntimeError,
+        match="PR code review agent did not produce a readable PR_VULNERABILITIES.json",
+    ):
+        scanner._raise_pr_review_execution_failure(ctx, state)
+
+    assert any("PR timing summary:" in warning for warning in state.warnings)
+    assert any("component_classification_seconds=0.40s" in warning for warning in state.warnings)
+    assert any("attempts=[179.90s]" in warning for warning in state.warnings)

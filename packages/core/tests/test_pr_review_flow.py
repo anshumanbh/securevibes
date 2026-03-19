@@ -112,6 +112,10 @@ class TestPRReviewContext:
         assert ctx.pr_review_attempts == 3
         assert ctx.detected_languages == {"python"}
         assert ctx.retry_focus_plan == ["command_option", "path_exfiltration"]
+        assert ctx.context_prep_seconds == 0.0
+        assert ctx.new_surface_delta_seconds == 0.0
+        assert ctx.hypothesis_generation_seconds == 0.0
+        assert ctx.context_phase_timings == {}
 
 
 class TestPRReviewState:
@@ -127,6 +131,7 @@ class TestPRReviewState:
         assert state.attempts_with_overwritten_artifact == 0
         assert state.attempt_finding_counts == []
         assert state.attempt_observed_counts == []
+        assert state.attempt_elapsed_seconds == []
         assert state.attempt_focus_areas == []
         assert state.attempt_chain_ids == []
         assert state.attempt_chain_exact_ids == []
@@ -170,6 +175,13 @@ class TestRunnerProperties:
     def test_model_delegates_to_scanner(self):
         runner = _make_runner()
         assert runner.model == "test-model"
+
+    def test_runner_resolves_permission_mode_at_runtime(self, monkeypatch):
+        monkeypatch.setenv("SECUREVIBES_PERMISSION_MODE", "bypassPermissions")
+
+        runner = _make_runner()
+
+        assert runner._permission_mode == "bypassPermissions"
 
 
 class TestRecordAttemptChains:
@@ -627,6 +639,40 @@ class TestRunAttemptLoop:
 
         assert any("timed out after 0.1s" in warning for warning in state.warnings)
         assert state.attempt_finding_counts == [0]
+        assert len(state.attempt_elapsed_seconds) == 1
+        assert state.attempt_elapsed_seconds[0] >= 0
+
+    async def test_timeout_budget_includes_client_setup(self, single_attempt_ctx):
+        """Client setup time should count against the same attempt timeout budget."""
+        single_attempt_ctx.pr_timeout_seconds = 0.05
+
+        disconnect_called = False
+
+        class _SlowSetupClientCtx:
+            async def __aenter__(self):
+                await asyncio.sleep(0.1)
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def disconnect(self):
+                nonlocal disconnect_called
+                disconnect_called = True
+
+        client_cls = MagicMock(return_value=_SlowSetupClientCtx())
+        runner = PRReviewAttemptRunner(
+            _make_scanner(),
+            progress_tracker_cls=_FakeTracker,
+            claude_client_cls=client_cls,
+            hook_matcher_cls=MagicMock,
+        )
+        state = PRReviewState()
+
+        await runner.run_attempt_loop(single_attempt_ctx, state)
+
+        assert any("timed out after 0.05s" in warning for warning in state.warnings)
+        assert disconnect_called
 
     async def test_generic_exception_records_warning_with_type(self, single_attempt_ctx):
         """Non-timeout exceptions should include the exception type in the warning."""
@@ -854,13 +900,13 @@ class TestTimeoutForceClose:
     """Tests for the force-close behavior on pr_timeout."""
 
     @pytest.mark.asyncio
-    async def test_timeout_calls_client_close(self, tmp_path):
-        """On timeout, client.close() should be called before context manager exit."""
+    async def test_timeout_calls_client_disconnect_when_available(self, tmp_path):
+        """On timeout, client.disconnect() should be called before context manager exit."""
         ctx = _make_context(tmp_path)
         ctx.pr_review_attempts = 1
         ctx.pr_timeout_seconds = 0.05
 
-        close_called = False
+        disconnect_called = False
 
         class _HangingClient:
             async def query(self, prompt):
@@ -870,9 +916,9 @@ class TestTimeoutForceClose:
                 if False:
                     yield None
 
-            async def close(self):
-                nonlocal close_called
-                close_called = True
+            async def disconnect(self):
+                nonlocal disconnect_called
+                disconnect_called = True
 
         class _HangingClientCtx:
             def __init__(self, **kwargs):
@@ -896,4 +942,95 @@ class TestTimeoutForceClose:
         await runner.run_attempt_loop(ctx, state)
 
         assert any("timed out" in w for w in state.warnings)
-        assert close_called, "client.close() should be called on timeout"
+        assert disconnect_called, "client.disconnect() should be called on timeout"
+
+    @pytest.mark.asyncio
+    async def test_timeout_falls_back_to_client_close(self, tmp_path):
+        """On timeout, older SDK clients without disconnect() should still be closed."""
+        ctx = _make_context(tmp_path)
+        ctx.pr_review_attempts = 1
+        ctx.pr_timeout_seconds = 0.05
+
+        close_called = False
+
+        class _LegacyHangingClient:
+            async def query(self, prompt):
+                await asyncio.sleep(10)
+
+            async def receive_messages(self):
+                if False:
+                    yield None
+
+            async def close(self):
+                nonlocal close_called
+                close_called = True
+
+        class _LegacyHangingClientCtx:
+            def __init__(self, **kwargs):
+                self._client = _LegacyHangingClient()
+
+            async def __aenter__(self):
+                return self._client
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        client_cls = MagicMock(return_value=_LegacyHangingClientCtx())
+
+        runner = PRReviewAttemptRunner(
+            _make_scanner(),
+            progress_tracker_cls=_FakeTracker,
+            claude_client_cls=client_cls,
+            hook_matcher_cls=MagicMock,
+        )
+        state = PRReviewState()
+        await runner.run_attempt_loop(ctx, state)
+
+        assert any("timed out" in w for w in state.warnings)
+        assert close_called, "client.close() should be called when disconnect() is unavailable"
+
+    @pytest.mark.asyncio
+    async def test_timeout_ignores_cancelled_disconnect_cleanup(self, tmp_path):
+        """Cancelled disconnect cleanup should not abort the timed-out attempt."""
+        ctx = _make_context(tmp_path)
+        ctx.pr_review_attempts = 1
+        ctx.pr_timeout_seconds = 0.05
+
+        disconnect_called = False
+
+        class _CancelledDisconnectClient:
+            async def query(self, prompt):
+                await asyncio.sleep(10)
+
+            async def receive_messages(self):
+                if False:
+                    yield None
+
+            async def disconnect(self):
+                nonlocal disconnect_called
+                disconnect_called = True
+                raise asyncio.CancelledError()
+
+        class _CancelledDisconnectClientCtx:
+            def __init__(self, **kwargs):
+                self._client = _CancelledDisconnectClient()
+
+            async def __aenter__(self):
+                return self._client
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        client_cls = MagicMock(return_value=_CancelledDisconnectClientCtx())
+
+        runner = PRReviewAttemptRunner(
+            _make_scanner(),
+            progress_tracker_cls=_FakeTracker,
+            claude_client_cls=client_cls,
+            hook_matcher_cls=MagicMock,
+        )
+        state = PRReviewState()
+        await runner.run_attempt_loop(ctx, state)
+
+        assert any("timed out" in w for w in state.warnings)
+        assert disconnect_called

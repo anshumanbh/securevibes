@@ -79,6 +79,17 @@ def test_load_state_returns_none_when_missing(state_path: Path) -> None:
     assert inc.load_state(state_path) is None
 
 
+def test_ensure_baseline_artifacts_requires_vulnerabilities(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir(parents=True)
+    (securevibes_dir / "SECURITY.md").write_text("# security", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="VULNERABILITIES.json"):
+        inc.ensure_baseline_artifacts(repo)
+
+
 def test_load_state_returns_dict(
     state_path: Path, sample_state: dict[str, object]
 ) -> None:
@@ -287,6 +298,65 @@ def test_run_scan_timeout_returns_infra_failure(
     assert result.classification == inc.INFRA_FAILURE
     assert result.exit_code == 124
     assert "timed out" in result.stderr_tail
+    assert result.stdout_tail == ""
+    assert result.failure_reason == "timeout"
+
+
+def test_run_subprocess_with_progress_timeout_does_not_recommunicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyProc:
+        def __init__(self) -> None:
+            self.pid = 12345
+            self.returncode = -9
+            self.communicate_calls: list[int | None] = []
+
+        def communicate(self, timeout: int | None = None) -> tuple[str, str]:
+            self.communicate_calls.append(timeout)
+            if timeout is not None:
+                raise subprocess.TimeoutExpired(cmd=["securevibes"], timeout=timeout)
+            raise AssertionError("timeout path must not call unbounded communicate()")
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.returncode = -9
+            return self.returncode
+
+    proc = DummyProc()
+    monkeypatch.setattr(inc.subprocess, "Popen", lambda *_args, **_kwargs: proc)
+    monkeypatch.setattr(inc, "_terminate_child_process", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        inc._run_subprocess_with_progress(
+            ["securevibes", "pr-review"], timeout_seconds=3
+        )
+
+    assert proc.communicate_calls == [3]
+
+
+def test_run_subprocess_with_progress_starts_new_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    class DummyProc:
+        def __init__(self) -> None:
+            self.pid = 123
+            self.returncode = 0
+
+        def communicate(self, timeout: int | None = None) -> tuple[str, str]:
+            return ("", "")
+
+    def fake_popen(*_args: Any, **kwargs: Any) -> DummyProc:
+        seen["kwargs"] = kwargs
+        return DummyProc()
+
+    monkeypatch.setattr(inc.subprocess, "Popen", fake_popen)
+    result = inc._run_subprocess_with_progress(
+        ["securevibes", "pr-review"], timeout_seconds=3
+    )
+
+    assert seen["kwargs"]["start_new_session"] is True
+    assert result.returncode == 0
 
 
 def test_run_since_date_scan_timeout_returns_infra_failure(
@@ -309,6 +379,8 @@ def test_run_since_date_scan_timeout_returns_infra_failure(
     assert result.classification == inc.INFRA_FAILURE
     assert result.exit_code == 124
     assert "timed out" in result.stderr_tail
+    assert result.stdout_tail == ""
+    assert result.failure_reason == "timeout"
 
 
 def test_git_fetch_retries_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -857,6 +929,7 @@ def test_exit_1_without_output_halts_pipeline(
             exit_code=1,
             classification=inc.INFRA_FAILURE,
             stderr_tail="missing output",
+            failure_reason="missing_output_report",
             output_path=output_path,
         )
 
@@ -867,6 +940,9 @@ def test_exit_1_without_output_halts_pipeline(
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["last_status"] == "failed"
     assert state["last_seen_sha"] == "abc123"
+    log_path = repo_dir / ".securevibes" / "incremental_scan.log"
+    log_body = log_path.read_text(encoding="utf-8")
+    assert "infra_failure reason=missing_output_report" in log_body
 
 
 def test_run_record_written_with_chunk_results(
@@ -908,6 +984,8 @@ def test_run_record_written_with_chunk_results(
     payload = json.loads(run_record.read_text(encoding="utf-8"))
     assert payload["status"] == "success"
     assert len(payload["chunks"]) == 1
+    assert payload["chunks"][0]["stdout_tail"] == ""
+    assert payload["chunks"][0]["failure_reason"] is None
 
 
 def test_corrupt_state_triggers_bootstrap(
@@ -1130,6 +1208,97 @@ def test_run_scan_classifies_diff_too_large_from_full_stderr(
         Path("/repo"), "base", "head", "sonnet", "medium", False, output_path
     )
     assert result.classification == inc.DIFF_TOO_LARGE
+    assert result.stdout_tail == ""
+    assert result.failure_reason == "diff_too_large"
+
+
+def test_classify_scan_result_with_reason_missing_output(report_path: Path) -> None:
+    classification, reason = inc.classify_scan_result_with_reason(1, report_path)
+    assert classification == inc.INFRA_FAILURE
+    assert reason == "missing_output_report"
+
+
+def test_classify_scan_result_with_reason_invalid_json(report_path: Path) -> None:
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("{bad-json", encoding="utf-8")
+    classification, reason = inc.classify_scan_result_with_reason(1, report_path)
+    assert classification == inc.INFRA_FAILURE
+    assert reason == "invalid_output_json"
+
+
+def test_classify_scan_result_with_reason_invalid_schema(report_path: Path) -> None:
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps({"repository_path": "/tmp/repo", "issues": []}), encoding="utf-8"
+    )
+    classification, reason = inc.classify_scan_result_with_reason(1, report_path)
+    assert classification == inc.INFRA_FAILURE
+    assert reason == "invalid_output_schema"
+
+
+def test_run_scan_infra_failure_keeps_stdout_tail_and_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run_with_progress(
+        command: list[str],
+        _timeout_seconds: int,
+        **_kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=1,
+            stdout="line1\nline2\nline3",
+            stderr="stderr1\nstderr2",
+        )
+
+    monkeypatch.setattr(inc, "_run_subprocess_with_progress", fake_run_with_progress)
+    output_path = tmp_path / "missing-report.json"
+    result = inc.run_scan(
+        Path("/repo"), "base", "head", "sonnet", "medium", False, output_path
+    )
+    assert result.classification == inc.INFRA_FAILURE
+    assert result.failure_reason == "missing_output_report"
+    assert result.stdout_tail.endswith("line3")
+
+
+def test_run_scan_completed_drops_stdout_tail(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run_with_progress(
+        command: list[str],
+        _timeout_seconds: int,
+        **_kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
+        output_idx = command.index("--output") + 1
+        output_path = Path(command[output_idx])
+        output_path.write_text(
+            json.dumps(
+                {
+                    "repository_path": "/tmp/repo",
+                    "files_scanned": 1,
+                    "scan_time_seconds": 1,
+                    "issues": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout="diagnostic line",
+            stderr="",
+        )
+
+    monkeypatch.setattr(inc, "_run_subprocess_with_progress", fake_run_with_progress)
+    output_path = tmp_path / "valid-report.json"
+    result = inc.run_scan(
+        Path("/repo"), "base", "head", "sonnet", "medium", False, output_path
+    )
+    assert result.classification == inc.COMPLETED
+    assert result.failure_reason is None
+    assert result.stdout_tail == ""
 
 
 def test_get_diff_stats_parses_numstat_rows(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1190,6 +1359,89 @@ def test_compute_chunks_adaptive_handles_single_oversized_commit(
     assert chunks == [("base", "c1")]
 
 
+def test_determine_chunk_risk_uses_parsed_patch_classification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch = """diff --git a/docs/readme.md b/docs/readme.md
+index 1111111..2222222 100644
+--- a/docs/readme.md
++++ b/docs/readme.md
+@@ -1 +1 @@
+-old
++new
+diff --git "a/src/security/auth service.py" "b/src/security/auth service.py"
+index 3333333..4444444 100644
+--- "a/src/security/auth service.py"
++++ "b/src/security/auth service.py"
+@@ -1 +1 @@
+-allow = False
++allow = True
+"""
+    monkeypatch.setattr(inc, "get_diff_from_commits", lambda *_args, **_kwargs: patch)
+    risk_map = {
+        "critical": ["src/security/*"],
+        "moderate": [],
+        "skip": ["docs/*"],
+    }
+
+    result = inc.determine_chunk_risk(
+        Path("/repo"),
+        "base",
+        "head",
+        risk_map,
+    )
+
+    assert result.tier == "critical"
+    assert result.model == "opus"
+    assert "critical_pattern_match" in result.reasons
+
+
+def test_determine_chunk_risk_extensionless_skip_safeguard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch = """diff --git a/Makefile b/Makefile
+index 1111111..2222222 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1 +1 @@
+-all:
++all: build
+"""
+    monkeypatch.setattr(inc, "get_diff_from_commits", lambda *_args, **_kwargs: patch)
+    risk_map = {
+        "critical": [],
+        "moderate": [],
+        "skip": ["Makefile"],
+    }
+
+    result = inc.determine_chunk_risk(
+        Path("/repo"),
+        "base",
+        "head",
+        risk_map,
+    )
+
+    assert result.tier == "moderate"
+    assert "skip_safeguard:extensionless_file" in result.reasons
+
+
+def test_resolve_prepared_risk_map_path_requires_explicit_prep(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir(parents=True)
+
+    with pytest.raises(RuntimeError, match="python ops/prepare_risk_map.py"):
+        inc.resolve_prepared_risk_map_path(securevibes_dir)
+
+
+def test_load_risk_map_or_raise_rejects_invalid_payload(tmp_path: Path) -> None:
+    risk_map_path = tmp_path / "risk_map.json"
+    risk_map_path.write_text(json.dumps({"critical": []}), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="Invalid risk map"):
+        inc.load_risk_map_or_raise(risk_map_path)
+
+
 def test_recover_stale_runs_only_updates_primary_run_records(tmp_path: Path) -> None:
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()
@@ -1218,23 +1470,24 @@ def test_recover_stale_runs_only_updates_primary_run_records(tmp_path: Path) -> 
     assert json.loads(non_matching.read_text(encoding="utf-8")) == non_matching_payload
 
 
-def test_signal_handler_marks_interrupted_without_system_exit() -> None:
-    class DummyProc:
-        def __init__(self) -> None:
-            self.killed = False
-
-        def kill(self) -> None:
-            self.killed = True
-
-    proc = DummyProc()
+def test_signal_handler_marks_interrupted_without_system_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called: dict[str, bool] = {"terminated": False}
+    proc = object()
     inc._run_ctx.reset()
     inc._run_ctx._child_process = proc  # type: ignore[assignment]
+    monkeypatch.setattr(
+        inc,
+        "_terminate_child_process",
+        lambda *_args, **_kwargs: called.__setitem__("terminated", True),
+    )
 
     inc._signal_handler(int(signal.SIGINT), None)
 
     assert inc._run_ctx.interrupted is True
     assert inc._run_ctx.interrupted_signal == int(signal.SIGINT)
-    assert proc.killed is True
+    assert called["terminated"] is True
     inc._run_ctx.reset()
 
 
@@ -1505,3 +1758,121 @@ def test_run_uses_effective_pr_budget_and_records_timeout_metadata(
     assert payload["chunk_timeout_reason"] == "derived_pr_budget_capped"
     assert payload["chunks"][0]["chunk_timeout_seconds"] == 400
     assert payload["chunks"][0]["timeout_reason"] == "derived_pr_budget_capped"
+
+
+def test_run_skip_tier_chunk_advances_anchor_without_pr_review(
+    monkeypatch: pytest.MonkeyPatch,
+    repo_dir: Path,
+    state_path: Path,
+    write_state,
+    sample_state: dict[str, object],
+) -> None:
+    args = build_args(repo_dir)
+    write_state(sample_state)
+
+    monkeypatch.setattr(inc, "ensure_dependencies", _noop)
+    monkeypatch.setattr(inc, "ensure_repo", _noop)
+    monkeypatch.setattr(inc, "ensure_baseline_artifacts", _noop)
+    monkeypatch.setattr(inc, "git_fetch", _noop)
+    monkeypatch.setattr(inc, "resolve_head", lambda *_args: "newhead")
+    monkeypatch.setattr(inc, "is_ancestor", lambda *_args: True)
+    monkeypatch.setattr(inc, "get_commit_list", lambda *_args: ["c1"])
+    monkeypatch.setattr(inc, "generate_run_id", lambda: "RUN_SKIP_TIER")
+    monkeypatch.setattr(
+        inc,
+        "resolve_prepared_risk_map_path",
+        lambda securevibes_dir: securevibes_dir / "risk_map.json",
+    )
+    monkeypatch.setattr(inc, "load_risk_map_or_raise", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        inc,
+        "determine_chunk_risk",
+        lambda *_args, **_kwargs: inc.ChunkRiskDecision(
+            tier="skip",
+            model=None,
+            reasons=("all_files_matched_skip_patterns",),
+            dependency_only=False,
+            dependency_files=(),
+            unmapped_files=(),
+            new_attack_surface=False,
+        ),
+    )
+
+    def fail_if_called(*_args: Any, **_kwargs: Any) -> None:
+        pytest.fail("run_scan should not be called for skip-tier chunks")
+
+    monkeypatch.setattr(inc, "run_scan", fail_if_called)
+
+    exit_code = inc.run(args)
+    assert exit_code == 0
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["last_status"] == "success"
+    assert state["last_seen_sha"] == "newhead"
+
+    run_record_path = (
+        repo_dir / ".securevibes" / "incremental_runs" / "RUN_SKIP_TIER.json"
+    )
+    run_record = json.loads(run_record_path.read_text(encoding="utf-8"))
+    assert run_record["status"] == "success"
+    assert run_record["chunks"][0]["chunk_tier"] == "skip"
+    assert run_record["chunks"][0]["mode"] == "skip_no_llm"
+
+
+def test_run_critical_tier_routes_chunk_to_opus_model(
+    monkeypatch: pytest.MonkeyPatch,
+    repo_dir: Path,
+    write_state,
+    sample_state: dict[str, object],
+) -> None:
+    args = build_args(repo_dir)
+    write_state(sample_state)
+    seen: dict[str, Any] = {}
+
+    monkeypatch.setattr(inc, "ensure_dependencies", _noop)
+    monkeypatch.setattr(inc, "ensure_repo", _noop)
+    monkeypatch.setattr(inc, "ensure_baseline_artifacts", _noop)
+    monkeypatch.setattr(inc, "git_fetch", _noop)
+    monkeypatch.setattr(inc, "resolve_head", lambda *_args: "newhead")
+    monkeypatch.setattr(inc, "is_ancestor", lambda *_args: True)
+    monkeypatch.setattr(inc, "get_commit_list", lambda *_args: ["c1"])
+    monkeypatch.setattr(inc, "generate_run_id", lambda: "RUN_CRITICAL_TIER")
+    monkeypatch.setattr(
+        inc,
+        "resolve_prepared_risk_map_path",
+        lambda securevibes_dir: securevibes_dir / "risk_map.json",
+    )
+    monkeypatch.setattr(inc, "load_risk_map_or_raise", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        inc,
+        "determine_chunk_risk",
+        lambda *_args, **_kwargs: inc.ChunkRiskDecision(
+            tier="critical",
+            model="opus",
+            reasons=("critical_pattern_match",),
+            dependency_only=False,
+            dependency_files=(),
+            unmapped_files=(),
+            new_attack_surface=False,
+        ),
+    )
+
+    def fake_run_scan(
+        _repo: Path,
+        _base: str,
+        _head: str,
+        model: str,
+        _severity: str,
+        _debug: bool,
+        output_path: Path,
+        _timeout_seconds: int,
+        **_kwargs: Any,
+    ) -> inc.ScanCommandResult:
+        seen["model"] = model
+        return _valid_result(["securevibes"], output_path)
+
+    monkeypatch.setattr(inc, "run_scan", fake_run_scan)
+
+    exit_code = inc.run(args)
+    assert exit_code == 0
+    assert seen["model"] == "opus"

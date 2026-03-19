@@ -280,6 +280,14 @@ class TestScannerInit:
 
         assert scanner.debug is True
 
+    def test_initialization_resolves_permission_mode_at_runtime(self, monkeypatch):
+        """Scanner should resolve permission mode when the instance is created."""
+        monkeypatch.setenv("SECUREVIBES_PERMISSION_MODE", "bypassPermissions")
+
+        scanner = Scanner()
+
+        assert scanner.permission_mode == "bypassPermissions"
+
     def test_api_key_sets_env_var(self):
         """Test API key is set in environment"""
         # API key is no longer set by the scanner - delegated to claude CLI
@@ -1430,10 +1438,18 @@ class TestMergeDastResults:
 class TestPrHypothesisTimeout:
     """Test hypothesis generation timeout and logging behaviour."""
 
+    _DEFAULT_HYPOTHESIS_KWARGS = {
+        "changed_code_dataflow_summary": "- None identified.",
+        "changed_code_chain_summary": "- None identified.",
+        "component_delta_summary": "- No changed components classified.",
+        "new_surface_threat_delta": "- No new-surface threat delta generated.",
+        "baseline_reachability_summary": "- No baseline sink reachability summary generated.",
+        "baseline_sink_code_summary": "- No unchanged baseline sink code available.",
+    }
+
     @pytest.mark.asyncio
     async def test_hypothesis_uses_240s_timeout(self, tmp_path):
-        """Hypothesis generation should use a 90s timeout, not 30s."""
-        import asyncio
+        """Hypothesis generation should use the full 240s default timeout."""
         from securevibes.scanner.scanner import _generate_pr_hypotheses
 
         captured = {}
@@ -1464,6 +1480,7 @@ class TestPrHypothesisTimeout:
                     threat_context_summary="none",
                     vuln_context_summary="none",
                     architecture_context="none",
+                    **self._DEFAULT_HYPOTHESIS_KWARGS,
                 )
 
         assert captured["timeout"] == 240
@@ -1474,12 +1491,17 @@ class TestPrHypothesisTimeout:
         import asyncio
         from securevibes.scanner.scanner import _generate_pr_hypotheses
 
+        async def timeout_wait_for(coro, *, timeout):
+            del timeout
+            coro.close()
+            raise asyncio.TimeoutError
+
         with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
             mock_instance = MagicMock()
             mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
             mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
+            with patch("asyncio.wait_for", side_effect=timeout_wait_for):
                 with patch("securevibes.scanner.scanner.logger") as mock_logger:
                     result = await _generate_pr_hypotheses(
                         repo=tmp_path,
@@ -1490,6 +1512,7 @@ class TestPrHypothesisTimeout:
                         threat_context_summary="none",
                         vuln_context_summary="none",
                         architecture_context="none",
+                        **self._DEFAULT_HYPOTHESIS_KWARGS,
                     )
 
                     assert result == "- Unable to generate hypotheses."
@@ -1503,8 +1526,7 @@ class TestPrRefinementTimeout:
 
     @pytest.mark.asyncio
     async def test_refinement_uses_240s_timeout(self, tmp_path):
-        """PR finding refinement should use a 90s timeout, not 30s."""
-        import asyncio
+        """PR finding refinement should use the full 240s default timeout."""
         from securevibes.scanner.scanner import _refine_pr_findings_with_llm
 
         captured = {}
@@ -1543,12 +1565,17 @@ class TestPrRefinementTimeout:
         import asyncio
         from securevibes.scanner.scanner import _refine_pr_findings_with_llm
 
+        async def timeout_wait_for(coro, *, timeout):
+            del timeout
+            coro.close()
+            raise asyncio.TimeoutError
+
         with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
             mock_instance = MagicMock()
             mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
             mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
+            with patch("asyncio.wait_for", side_effect=timeout_wait_for):
                 with patch("securevibes.scanner.scanner.logger") as mock_logger:
                     result = await _refine_pr_findings_with_llm(
                         repo=tmp_path,

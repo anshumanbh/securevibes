@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import shlex
 from typing import Dict, List, Optional, Sequence, Tuple
 
 
@@ -95,6 +96,12 @@ class DiffContext:
 
 def _strip_diff_prefix(path: str) -> Optional[str]:
     path = path.split("\t", 1)[0].strip()
+    try:
+        parts = shlex.split(path)
+        if len(parts) == 1:
+            path = parts[0]
+    except ValueError:
+        pass
     if path.startswith("a/") or path.startswith("b/"):
         path = path[2:]
     if path in ("/dev/null", "dev/null"):
@@ -135,7 +142,10 @@ def parse_unified_diff(diff_content: str) -> DiffContext:
         if line.startswith("diff --git"):
             if current_file:
                 files.append(current_file)
-            parts = line.split()
+            try:
+                parts = shlex.split(line)
+            except ValueError:
+                parts = line.split()
             old_path = _strip_diff_prefix(parts[2]) if len(parts) > 2 else None
             new_path = _strip_diff_prefix(parts[3]) if len(parts) > 3 else None
             current_file = DiffFile(
@@ -161,21 +171,29 @@ def parse_unified_diff(diff_content: str) -> DiffContext:
             current_file.is_deleted = True
             continue
         if line.startswith("rename from "):
-            current_file.old_path = line[len("rename from ") :].strip() or current_file.old_path
+            current_file.old_path = (
+                _strip_diff_prefix(line[len("rename from ") :]) or current_file.old_path
+            )
             current_file.is_renamed = True
             continue
         if line.startswith("rename to "):
-            current_file.new_path = line[len("rename to ") :].strip() or current_file.new_path
+            current_file.new_path = (
+                _strip_diff_prefix(line[len("rename to ") :]) or current_file.new_path
+            )
             current_file.is_renamed = True
             continue
 
         if line.startswith("--- "):
-            current_file.old_path = _strip_diff_prefix(line[4:]) or current_file.old_path
+            current_file.old_path = (
+                _strip_diff_prefix(line[4:]) or current_file.old_path
+            )
             if current_file.old_path is None:
                 current_file.is_new = True
             continue
         if line.startswith("+++ "):
-            current_file.new_path = _strip_diff_prefix(line[4:]) or current_file.new_path
+            current_file.new_path = (
+                _strip_diff_prefix(line[4:]) or current_file.new_path
+            )
             if current_file.new_path is None:
                 current_file.is_deleted = True
             continue
@@ -212,7 +230,9 @@ def parse_unified_diff(diff_content: str) -> DiffContext:
                 new_line_num += 1
         elif prefix == "-":
             current_hunk.lines.append(
-                DiffLine("remove", content, old_line_num=old_line_num, new_line_num=None)
+                DiffLine(
+                    "remove", content, old_line_num=old_line_num, new_line_num=None
+                )
             )
             removed_lines += 1
             if old_line_num is not None:
@@ -221,7 +241,12 @@ def parse_unified_diff(diff_content: str) -> DiffContext:
             if prefix == " ":
                 content = line[1:]
             current_hunk.lines.append(
-                DiffLine("context", content, old_line_num=old_line_num, new_line_num=new_line_num)
+                DiffLine(
+                    "context",
+                    content,
+                    old_line_num=old_line_num,
+                    new_line_num=new_line_num,
+                )
             )
             if old_line_num is not None:
                 old_line_num += 1

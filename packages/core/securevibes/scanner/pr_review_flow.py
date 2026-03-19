@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional, Type
 
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
-from claude_agent_sdk.types import AssistantMessage, HookMatcher, ResultMessage, TextBlock
+from claude_agent_sdk.types import (
+    AssistantMessage,
+    HookMatcher,
+    ResultMessage,
+    TextBlock,
+)
 
 from securevibes.agents.definitions import create_agent_definitions
 from securevibes.config import config
@@ -27,6 +33,7 @@ from securevibes.scanner.hooks import (
     create_pre_tool_hook,
     create_subagent_hook,
 )
+from securevibes.scanner.permissions import resolve_permission_mode
 from securevibes.scanner.pr_review_merge import (
     build_pr_review_retry_suffix,
     extract_observed_pr_findings,
@@ -70,6 +77,16 @@ class PRReviewContext:
     pr_grep_default_scope: str
     scan_start_time: float
     severity_threshold: str
+    changed_code_chain_summary: str = "- None identified."
+    baseline_reachability_summary: str = (
+        "- No overlapping high-impact baseline operations identified."
+    )
+    baseline_sink_code_summary: str = "- No unchanged baseline sink code selected."
+    baseline_sink_candidates: list[dict[str, Any]] = field(default_factory=list)
+    context_prep_seconds: float = 0.0
+    new_surface_delta_seconds: float = 0.0
+    hypothesis_generation_seconds: float = 0.0
+    context_phase_timings: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -85,6 +102,7 @@ class PRReviewState:
     attempts_with_overwritten_artifact: int = 0
     attempt_finding_counts: list[int] = field(default_factory=list)
     attempt_observed_counts: list[int] = field(default_factory=list)
+    attempt_elapsed_seconds: list[float] = field(default_factory=list)
     attempt_focus_areas: list[str] = field(default_factory=list)
     attempt_chain_ids: list[set[str]] = field(default_factory=list)
     attempt_chain_exact_ids: list[set[str]] = field(default_factory=list)
@@ -132,6 +150,7 @@ class PRReviewAttemptRunner:
         self._progress_tracker_cls = progress_tracker_cls
         self._claude_client_cls = claude_client_cls
         self._hook_matcher_cls = hook_matcher_cls
+        self._permission_mode = resolve_permission_mode()
 
     @property
     def console(self) -> Any:
@@ -144,6 +163,74 @@ class PRReviewAttemptRunner:
     @property
     def model(self) -> str:
         return self._scanner.model
+
+    async def _force_close_client(self, *targets: Any, timeout_seconds: float = 5.0) -> None:
+        """Best-effort client shutdown for timed-out attempts."""
+        unique_targets: list[Any] = []
+        seen_ids: set[int] = set()
+        for target in targets:
+            if target is None:
+                continue
+            target_id = id(target)
+            if target_id in seen_ids:
+                continue
+            seen_ids.add(target_id)
+            unique_targets.append(target)
+
+        for target in unique_targets:
+            close_coro = None
+            disconnect_fn = getattr(target, "disconnect", None)
+            if callable(disconnect_fn):
+                close_coro = disconnect_fn()
+            else:
+                close_fn = getattr(target, "close", None)
+                if callable(close_fn):
+                    close_coro = close_fn()
+            if close_coro is None:
+                continue
+            try:
+                await asyncio.wait_for(close_coro, timeout=timeout_seconds)
+            except (Exception, asyncio.CancelledError):
+                pass
+            break
+
+        for target in unique_targets:
+            transport = getattr(target, "_transport", None)
+            process = getattr(transport, "_process", None)
+            if process is None or getattr(process, "returncode", None) is not None:
+                continue
+
+            wait_fn = getattr(process, "wait", None)
+            try:
+                process.terminate()
+            except Exception:
+                pass
+
+            if callable(wait_fn):
+                try:
+                    await asyncio.wait_for(wait_fn(), timeout=1.0)
+                    continue
+                except (Exception, asyncio.CancelledError):
+                    pass
+
+            try:
+                process.kill()
+            except Exception:
+                pass
+
+            if callable(wait_fn):
+                try:
+                    await asyncio.wait_for(wait_fn(), timeout=1.0)
+                except (Exception, asyncio.CancelledError):
+                    pass
+
+        for target in unique_targets:
+            for attr in ("_query", "_transport"):
+                if hasattr(target, attr):
+                    try:
+                        setattr(target, attr, None)
+                    except Exception:
+                        pass
 
     def _record_attempt_chains(
         self,
@@ -296,6 +383,7 @@ class PRReviewAttemptRunner:
         consecutive_clean_passes = 0
 
         for attempt_idx in range(pr_review_attempts):
+            attempt_start_time = time.monotonic()
             attempt_num = attempt_idx + 1
             state.attempts_run = attempt_num
             retry_suffix = ""
@@ -371,7 +459,7 @@ class PRReviewAttemptRunner:
                 setting_sources=["project"],
                 allowed_tools=["Read", "Write", "Grep", "Glob", "LS"],
                 max_turns=config.get_max_turns(),
-                permission_mode="default",
+                permission_mode=self._permission_mode,
                 model=self.model,
                 hooks={
                     "PreToolUse": [
@@ -384,35 +472,34 @@ class PRReviewAttemptRunner:
             )
 
             attempt_error: Optional[str] = None
-            try:
-                async with self._claude_client_cls(options=options) as client:
-                    try:
-                        await asyncio.wait_for(
-                            self._run_attempt_messages(
-                                client=client,
-                                attempt_prompt=attempt_prompt,
-                                tracker=tracker,
-                            ),
-                            timeout=ctx.pr_timeout_seconds,
-                        )
-                    except asyncio.TimeoutError:
-                        attempt_error = (
-                            f"PR code review attempt {attempt_num}/{pr_review_attempts} timed out after "
-                            f"{ctx.pr_timeout_seconds}s."
-                        )
-                        # Force-close the client to kill any hung subprocess
-                        # before the context manager __aexit__ tries a graceful close.
-                        try:
-                            await asyncio.wait_for(client.close(), timeout=5.0)
-                        except Exception:
-                            pass
-            except asyncio.TimeoutError:
-                # Context manager __aexit__ itself timed out during cleanup
-                if not attempt_error:
-                    attempt_error = (
-                        f"PR code review attempt {attempt_num}/{pr_review_attempts} timed out after "
-                        f"{ctx.pr_timeout_seconds}s (cleanup also timed out)."
+            client_ctx = self._claude_client_cls(options=options)
+            connected_client: Optional[Any] = None
+
+            async def _run_client_session() -> None:
+                nonlocal connected_client
+                async with client_ctx as client:
+                    connected_client = client
+                    await self._run_attempt_messages(
+                        client=client,
+                        attempt_prompt=attempt_prompt,
+                        tracker=tracker,
                     )
+
+            try:
+                await asyncio.wait_for(
+                    _run_client_session(),
+                    timeout=ctx.pr_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                attempt_error = (
+                    f"PR code review attempt {attempt_num}/{pr_review_attempts} timed out after "
+                    f"{ctx.pr_timeout_seconds}s."
+                )
+                await self._force_close_client(
+                    connected_client,
+                    client_ctx,
+                    timeout_seconds=5.0,
+                )
             except Exception as exc:
                 if not attempt_error:
                     attempt_error = (
@@ -452,6 +539,7 @@ class PRReviewAttemptRunner:
                 loaded_vulns=loaded_vulns,
                 load_warning=load_warning,
             )
+            state.attempt_elapsed_seconds.append(round(time.monotonic() - attempt_start_time, 2))
 
             if attempt_error or load_warning:
                 consecutive_clean_passes = 0

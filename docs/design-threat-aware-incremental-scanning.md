@@ -1,7 +1,28 @@
 # Design: Threat-Aware Incremental Scanning
 
 ## Status
-Proposed — PR #43
+Partially implemented — PR #43
+
+## Implementation Status Snapshot (March 18, 2026)
+
+- [x] Phase 1: derive or load `.securevibes/risk_map.json` from `THREAT_MODEL.json`
+- [x] Phase 2: deterministic file/chunk risk scoring with `critical` / `moderate` / `skip`
+- [x] Skip-tier safeguards and dependency-change promotion
+- [x] Policy/context file changes promote a chunk to Tier 1
+- [~] Phase 3: risk-weighted chunk routing exists in `ops/incremental_scan.py`, but the core `securevibes incremental` orchestrator does not exist yet
+- [~] Prompt assembly now carries richer baseline-aware PR-review context, but it does not use qmd semantic retrieval
+- [~] Wrapper anchor-preservation and fail-closed behavior exist, but trusted merge-base policy reads are not implemented yet
+- [ ] Phase 4: `design_decisions.json` loading, matching, and prompt injection
+- [ ] Phase 5: qmd indexing, semantic retrieval, and intra-run refresh
+- [ ] Phase 6: decision traces and Agent Trace provenance
+- [ ] Phase 7: compounding knowledge loop and artifact re-indexing
+- [ ] Phase 8: interactive post-scan feedback loop
+
+### Built In This PR Outside The Original Phase Breakdown
+
+- PR-review timeout propagation and attempt-loop hardening
+- Structured changed-code reasoning and prompt assembly improvements
+- Baseline-sink composition and exact unchanged-sink adjudication for PR review
 
 ## Problem
 
@@ -20,6 +41,38 @@ Current incremental scanning treats all code changes equally. A 1-line change to
 ## Solution
 
 Use baseline scan artifacts (THREAT_MODEL.json, SECURITY.md, VULNERABILITIES.json) as a **security-aware lens**. Before any LLM call, classify each chunk by what it touches and route to the appropriate model and review depth. Triage uses exact glob matching against `risk_map.json` (no external dependencies). Context injection uses qmd for semantic search to find relevant threats and findings for the code under review.
+
+## Mandatory Prerequisites (Per Repository)
+
+Threat-aware incremental scanning is only valid after a baseline scan has been completed for that repository and branch.
+
+1. Baseline run order is fixed:
+   - `assessment -> threat-modeling -> code-review -> report-generator`
+2. Required baseline artifacts:
+   - `.securevibes/SECURITY.md`
+   - `.securevibes/THREAT_MODEL.json`
+   - `.securevibes/VULNERABILITIES.json`
+3. Threat modeling is produced by the **`threat-modeling` subagent** (fixed subagent contract, even when invoked ad hoc per chunk).
+4. For agentic applications, threat modeling must include OWASP ASI threats (via agentic threat-modeling skills); orchestration must pass repository/app profile so this path is auto-applied by the subagent.
+5. If prerequisites are missing or invalid, incremental mode fails closed and instructs the operator to run baseline scan.
+6. Canonical finding artifact name is `VULNERABILITIES.json`.
+7. Baseline threat outputs must include code-grounded validation status from baseline code-review:
+   - each threat is marked `validated`, `invalidated`, or `needs_followup`
+   - each status includes code evidence (file paths and rationale) captured during the baseline run
+
+### Baseline Quality Contract (Blocking)
+
+Baseline quality is a hard gate because baseline artifacts are the source of truth for incremental learning, tiering, and memory.
+
+Incremental mode is allowed only when baseline outputs satisfy all checks:
+
+- Architecture assessment captures core components, key data flows, trust boundaries, authn/authz paths, and external integrations relevant to security.
+- Architecture assessment completion is phase-complete (no omitted SecureVibes assessment phases for that repository profile).
+- Threat modeling is in-depth for the repository domain and includes agentic-specific threats when the app is agentic.
+- Baseline code-review explicitly validates/invalidates modeled threats against real code and carries unresolved items as `needs_followup`.
+- `VULNERABILITIES.json` remains the canonical findings artifact name (not `volunteers.json`).
+
+If quality checks fail, incremental mode fails closed with explicit remediation guidance to rerun baseline.
 
 ### Architecture
 
@@ -53,6 +106,15 @@ Use baseline scan artifacts (THREAT_MODEL.json, SECURITY.md, VULNERABILITIES.jso
             │ (tier + context)│
             └─────────────────┘
 ```
+
+Runtime ownership: incremental orchestration lives in a core command (`securevibes incremental`) that enforces deterministic safety invariants. During migration, `ops/incremental_scan.py` is a compatibility shim that delegates to this command.
+
+## Severity Handling Policy
+
+- Persist findings across all severities in artifacts to preserve longitudinal learning.
+- Surface only `high` and `critical` findings to end users by default.
+- Display filtering must not discard stored `medium`/`low` findings.
+- This policy applies to both baseline and incremental flows.
 
 ## Three-Tier Risk-Based Triage
 
@@ -170,21 +232,6 @@ Example `risk_map.json` (generated from OpenClaw's threat model):
 
 **Unmapped files** default to Tier 2 (moderate) with context injection via qmd. If they introduce a new attack surface, they also trigger incremental threat modeling (see Tier 2 description).
 
-### Projected Impact
-
-Using OpenClaw's current commit distribution as a benchmark:
-
-| Tier | Chunks | Model | Time/chunk | Total |
-|------|--------|-------|-----------|-------|
-| Critical (Opus) | ~10 | Opus | 600s | 6,000s |
-| Moderate (Sonnet) | ~15 | Sonnet | 300s | 4,500s |
-| Skip | ~33 | — | 0s | 0s |
-| **Total** | **58** | | | **~2.9 hours** |
-
-**vs current:** 58 × 600s = **9.7 hours** (all Sonnet, no triage)
-
-~70% time reduction. Critical findings surface in the first pass instead of being queued behind docs updates.
-
 ## Implementation Plan
 
 ### Phase 1: Risk Map Generation
@@ -193,7 +240,7 @@ After a baseline scan produces `THREAT_MODEL.json`, generate `.securevibes/risk_
 
 ### Phase 2: File → Component Mapping + Risk Scoring
 
-**In the wrapper (`ops/incremental_scan.py`):**
+**In the core incremental orchestrator (`securevibes incremental`):**
 
 1. On each run, before chunking:
    - Get changed files: `git diff --name-only base..head`
@@ -212,7 +259,7 @@ After a baseline scan produces `THREAT_MODEL.json`, generate `.securevibes/risk_
 
 4. Route to appropriate model and depth.
 
-**New module: `ops/risk_scorer.py`**
+**New module: `packages/core/securevibes/scanner/risk_scorer.py`**
 - Input: `risk_map.json` + list of changed files
 - Match file paths against glob patterns from the risk map
 - Output: `list[FileRisk]` with file, component, tier, relevant_threats
@@ -225,13 +272,15 @@ After a baseline scan produces `THREAT_MODEL.json`, generate `.securevibes/risk_
 - `_derive_components_from_file_path()` is NOT used for tier decisions in Phases 1-3.
 - Future improvement: enhance component derivation to use multi-level path segments; this is not a blocker for Phases 1-3.
 
-### Phase 3: Risk-Weighted Chunking
+### Phase 3: Risk-Weighted Chunking + Ad Hoc Subagent Routing
 
 Replace flat chunking with tiered processing:
 
 - Chunks are processed in commit order (same anchor model as today); tier determines review depth, not processing sequence.
 - For Phases 1-3, model routing is chunk-level: the highest-risk file in the chunk chooses the model (`critical -> Opus`, `moderate -> Sonnet`, `skip -> no LLM`), subject to cross-tier dependency-detection promotion and skip safeguards.
 - Mixed-tier chunks are processed as a single unit at the highest required depth to preserve anchor safety and avoid split-range gaps.
+- Subagent routing is not fixed to a global sequential pipeline. The orchestrator may invoke an ad hoc subset per chunk while preserving dependency order and anchor safety.
+- Threat modeling for new attack surfaces MUST be executed by the `threat-modeling` subagent, then handed off to `pr-code-review` with updated threat context.
 - Skip-tier classification is recorded before anchor advancement (see Safety Invariants / Anchor Advancement Invariant).
 - Tier 3 batching: consecutive all-skip chunks can be batched for execution efficiency, but each constituent commit must be individually recorded as classified.
 
@@ -330,7 +379,7 @@ No other scanner lets developers declare design intent that the AI reviewer actu
 
 ### Phase 5: Context Injection via Prompt Assembly + qmd
 
-**In `securevibes pr-review` (packages/core change):**
+**In `securevibes incremental` / `securevibes pr-review` prompt assembly (packages/core change):**
 
 Context injection extends the existing prompt assembly path in `scanner.py` (`pr_review()` and `_prepare_pr_review_context()`), which already injects:
 
@@ -392,7 +441,15 @@ Feedback loop happens after each scan run: log which context was injected and wh
 
 ### Phase 6: Decision Traces — Institutional Triage Memory
 
-When a finding is triaged (false positive, accepted risk, mitigated elsewhere), record a **decision trace**:
+When a finding is triaged (false positive, accepted risk, mitigated elsewhere), record a **decision trace**.
+
+Decision traces use **Agent Trace** for provenance and attribution (conversation/model/code-range lineage), while SecureVibes-specific fields remain canonical for security triage semantics.
+
+Reference standard:
+- https://agent-trace.dev/
+- https://github.com/cursor/agent-trace
+
+Decision trace record (SecureVibes schema + Agent Trace envelope):
 
 ```json
 {
@@ -406,9 +463,25 @@ When a finding is triaged (false positive, accepted risk, mitigated elsewhere), 
   "mitigated_by": ["src/agents/pi-tools.safe-bins.ts", "src/agents/sandbox-tool-policy.ts"],
   "decided_by": "anshuman",
   "decided_at": "2026-02-26",
-  "related_findings": ["sv-2026-0225-004"]
+  "related_findings": ["sv-2026-0225-004"],
+  "agent_trace": {
+    "id": "at_01HXYZ...",
+    "standard_version": "1.0",
+    "vcs_revision": "abc1234",
+    "conversation_url": "https://example.ai/c/123",
+    "contributor": "codex",
+    "model": "claude-sonnet-4.5",
+    "files": [
+      {
+        "path": "src/agents/sandbox-tool-policy.ts",
+        "ranges": [{"start": 42, "end": 73}]
+      }
+    ]
+  }
 }
 ```
+
+**Mapping rule:** Agent Trace fields capture provenance (`who/what/where`); SecureVibes fields capture security decision behavior (`verdict/conditions/mitigated_by`). Agent Trace does not replace verdict semantics.
 
 **Verdict types:**
 
@@ -438,6 +511,23 @@ After each scan:
 5. Prune low-relevance threat context over time (keeps prompts lean)
 6. Flag decisions whose `mitigated_by` files changed for re-review
 
+### Phase 8: Post-Baseline Findings Review + User Feedback Loop
+
+After baseline (and on each incremental run), findings are presented to the user with default visibility filtering:
+
+- Surface only `high` and `critical` findings by default.
+- Keep `medium`/`low` persisted and queryable for longitudinal risk tracking.
+
+Interactive review flow:
+
+1. User opens a finding (or set of findings) in conversational mode.
+2. System provides supporting context: threat entry, code evidence, prior decisions, and related artifacts.
+3. User can submit feedback (confirm issue, dispute issue, accepted risk, request more evidence, defer).
+4. Feedback updates decision traces and triage state for future runs.
+5. If user feedback invalidates prior assumptions, mark affected threat/finding context for re-validation on next scan.
+
+Feedback outcomes are written to decision traces with Agent Trace provenance so future reviewers can audit why a verdict changed and which conversation/code context drove the change.
+
 ## Cost Model
 
 Assuming a repo like OpenClaw (~5,300 files):
@@ -456,6 +546,7 @@ Assuming a repo like OpenClaw (~5,300 files):
 - Any PR that modifies these version-controlled policy/context files is auto-classified as Tier 1 (Critical), regardless of other file content.
 - The risk scorer loads policy via trusted git object reads (for example, `git show <merge-base>:.securevibes/risk_map.json`) rather than working-tree reads.
 - Decision traces under `.securevibes/decisions/` follow the same trust rule and are loaded from trusted base state.
+- Agent Trace metadata linked from decision traces follows the same trust rule; provenance references from untrusted PR head state are advisory-only and cannot suppress review depth.
 - If `VULNERABILITIES.json` is local-only (not version-controlled), it may be used as advisory context but MUST NOT lower tiering decisions or suppress review depth.
 
 ### Anchor Advancement Invariant
@@ -467,7 +558,7 @@ Assuming a repo like OpenClaw (~5,300 files):
 - Tiering controls review depth, not processing order; chunks are visited in commit order.
 - "Process Tier 1 first" applies only to parallel implementations. Sequential runs must preserve commit order.
 - Skip-tier chunks must record a classification entry (`tier=skip`, `files=[...]`, `reason="all files matched skip patterns"`) before anchor advances past them.
-- Reference point: current greedy anchor progression in `ops/incremental_scan.py` (around `last_successful_anchor`) requires explicit classification guarantees to prevent unclassified gaps.
+- Reference implementation during migration: legacy wrapper behavior around `last_successful_anchor` in `ops/incremental_scan.py` remains the parity baseline until deprecation is complete.
 
 ### Skip Tier Safeguards
 
@@ -486,24 +577,45 @@ These safeguards are deterministic pattern/regex checks, not LLM-based checks.
 
 ## Migration Path
 
-1. **Phase 1-2** — biggest ROI, pure wrapper change. No changes to core securevibes needed.
-2. **Phase 3** — wrapper refactor, depends on Phase 2.
-3. **Phase 4** — design decisions file schema. Low effort, high impact on false positive reduction. Can be adopted incrementally per repo.
-4. **Phase 5** — extends existing prompt assembly in securevibes core to inject design decisions + decision traces + past findings context. Requires qmd for semantic context retrieval.
-5. **Phase 6** — decision traces for reactive triage. Needs a CLI flow for recording triage decisions.
-6. **Phase 7** — metrics collection, added incrementally.
+1. **Step 1 (core orchestrator)** — implement `securevibes incremental` in core with deterministic state/anchor/chunk invariants and tier-aware subagent routing.
+2. **Step 2 (compatibility shim)** — keep `ops/incremental_scan.py` as a thin delegating shim to preserve existing cron/ops entrypoints while parity tests run.
+3. **Step 3 (deprecation)** — remove wrapper-owned orchestration after parity and soak period; keep behavior contract and logs in the core command.
+4. **Step 4 (context + memory layers)** — roll out Phases 4-8 (design decisions, context injection, decision traces, compounding telemetry, user feedback loop) incrementally.
+
+### Recommended Implementation Order For Phases 4-8
+
+To preserve deterministic routing, Phases 4-8 should be implemented as review-context and memory layers only. They must not affect tier classification, skip decisions, or anchor advancement.
+
+1. **Phase 4 first, exact-match only** — add `design_decisions.json` loading, validation, exact path/component matching, and prompt injection. Do not add semantic retrieval yet.
+2. **Phase 6 second, exact-match only** — add decision trace storage under `.securevibes/decisions/`, exact matching by changed paths/components/`mitigated_by`, and prompt injection. Do not block this on Agent Trace support.
+3. **Introduce a retrieval abstraction** — add a shared retrieval layer that returns relevant threats, findings, design decisions, and decision traces. Start with exact-match providers only so `scanner.py` depends on an interface rather than a qmd-specific implementation.
+4. **Phase 5 after the abstraction exists** — add qmd-backed semantic retrieval behind the retrieval layer. Use it only for contextual retrieval during prompt assembly, not for tiering or review-depth suppression.
+5. **Phase 7 next** — add freshness/reindexing and compounding-memory mechanics: refresh contextual artifacts after updates, re-surface traces when `mitigated_by` files change, and record minimal context-injection telemetry.
+6. **Phase 8 last** — add a simple user-feedback flow that writes decision traces from explicit triage actions (`false_positive`, `accepted_risk`, `mitigated_by`, `deferred`, `fixed`). Start with a narrow CLI-backed flow rather than a full conversational UX.
+
+**Agent Trace sequencing:** add Agent Trace provenance as a follow-up enrichment to Phase 6 once the core decision-trace model is stable. It should extend trace provenance, not block the first usable memory layer.
 
 ## Dependencies
 
 - **THREAT_MODEL.json** — must exist from baseline scan (source of truth for risk map generation)
 - **Baseline artifacts** — SECURITY.md, VULNERABILITIES.json
+- **Core incremental command** — `securevibes incremental` owns orchestration and routing behavior
 - **qmd** — BM25 + vector search CLI (Phase 5 context injection, Phase 7 re-indexing). Not required for triage (Phases 1-3).
 - **Prompt assembly path** — `pr_review()` in `packages/core/securevibes/scanner/scanner.py` (Phase 5 extension point)
 - **design_decisions.json** — optional, created by dev team (Phase 4)
+- **Agent Trace metadata** — provenance envelope for decision traces (Phase 6); SecureVibes verdict semantics remain canonical
 
 ## Resolved Decisions
 
 1. **Risk tiers configurable per repo?** Yes. `risk_map.json` is per-repo; teams can promote paths (including `docs/*`) to moderate when docs carry security guidance.
 2. **How to handle new files not in threat model?** Default to Tier 2 and log for threat model update.
 3. **Where is qmd used?** Phase 5 (context injection) and Phase 7 (re-indexing). qmd provides semantic search to find relevant threats, findings, and design decisions where the relationship between changed files and context is not captured in explicit path references. Not used for triage (Phases 1-3) — tier classification uses exact glob matching against `risk_map.json`.
-4. **Multi-repo support?** Each repo has its own `risk_map.json` and artifact set; cross-repo references are out of scope.
+4. **Threat modeling execution model?** Threat updates are produced by the `threat-modeling` subagent (including agentic skill augmentation), not by ad hoc prompt fragments inside other reviewers.
+5. **Ad hoc subagent routing supported?** Yes. Incremental orchestration supports per-chunk subagent subsets (not only fixed sequential runs), while preserving dependency and anchor invariants.
+6. **Wrapper future?** Wrapper-owned orchestration is being deprecated in favor of a core command; wrapper remains temporary compatibility shim.
+7. **Severity visibility policy?** Track all severities in artifacts; default user-facing output shows only high/critical.
+8. **Multi-repo support?** Each repo has its own `risk_map.json` and artifact set; cross-repo references are out of scope.
+9. **Does baseline quality block incremental eligibility?** Yes. Baseline quality contract is an explicit hard gate.
+10. **Is post-baseline interactive user conversation/feedback flow included in this design?** Yes. Included as Phase 8.
+11. **Canonical findings artifact name?** `VULNERABILITIES.json` (not `volunteers.json`).
+12. **Should Agent Trace be used for decision traces?** Yes. Agent Trace is the provenance standard; SecureVibes retains canonical security verdict fields.

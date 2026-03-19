@@ -14,9 +14,13 @@ _SINCE_PATTERN = re.compile(r"^[0-9T:+\- ]+$")
 def _validate_single_git_ref(ref: str, original_ref: str) -> None:
     """Validate one git ref token (non-range)."""
     if ref.startswith("-"):
-        raise ValueError(f"Invalid git ref: {original_ref!r} (option-style refs are not allowed)")
+        raise ValueError(
+            f"Invalid git ref: {original_ref!r} (option-style refs are not allowed)"
+        )
     if not GIT_REF_PATTERN.match(ref):
-        raise ValueError(f"Invalid git ref: {original_ref!r} (contains invalid characters)")
+        raise ValueError(
+            f"Invalid git ref: {original_ref!r} (contains invalid characters)"
+        )
 
 
 def validate_git_ref(ref: str) -> None:
@@ -72,6 +76,27 @@ def _run_git_diff(repo: Path, args: list[str]) -> str:
         text=True,
         check=False,
     )
+    if result.returncode != 0:
+        stderr = result.stderr.strip() or "Unknown git diff error"
+        raise RuntimeError(f"git diff failed: {stderr}")
+    return result.stdout
+
+
+def _run_git_diff_with_timeout(
+    repo: Path, args: list[str], timeout_seconds: int | None
+) -> str:
+    """Run git diff with an optional timeout for wrapper callers."""
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--no-color", *args],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"git diff timed out after {timeout_seconds}s") from exc
     if result.returncode != 0:
         stderr = result.stderr.strip() or "Unknown git diff error"
         raise RuntimeError(f"git diff failed: {stderr}")
@@ -144,7 +169,9 @@ def get_last_n_commits(repo: Path, count: int) -> list[str]:
     return _run_git_rev_list(repo, ["--reverse", f"--max-count={count}", "HEAD"])
 
 
-def get_diff_from_commit_list(repo: Path, commits: list[str]) -> str:
+def get_diff_from_commit_list(
+    repo: Path, commits: list[str], timeout_seconds: int | None = None
+) -> str:
     """Get a combined diff for the provided commit list window."""
     if not commits:
         return ""
@@ -155,21 +182,27 @@ def get_diff_from_commit_list(repo: Path, commits: list[str]) -> str:
     validate_git_ref(newest)
     base_commit = _get_parent_commit(repo, oldest)
     if base_commit:
-        return _run_git_diff(repo, [f"{base_commit}..{newest}"])
-    return _run_git_diff(repo, ["--root", newest])
+        return _run_git_diff_with_timeout(
+            repo, [f"{base_commit}..{newest}"], timeout_seconds
+        )
+    return _run_git_diff_with_timeout(repo, ["--root", newest], timeout_seconds)
 
 
-def get_diff_from_git_range(repo: Path, base: str, head: str) -> str:
+def get_diff_from_git_range(
+    repo: Path, base: str, head: str, timeout_seconds: int | None = None
+) -> str:
     """Get diff between two branches/commits."""
     validate_git_ref(base)
     validate_git_ref(head)
-    return _run_git_diff(repo, [f"{base}...{head}"])
+    return _run_git_diff_with_timeout(repo, [f"{base}...{head}"], timeout_seconds)
 
 
-def get_diff_from_commits(repo: Path, commit_range: str) -> str:
+def get_diff_from_commits(
+    repo: Path, commit_range: str, timeout_seconds: int | None = None
+) -> str:
     """Get diff from commit range (e.g., abc123~1..abc123)."""
     validate_git_ref(commit_range)
-    return _run_git_diff(repo, [commit_range])
+    return _run_git_diff_with_timeout(repo, [commit_range], timeout_seconds)
 
 
 def get_diff_from_file(patch_path: Path) -> str:
