@@ -1483,12 +1483,17 @@ class TestPrHypothesisTimeout:
         import asyncio
         from securevibes.scanner.scanner import _generate_pr_hypotheses
 
+        async def timeout_wait_for(coro, *, timeout):
+            del timeout
+            coro.close()
+            raise asyncio.TimeoutError
+
         with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
             mock_instance = MagicMock()
             mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
             mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
+            with patch("asyncio.wait_for", side_effect=timeout_wait_for):
                 with patch("securevibes.scanner.scanner.logger") as mock_logger:
                     result = await _generate_pr_hypotheses(
                         repo=tmp_path,
@@ -1552,12 +1557,17 @@ class TestPrRefinementTimeout:
         import asyncio
         from securevibes.scanner.scanner import _refine_pr_findings_with_llm
 
+        async def timeout_wait_for(coro, *, timeout):
+            del timeout
+            coro.close()
+            raise asyncio.TimeoutError
+
         with patch("securevibes.scanner.scanner.ClaudeSDKClient") as mock_client:
             mock_instance = MagicMock()
             mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
             mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
+            with patch("asyncio.wait_for", side_effect=timeout_wait_for):
                 with patch("securevibes.scanner.scanner.logger") as mock_logger:
                     result = await _refine_pr_findings_with_llm(
                         repo=tmp_path,
