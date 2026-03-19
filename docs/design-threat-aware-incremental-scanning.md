@@ -1,7 +1,28 @@
 # Design: Threat-Aware Incremental Scanning
 
 ## Status
-Proposed — PR #43
+Partially implemented — PR #43
+
+## Implementation Status Snapshot (March 18, 2026)
+
+- [x] Phase 1: derive or load `.securevibes/risk_map.json` from `THREAT_MODEL.json`
+- [x] Phase 2: deterministic file/chunk risk scoring with `critical` / `moderate` / `skip`
+- [x] Skip-tier safeguards and dependency-change promotion
+- [x] Policy/context file changes promote a chunk to Tier 1
+- [~] Phase 3: risk-weighted chunk routing exists in `ops/incremental_scan.py`, but the core `securevibes incremental` orchestrator does not exist yet
+- [~] Prompt assembly now carries richer baseline-aware PR-review context, but it does not use qmd semantic retrieval
+- [~] Wrapper anchor-preservation and fail-closed behavior exist, but trusted merge-base policy reads are not implemented yet
+- [ ] Phase 4: `design_decisions.json` loading, matching, and prompt injection
+- [ ] Phase 5: qmd indexing, semantic retrieval, and intra-run refresh
+- [ ] Phase 6: decision traces and Agent Trace provenance
+- [ ] Phase 7: compounding knowledge loop and artifact re-indexing
+- [ ] Phase 8: interactive post-scan feedback loop
+
+### Built In This PR Outside The Original Phase Breakdown
+
+- PR-review timeout propagation and attempt-loop hardening
+- Structured changed-code reasoning and prompt assembly improvements
+- Baseline-sink composition and exact unchanged-sink adjudication for PR review
 
 ## Problem
 
