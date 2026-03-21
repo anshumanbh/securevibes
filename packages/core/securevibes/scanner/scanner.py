@@ -3068,18 +3068,19 @@ class Scanner:
     file polling for phase detection.
     """
 
-    def __init__(self, model: str = "sonnet", debug: bool = False):
+    def __init__(self, model: str = "sonnet", debug: bool = False, quiet: bool = False):
         """
         Initialize streaming scanner.
 
         Args:
             model: Claude model name (e.g., sonnet, haiku)
             debug: Enable verbose debug output including agent narration
+            quiet: Redirect scanner progress output to stderr for machine-readable stdout
         """
         self.model = model
         self.debug = debug
         self.total_cost = 0.0
-        self.console = Console()
+        self.console = Console(stderr=True) if quiet else Console()
         self.permission_mode = resolve_permission_mode()
 
         # DAST configuration
@@ -5266,7 +5267,9 @@ class Scanner:
 
         except (OSError, json.JSONDecodeError) as e:
             if self.debug:
-                self.console.print(f"⚠️  Warning: Failed to merge DAST results: {e}", style="yellow")
+                self.console.print(
+                    f"⚠️  Warning: Failed to merge DAST results: {e}", style="yellow"
+                )
             return scan_result
 
     def _load_subagent_results(

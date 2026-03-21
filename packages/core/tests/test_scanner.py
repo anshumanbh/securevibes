@@ -1,6 +1,7 @@
 """Tests for scanner with real-time progress tracking"""
 
 import os
+import sys
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 from securevibes.scanner.scanner import Scanner
@@ -38,19 +39,15 @@ def scanner():
 @pytest.fixture
 def test_repo(tmp_path):
     """Create a minimal test repository"""
-    (tmp_path / "app.py").write_text(
-        """
+    (tmp_path / "app.py").write_text("""
 def hello():
     print("Hello World")
-"""
-    )
-    (tmp_path / "routes.py").write_text(
-        """
+""")
+    (tmp_path / "routes.py").write_text("""
 @app.route('/api')
 def api():
     return {'status': 'ok'}
-"""
-    )
+""")
     return tmp_path
 
 
@@ -135,7 +132,10 @@ class TestProgressTracker:
 
     def test_on_tool_start_task(self, progress_tracker):
         """Test tracking Task (sub-agent) tool usage"""
-        tool_input = {"agent_name": "assessment", "prompt": "Analyze the codebase architecture"}
+        tool_input = {
+            "agent_name": "assessment",
+            "prompt": "Analyze the codebase architecture",
+        }
 
         # Mock announce_phase to avoid console output
         progress_tracker.announce_phase = lambda x: None
@@ -267,6 +267,7 @@ class TestScannerInit:
         assert scanner.model == "sonnet"
         assert scanner.debug is False
         assert scanner.total_cost == 0.0
+        assert scanner.console.file is sys.stdout
 
     def test_initialization_with_model(self):
         """Test scanner initializes with custom model"""
@@ -279,6 +280,12 @@ class TestScannerInit:
         scanner = Scanner(debug=True)
 
         assert scanner.debug is True
+
+    def test_scanner_quiet_console_uses_stderr(self):
+        """Quiet mode should redirect scanner progress output to stderr."""
+        scanner = Scanner(quiet=True)
+
+        assert scanner.console.file is sys.stderr
 
     def test_initialization_resolves_permission_mode_at_runtime(self, monkeypatch):
         """Scanner should resolve permission mode when the instance is created."""
@@ -1261,7 +1268,10 @@ class TestMergeDastResults:
                     "validations": [
                         "not-an-object",
                         123,
-                        {"vulnerability_id": "V001", "validation_status": "FALSE_POSITIVE"},
+                        {
+                            "vulnerability_id": "V001",
+                            "validation_status": "FALSE_POSITIVE",
+                        },
                     ],
                 }
             )
@@ -1396,14 +1406,24 @@ class TestMergeDastResults:
                     "dast_scan_metadata": {"total_vulnerabilities_tested": 3},
                     "validations": [
                         {"vulnerability_id": "V001", "validation_status": "VALIDATED"},
-                        {"vulnerability_id": "V002", "validation_status": "FALSE_POSITIVE"},
-                        {"vulnerability_id": "V003", "validation_status": "UNVALIDATED"},
+                        {
+                            "vulnerability_id": "V002",
+                            "validation_status": "FALSE_POSITIVE",
+                        },
+                        {
+                            "vulnerability_id": "V003",
+                            "validation_status": "UNVALIDATED",
+                        },
                     ],
                 }
             )
         )
 
-        issues = [self._make_issue("V001"), self._make_issue("V002"), self._make_issue("V003")]
+        issues = [
+            self._make_issue("V001"),
+            self._make_issue("V002"),
+            self._make_issue("V003"),
+        ]
         result = self._make_scan_result(issues)
         merged = scanner._merge_dast_results(result, tmp_path)
 

@@ -1,12 +1,19 @@
 """Tests for CLI commands"""
 
+import json
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
 
-from securevibes.cli.main import _git_pull, _is_production_url, _repo_has_local_changes, cli
+from securevibes.cli.main import (
+    _git_pull,
+    _is_production_url,
+    _repo_has_local_changes,
+    cli,
+)
+from securevibes.models.issue import SecurityIssue, Severity
 from securevibes.models.result import ScanResult
 
 
@@ -14,6 +21,31 @@ def _empty_scan_result(repo_path: Path) -> ScanResult:
     return ScanResult(
         repository_path=str(repo_path),
         issues=[],
+        files_scanned=1,
+        scan_time_seconds=1.0,
+    )
+
+
+def _scan_result_with_issue(
+    repo_path: Path,
+    *,
+    severity: Severity = Severity.HIGH,
+    issue_id: str = "ISSUE-1",
+) -> ScanResult:
+    return ScanResult(
+        repository_path=str(repo_path),
+        issues=[
+            SecurityIssue(
+                id=issue_id,
+                severity=severity,
+                title="Injected issue",
+                description="Test issue for CLI JSON output.",
+                file_path="src/app.py",
+                line_number=7,
+                code_snippet="danger()",
+                cwe_id="CWE-94",
+            )
+        ],
         files_scanned=1,
         scan_time_seconds=1.0,
     )
@@ -28,12 +60,10 @@ def runner():
 @pytest.fixture
 def test_repo(tmp_path):
     """Create a minimal test repository"""
-    (tmp_path / "app.py").write_text(
-        """
+    (tmp_path / "app.py").write_text("""
 def hello():
     print("Hello World")
-"""
-    )
+""")
     return tmp_path
 
 
@@ -96,7 +126,8 @@ class TestCatchupCommand:
         monkeypatch.setattr("securevibes.cli.main.pr_review", fake_pr_review)
         monkeypatch.setattr("securevibes.cli.main._git_pull", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(
-            "securevibes.cli.main._repo_has_local_changes", lambda *_args, **_kwargs: False
+            "securevibes.cli.main._repo_has_local_changes",
+            lambda *_args, **_kwargs: False,
         )
         monkeypatch.setattr(
             "securevibes.cli.main.get_repo_branch", lambda *_args, **_kwargs: "main"
@@ -250,6 +281,35 @@ class TestScanCommand:
         assert result.exit_code == 0
         assert '"issues": []' in result.output
 
+    def test_json_quiet_output_is_parseable_json(self, runner, test_repo):
+        """Quiet JSON scan output should remain parseable on stdout."""
+        scanner = MagicMock()
+        scanner.configure_agentic_detection = MagicMock()
+        scanner.configure_dast = MagicMock()
+        scanner.scan = AsyncMock(return_value=_empty_scan_result(test_repo))
+
+        with patch("securevibes.cli.main.Scanner", return_value=scanner) as mock_scanner:
+            result = runner.invoke(cli, ["scan", str(test_repo), "--format", "json", "--quiet"])
+
+        assert result.exit_code == 0
+        mock_scanner.assert_called_once_with(model="sonnet", debug=False, quiet=True)
+        payload = json.loads(result.stdout)
+        assert payload["repository_path"] == str(test_repo)
+        assert payload["issues"] == []
+
+    def test_json_quiet_runtime_failure_writes_error_to_stderr(self, runner, test_repo):
+        """Quiet JSON scan failures should not pollute stdout."""
+        with patch(
+            "securevibes.cli.main._run_scan",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("boom"),
+        ):
+            result = runner.invoke(cli, ["scan", str(test_repo), "--format", "json", "--quiet"])
+
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert "boom" in result.stderr
+
     def test_scan_markdown_format_default(self, runner, test_repo):
         """Test default markdown output path."""
         with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
@@ -267,7 +327,14 @@ class TestScanCommand:
             mock_run.return_value = _empty_scan_result(test_repo)
             result = runner.invoke(
                 cli,
-                ["scan", str(test_repo), "--format", "markdown", "--output", "custom_report.md"],
+                [
+                    "scan",
+                    str(test_repo),
+                    "--format",
+                    "markdown",
+                    "--output",
+                    "custom_report.md",
+                ],
             )
 
         report_path = test_repo / ".securevibes" / "custom_report.md"
@@ -281,7 +348,15 @@ class TestScanCommand:
         with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _empty_scan_result(test_repo)
             result = runner.invoke(
-                cli, ["scan", str(test_repo), "--format", "markdown", "--output", str(output_file)]
+                cli,
+                [
+                    "scan",
+                    str(test_repo),
+                    "--format",
+                    "markdown",
+                    "--output",
+                    str(output_file),
+                ],
             )
 
         assert result.exit_code == 0
@@ -296,7 +371,15 @@ class TestScanCommand:
         with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _empty_scan_result(test_repo)
             result = runner.invoke(
-                cli, ["scan", str(test_repo), "--format", "markdown", "--output", str(output_file)]
+                cli,
+                [
+                    "scan",
+                    str(test_repo),
+                    "--format",
+                    "markdown",
+                    "--output",
+                    str(output_file),
+                ],
             )
 
         assert result.exit_code == 1
@@ -309,7 +392,15 @@ class TestScanCommand:
         with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _empty_scan_result(test_repo)
             result = runner.invoke(
-                cli, ["scan", str(test_repo), "--format", "json", "--output", str(output_file)]
+                cli,
+                [
+                    "scan",
+                    str(test_repo),
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output_file),
+                ],
             )
 
         assert result.exit_code == 0
@@ -322,7 +413,15 @@ class TestScanCommand:
         with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _empty_scan_result(test_repo)
             result = runner.invoke(
-                cli, ["scan", str(test_repo), "--format", "json", "--output", str(output_file)]
+                cli,
+                [
+                    "scan",
+                    str(test_repo),
+                    "--format",
+                    "json",
+                    "--output",
+                    str(output_file),
+                ],
             )
 
         assert result.exit_code == 1
@@ -447,6 +546,108 @@ class TestCLIOutputFormats:
 
         assert result.exit_code == 0
         assert "Scan Results" in result.output
+
+
+class TestPRReviewOutput:
+    """Test PR review JSON output behavior."""
+
+    @staticmethod
+    def _prepare_pr_review_repo(tmp_path: Path) -> tuple[Path, Path]:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        securevibes_dir = repo / ".securevibes"
+        securevibes_dir.mkdir()
+        (securevibes_dir / "SECURITY.md").write_text("# Security", encoding="utf-8")
+        (securevibes_dir / "THREAT_MODEL.json").write_text("[]", encoding="utf-8")
+
+        diff_file = tmp_path / "changes.patch"
+        diff_file.write_text(
+            "diff --git a/src/app.py b/src/app.py\n"
+            "--- a/src/app.py\n"
+            "+++ b/src/app.py\n"
+            "@@ -1 +1 @@\n"
+            "-safe()\n"
+            "+danger()\n",
+            encoding="utf-8",
+        )
+        return repo, diff_file
+
+    def test_pr_review_json_quiet_output_is_parseable_json(self, runner, tmp_path):
+        """Quiet JSON PR review output should remain parseable on stdout."""
+        repo, diff_file = self._prepare_pr_review_repo(tmp_path)
+        scanner = MagicMock()
+        scanner.pr_review = AsyncMock(return_value=_empty_scan_result(repo))
+
+        with patch("securevibes.cli.main.Scanner", return_value=scanner) as mock_scanner:
+            result = runner.invoke(
+                cli,
+                [
+                    "pr-review",
+                    str(repo),
+                    "--diff",
+                    str(diff_file),
+                    "--format",
+                    "json",
+                    "--quiet",
+                ],
+            )
+
+        assert result.exit_code == 0
+        mock_scanner.assert_called_once_with(model="sonnet", debug=False, quiet=True)
+        payload = json.loads(result.stdout)
+        assert payload["repository_path"] == str(repo)
+        assert payload["issues"] == []
+
+    def test_pr_review_nonzero_exit_with_parseable_json(self, runner, tmp_path):
+        """PR review should keep stdout parseable even when findings drive a non-zero exit."""
+        repo, diff_file = self._prepare_pr_review_repo(tmp_path)
+        scanner = MagicMock()
+        scanner.pr_review = AsyncMock(return_value=_scan_result_with_issue(repo))
+
+        with patch("securevibes.cli.main.Scanner", return_value=scanner):
+            result = runner.invoke(
+                cli,
+                [
+                    "pr-review",
+                    str(repo),
+                    "--diff",
+                    str(diff_file),
+                    "--format",
+                    "json",
+                    "--quiet",
+                ],
+            )
+
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["summary"]["high"] == 1
+        assert payload["issues"][0]["id"] == "ISSUE-1"
+
+    def test_pr_review_runtime_failure_writes_error_to_stderr(self, runner, tmp_path):
+        """Quiet JSON PR review failures should not pollute stdout."""
+        repo, diff_file = self._prepare_pr_review_repo(tmp_path)
+
+        with patch(
+            "securevibes.cli.main._run_pr_review",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("boom"),
+        ):
+            result = runner.invoke(
+                cli,
+                [
+                    "pr-review",
+                    str(repo),
+                    "--diff",
+                    str(diff_file),
+                    "--format",
+                    "json",
+                    "--quiet",
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert "boom" in result.stderr
 
 
 class TestCLIErrorMessages:

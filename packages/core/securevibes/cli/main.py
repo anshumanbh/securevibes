@@ -55,8 +55,24 @@ TRANSIENT_PR_ARTIFACTS = (
     "DIFF_CONTEXT.json",
     "pr_review_report.md",
 )
-REQUIRED_REPORT_FIELDS = ("repository_path", "files_scanned", "scan_time_seconds", "issues")
-REQUIRED_REPORT_ISSUE_FIELDS = ("severity", "title", "description", "file_path", "line_number")
+REQUIRED_REPORT_FIELDS = (
+    "repository_path",
+    "files_scanned",
+    "scan_time_seconds",
+    "issues",
+)
+REQUIRED_REPORT_ISSUE_FIELDS = (
+    "severity",
+    "title",
+    "description",
+    "file_path",
+    "line_number",
+)
+
+
+def _command_console(quiet: bool) -> Console:
+    """Return a console for command-layer diagnostics."""
+    return Console(stderr=True) if quiet else console
 
 
 def _require_repo_scoped_path(repo_root: Path, candidate: Path, *, operation: str) -> Path:
@@ -239,7 +255,9 @@ def cli():
 @click.option("--debug", is_flag=True, help="Show verbose diagnostic output")
 @click.option("--dast", is_flag=True, help="Enable DAST validation in full scan")
 @click.option(
-    "--target-url", type=str, help="Target URL for DAST testing (e.g., http://localhost:3000)"
+    "--target-url",
+    type=str,
+    help="Target URL for DAST testing (e.g., http://localhost:3000)",
 )
 @click.option(
     "--dast-timeout",
@@ -248,7 +266,9 @@ def cli():
     help="DAST validation timeout in seconds (default: 120)",
 )
 @click.option(
-    "--dast-accounts", type=click.Path(exists=True), help="Path to test accounts JSON file"
+    "--dast-accounts",
+    type=click.Path(exists=True),
+    help="Path to test accounts JSON file",
 )
 @click.option(
     "--allow-production",
@@ -266,7 +286,9 @@ def cli():
     help="Resume scan from specific sub-agent onwards",
 )
 @click.option(
-    "--force", is_flag=True, help="Skip confirmation prompts, overwrite existing artifacts"
+    "--force",
+    is_flag=True,
+    help="Skip confirmation prompts, overwrite existing artifacts",
 )
 @click.option("--skip-checks", is_flag=True, help="Bypass artifact validation checks")
 @click.option(
@@ -317,6 +339,7 @@ def scan(
 
         securevibes scan . --model claude-3-5-haiku-20241022  # Use faster/cheaper model
     """
+    console = _command_console(quiet)
     try:
         repo = Path(path).resolve()
 
@@ -509,6 +532,7 @@ def scan(
     help="Output format (default: markdown)",
 )
 @click.option("--output", "-o", type=click.Path(), help="Output file path")
+@click.option("--quiet", "-q", is_flag=True, help="Minimal output (errors only)")
 @click.option("--debug", is_flag=True, help="Show verbose diagnostic output")
 @click.option(
     "--severity",
@@ -549,6 +573,7 @@ def pr_review(
     model: str,
     output_format: str,
     output: Optional[str],
+    quiet: bool,
     debug: bool,
     severity: str,
     pr_attempts: Optional[int],
@@ -566,6 +591,7 @@ def pr_review(
 
         securevibes pr-review . --diff changes.patch
     """
+    console = _command_console(quiet)
     try:
         repo = Path(path).resolve()
         securevibes_dir = _repo_output_path(
@@ -596,7 +622,7 @@ def pr_review(
             sys.exit(1)
 
         if since_last_scan:
-            _ensure_baseline_scan(repo, model, debug)
+            _ensure_baseline_scan(repo, model, debug, quiet)
 
         required_artifacts = ["SECURITY.md", "THREAT_MODEL.json"]
         missing = [a for a in required_artifacts if not (securevibes_dir / a).exists()]
@@ -684,6 +710,7 @@ def pr_review(
             _run_pr_review(
                 repo,
                 model,
+                quiet,
                 debug,
                 diff_context,
                 known_vulns,
@@ -704,7 +731,7 @@ def pr_review(
             repo_path=repo,
             markdown_default_filename="pr_review_report.md",
             markdown_label="PR review report",
-            quiet=False,
+            quiet=quiet,
         )
 
         head_commit = get_repo_head_commit(repo)
@@ -815,6 +842,7 @@ def catchup(
             model=model,
             output_format=output_format,
             output=output,
+            quiet=False,
             debug=debug,
             severity=severity,
         )
@@ -877,7 +905,8 @@ def _parse_since_date_pacific(date_str: str) -> str:
     return since_dt.strftime("%Y-%m-%dT%H:%M:%S%z")
 
 
-def _ensure_baseline_scan(repo: Path, model: str, debug: bool) -> None:
+def _ensure_baseline_scan(repo: Path, model: str, debug: bool, quiet: bool = False) -> None:
+    console = _command_console(quiet)
     securevibes_dir = _repo_output_path(
         repo,
         Path(".securevibes"),
@@ -1007,7 +1036,7 @@ async def _run_scan(
                 console.print("[green]✓ Target is reachable[/green]")
 
     # Create scanner instance with DAST configuration
-    scanner = Scanner(model=model, debug=debug)
+    scanner = Scanner(model=model, debug=debug, quiet=quiet)
 
     # Configure agentic detection override if provided
     scanner.configure_agentic_detection(agentic_override)
@@ -1032,6 +1061,7 @@ async def _run_scan(
 async def _run_pr_review(
     repo: Path,
     model: str,
+    quiet: bool,
     debug: bool,
     diff_context: DiffContext,
     known_vulns_path: Optional[Path],
@@ -1043,7 +1073,7 @@ async def _run_pr_review(
     progress_writer: Optional[Callable[[ScanResult], None]] = None,
 ):
     """Run the PR review with the configured scanner."""
-    scanner = Scanner(model=model, debug=debug)
+    scanner = Scanner(model=model, debug=debug, quiet=quiet)
     return await scanner.pr_review(
         str(repo),
         diff_context,
@@ -1200,7 +1230,9 @@ def _parse_report_issues(raw_issues: list[dict]) -> list:
 
 @cli.command()
 @click.argument(
-    "report_path", type=click.Path(exists=True), default=".securevibes/scan_results.json"
+    "report_path",
+    type=click.Path(exists=True),
+    default=".securevibes/scan_results.json",
 )
 def report(report_path: str):
     """

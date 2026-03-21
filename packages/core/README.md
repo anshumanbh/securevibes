@@ -149,6 +149,7 @@ securevibes pr-review . --range abc123~1..abc123 --clean-pr-artifacts
 # PR review output formats (default: markdown)
 securevibes pr-review . --base main --head feature-branch --format markdown
 securevibes pr-review . --base main --head feature-branch --format json --output pr_review.json
+securevibes pr-review . --base main --head feature-branch --format json --quiet
 securevibes pr-review . --base main --head feature-branch --format table
 
 # PR review severity threshold
