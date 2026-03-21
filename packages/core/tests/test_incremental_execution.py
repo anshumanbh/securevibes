@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -424,3 +425,82 @@ index 3333333..4444444 100644
 
     assert fake_scanner.pr_review.await_args_list[0].args[2] == known_vulns_path
     assert fake_scanner.pr_review.await_args_list[1].args[2] == known_vulns_path
+
+
+def test_execute_incremental_plan_rebuilds_risk_map_after_threat_modeling(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+
+    threat_model_path = securevibes_dir / "THREAT_MODEL.json"
+    threat_model_path.write_text("[]", encoding="utf-8")
+    risk_map_path = securevibes_dir / "risk_map.json"
+    risk_map_path.write_text(
+        json.dumps(
+            {
+                "critical": [],
+                "moderate": [],
+                "skip": ["docs/*"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    diff_context = parse_unified_diff(
+        """diff --git a/plugins/runtime/loader.ts b/plugins/runtime/loader.ts
+index 1111111..2222222 100644
+--- a/plugins/runtime/loader.ts
++++ b/plugins/runtime/loader.ts
+@@ -0,0 +1,2 @@
++export function loadPlugin() {}
++export function validatePlugin() {}
+diff --git a/src/auth.py b/src/auth.py
+index 3333333..4444444 100644
+--- a/src/auth.py
++++ b/src/auth.py
+@@ -1 +1,2 @@
+-allow(user)
++allow(user)
++audit(user)
+"""
+    )
+
+    async def fake_scan_subagent(*_args, **_kwargs):
+        threat_model_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "id": "THREAT-NEW",
+                        "severity": "high",
+                        "affected_components": ["plugins/runtime/*"],
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return _scan_result(repo)
+
+    fake_scanner = SimpleNamespace(
+        scan_subagent=AsyncMock(side_effect=fake_scan_subagent),
+        pr_review=AsyncMock(return_value=_scan_result(repo)),
+    )
+
+    asyncio.run(
+        execute_incremental_plan(
+            repo,
+            securevibes_dir,
+            _new_surface_plan(),
+            diff_context,
+            model="sonnet",
+            quiet=True,
+            debug=False,
+            scanner_factory=lambda **_kwargs: fake_scanner,
+        )
+    )
+
+    risk_map = json.loads(risk_map_path.read_text(encoding="utf-8"))
+    assert "plugins/runtime/*" in risk_map["critical"]
+    assert risk_map["_meta"]["generated_from"] == "THREAT_MODEL.json"

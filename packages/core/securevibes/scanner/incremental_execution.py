@@ -12,6 +12,12 @@ from securevibes.models.result import ScanResult
 from securevibes.scanner import Scanner
 from securevibes.scanner.chain_analysis import diff_file_path
 from securevibes.scanner.incremental_planning import IncrementalPlan, ReviewCluster
+from securevibes.scanner.risk_scorer import (
+    build_risk_map_from_threat_model,
+    load_threat_model_entries,
+    resolve_component_globs,
+    save_risk_map,
+)
 
 ClusterExecutionStatus = Literal["executed", "skipped"]
 
@@ -147,6 +153,7 @@ async def execute_incremental_plan(
                 force=True,
                 skip_checks=True,
             )
+            _refresh_incremental_artifacts(repo, securevibes_dir)
             current_known_vulns_path = _resolve_known_vulns_path(
                 securevibes_dir,
                 known_vulns_path,
@@ -159,6 +166,8 @@ async def execute_incremental_plan(
             severity_threshold,
             update_artifacts=update_artifacts,
         )
+        if update_artifacts:
+            _refresh_incremental_artifacts(repo, securevibes_dir)
         cluster_results.append(_execution_result_for_cluster(cluster, result))
 
     return IncrementalExecutionResult(cluster_results=tuple(cluster_results))
@@ -189,3 +198,16 @@ def _resolve_known_vulns_path(
     if candidate.exists():
         return candidate
     return None
+
+
+def _refresh_incremental_artifacts(repo: Path, securevibes_dir: Path) -> None:
+    threat_model_path = securevibes_dir / "THREAT_MODEL.json"
+    if not threat_model_path.exists():
+        return
+
+    threat_entries = load_threat_model_entries(threat_model_path)
+    risk_map = build_risk_map_from_threat_model(
+        threat_entries,
+        component_resolver=lambda component: resolve_component_globs(repo, component),
+    )
+    save_risk_map(securevibes_dir / "risk_map.json", risk_map)
