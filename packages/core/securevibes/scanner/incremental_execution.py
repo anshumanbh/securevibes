@@ -111,6 +111,7 @@ async def execute_incremental_plan(
         if cluster.route not in {
             "targeted_pr_review",
             "incremental_threat_model_then_review",
+            "supply_chain_review",
         }:
             cluster_results.append(
                 ClusterExecutionResult(

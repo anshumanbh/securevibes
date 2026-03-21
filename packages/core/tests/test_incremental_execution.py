@@ -182,7 +182,7 @@ index 3333333..4444444 100644
     assert subset.removed_lines == 1
 
 
-def test_execute_incremental_plan_runs_targeted_clusters_only(tmp_path: Path) -> None:
+def test_execute_incremental_plan_runs_targeted_and_supply_chain_clusters(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     securevibes_dir = repo / ".securevibes"
@@ -208,6 +208,7 @@ index 3333333..4444444 100644
 """)
 
     fake_scanner = SimpleNamespace(
+        scan_subagent=AsyncMock(return_value=_scan_result(repo)),
         pr_review=AsyncMock(return_value=_scan_result(repo)),
     )
 
@@ -237,16 +238,23 @@ index 3333333..4444444 100644
     assert result.cluster_results[0].status == "executed"
     assert result.cluster_results[0].route == "targeted_pr_review"
     assert result.cluster_results[0].findings_count == 0
-    assert result.cluster_results[1].status == "skipped"
-    assert result.cluster_results[1].skip_reason == "route_not_implemented"
+    assert result.cluster_results[1].status == "executed"
+    assert result.cluster_results[1].route == "supply_chain_review"
+    assert result.cluster_results[1].findings_count == 0
 
-    fake_scanner.pr_review.assert_awaited_once()
-    call = fake_scanner.pr_review.await_args
-    assert call.args[0] == str(repo)
-    assert call.args[1].changed_files == ["src/auth.py"]
-    assert call.args[2] == known_vulns_path
-    assert call.args[3] == "medium"
-    assert call.kwargs["update_artifacts"] is True
+    assert fake_scanner.pr_review.await_count == 2
+    targeted_call = fake_scanner.pr_review.await_args_list[0]
+    assert targeted_call.args[0] == str(repo)
+    assert targeted_call.args[1].changed_files == ["src/auth.py"]
+    assert targeted_call.args[2] == known_vulns_path
+    assert targeted_call.args[3] == "medium"
+    assert targeted_call.kwargs["update_artifacts"] is True
+
+    supply_chain_call = fake_scanner.pr_review.await_args_list[1]
+    assert supply_chain_call.args[1].changed_files == ["package.json"]
+    assert supply_chain_call.args[2] == known_vulns_path
+    assert supply_chain_call.kwargs["update_artifacts"] is True
+    fake_scanner.scan_subagent.assert_not_awaited()
 
 
 def test_execute_incremental_plan_skips_empty_cluster_subset(tmp_path: Path) -> None:
