@@ -1,0 +1,519 @@
+"""Range-aware incremental planning helpers."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal, Sequence
+
+from securevibes.diff.extractor import get_commits_between, validate_git_ref
+from securevibes.scanner.artifacts import _derive_components_from_file_path
+from securevibes.scanner.risk_scorer import (
+    ChangedFile,
+    ChunkRisk,
+    classify_chunk,
+    load_risk_map,
+    load_threat_model_entries,
+    normalize_path,
+)
+from securevibes.scanner.state import utc_timestamp
+
+CoarseIntent = Literal[
+    "new_surface",
+    "existing_surface_delta",
+    "dependency_change",
+    "likely_non_security",
+]
+ReviewRoute = Literal[
+    "targeted_pr_review",
+    "incremental_threat_model_then_review",
+    "supply_chain_review",
+    "skip",
+]
+
+_SYNOPSIS_SCHEMA_VERSION = 1
+_HYPOTHESES_SCHEMA_VERSION = 1
+
+
+@dataclass(frozen=True)
+class BaselineContext:
+    """Baseline artifacts used for incremental routing."""
+
+    risk_map: dict[str, object]
+    vuln_paths: frozenset[str]
+    affected_components: frozenset[str]
+
+
+@dataclass(frozen=True)
+class CommitMetadata:
+    """Commit metadata collected for incremental planning."""
+
+    sha: str
+    subject: str
+    body: str
+    changed_files: tuple[ChangedFile, ...]
+    insertions: int
+    deletions: int
+
+
+@dataclass(frozen=True)
+class CommitSynopsis:
+    """Structured synopsis for a single commit."""
+
+    sha: str
+    subject: str
+    file_paths: tuple[str, ...]
+    derived_components: tuple[str, ...]
+    matched_baseline_vuln_paths: tuple[str, ...]
+    matched_baseline_components: tuple[str, ...]
+    coarse_intent: CoarseIntent
+    route: ReviewRoute
+    risk_tier: str
+    reasons: tuple[str, ...]
+    dependency_files: tuple[str, ...]
+    new_attack_surface: bool
+    insertions: int
+    deletions: int
+
+
+@dataclass(frozen=True)
+class ReviewCluster:
+    """Cluster of commits routed to the same incremental review strategy."""
+
+    cluster_id: str
+    route: ReviewRoute
+    commit_shas: tuple[str, ...]
+    file_paths: tuple[str, ...]
+    baseline_vuln_paths: tuple[str, ...]
+    baseline_components: tuple[str, ...]
+    coarse_intents: tuple[CoarseIntent, ...]
+    reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class IncrementalPlan:
+    """Planning output for an incremental commit range."""
+
+    base_ref: str
+    head_ref: str
+    generated_at: str
+    synopses: tuple[CommitSynopsis, ...]
+    clusters: tuple[ReviewCluster, ...]
+
+
+def load_baseline_context(securevibes_dir: Path) -> BaselineContext:
+    """Load baseline artifacts required for incremental routing.
+
+    Args:
+        securevibes_dir: Repository `.securevibes` directory.
+
+    Returns:
+        Parsed baseline context.
+
+    Raises:
+        FileNotFoundError: If a required baseline artifact is missing.
+        ValueError: If an artifact exists but is invalid.
+    """
+    risk_map_path = securevibes_dir / "risk_map.json"
+    threat_model_path = securevibes_dir / "THREAT_MODEL.json"
+    vulnerabilities_path = securevibes_dir / "VULNERABILITIES.json"
+
+    for path in (risk_map_path, threat_model_path, vulnerabilities_path):
+        if not path.exists():
+            raise FileNotFoundError(f"Missing required baseline artifact: {path.name}")
+
+    risk_map = load_risk_map(risk_map_path)
+    threat_entries = load_threat_model_entries(threat_model_path)
+    vulnerabilities = _load_vulnerability_entries(vulnerabilities_path)
+
+    affected_components: set[str] = set()
+    for entry in threat_entries:
+        components = entry.get("affected_components")
+        if isinstance(components, str):
+            normalized = components.strip().lower()
+            if normalized:
+                affected_components.add(normalized)
+            continue
+        if isinstance(components, list):
+            for component in components:
+                if isinstance(component, str):
+                    normalized = component.strip().lower()
+                    if normalized:
+                        affected_components.add(normalized)
+
+    vuln_paths: set[str] = set()
+    for entry in vulnerabilities:
+        file_path = entry.get("file_path")
+        if not isinstance(file_path, str):
+            continue
+        normalized = normalize_path(file_path).lower()
+        if normalized:
+            vuln_paths.add(normalized)
+
+    return BaselineContext(
+        risk_map=risk_map,
+        vuln_paths=frozenset(vuln_paths),
+        affected_components=frozenset(affected_components),
+    )
+
+
+def collect_commit_range(repo: Path, *, base: str, head: str) -> list[CommitMetadata]:
+    """Collect commit metadata for an explicit base/head range."""
+    commits = get_commits_between(repo, base, head)
+    return [_load_commit_metadata(repo, sha) for sha in commits]
+
+
+def build_incremental_plan(
+    commits: Sequence[CommitMetadata],
+    baseline: BaselineContext,
+    *,
+    base_ref: str,
+    head_ref: str,
+    generated_at: str | None = None,
+) -> IncrementalPlan:
+    """Build a deterministic incremental routing plan for a commit range."""
+    synopses = tuple(_build_commit_synopsis(commit, baseline) for commit in commits)
+    clusters = _cluster_synopses(synopses)
+    return IncrementalPlan(
+        base_ref=base_ref,
+        head_ref=head_ref,
+        generated_at=generated_at or utc_timestamp(),
+        synopses=synopses,
+        clusters=clusters,
+    )
+
+
+def plan_incremental_range(
+    repo: Path,
+    securevibes_dir: Path,
+    *,
+    base_ref: str,
+    head_ref: str,
+    generated_at: str | None = None,
+) -> IncrementalPlan:
+    """Load, build, and persist an incremental plan for a commit range."""
+    baseline = load_baseline_context(securevibes_dir)
+    commits = collect_commit_range(repo, base=base_ref, head=head_ref)
+    plan = build_incremental_plan(
+        commits,
+        baseline,
+        base_ref=base_ref,
+        head_ref=head_ref,
+        generated_at=generated_at,
+    )
+    write_incremental_plan_artifacts(securevibes_dir, plan)
+    return plan
+
+
+def write_incremental_plan_artifacts(securevibes_dir: Path, plan: IncrementalPlan) -> None:
+    """Persist synopsis and routing artifacts for an incremental plan."""
+    securevibes_dir.mkdir(parents=True, exist_ok=True)
+
+    synopsis_payload = {
+        "schema_version": _SYNOPSIS_SCHEMA_VERSION,
+        "generated_at": plan.generated_at,
+        "base_ref": plan.base_ref,
+        "head_ref": plan.head_ref,
+        "commit_count": len(plan.synopses),
+        "commits": [
+            {
+                "sha": synopsis.sha,
+                "subject": synopsis.subject,
+                "file_paths": list(synopsis.file_paths),
+                "derived_components": list(synopsis.derived_components),
+                "matched_baseline_vuln_paths": list(synopsis.matched_baseline_vuln_paths),
+                "matched_baseline_components": list(synopsis.matched_baseline_components),
+                "coarse_intent": synopsis.coarse_intent,
+                "route": synopsis.route,
+                "risk_tier": synopsis.risk_tier,
+                "reasons": list(synopsis.reasons),
+                "dependency_files": list(synopsis.dependency_files),
+                "new_attack_surface": synopsis.new_attack_surface,
+                "insertions": synopsis.insertions,
+                "deletions": synopsis.deletions,
+            }
+            for synopsis in plan.synopses
+        ],
+    }
+    hypotheses_payload = {
+        "schema_version": _HYPOTHESES_SCHEMA_VERSION,
+        "generated_at": plan.generated_at,
+        "base_ref": plan.base_ref,
+        "head_ref": plan.head_ref,
+        "cluster_count": len(plan.clusters),
+        "clusters": [
+            {
+                "cluster_id": cluster.cluster_id,
+                "route": cluster.route,
+                "commit_shas": list(cluster.commit_shas),
+                "file_paths": list(cluster.file_paths),
+                "baseline_vuln_paths": list(cluster.baseline_vuln_paths),
+                "baseline_components": list(cluster.baseline_components),
+                "coarse_intents": list(cluster.coarse_intents),
+                "reasons": list(cluster.reasons),
+            }
+            for cluster in plan.clusters
+        ],
+    }
+
+    (securevibes_dir / "incremental_synopsis.json").write_text(
+        json.dumps(synopsis_payload, indent=2),
+        encoding="utf-8",
+    )
+    (securevibes_dir / "incremental_hypotheses.json").write_text(
+        json.dumps(hypotheses_payload, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _load_commit_metadata(repo: Path, sha: str) -> CommitMetadata:
+    validate_git_ref(sha)
+
+    message_result = _run_git_command(
+        repo,
+        ["git", "show", "--quiet", "--format=%H%x00%s%x00%b", "--no-color", sha],
+    )
+    message_parts = message_result.split("\0", 2)
+    subject = message_parts[1].strip() if len(message_parts) > 1 else ""
+    body = message_parts[2].strip() if len(message_parts) > 2 else ""
+
+    status_output = _run_git_command(
+        repo,
+        [
+            "git",
+            "diff-tree",
+            "--root",
+            "--no-commit-id",
+            "--name-status",
+            "-r",
+            "--find-renames",
+            sha,
+        ],
+    )
+    numstat_output = _run_git_command(
+        repo,
+        ["git", "diff-tree", "--root", "--no-commit-id", "--numstat", "-r", "--find-renames", sha],
+    )
+
+    file_statuses = _parse_name_status(status_output)
+    file_stats = _parse_numstat(numstat_output)
+
+    changed_files: list[ChangedFile] = []
+    for path in sorted(set(file_statuses) | set(file_stats)):
+        if not path:
+            continue
+        changed_files.append(
+            ChangedFile(
+                path=path,
+                status=file_statuses.get(path, "M"),
+            )
+        )
+
+    insertions = sum(insert for insert, _delete in file_stats.values())
+    deletions = sum(delete for _insert, delete in file_stats.values())
+
+    return CommitMetadata(
+        sha=sha,
+        subject=subject,
+        body=body,
+        changed_files=tuple(changed_files),
+        insertions=insertions,
+        deletions=deletions,
+    )
+
+
+def _build_commit_synopsis(
+    commit: CommitMetadata,
+    baseline: BaselineContext,
+) -> CommitSynopsis:
+    chunk_risk = classify_chunk(commit.changed_files, baseline.risk_map)
+    file_paths = tuple(
+        sorted(
+            {
+                normalized
+                for changed_file in commit.changed_files
+                if (normalized := normalize_path(changed_file.path))
+            }
+        )
+    )
+    derived_components = tuple(
+        sorted(
+            {
+                component
+                for path in file_paths
+                for component in _derive_components_from_file_path(path)
+                if component
+            }
+        )
+    )
+    matched_baseline_vuln_paths = tuple(
+        sorted(path for path in file_paths if path.lower() in baseline.vuln_paths)
+    )
+    matched_baseline_components = tuple(
+        sorted(
+            component
+            for component in derived_components
+            if component.lower() in baseline.affected_components
+        )
+    )
+
+    coarse_intent = _coarse_intent_for_synopsis(
+        chunk_risk,
+        matched_baseline_vuln_paths=matched_baseline_vuln_paths,
+        matched_baseline_components=matched_baseline_components,
+    )
+    route = _route_for_intent(coarse_intent)
+
+    reasons = list(chunk_risk.reasons)
+    if matched_baseline_vuln_paths:
+        reasons.append("baseline_vulnerability_overlap")
+    if matched_baseline_components:
+        reasons.append("baseline_component_overlap")
+
+    return CommitSynopsis(
+        sha=commit.sha,
+        subject=commit.subject,
+        file_paths=file_paths,
+        derived_components=derived_components,
+        matched_baseline_vuln_paths=matched_baseline_vuln_paths,
+        matched_baseline_components=matched_baseline_components,
+        coarse_intent=coarse_intent,
+        route=route,
+        risk_tier=chunk_risk.tier,
+        reasons=tuple(dict.fromkeys(reasons)),
+        dependency_files=chunk_risk.dependency_files,
+        new_attack_surface=chunk_risk.new_attack_surface,
+        insertions=commit.insertions,
+        deletions=commit.deletions,
+    )
+
+
+def _coarse_intent_for_synopsis(
+    chunk_risk: ChunkRisk,
+    *,
+    matched_baseline_vuln_paths: Sequence[str],
+    matched_baseline_components: Sequence[str],
+) -> CoarseIntent:
+    if chunk_risk.dependency_only:
+        return "dependency_change"
+    if chunk_risk.new_attack_surface:
+        return "new_surface"
+    if chunk_risk.tier == "skip":
+        return "likely_non_security"
+    if matched_baseline_vuln_paths or matched_baseline_components:
+        return "existing_surface_delta"
+    return "existing_surface_delta"
+
+
+def _route_for_intent(intent: CoarseIntent) -> ReviewRoute:
+    if intent == "new_surface":
+        return "incremental_threat_model_then_review"
+    if intent == "dependency_change":
+        return "supply_chain_review"
+    if intent == "likely_non_security":
+        return "skip"
+    return "targeted_pr_review"
+
+
+def _cluster_synopses(synopses: Sequence[CommitSynopsis]) -> tuple[ReviewCluster, ...]:
+    buckets: dict[tuple[ReviewRoute, tuple[str, ...]], list[CommitSynopsis]] = {}
+    for synopsis in synopses:
+        key = (synopsis.route, _cluster_topic(synopsis))
+        buckets.setdefault(key, []).append(synopsis)
+
+    clusters: list[ReviewCluster] = []
+    for index, bucket in enumerate(buckets.values(), start=1):
+        clusters.append(
+            ReviewCluster(
+                cluster_id=f"cluster-{index:03d}",
+                route=bucket[0].route,
+                commit_shas=tuple(item.sha for item in bucket),
+                file_paths=tuple(sorted({path for item in bucket for path in item.file_paths})),
+                baseline_vuln_paths=tuple(
+                    sorted({path for item in bucket for path in item.matched_baseline_vuln_paths})
+                ),
+                baseline_components=tuple(
+                    sorted(
+                        {
+                            component
+                            for item in bucket
+                            for component in item.matched_baseline_components
+                        }
+                    )
+                ),
+                coarse_intents=tuple(dict.fromkeys(item.coarse_intent for item in bucket)),
+                reasons=tuple(sorted({reason for item in bucket for reason in item.reasons})),
+            )
+        )
+    return tuple(clusters)
+
+
+def _cluster_topic(synopsis: CommitSynopsis) -> tuple[str, ...]:
+    if synopsis.matched_baseline_components:
+        return synopsis.matched_baseline_components
+    if synopsis.matched_baseline_vuln_paths:
+        return synopsis.matched_baseline_vuln_paths
+    if synopsis.dependency_files:
+        return ("dependency_change",)
+    if synopsis.derived_components:
+        return synopsis.derived_components
+    top_levels = {
+        path.split("/", 1)[0] if "/" in path else path for path in synopsis.file_paths if path
+    }
+    return tuple(sorted(top_levels)) or ("empty",)
+
+
+def _load_vulnerability_entries(path: Path) -> list[dict[str, object]]:
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid VULNERABILITIES.json: {exc.msg}") from exc
+    if not isinstance(parsed, list):
+        raise ValueError("VULNERABILITIES.json must be a JSON array.")
+    return [entry for entry in parsed if isinstance(entry, dict)]
+
+
+def _run_git_command(repo: Path, cmd: list[str]) -> str:
+    result = subprocess.run(
+        cmd,
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.strip() or "Unknown git error"
+        raise RuntimeError(f"{cmd[0]} command failed: {stderr}")
+    return result.stdout
+
+
+def _parse_name_status(output: str) -> dict[str, str]:
+    statuses: dict[str, str] = {}
+    for line in output.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        raw_status = parts[0].strip()
+        status = raw_status[:1] or "M"
+        path = parts[-1]
+        normalized = normalize_path(path)
+        if normalized:
+            statuses[normalized] = status
+    return statuses
+
+
+def _parse_numstat(output: str) -> dict[str, tuple[int, int]]:
+    stats: dict[str, tuple[int, int]] = {}
+    for line in output.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        insertions = 0 if parts[0] == "-" else int(parts[0])
+        deletions = 0 if parts[1] == "-" else int(parts[1])
+        path = parts[-1]
+        normalized = normalize_path(path)
+        if normalized:
+            stats[normalized] = (insertions, deletions)
+    return stats

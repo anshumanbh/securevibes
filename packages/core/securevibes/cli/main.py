@@ -45,6 +45,7 @@ from securevibes.scanner.state import (
     update_scan_state,
     utc_timestamp,
 )
+from securevibes.scanner.incremental_planning import plan_incremental_range
 
 console = Console()
 
@@ -846,6 +847,46 @@ def catchup(
             debug=debug,
             severity=severity,
         )
+    except Exception as e:
+        console.print(f"\n[bold red]❌ Error:[/bold red] {e}", style="red")
+        console.print("\n[dim]Run with --help for usage information[/dim]")
+        sys.exit(1)
+
+
+@cli.command("incremental")
+@click.argument("path", type=click.Path(exists=True), default=".")
+@click.option("--base", required=True, help="Base commit or branch for the incremental range")
+@click.option("--head", required=True, help="Head commit or branch for the incremental range")
+@click.option("--quiet", "-q", is_flag=True, help="Minimal output (errors only)")
+def incremental(path: str, base: str, head: str, quiet: bool):
+    """Build incremental planning artifacts for a commit range."""
+    console = _command_console(quiet)
+    try:
+        repo = Path(path).resolve()
+        securevibes_dir = _repo_output_path(
+            repo,
+            Path(".securevibes"),
+            operation="incremental planning artifact directory",
+        )
+        plan = plan_incremental_range(
+            repo,
+            securevibes_dir,
+            base_ref=base,
+            head_ref=head,
+        )
+
+        if not quiet:
+            commit_count = len(plan.synopses)
+            cluster_count = len(plan.clusters)
+            console.print(
+                f"Planned {commit_count} commit(s) into {cluster_count} review cluster(s)."
+            )
+            console.print(
+                f"Artifacts: {securevibes_dir / 'incremental_synopsis.json'}, "
+                f"{securevibes_dir / 'incremental_hypotheses.json'}"
+            )
+
+        sys.exit(0)
     except Exception as e:
         console.print(f"\n[bold red]❌ Error:[/bold red] {e}", style="red")
         console.print("\n[dim]Run with --help for usage information[/dim]")

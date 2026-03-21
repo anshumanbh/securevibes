@@ -15,6 +15,11 @@ from securevibes.cli.main import (
 )
 from securevibes.models.issue import SecurityIssue, Severity
 from securevibes.models.result import ScanResult
+from securevibes.scanner.incremental_planning import (
+    CommitSynopsis,
+    IncrementalPlan,
+    ReviewCluster,
+)
 
 
 def _empty_scan_result(repo_path: Path) -> ScanResult:
@@ -48,6 +53,44 @@ def _scan_result_with_issue(
         ],
         files_scanned=1,
         scan_time_seconds=1.0,
+    )
+
+
+def _incremental_plan() -> IncrementalPlan:
+    return IncrementalPlan(
+        base_ref="base123",
+        head_ref="head456",
+        generated_at="2026-03-20T12:00:00Z",
+        synopses=(
+            CommitSynopsis(
+                sha="commit-1",
+                subject="Modify auth flow",
+                file_paths=("src/auth.py",),
+                derived_components=("src:py",),
+                matched_baseline_vuln_paths=("src/auth.py",),
+                matched_baseline_components=("src:py",),
+                coarse_intent="existing_surface_delta",
+                route="targeted_pr_review",
+                risk_tier="critical",
+                reasons=("critical_pattern_match",),
+                dependency_files=(),
+                new_attack_surface=False,
+                insertions=8,
+                deletions=2,
+            ),
+        ),
+        clusters=(
+            ReviewCluster(
+                cluster_id="cluster-001",
+                route="targeted_pr_review",
+                commit_shas=("commit-1",),
+                file_paths=("src/auth.py",),
+                baseline_vuln_paths=("src/auth.py",),
+                baseline_components=("src:py",),
+                coarse_intents=("existing_surface_delta",),
+                reasons=("critical_pattern_match",),
+            ),
+        ),
     )
 
 
@@ -156,6 +199,93 @@ class TestCatchupCommand:
 
         assert result.exit_code == 1
         assert "working tree is not clean" in result.output.lower()
+
+
+class TestIncrementalCommand:
+    """Tests for incremental planning command."""
+
+    def test_incremental_help(self, runner):
+        result = runner.invoke(cli, ["incremental", "--help"])
+
+        assert result.exit_code == 0
+        assert "--base" in result.output
+        assert "--head" in result.output
+
+    def test_incremental_invokes_planner_and_prints_summary(
+        self,
+        runner,
+        tmp_path,
+        monkeypatch,
+    ):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        observed = {}
+
+        def fake_plan_incremental_range(
+            repo_path: Path,
+            securevibes_dir: Path,
+            *,
+            base_ref: str,
+            head_ref: str,
+            generated_at: str | None = None,
+        ) -> IncrementalPlan:
+            observed["args"] = (repo_path, securevibes_dir, base_ref, head_ref, generated_at)
+            return _incremental_plan()
+
+        monkeypatch.setattr(
+            "securevibes.cli.main.plan_incremental_range",
+            fake_plan_incremental_range,
+        )
+
+        result = runner.invoke(
+            cli,
+            ["incremental", str(repo), "--base", "base123", "--head", "head456"],
+        )
+
+        assert result.exit_code == 0
+        assert observed["args"] == (
+            repo.resolve(),
+            repo.resolve() / ".securevibes",
+            "base123",
+            "head456",
+            None,
+        )
+        assert "planned 1 commit" in result.output.lower()
+        assert "1 review cluster" in result.output.lower()
+
+    def test_incremental_quiet_suppresses_summary(self, runner, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        monkeypatch.setattr(
+            "securevibes.cli.main.plan_incremental_range",
+            lambda *_args, **_kwargs: _incremental_plan(),
+        )
+
+        result = runner.invoke(
+            cli,
+            ["incremental", str(repo), "--base", "base123", "--head", "head456", "--quiet"],
+        )
+
+        assert result.exit_code == 0
+        assert result.output == ""
+
+    def test_incremental_reports_planner_errors(self, runner, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        def fail(*_args, **_kwargs):
+            raise FileNotFoundError("Missing required baseline artifact: risk_map.json")
+
+        monkeypatch.setattr("securevibes.cli.main.plan_incremental_range", fail)
+
+        result = runner.invoke(
+            cli,
+            ["incremental", str(repo), "--base", "base123", "--head", "head456"],
+        )
+
+        assert result.exit_code == 1
+        assert "risk_map.json" in result.output
 
 
 class TestProductionUrlDetection:

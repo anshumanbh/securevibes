@@ -10,6 +10,7 @@ Partially implemented — PR #43
 - [x] Skip-tier safeguards and dependency-change promotion
 - [x] Policy/context file changes promote a chunk to Tier 1
 - [~] Phase 3: risk-weighted chunk routing exists in `ops/incremental_scan.py`, but the core `securevibes incremental` orchestrator does not exist yet
+- [ ] Phase 3A: range-aware commit synopsis and baseline-guided hypothesis routing
 - [~] Prompt assembly now carries richer baseline-aware PR-review context, but it does not use qmd semantic retrieval
 - [~] Wrapper anchor-preservation and fail-closed behavior exist, but trusted merge-base policy reads are not implemented yet
 - [ ] Phase 4: `design_decisions.json` loading, matching, and prompt injection
@@ -41,6 +42,138 @@ Current incremental scanning treats all code changes equally. A 1-line change to
 ## Solution
 
 Use baseline scan artifacts (THREAT_MODEL.json, SECURITY.md, VULNERABILITIES.json) as a **security-aware lens**. Before any LLM call, classify each chunk by what it touches and route to the appropriate model and review depth. Triage uses exact glob matching against `risk_map.json` (no external dependencies). Context injection uses qmd for semantic search to find relevant threats and findings for the code under review.
+
+For high-velocity repositories, the analysis unit cannot be "one giant raw diff." Incremental mode must accept a **commit range** and decompose it into smaller, evidence-preserving review units. The intended model is:
+
+1. **Pass A: commit synopsis / surface delta**
+   - Cheap LLM or deterministic pass over commit metadata, changed files, file stats, and compact diff anchors/snippets
+   - Produces a structured synopsis of what each commit appears to change:
+     - new or modified capabilities
+     - new or modified trust boundaries
+     - new or modified privileged sinks
+     - likely new component / feature introduction
+     - likely regression or threat-enabler against an existing component
+2. **Pass B: baseline-guided hypothesis routing**
+   - Compare those synopses against baseline `THREAT_MODEL.json`, `VULNERABILITIES.json`, and `risk_map.json`
+   - Group commits into **security review clusters** by affected component, attack surface, and baseline overlap
+   - Decide whether each cluster requires:
+     - targeted code review only
+     - incremental threat modeling + code review
+     - dependency / supply-chain review
+     - skip / defer
+3. **Pass C: targeted code validation**
+   - Only now read concrete code and diff content for the selected cluster
+   - Review evidence must still come from code, not from summaries
+   - The synopsis is a routing artifact, not a finding artifact
+
+This keeps SecureVibes useful on repos like OpenClaw where even a 30-minute window may contain too many changed files for classic PR review.
+
+## Commit-Range Processing Model
+
+### Why commit ranges matter
+
+Reviewing only the single vulnerability-introducing commit is a good benchmark approximation for "catch it at introduction time," but it is not sufficient for real-world high-velocity repositories. In practice:
+
+- operators often run SecureVibes on a timer (`every 15m`, `every 30m`, hourly)
+- the resulting window may include many commits
+- that window may be too large for direct PR-review ingestion even when every individual commit is "reasonable"
+- vulnerability-relevant context may span multiple commits in the same window
+
+So incremental mode must support **range intake** while refusing to send an arbitrarily large raw diff directly into `pr-review`.
+
+### Three-pass hierarchical review
+
+The core orchestration model for `securevibes incremental` should be:
+
+```text
+commit range
+  -> commit synopses
+  -> baseline-aware hypothesis routing
+  -> targeted review clusters
+  -> code-grounded validation
+  -> artifact updates
+```
+
+#### Pass A: commit synopsis
+
+Input:
+- commit SHAs in the active range
+- commit subject/body
+- changed file list
+- insertions / deletions / rename metadata
+- compact diff anchors and hunk snippets
+
+Output:
+- `.securevibes/incremental_synopsis.json`
+
+Each commit synopsis captures:
+- affected files and inferred components
+- whether the change appears to introduce a new feature / surface
+- whether the change modifies existing auth, policy, config, network, secrets, sandbox, plugin, or execution paths
+- whether the change touches files with prior baseline findings
+- coarse security intent:
+  - `new_surface`
+  - `existing_surface_delta`
+  - `dependency_change`
+  - `likely_non_security`
+
+Important constraint:
+- synopsis generation must stay cheap
+- it may use compact diff summaries, but it must not attempt full vulnerability analysis
+- synopsis output is advisory routing metadata only
+
+#### Pass B: baseline-guided hypothesis routing
+
+Input:
+- commit synopses
+- baseline `THREAT_MODEL.json`
+- baseline `VULNERABILITIES.json`
+- derived `risk_map.json`
+- optional design decisions / decision traces when present
+
+Output:
+- `.securevibes/incremental_hypotheses.json`
+
+This pass clusters commits into review units such as:
+- "existing gateway auth surface changed across commits A,B,C"
+- "new plugin installation surface introduced in commits D,E"
+- "dependency-only changes in commits F,G"
+
+For each cluster, the router chooses one of:
+- `targeted_pr_review`
+- `incremental_threat_model_then_review`
+- `supply_chain_review`
+- `skip`
+
+The router also determines the evidence set for Pass C:
+- file subset
+- adjacent baseline files
+- relevant baseline threats/findings
+- changed-code anchors
+
+#### Pass C: targeted code validation
+
+Input:
+- one routed cluster
+- only the files and diff slices needed for that cluster
+- baseline summaries and component context
+
+Output:
+- findings backed by concrete code evidence
+
+Pass C is the only pass allowed to emit findings. It may:
+- call existing PR-review prompt assembly on a synthetic diff slice
+- run incremental threat modeling before PR review when the cluster is `new_surface`
+- update `THREAT_MODEL.json` and `VULNERABILITIES.json` after validated findings
+
+### Key invariants
+
+- A large commit range is an **ingest unit**, not a review unit.
+- Commit summaries are never treated as final evidence.
+- Findings must remain grounded in concrete code reads and diff snippets.
+- New attack surfaces trigger threat-model expansion before final review.
+- Existing attack surfaces are reviewed against baseline threats and findings before broad exploration.
+- Artifact updates from one cluster must be visible to later clusters in the same run.
 
 ## Mandatory Prerequisites (Per Repository)
 
@@ -283,6 +416,55 @@ Replace flat chunking with tiered processing:
 - Threat modeling for new attack surfaces MUST be executed by the `threat-modeling` subagent, then handed off to `pr-code-review` with updated threat context.
 - Skip-tier classification is recorded before anchor advancement (see Safety Invariants / Anchor Advancement Invariant).
 - Tier 3 batching: consecutive all-skip chunks can be batched for execution efficiency, but each constituent commit must be individually recorded as classified.
+
+### Phase 3A: Commit Synopsis + Hypothesis Routing
+
+Add a hierarchical preprocessing layer before targeted review execution.
+
+**Inputs**
+- active commit range (`last_successful_anchor..HEAD`)
+- changed file metadata per commit
+- compact diff anchors / hunk snippets
+- baseline artifacts (`THREAT_MODEL.json`, `VULNERABILITIES.json`, `risk_map.json`)
+
+**New runtime artifacts**
+- `.securevibes/incremental_synopsis.json`
+- `.securevibes/incremental_hypotheses.json`
+
+**Step 1: commit synopsis**
+- Generate a cheap structured synopsis for each commit
+- Prefer deterministic metadata first, with optional low-cost LLM enrichment when needed
+- Capture:
+  - changed files and inferred components
+  - whether the commit introduces a new surface or changes an existing one
+  - whether it appears to touch trust boundaries, authz, config, routing, execution, sandbox, plugin, or secrets paths
+
+**Step 2: baseline-guided hypothesis routing**
+- Compare commit synopses against baseline threats, findings, and risk-map ownership
+- Group related commits into security review clusters
+- Label each cluster as:
+  - `existing_surface_delta`
+  - `new_surface`
+  - `dependency_change`
+  - `likely_non_security`
+
+**Step 3: route clusters to review strategies**
+- `existing_surface_delta`
+  - targeted PR/code review with strong baseline hypothesis injection
+- `new_surface`
+  - incremental threat-modeling subagent first, then targeted code review
+- `dependency_change`
+  - supply-chain review path
+- `likely_non_security`
+  - skip or defer with invariant-checked logging
+
+**Step 4: execute targeted validation**
+- Review only the code slices selected by the router
+- Reuse existing PR-review prompt machinery, but on cluster-sized inputs rather than the whole raw range
+- Merge validated findings across clusters and update artifacts incrementally
+
+**Implementation note**
+- This phase is intentionally designed to solve the "OpenClaw problem": frequent scans over high-velocity ranges without requiring SecureVibes to ingest the entire raw diff in a single PR-review request.
 
 ### Phase 4: Security Design Decisions — Proactive Intent Declaration
 
