@@ -108,7 +108,10 @@ async def execute_incremental_plan(
 
     cluster_results: list[ClusterExecutionResult] = []
     for cluster in plan.clusters:
-        if cluster.route != "targeted_pr_review":
+        if cluster.route not in {
+            "targeted_pr_review",
+            "incremental_threat_model_then_review",
+        }:
             cluster_results.append(
                 ClusterExecutionResult(
                     cluster_id=cluster.cluster_id,
@@ -131,11 +134,27 @@ async def execute_incremental_plan(
             )
             continue
 
+        current_known_vulns_path = _resolve_known_vulns_path(
+            securevibes_dir,
+            known_vulns_path,
+        )
         scanner = factory(model=model, debug=debug, quiet=quiet)
+        if cluster.route == "incremental_threat_model_then_review":
+            await scanner.scan_subagent(
+                str(repo),
+                "threat-modeling",
+                force=True,
+                skip_checks=True,
+            )
+            current_known_vulns_path = _resolve_known_vulns_path(
+                securevibes_dir,
+                known_vulns_path,
+            )
+
         result = await scanner.pr_review(
             str(repo),
             cluster_diff_context,
-            known_vulns_path,
+            current_known_vulns_path,
             severity_threshold,
             update_artifacts=update_artifacts,
         )
@@ -156,3 +175,16 @@ def _execution_result_for_cluster(
         critical_count=result.critical_count,
         high_count=result.high_count,
     )
+
+
+def _resolve_known_vulns_path(
+    securevibes_dir: Path,
+    known_vulns_path: Path | None,
+) -> Path | None:
+    if known_vulns_path is not None and known_vulns_path.exists():
+        return known_vulns_path
+
+    candidate = securevibes_dir / "VULNERABILITIES.json"
+    if candidate.exists():
+        return candidate
+    return None

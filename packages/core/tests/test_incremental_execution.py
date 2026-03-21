@@ -84,6 +84,70 @@ def _incremental_plan() -> IncrementalPlan:
     )
 
 
+def _new_surface_plan() -> IncrementalPlan:
+    return IncrementalPlan(
+        base_ref="base123",
+        head_ref="head456",
+        generated_at="2026-03-20T12:00:00Z",
+        synopses=(
+            CommitSynopsis(
+                sha="commit-1",
+                subject="Add plugin runtime",
+                file_paths=("plugins/runtime/loader.ts",),
+                derived_components=("plugins:ts",),
+                matched_baseline_vuln_paths=(),
+                matched_baseline_components=(),
+                coarse_intent="new_surface",
+                route="incremental_threat_model_then_review",
+                risk_tier="moderate",
+                reasons=("unmapped_new_attack_surface",),
+                dependency_files=(),
+                new_attack_surface=True,
+                insertions=42,
+                deletions=0,
+            ),
+            CommitSynopsis(
+                sha="commit-2",
+                subject="Modify auth flow",
+                file_paths=("src/auth.py",),
+                derived_components=("src:py",),
+                matched_baseline_vuln_paths=("src/auth.py",),
+                matched_baseline_components=("src:py",),
+                coarse_intent="existing_surface_delta",
+                route="targeted_pr_review",
+                risk_tier="critical",
+                reasons=("critical_pattern_match",),
+                dependency_files=(),
+                new_attack_surface=False,
+                insertions=8,
+                deletions=2,
+            ),
+        ),
+        clusters=(
+            ReviewCluster(
+                cluster_id="cluster-001",
+                route="incremental_threat_model_then_review",
+                commit_shas=("commit-1",),
+                file_paths=("plugins/runtime/loader.ts",),
+                baseline_vuln_paths=(),
+                baseline_components=(),
+                coarse_intents=("new_surface",),
+                reasons=("unmapped_new_attack_surface",),
+            ),
+            ReviewCluster(
+                cluster_id="cluster-002",
+                route="targeted_pr_review",
+                commit_shas=("commit-2",),
+                file_paths=("src/auth.py",),
+                baseline_vuln_paths=("src/auth.py",),
+                baseline_components=("src:py",),
+                coarse_intents=("existing_surface_delta",),
+                reasons=("critical_pattern_match",),
+            ),
+        ),
+    )
+
+
 def _scan_result(repo: Path, *, issues: int = 0) -> ScanResult:
     return ScanResult(
         repository_path=str(repo),
@@ -237,3 +301,118 @@ index 1111111..2222222 100644
     assert result.cluster_results[0].status == "skipped"
     assert result.cluster_results[0].skip_reason == "empty_cluster_diff"
     fake_scanner.pr_review.assert_not_awaited()
+
+
+def test_execute_incremental_plan_runs_new_surface_route_before_pr_review(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    known_vulns_path = securevibes_dir / "VULNERABILITIES.json"
+    known_vulns_path.write_text("[]", encoding="utf-8")
+
+    diff_context = parse_unified_diff(
+        """diff --git a/plugins/runtime/loader.ts b/plugins/runtime/loader.ts
+index 1111111..2222222 100644
+--- a/plugins/runtime/loader.ts
++++ b/plugins/runtime/loader.ts
+@@ -0,0 +1,2 @@
++export function loadPlugin() {}
++export function validatePlugin() {}
+diff --git a/src/auth.py b/src/auth.py
+index 3333333..4444444 100644
+--- a/src/auth.py
++++ b/src/auth.py
+@@ -1 +1,2 @@
+-allow(user)
++allow(user)
++audit(user)
+"""
+    )
+
+    fake_scanner = SimpleNamespace(
+        scan_subagent=AsyncMock(return_value=_scan_result(repo)),
+        pr_review=AsyncMock(return_value=_scan_result(repo)),
+    )
+
+    result = asyncio.run(
+        execute_incremental_plan(
+            repo,
+            securevibes_dir,
+            _new_surface_plan(),
+            diff_context,
+            model="sonnet",
+            quiet=True,
+            debug=False,
+            known_vulns_path=known_vulns_path,
+            scanner_factory=lambda **_kwargs: fake_scanner,
+        )
+    )
+
+    assert [item.status for item in result.cluster_results] == ["executed", "executed"]
+    fake_scanner.scan_subagent.assert_awaited_once_with(
+        str(repo),
+        "threat-modeling",
+        force=True,
+        skip_checks=True,
+    )
+    assert fake_scanner.pr_review.await_count == 2
+    new_surface_call = fake_scanner.pr_review.await_args_list[0]
+    assert new_surface_call.args[1].changed_files == ["plugins/runtime/loader.ts"]
+
+
+def test_execute_incremental_plan_refreshes_known_vulns_between_clusters(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    known_vulns_path = securevibes_dir / "VULNERABILITIES.json"
+
+    diff_context = parse_unified_diff(
+        """diff --git a/plugins/runtime/loader.ts b/plugins/runtime/loader.ts
+index 1111111..2222222 100644
+--- a/plugins/runtime/loader.ts
++++ b/plugins/runtime/loader.ts
+@@ -0,0 +1,2 @@
++export function loadPlugin() {}
++export function validatePlugin() {}
+diff --git a/src/auth.py b/src/auth.py
+index 3333333..4444444 100644
+--- a/src/auth.py
++++ b/src/auth.py
+@@ -1 +1,2 @@
+-allow(user)
++allow(user)
++audit(user)
+"""
+    )
+
+    async def fake_scan_subagent(*_args, **_kwargs):
+        known_vulns_path.write_text("[]", encoding="utf-8")
+        return _scan_result(repo)
+
+    fake_scanner = SimpleNamespace(
+        scan_subagent=AsyncMock(side_effect=fake_scan_subagent),
+        pr_review=AsyncMock(return_value=_scan_result(repo)),
+    )
+
+    asyncio.run(
+        execute_incremental_plan(
+            repo,
+            securevibes_dir,
+            _new_surface_plan(),
+            diff_context,
+            model="sonnet",
+            quiet=True,
+            debug=False,
+            known_vulns_path=None,
+            scanner_factory=lambda **_kwargs: fake_scanner,
+        )
+    )
+
+    assert fake_scanner.pr_review.await_args_list[0].args[2] == known_vulns_path
+    assert fake_scanner.pr_review.await_args_list[1].args[2] == known_vulns_path
