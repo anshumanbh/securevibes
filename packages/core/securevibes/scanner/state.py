@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import tempfile
+import hashlib
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,7 +42,7 @@ def update_scan_state(
 ) -> Dict[str, object]:
     """Atomically update scan state with optional full-scan/PR-review entries."""
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = state_path.with_name(f".{state_path.name}.lock")
+    lock_path = _lock_path_for_state(state_path)
     with _file_lock(lock_path):
         state = load_scan_state(state_path) or {}
 
@@ -129,6 +130,12 @@ def utc_timestamp() -> str:
     """Return current UTC timestamp in ISO format."""
     timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     return timestamp.replace("+00:00", "Z")
+
+
+def _lock_path_for_state(state_path: Path) -> Path:
+    """Return a stable tempdir lock path for a scan-state file."""
+    digest = hashlib.sha256(str(state_path.resolve(strict=False)).encode("utf-8")).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / f"securevibes-scan-state-{digest}.lock"
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
