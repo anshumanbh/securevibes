@@ -45,6 +45,7 @@ from securevibes.scanner.state import (
     update_scan_state,
     utc_timestamp,
 )
+from securevibes.scanner.incremental_execution import execute_incremental_plan
 from securevibes.scanner.incremental_planning import plan_incremental_range
 
 console = Console()
@@ -891,6 +892,100 @@ def incremental(path: str, base: str, head: str, quiet: bool):
         console.print(f"\n[bold red]❌ Error:[/bold red] {e}", style="red")
         console.print("\n[dim]Run with --help for usage information[/dim]")
         sys.exit(1)
+
+
+@cli.command("incremental-run")
+@click.argument("path", type=click.Path(exists=True), default=".")
+@click.option("--base", required=True, help="Base commit or branch for the incremental range")
+@click.option("--head", required=True, help="Head commit or branch for the incremental range")
+@click.option("--model", "-m", default="sonnet", help="Claude model to use (e.g., sonnet, haiku)")
+@click.option(
+    "--severity",
+    "-s",
+    type=click.Choice(["critical", "high", "medium", "low"]),
+    default="medium",
+    help="Minimum severity to report",
+)
+@click.option(
+    "--update-artifacts",
+    is_flag=True,
+    help="Update THREAT_MODEL.json and VULNERABILITIES.json from executed cluster findings",
+)
+@click.option("--quiet", "-q", is_flag=True, help="Minimal output (errors only)")
+@click.option("--debug", is_flag=True, help="Show verbose diagnostic output")
+def incremental_run(
+    path: str,
+    base: str,
+    head: str,
+    model: str,
+    severity: str,
+    update_artifacts: bool,
+    quiet: bool,
+    debug: bool,
+):
+    """Execute supported incremental review clusters for a commit range."""
+    console = _command_console(quiet)
+    try:
+        repo = Path(path).resolve()
+        securevibes_dir = _repo_output_path(
+            repo,
+            Path(".securevibes"),
+            operation="incremental execution artifact directory",
+        )
+        plan = plan_incremental_range(
+            repo,
+            securevibes_dir,
+            base_ref=base,
+            head_ref=head,
+        )
+        diff_content = get_diff_from_git_range(repo, base, head)
+        diff_context = parse_unified_diff(diff_content)
+        known_vulns_path = securevibes_dir / "VULNERABILITIES.json"
+        if not known_vulns_path.exists():
+            known_vulns_path = None
+
+        execution_result = asyncio.run(
+            execute_incremental_plan(
+                repo,
+                securevibes_dir,
+                plan,
+                diff_context,
+                model=model,
+                quiet=quiet,
+                debug=debug,
+                known_vulns_path=known_vulns_path,
+                severity_threshold=severity,
+                update_artifacts=update_artifacts,
+            )
+        )
+
+        if not quiet:
+            executed = sum(
+                1
+                for cluster_result in execution_result.cluster_results
+                if cluster_result.status == "executed"
+            )
+            skipped = sum(
+                1
+                for cluster_result in execution_result.cluster_results
+                if cluster_result.status == "skipped"
+            )
+            console.print(f"Executed {executed} cluster(s); skipped {skipped} cluster(s).")
+
+        sys.exit(_incremental_execution_exit_code(execution_result))
+    except Exception as e:
+        console.print(f"\n[bold red]❌ Error:[/bold red] {e}", style="red")
+        console.print("\n[dim]Run with --help for usage information[/dim]")
+        sys.exit(1)
+
+
+def _incremental_execution_exit_code(execution_result) -> int:
+    """Map incremental execution findings to the CLI exit contract."""
+    if any(result.critical_count > 0 for result in execution_result.cluster_results):
+        return 2
+    if any(result.high_count > 0 for result in execution_result.cluster_results):
+        return 1
+    return 0
 
 
 def _is_production_url(url: str) -> bool:

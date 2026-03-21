@@ -20,6 +20,10 @@ from securevibes.scanner.incremental_planning import (
     IncrementalPlan,
     ReviewCluster,
 )
+from securevibes.scanner.incremental_execution import (
+    ClusterExecutionResult,
+    IncrementalExecutionResult,
+)
 
 
 def _empty_scan_result(repo_path: Path) -> ScanResult:
@@ -89,6 +93,26 @@ def _incremental_plan() -> IncrementalPlan:
                 baseline_components=("src:py",),
                 coarse_intents=("existing_surface_delta",),
                 reasons=("critical_pattern_match",),
+            ),
+        ),
+    )
+
+
+def _incremental_execution_result() -> IncrementalExecutionResult:
+    return IncrementalExecutionResult(
+        cluster_results=(
+            ClusterExecutionResult(
+                cluster_id="cluster-001",
+                route="targeted_pr_review",
+                status="executed",
+                findings_count=1,
+                high_count=1,
+            ),
+            ClusterExecutionResult(
+                cluster_id="cluster-002",
+                route="supply_chain_review",
+                status="skipped",
+                skip_reason="route_not_implemented",
             ),
         ),
     )
@@ -286,6 +310,136 @@ class TestIncrementalCommand:
 
         assert result.exit_code == 1
         assert "risk_map.json" in result.output
+
+
+class TestIncrementalRunCommand:
+    """Tests for incremental execution command."""
+
+    def test_incremental_run_help(self, runner):
+        result = runner.invoke(cli, ["incremental-run", "--help"])
+
+        assert result.exit_code == 0
+        assert "--base" in result.output
+        assert "--head" in result.output
+        assert "--model" in result.output
+
+    def test_incremental_run_invokes_planner_and_executor(
+        self,
+        runner,
+        tmp_path,
+        monkeypatch,
+    ):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        observed = {}
+
+        async def fake_execute_incremental_plan(
+            repo_path: Path,
+            securevibes_dir: Path,
+            plan: IncrementalPlan,
+            diff_context,
+            *,
+            model: str,
+            quiet: bool,
+            debug: bool,
+            known_vulns_path: Path | None = None,
+            severity_threshold: str = "medium",
+            update_artifacts: bool = False,
+            scanner_factory=None,
+        ) -> IncrementalExecutionResult:
+            observed["execute"] = (
+                repo_path,
+                securevibes_dir,
+                plan.base_ref,
+                diff_context,
+                model,
+                quiet,
+                debug,
+                known_vulns_path,
+                severity_threshold,
+                update_artifacts,
+            )
+            return _incremental_execution_result()
+
+        monkeypatch.setattr(
+            "securevibes.cli.main.plan_incremental_range",
+            lambda repo_path, securevibes_dir, *, base_ref, head_ref: _incremental_plan(),
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.get_diff_from_git_range",
+            lambda repo_path, base, head: "diff --git a/a.py b/a.py\n",
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.parse_unified_diff",
+            lambda diff: {"raw": diff},
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.execute_incremental_plan",
+            fake_execute_incremental_plan,
+        )
+
+        result = runner.invoke(
+            cli,
+            [
+                "incremental-run",
+                str(repo),
+                "--base",
+                "base123",
+                "--head",
+                "head456",
+                "--model",
+                "sonnet",
+                "--update-artifacts",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert observed["execute"] == (
+            repo.resolve(),
+            repo.resolve() / ".securevibes",
+            "base123",
+            {"raw": "diff --git a/a.py b/a.py\n"},
+            "sonnet",
+            False,
+            False,
+            None,
+            "medium",
+            True,
+        )
+        assert "executed 1 cluster" in result.output.lower()
+        assert "skipped 1 cluster" in result.output.lower()
+
+    def test_incremental_run_quiet_suppresses_summary(self, runner, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        async def fake_execute_incremental_plan(*_args, **_kwargs):
+            return _incremental_execution_result()
+
+        monkeypatch.setattr(
+            "securevibes.cli.main.plan_incremental_range",
+            lambda repo_path, securevibes_dir, *, base_ref, head_ref: _incremental_plan(),
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.get_diff_from_git_range",
+            lambda repo_path, base, head: "diff --git a/a.py b/a.py\n",
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.parse_unified_diff",
+            lambda diff: {"raw": diff},
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.execute_incremental_plan",
+            fake_execute_incremental_plan,
+        )
+
+        result = runner.invoke(
+            cli,
+            ["incremental-run", str(repo), "--base", "base123", "--head", "head456", "--quiet"],
+        )
+
+        assert result.exit_code == 1
+        assert result.output == ""
 
 
 class TestProductionUrlDetection:
