@@ -438,7 +438,7 @@ When deciding whether to keep or remove code:
 # - THREAT_MODEL.json
 # - VULNERABILITIES.json
 # - scan_results.json
-# - scan_state.json (commit tracking for pr-review/catchup)
+# - scan_state.json (commit tracking for pr-review/catchup/incremental)
 
 # Optional artifacts (only when --target-url provided):
 # - DAST_VALIDATION.json (created by DAST agent)

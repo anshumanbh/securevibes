@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterator, Mapping, Optional
 
+from securevibes.diff.extractor import validate_git_ref
+
 try:
     import fcntl
 except ImportError:  # pragma: no cover
@@ -38,8 +40,9 @@ def update_scan_state(
     *,
     full_scan: Optional[Mapping[str, object]] = None,
     pr_review: Optional[Mapping[str, object]] = None,
+    incremental_run: Optional[Mapping[str, object]] = None,
 ) -> Dict[str, object]:
-    """Atomically update scan state with optional full-scan/PR-review entries."""
+    """Atomically update scan state with optional full-scan, PR-review, and incremental entries."""
     state_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = state_path.with_name(f".{state_path.name}.lock")
     with _file_lock(lock_path):
@@ -49,6 +52,8 @@ def update_scan_state(
             state["last_full_scan"] = dict(full_scan)
         if pr_review is not None:
             state["last_pr_review"] = dict(pr_review)
+        if incremental_run is not None:
+            state["last_incremental_run"] = dict(incremental_run)
 
         _write_json_atomic(state_path, state)
 
@@ -71,6 +76,22 @@ def build_pr_review_entry(
     }
 
 
+def build_incremental_run_entry(
+    *,
+    commit: str,
+    base_commit: str,
+    branch: str,
+    timestamp: str,
+) -> Dict[str, object]:
+    """Build metadata for a completed incremental run."""
+    return {
+        "commit": commit,
+        "base_commit": base_commit,
+        "branch": branch,
+        "timestamp": timestamp,
+    }
+
+
 def scan_state_branch_matches(state: Mapping[str, object], branch: str) -> bool:
     """Check if scan state belongs to the provided branch."""
     entry = state.get("last_full_scan")
@@ -89,22 +110,18 @@ def get_last_full_scan_commit(state: Mapping[str, object]) -> Optional[str]:
     return commit if isinstance(commit, str) else None
 
 
+def get_last_incremental_commit(state: Mapping[str, object]) -> Optional[str]:
+    """Extract last_incremental_run commit hash from state."""
+    entry = state.get("last_incremental_run")
+    if not isinstance(entry, dict):
+        return None
+    commit = entry.get("commit")
+    return commit if isinstance(commit, str) else None
+
+
 def get_repo_head_commit(repo: Path) -> Optional[str]:
     """Get the current HEAD commit hash for a repo."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError:
-        return None
-    if result.returncode != 0:
-        return None
-    commit = result.stdout.strip()
-    return commit if commit else None
+    return resolve_repo_commit(repo, "HEAD")
 
 
 def get_repo_branch(repo: Path) -> Optional[str]:
@@ -123,6 +140,25 @@ def get_repo_branch(repo: Path) -> Optional[str]:
         return None
     branch = result.stdout.strip()
     return branch if branch else None
+
+
+def resolve_repo_commit(repo: Path, ref: str) -> Optional[str]:
+    """Resolve a git ref to a concrete commit hash."""
+    try:
+        validate_git_ref(ref)
+        result = subprocess.run(
+            ["git", "rev-parse", ref],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, ValueError):
+        return None
+    if result.returncode != 0:
+        return None
+    commit = result.stdout.strip()
+    return commit if commit else None
 
 
 def utc_timestamp() -> str:

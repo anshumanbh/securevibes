@@ -9,10 +9,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from securevibes.diff.parser import parse_unified_diff
+from securevibes.models.issue import SecurityIssue, Severity
 from securevibes.models.result import ScanResult
 from securevibes.scanner.incremental_execution import (
+    aggregate_incremental_scan_result,
     build_cluster_diff_context,
+    ClusterExecutionResult,
     execute_incremental_plan,
+    IncrementalExecutionResult,
 )
 from securevibes.scanner.incremental_planning import (
     CommitSynopsis,
@@ -152,7 +156,19 @@ def _new_surface_plan() -> IncrementalPlan:
 def _scan_result(repo: Path, *, issues: int = 0) -> ScanResult:
     return ScanResult(
         repository_path=str(repo),
-        issues=[],
+        issues=[
+            SecurityIssue(
+                id=f"ISSUE-{index + 1}",
+                severity=Severity.HIGH,
+                title="Incremental finding",
+                description="Synthetic finding for incremental execution tests.",
+                file_path="src/auth.py",
+                line_number=7,
+                code_snippet="danger()",
+                cwe_id="CWE-94",
+            )
+            for index in range(issues)
+        ],
         files_scanned=max(issues, 1),
         scan_time_seconds=1.0,
     )
@@ -256,6 +272,34 @@ index 3333333..4444444 100644
     assert supply_chain_call.args[2] == known_vulns_path
     assert supply_chain_call.kwargs["update_artifacts"] is True
     fake_scanner.scan_subagent.assert_not_awaited()
+
+
+def test_aggregate_incremental_scan_result_merges_cluster_findings(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    execution_result = IncrementalExecutionResult(
+        cluster_results=(
+            ClusterExecutionResult(
+                cluster_id="cluster-001",
+                route="targeted_pr_review",
+                status="executed",
+                scan_result=_scan_result(repo, issues=1),
+            ),
+            ClusterExecutionResult(
+                cluster_id="cluster-002",
+                route="skip",
+                status="skipped",
+                skip_reason="route_not_implemented",
+            ),
+        )
+    )
+
+    aggregated = aggregate_incremental_scan_result(repo, execution_result)
+
+    assert aggregated.repository_path == str(repo)
+    assert len(aggregated.issues) == 1
+    assert "cluster-002" in aggregated.warnings[0]
 
 
 def test_execute_incremental_plan_skips_empty_cluster_subset(tmp_path: Path) -> None:

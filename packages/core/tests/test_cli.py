@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -182,15 +183,60 @@ class TestCatchupCommand:
         assert result.exit_code == 1
         assert "checkout" in result.output.lower()
 
-    def test_catchup_invokes_pr_review(self, runner, tmp_path, monkeypatch):
+    def test_catchup_prefers_last_incremental_anchor(self, runner, tmp_path, monkeypatch):
         repo = tmp_path / "repo"
         repo.mkdir()
-        called = {}
+        securevibes_dir = repo / ".securevibes"
+        securevibes_dir.mkdir()
+        (securevibes_dir / "scan_state.json").write_text(
+            json.dumps(
+                {
+                    "last_full_scan": {
+                        "commit": "base123",
+                        "branch": "main",
+                        "timestamp": "2026-03-21T00:00:00Z",
+                    },
+                    "last_incremental_run": {
+                        "commit": "incr456",
+                        "base_commit": "base123",
+                        "branch": "main",
+                        "timestamp": "2026-03-21T01:00:00Z",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        observed = {}
 
-        def fake_pr_review(**kwargs):
-            called["since_last_scan"] = kwargs.get("since_last_scan")
+        async def fake_execute_incremental_plan(*_args, **_kwargs):
+            return _incremental_execution_result()
 
-        monkeypatch.setattr("securevibes.cli.main.pr_review", fake_pr_review)
+        def fake_plan_incremental_range(
+            repo_path: Path,
+            securevibes_path: Path,
+            *,
+            base_ref: str,
+            head_ref: str,
+            generated_at: str | None = None,
+        ) -> IncrementalPlan:
+            observed["plan"] = (repo_path, securevibes_path, base_ref, head_ref, generated_at)
+            return _incremental_plan()
+
+        monkeypatch.setattr(
+            "securevibes.cli.main.plan_incremental_range", fake_plan_incremental_range
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.get_diff_from_git_range",
+            lambda *_args, **_kwargs: "diff --git a/src/auth.py b/src/auth.py\n",
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.parse_unified_diff",
+            lambda diff: SimpleNamespace(raw=diff, changed_files=["src/auth.py"]),
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.execute_incremental_plan",
+            fake_execute_incremental_plan,
+        )
         monkeypatch.setattr("securevibes.cli.main._git_pull", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(
             "securevibes.cli.main._repo_has_local_changes",
@@ -199,11 +245,99 @@ class TestCatchupCommand:
         monkeypatch.setattr(
             "securevibes.cli.main.get_repo_branch", lambda *_args, **_kwargs: "main"
         )
+        monkeypatch.setattr(
+            "securevibes.cli.main.get_repo_head_commit", lambda *_args, **_kwargs: "head789"
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.resolve_repo_commit",
+            lambda _repo, ref: {"incr456": "incr456", "HEAD": "head789"}[ref],
+        )
 
         result = runner.invoke(cli, ["catchup", str(repo), "--branch", "main"])
 
-        assert result.exit_code == 0
-        assert called["since_last_scan"] is True
+        assert result.exit_code == 1
+        assert observed["plan"] == (
+            repo.resolve(),
+            repo.resolve() / ".securevibes",
+            "incr456",
+            "HEAD",
+            None,
+        )
+
+    def test_catchup_falls_back_to_last_full_scan_anchor(self, runner, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        securevibes_dir = repo / ".securevibes"
+        securevibes_dir.mkdir()
+        (securevibes_dir / "scan_state.json").write_text(
+            json.dumps(
+                {
+                    "last_full_scan": {
+                        "commit": "base123",
+                        "branch": "main",
+                        "timestamp": "2026-03-21T00:00:00Z",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        observed = {}
+
+        async def fake_execute_incremental_plan(*_args, **_kwargs):
+            return _incremental_execution_result()
+
+        def fake_plan_incremental_range(
+            repo_path: Path,
+            securevibes_path: Path,
+            *,
+            base_ref: str,
+            head_ref: str,
+            generated_at: str | None = None,
+        ) -> IncrementalPlan:
+            observed["plan"] = (repo_path, securevibes_path, base_ref, head_ref, generated_at)
+            return _incremental_plan()
+
+        monkeypatch.setattr(
+            "securevibes.cli.main.plan_incremental_range", fake_plan_incremental_range
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.get_diff_from_git_range",
+            lambda *_args, **_kwargs: "diff --git a/src/auth.py b/src/auth.py\n",
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.parse_unified_diff",
+            lambda diff: SimpleNamespace(raw=diff, changed_files=["src/auth.py"]),
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.execute_incremental_plan",
+            fake_execute_incremental_plan,
+        )
+        monkeypatch.setattr("securevibes.cli.main._git_pull", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            "securevibes.cli.main._repo_has_local_changes",
+            lambda *_args, **_kwargs: False,
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.get_repo_branch", lambda *_args, **_kwargs: "main"
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.get_repo_head_commit", lambda *_args, **_kwargs: "head789"
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.resolve_repo_commit",
+            lambda _repo, ref: {"base123": "base123", "HEAD": "head789"}[ref],
+        )
+
+        result = runner.invoke(cli, ["catchup", str(repo), "--branch", "main"])
+
+        assert result.exit_code == 1
+        assert observed["plan"] == (
+            repo.resolve(),
+            repo.resolve() / ".securevibes",
+            "base123",
+            "HEAD",
+            None,
+        )
 
     def test_catchup_fails_when_worktree_dirty(self, runner, tmp_path, monkeypatch):
         repo = tmp_path / "repo"
@@ -371,7 +505,7 @@ class TestIncrementalRunCommand:
         )
         monkeypatch.setattr(
             "securevibes.cli.main.parse_unified_diff",
-            lambda diff: {"raw": diff},
+            lambda diff: SimpleNamespace(raw=diff, changed_files=["a.py"]),
         )
         monkeypatch.setattr(
             "securevibes.cli.main.execute_incremental_plan",
@@ -398,7 +532,7 @@ class TestIncrementalRunCommand:
             repo.resolve(),
             repo.resolve() / ".securevibes",
             "base123",
-            {"raw": "diff --git a/a.py b/a.py\n"},
+            SimpleNamespace(raw="diff --git a/a.py b/a.py\n", changed_files=["a.py"]),
             "sonnet",
             False,
             False,
@@ -426,7 +560,7 @@ class TestIncrementalRunCommand:
         )
         monkeypatch.setattr(
             "securevibes.cli.main.parse_unified_diff",
-            lambda diff: {"raw": diff},
+            lambda diff: SimpleNamespace(raw=diff, changed_files=["a.py"]),
         )
         monkeypatch.setattr(
             "securevibes.cli.main.execute_incremental_plan",
@@ -440,6 +574,59 @@ class TestIncrementalRunCommand:
 
         assert result.exit_code == 1
         assert result.output == ""
+
+    def test_incremental_run_persists_last_incremental_anchor(self, runner, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        async def fake_execute_incremental_plan(*_args, **_kwargs):
+            return IncrementalExecutionResult(
+                cluster_results=(
+                    ClusterExecutionResult(
+                        cluster_id="cluster-001",
+                        route="targeted_pr_review",
+                        status="executed",
+                    ),
+                )
+            )
+
+        monkeypatch.setattr(
+            "securevibes.cli.main.plan_incremental_range",
+            lambda repo_path, securevibes_dir, *, base_ref, head_ref: _incremental_plan(),
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.get_diff_from_git_range",
+            lambda repo_path, base, head: "diff --git a/a.py b/a.py\n",
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.parse_unified_diff",
+            lambda diff: SimpleNamespace(raw=diff, changed_files=["a.py"]),
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.execute_incremental_plan",
+            fake_execute_incremental_plan,
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.resolve_repo_commit",
+            lambda _repo, ref: {"base123": "abc123", "head456": "def456"}[ref],
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.get_repo_branch", lambda *_args, **_kwargs: "main"
+        )
+
+        result = runner.invoke(
+            cli,
+            ["incremental-run", str(repo), "--base", "base123", "--head", "head456"],
+        )
+
+        assert result.exit_code == 0
+        state_payload = json.loads((repo / ".securevibes" / "scan_state.json").read_text())
+        assert state_payload["last_incremental_run"] == {
+            "commit": "def456",
+            "base_commit": "abc123",
+            "branch": "main",
+            "timestamp": state_payload["last_incremental_run"]["timestamp"],
+        }
 
 
 class TestProductionUrlDetection:

@@ -36,16 +36,22 @@ from securevibes.diff.extractor import (
 )
 from securevibes.diff.parser import DiffContext, parse_unified_diff
 from securevibes.scanner.state import (
+    build_incremental_run_entry,
     build_pr_review_entry,
+    get_last_incremental_commit,
     get_last_full_scan_commit,
     get_repo_branch,
     get_repo_head_commit,
     load_scan_state,
+    resolve_repo_commit,
     scan_state_branch_matches,
     update_scan_state,
     utc_timestamp,
 )
-from securevibes.scanner.incremental_execution import execute_incremental_plan
+from securevibes.scanner.incremental_execution import (
+    aggregate_incremental_scan_result,
+    execute_incremental_plan,
+)
 from securevibes.scanner.incremental_planning import plan_incremental_range
 
 console = Console()
@@ -830,24 +836,45 @@ def catchup(
             console.print(f"[bold red]❌ git pull failed:[/bold red] {e}")
             sys.exit(1)
 
-        pr_review(
-            path=path,
-            base=None,
-            head=None,
-            commit_range=None,
-            diff_file=None,
-            since_last_scan=True,
-            since_date=None,
-            last_commits=None,
-            update_artifacts=update_artifacts,
-            clean_pr_artifacts=False,
+        _ensure_baseline_scan(repo, model, debug, quiet=False)
+
+        securevibes_dir = _repo_output_path(
+            repo,
+            Path(".securevibes"),
+            operation="catchup artifact directory",
+        )
+        state_path = _repo_output_path(
+            repo,
+            securevibes_dir / "scan_state.json",
+            operation="catchup scan_state artifact",
+        )
+        state = load_scan_state(state_path) or {}
+        base_ref = _resolve_incremental_base_ref(state, branch)
+        if not base_ref:
+            console.print("[bold red]❌ Missing incremental baseline in scan_state.json[/bold red]")
+            sys.exit(1)
+
+        exit_code, result = _run_incremental_range_command(
+            repo=repo,
+            base=base_ref,
+            head="HEAD",
             model=model,
-            output_format=output_format,
-            output=output,
+            severity=severity,
+            update_artifacts=update_artifacts,
             quiet=False,
             debug=debug,
-            severity=severity,
         )
+        _filter_by_severity(result, severity)
+        _write_output(
+            result=result,
+            output_format=output_format,
+            output=output,
+            repo_path=repo,
+            markdown_default_filename="pr_review_report.md",
+            markdown_label="PR review report",
+            quiet=False,
+        )
+        sys.exit(exit_code)
     except Exception as e:
         console.print(f"\n[bold red]❌ Error:[/bold red] {e}", style="red")
         console.print("\n[dim]Run with --help for usage information[/dim]")
@@ -927,52 +954,17 @@ def incremental_run(
     console = _command_console(quiet)
     try:
         repo = Path(path).resolve()
-        securevibes_dir = _repo_output_path(
-            repo,
-            Path(".securevibes"),
-            operation="incremental execution artifact directory",
+        exit_code, _result = _run_incremental_range_command(
+            repo=repo,
+            base=base,
+            head=head,
+            model=model,
+            severity=severity,
+            update_artifacts=update_artifacts,
+            quiet=quiet,
+            debug=debug,
         )
-        plan = plan_incremental_range(
-            repo,
-            securevibes_dir,
-            base_ref=base,
-            head_ref=head,
-        )
-        diff_content = get_diff_from_git_range(repo, base, head)
-        diff_context = parse_unified_diff(diff_content)
-        known_vulns_path = securevibes_dir / "VULNERABILITIES.json"
-        if not known_vulns_path.exists():
-            known_vulns_path = None
-
-        execution_result = asyncio.run(
-            execute_incremental_plan(
-                repo,
-                securevibes_dir,
-                plan,
-                diff_context,
-                model=model,
-                quiet=quiet,
-                debug=debug,
-                known_vulns_path=known_vulns_path,
-                severity_threshold=severity,
-                update_artifacts=update_artifacts,
-            )
-        )
-
-        if not quiet:
-            executed = sum(
-                1
-                for cluster_result in execution_result.cluster_results
-                if cluster_result.status == "executed"
-            )
-            skipped = sum(
-                1
-                for cluster_result in execution_result.cluster_results
-                if cluster_result.status == "skipped"
-            )
-            console.print(f"Executed {executed} cluster(s); skipped {skipped} cluster(s).")
-
-        sys.exit(_incremental_execution_exit_code(execution_result))
+        sys.exit(exit_code)
     except Exception as e:
         console.print(f"\n[bold red]❌ Error:[/bold red] {e}", style="red")
         console.print("\n[dim]Run with --help for usage information[/dim]")
@@ -986,6 +978,125 @@ def _incremental_execution_exit_code(execution_result) -> int:
     if any(result.high_count > 0 for result in execution_result.cluster_results):
         return 1
     return 0
+
+
+def _resolve_incremental_base_ref(state: dict[str, object], branch: str) -> Optional[str]:
+    """Choose the best incremental anchor for the current branch."""
+    incremental_entry = state.get("last_incremental_run")
+    if isinstance(incremental_entry, dict) and incremental_entry.get("branch") == branch:
+        incremental_commit = get_last_incremental_commit(state)
+        if incremental_commit:
+            return incremental_commit
+    return get_last_full_scan_commit(state)
+
+
+def _persist_incremental_run_state(
+    repo: Path,
+    securevibes_dir: Path,
+    *,
+    base_ref: str,
+    head_ref: str,
+) -> None:
+    """Persist the latest successful incremental anchor."""
+    base_commit = resolve_repo_commit(repo, base_ref)
+    head_commit = resolve_repo_commit(repo, head_ref)
+    branch = get_repo_branch(repo)
+    if not base_commit or not head_commit or not branch:
+        return
+
+    scan_state_path = _repo_output_path(
+        repo,
+        securevibes_dir / "scan_state.json",
+        operation="incremental scan_state artifact",
+    )
+    update_scan_state(
+        scan_state_path,
+        incremental_run=build_incremental_run_entry(
+            commit=head_commit,
+            base_commit=base_commit,
+            branch=branch,
+            timestamp=utc_timestamp(),
+        ),
+    )
+
+
+def _run_incremental_range_command(
+    *,
+    repo: Path,
+    base: str,
+    head: str,
+    model: str,
+    severity: str,
+    update_artifacts: bool,
+    quiet: bool,
+    debug: bool,
+) -> int:
+    """Plan and execute incremental review for a resolved commit range."""
+    securevibes_dir = _repo_output_path(
+        repo,
+        Path(".securevibes"),
+        operation="incremental execution artifact directory",
+    )
+    plan = plan_incremental_range(
+        repo,
+        securevibes_dir,
+        base_ref=base,
+        head_ref=head,
+    )
+    diff_content = get_diff_from_git_range(repo, base, head)
+    if not diff_content.strip():
+        if not quiet:
+            console.print("[yellow]No changes found in diff.[/yellow]")
+        return 0, ScanResult(repository_path=str(repo))
+
+    diff_context = parse_unified_diff(diff_content)
+    if not diff_context.changed_files:
+        if not quiet:
+            console.print("[yellow]No changed files found in diff.[/yellow]")
+        return 0, ScanResult(repository_path=str(repo))
+
+    known_vulns_path = securevibes_dir / "VULNERABILITIES.json"
+    if not known_vulns_path.exists():
+        known_vulns_path = None
+
+    execution_result = asyncio.run(
+        execute_incremental_plan(
+            repo,
+            securevibes_dir,
+            plan,
+            diff_context,
+            model=model,
+            quiet=quiet,
+            debug=debug,
+            known_vulns_path=known_vulns_path,
+            severity_threshold=severity,
+            update_artifacts=update_artifacts,
+        )
+    )
+
+    if not quiet:
+        executed = sum(
+            1
+            for cluster_result in execution_result.cluster_results
+            if cluster_result.status == "executed"
+        )
+        skipped = sum(
+            1
+            for cluster_result in execution_result.cluster_results
+            if cluster_result.status == "skipped"
+        )
+        console.print(f"Executed {executed} cluster(s); skipped {skipped} cluster(s).")
+
+    _persist_incremental_run_state(
+        repo,
+        securevibes_dir,
+        base_ref=base,
+        head_ref=head,
+    )
+    return (
+        _incremental_execution_exit_code(execution_result),
+        aggregate_incremental_scan_result(repo, execution_result),
+    )
 
 
 def _is_production_url(url: str) -> bool:

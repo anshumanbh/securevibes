@@ -155,7 +155,12 @@ securevibes pr-review . --base main --head feature-branch --format table
 # PR review severity threshold
 securevibes pr-review . --base main --head feature-branch --severity high
 
-# Catchup: pull latest + review since last full scan
+# Incremental planning/execution for larger commit windows
+securevibes incremental . --base main~10 --head HEAD
+securevibes incremental-run . --base main~10 --head HEAD
+
+# Catchup: pull latest + review since last incremental anchor
+# (falls back to the last full scan when no incremental anchor exists)
 securevibes catchup . --branch main
 ```
 
@@ -190,7 +195,7 @@ PR review artifacts (written to `.securevibes/`):
 - `DIFF_CONTEXT.json` (parsed diff summary)
 - `PR_VULNERABILITIES.json` (raw findings)
 - `pr_review_report.md` (default markdown report)
-- `scan_state.json` (commit tracking for pr-review/catchup)
+- `scan_state.json` (commit tracking for pr-review/catchup/incremental)
 
 ---
 

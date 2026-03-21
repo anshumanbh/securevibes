@@ -11,7 +11,9 @@ import pytest
 from securevibes.scanner import state as scan_state_module
 from securevibes.scanner.state import (
     build_full_scan_entry,
+    build_incremental_run_entry,
     build_pr_review_entry,
+    get_last_incremental_commit,
     get_repo_branch,
     get_repo_head_commit,
     get_last_full_scan_commit,
@@ -66,6 +68,29 @@ def test_update_scan_state_merges_pr_review(tmp_path: Path):
     assert state["last_pr_review"]["commits_reviewed"] == ["def456", "ghi789"]
 
 
+def test_update_scan_state_merges_incremental_run(tmp_path: Path):
+    state_path = tmp_path / "scan_state.json"
+    full_scan = build_full_scan_entry(
+        commit="abc123",
+        branch="main",
+        timestamp="2026-02-02T10:00:00Z",
+    )
+    update_scan_state(state_path, full_scan=full_scan)
+
+    incremental_run = build_incremental_run_entry(
+        commit="def456",
+        base_commit="abc123",
+        branch="main",
+        timestamp="2026-02-02T15:00:00Z",
+    )
+    state = update_scan_state(state_path, incremental_run=incremental_run)
+
+    assert state["last_full_scan"]["commit"] == "abc123"
+    assert state["last_incremental_run"]["commit"] == "def456"
+    assert state["last_incremental_run"]["base_commit"] == "abc123"
+    assert state["last_incremental_run"]["branch"] == "main"
+
+
 def test_scan_state_branch_matches(tmp_path: Path):
     state_path = tmp_path / "scan_state.json"
     full_scan = build_full_scan_entry(
@@ -103,6 +128,19 @@ def test_get_last_full_scan_commit(tmp_path: Path):
     state = update_scan_state(state_path, full_scan=full_scan)
 
     assert get_last_full_scan_commit(state) == "abc123"
+
+
+def test_get_last_incremental_commit(tmp_path: Path):
+    state_path = tmp_path / "scan_state.json"
+    incremental_run = build_incremental_run_entry(
+        commit="def456",
+        base_commit="abc123",
+        branch="main",
+        timestamp="2026-02-02T15:00:00Z",
+    )
+    state = update_scan_state(state_path, incremental_run=incremental_run)
+
+    assert get_last_incremental_commit(state) == "def456"
 
 
 def test_get_repo_head_commit_parses_output(monkeypatch):

@@ -33,6 +33,7 @@ class ClusterExecutionResult:
     critical_count: int = 0
     high_count: int = 0
     skip_reason: str | None = None
+    scan_result: ScanResult | None = None
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,31 @@ class IncrementalExecutionResult:
     """Execution summary for an incremental plan."""
 
     cluster_results: tuple[ClusterExecutionResult, ...]
+
+
+def aggregate_incremental_scan_result(
+    repo: Path,
+    execution_result: IncrementalExecutionResult,
+) -> ScanResult:
+    """Aggregate executed cluster scan results into a single CLI-facing result."""
+    aggregated = ScanResult(repository_path=str(repo))
+
+    for cluster_result in execution_result.cluster_results:
+        if cluster_result.scan_result is None:
+            if cluster_result.status == "skipped" and cluster_result.skip_reason:
+                aggregated.warnings.append(
+                    f"Incremental cluster {cluster_result.cluster_id} skipped: "
+                    f"{cluster_result.skip_reason}"
+                )
+            continue
+
+        aggregated.issues.extend(cluster_result.scan_result.issues)
+        aggregated.files_scanned += cluster_result.scan_result.files_scanned
+        aggregated.scan_time_seconds += cluster_result.scan_result.scan_time_seconds
+        aggregated.total_cost_usd += cluster_result.scan_result.total_cost_usd
+        aggregated.warnings.extend(cluster_result.scan_result.warnings)
+
+    return aggregated
 
 
 def build_cluster_diff_context(
@@ -184,6 +210,7 @@ def _execution_result_for_cluster(
         findings_count=len(result.issues),
         critical_count=result.critical_count,
         high_count=result.high_count,
+        scan_result=result,
     )
 
 
