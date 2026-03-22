@@ -101,6 +101,7 @@ class _ClusterSlice:
 
     commit_sha: str
     route: ReviewRoute
+    topic: tuple[str, ...]
     file_paths: tuple[str, ...]
     baseline_vuln_paths: tuple[str, ...]
     baseline_components: tuple[str, ...]
@@ -192,7 +193,7 @@ def build_incremental_plan(
 ) -> IncrementalPlan:
     """Build a deterministic incremental routing plan for a commit range."""
     synopses = tuple(_build_commit_synopsis(commit, baseline) for commit in commits)
-    clusters = _cluster_synopses(synopses)
+    clusters = _cluster_synopses(synopses, baseline)
     return IncrementalPlan(
         base_ref=base_ref,
         head_ref=head_ref,
@@ -437,11 +438,15 @@ def _route_for_intent(intent: CoarseIntent) -> ReviewRoute:
     return "targeted_pr_review"
 
 
-def _cluster_synopses(synopses: Sequence[CommitSynopsis]) -> tuple[ReviewCluster, ...]:
-    buckets: dict[tuple[ReviewRoute, tuple[str, ...]], list[CommitSynopsis]] = {}
+def _cluster_synopses(
+    synopses: Sequence[CommitSynopsis],
+    baseline: BaselineContext,
+) -> tuple[ReviewCluster, ...]:
+    buckets: dict[tuple[ReviewRoute, tuple[str, ...]], list[_ClusterSlice]] = {}
     for synopsis in synopses:
-        key = (synopsis.route, _cluster_topic(synopsis))
-        buckets.setdefault(key, []).append(synopsis)
+        for slice_item in _slice_synopsis(synopsis, baseline):
+            key = (slice_item.route, slice_item.topic)
+            buckets.setdefault(key, []).append(slice_item)
 
     clusters: list[ReviewCluster] = []
     index = 1
@@ -453,7 +458,7 @@ def _cluster_synopses(synopses: Sequence[CommitSynopsis]) -> tuple[ReviewCluster
 
 
 def _split_bucket_into_clusters(
-    bucket: Sequence[CommitSynopsis],
+    bucket: Sequence[_ClusterSlice],
     *,
     cluster_index_start: int,
 ) -> tuple[ReviewCluster, ...]:
@@ -466,18 +471,17 @@ def _split_bucket_into_clusters(
             _build_review_cluster(
                 cluster_id=f"cluster-{cluster_index_start:03d}",
                 route=route,
-                slices=tuple(item for synopsis in bucket for item in _slice_synopsis(synopsis)),
+                slices=tuple(bucket),
             ),
         )
 
-    slices = [item for synopsis in bucket for item in _slice_synopsis(synopsis)]
     clusters: list[ReviewCluster] = []
     cluster_slices: list[_ClusterSlice] = []
     current_files: set[str] = set()
     current_lines = 0
-    split_occurred = len(slices) > 1
+    split_occurred = len(bucket) > 1
 
-    for slice_item in slices:
+    for slice_item in bucket:
         slice_files = set(slice_item.file_paths)
         next_file_count = len(current_files | slice_files)
         next_line_count = current_lines + slice_item.changed_lines
@@ -542,13 +546,23 @@ def _build_review_cluster(
     )
 
 
-def _slice_synopsis(synopsis: CommitSynopsis) -> tuple[_ClusterSlice, ...]:
+def _slice_synopsis(
+    synopsis: CommitSynopsis,
+    baseline: BaselineContext,
+) -> tuple[_ClusterSlice, ...]:
     changed_files = _normalized_changed_files(synopsis)
     if not changed_files:
         return (
             _ClusterSlice(
                 commit_sha=synopsis.sha,
                 route=synopsis.route,
+                topic=_cluster_topic_values(
+                    synopsis.matched_baseline_components,
+                    synopsis.matched_baseline_vuln_paths,
+                    synopsis.dependency_files,
+                    synopsis.derived_components,
+                    synopsis.file_paths,
+                ),
                 file_paths=synopsis.file_paths,
                 baseline_vuln_paths=synopsis.matched_baseline_vuln_paths,
                 baseline_components=synopsis.matched_baseline_components,
@@ -558,41 +572,15 @@ def _slice_synopsis(synopsis: CommitSynopsis) -> tuple[_ClusterSlice, ...]:
             ),
         )
 
-    slices: list[_ClusterSlice] = []
-    current_files: list[ChangedFile] = []
-    current_paths: set[str] = set()
-    current_lines = 0
-
-    for changed_file in changed_files:
-        normalized_path = normalize_path(changed_file.path)
-        if not normalized_path:
-            continue
-        file_lines = changed_file.insertions + changed_file.deletions
-        next_file_count = len(current_paths | {normalized_path})
-        next_line_count = current_lines + file_lines
-        exceeds_budget = current_files and (
-            next_file_count > _EXECUTABLE_CLUSTER_MAX_FILES
-            or next_line_count > _EXECUTABLE_CLUSTER_MAX_CHANGED_LINES
-        )
-        if exceeds_budget:
-            slices.append(_build_cluster_slice(synopsis, current_files))
-            current_files = []
-            current_paths = set()
-            current_lines = 0
-
-        current_files.append(changed_file)
-        current_paths.add(normalized_path)
-        current_lines += file_lines
-
-    if current_files:
-        slices.append(_build_cluster_slice(synopsis, current_files))
-
-    return tuple(slices)
+    return tuple(
+        _build_cluster_slice(synopsis, (changed_file,), baseline) for changed_file in changed_files
+    )
 
 
 def _build_cluster_slice(
     synopsis: CommitSynopsis,
     changed_files: Sequence[ChangedFile],
+    baseline: BaselineContext,
 ) -> _ClusterSlice:
     file_paths = tuple(
         sorted(
@@ -603,26 +591,55 @@ def _build_cluster_slice(
             }
         )
     )
-    baseline_components = tuple(
+    derived_components = tuple(
         sorted(
             {
                 component
                 for path in file_paths
                 for component in _derive_components_from_file_path(path)
-                if component in synopsis.matched_baseline_components
+                if component
             }
         )
     )
+    chunk_risk = classify_chunk(changed_files, baseline.risk_map)
+    matched_baseline_vuln_paths = tuple(
+        sorted(path for path in file_paths if path.lower() in baseline.vuln_paths)
+    )
+    baseline_components = tuple(
+        sorted(
+            {
+                component
+                for component in derived_components
+                if component.lower() in baseline.affected_components
+            }
+        )
+    )
+    coarse_intent = _coarse_intent_for_synopsis(
+        chunk_risk,
+        matched_baseline_vuln_paths=matched_baseline_vuln_paths,
+        matched_baseline_components=baseline_components,
+    )
+    route = _route_for_intent(coarse_intent)
+    reasons = list(chunk_risk.reasons)
+    if matched_baseline_vuln_paths:
+        reasons.append("baseline_vulnerability_overlap")
+    if baseline_components:
+        reasons.append("baseline_component_overlap")
     return _ClusterSlice(
         commit_sha=synopsis.sha,
-        route=synopsis.route,
-        file_paths=file_paths,
-        baseline_vuln_paths=tuple(
-            sorted(path for path in file_paths if path in synopsis.matched_baseline_vuln_paths)
+        route=route,
+        topic=_cluster_topic_values(
+            baseline_components,
+            matched_baseline_vuln_paths,
+            chunk_risk.dependency_files,
+            derived_components,
+            file_paths,
         ),
+        file_paths=file_paths,
+        baseline_vuln_paths=matched_baseline_vuln_paths,
         baseline_components=baseline_components,
-        coarse_intent=synopsis.coarse_intent,
-        reasons=synopsis.reasons,
+        coarse_intent=coarse_intent,
+        reasons=tuple(dict.fromkeys(reasons)),
         changed_lines=sum(file.insertions + file.deletions for file in changed_files),
     )
 
@@ -637,17 +654,31 @@ def _normalized_changed_files(synopsis: CommitSynopsis) -> tuple[ChangedFile, ..
 
 
 def _cluster_topic(synopsis: CommitSynopsis) -> tuple[str, ...]:
-    if synopsis.matched_baseline_components:
-        return synopsis.matched_baseline_components
-    if synopsis.matched_baseline_vuln_paths:
-        return synopsis.matched_baseline_vuln_paths
-    if synopsis.dependency_files:
+    return _cluster_topic_values(
+        synopsis.matched_baseline_components,
+        synopsis.matched_baseline_vuln_paths,
+        synopsis.dependency_files,
+        synopsis.derived_components,
+        synopsis.file_paths,
+    )
+
+
+def _cluster_topic_values(
+    matched_baseline_components: Sequence[str],
+    matched_baseline_vuln_paths: Sequence[str],
+    dependency_files: Sequence[str],
+    derived_components: Sequence[str],
+    file_paths: Sequence[str],
+) -> tuple[str, ...]:
+    if matched_baseline_components:
+        return tuple(matched_baseline_components)
+    if matched_baseline_vuln_paths:
+        return tuple(matched_baseline_vuln_paths)
+    if dependency_files:
         return ("dependency_change",)
-    if synopsis.derived_components:
-        return synopsis.derived_components
-    top_levels = {
-        path.split("/", 1)[0] if "/" in path else path for path in synopsis.file_paths if path
-    }
+    if derived_components:
+        return tuple(derived_components)
+    top_levels = {path.split("/", 1)[0] if "/" in path else path for path in file_paths if path}
     return tuple(sorted(top_levels)) or ("empty",)
 
 

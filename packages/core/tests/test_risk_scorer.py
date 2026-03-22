@@ -73,14 +73,24 @@ def test_dependency_only_chunk_sets_dependency_only_flag() -> None:
     assert result.dependency_only is True
 
 
-def test_skip_safeguard_new_file_in_skip_path_promotes_to_moderate() -> None:
-    risk_map = {"critical": [], "moderate": [], "skip": ["docs/*"]}
-    changed_files = [ChangedFile(path="docs/new-guide.md", status="A")]
+def test_skip_safeguard_new_non_doc_file_in_skip_path_promotes_to_moderate() -> None:
+    risk_map = {"critical": [], "moderate": [], "skip": ["scripts/*"]}
+    changed_files = [ChangedFile(path="scripts/release.sh", status="A")]
 
     result = classify_chunk(changed_files, risk_map)
 
     assert result.tier == "moderate"
     assert "skip_safeguard:new_file_in_skip_path" in result.reasons
+
+
+def test_new_markdown_file_in_skip_path_stays_skip() -> None:
+    risk_map = {"critical": [], "moderate": [], "skip": ["docs/*"]}
+    changed_files = [ChangedFile(path="docs/new-guide.md", status="A")]
+
+    result = classify_chunk(changed_files, risk_map)
+
+    assert result.tier == "skip"
+    assert "skip_safeguard:new_file_in_skip_path" not in result.reasons
 
 
 def test_policy_file_change_forces_critical_tier() -> None:
@@ -189,9 +199,7 @@ def test_load_threat_model_entries_accepts_wrapped_and_list_formats(
 
 def test_load_risk_map_requires_all_tier_buckets(tmp_path) -> None:
     risk_map_path = tmp_path / "risk_map.json"
-    risk_map_path.write_text(
-        json.dumps({"critical": [], "moderate": []}), encoding="utf-8"
-    )
+    risk_map_path.write_text(json.dumps({"critical": [], "moderate": []}), encoding="utf-8")
 
     with pytest.raises(ValueError, match="missing required field"):
         load_risk_map(risk_map_path)

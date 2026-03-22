@@ -167,6 +167,18 @@ def _is_extensionless_non_doc(path: str) -> bool:
     return Path(path).suffix == ""
 
 
+def _is_obvious_low_signal_skip_path(path: str) -> bool:
+    normalized = normalize_path(path).lower()
+    name = Path(normalized).name.lower()
+    if normalized.startswith(("docs/", "doc/", "tests/", "test/")):
+        return True
+    if name.endswith((".md", ".mdx", ".rst", ".txt")):
+        return True
+    if _is_security_test_path(normalized):
+        return True
+    return False
+
+
 def _is_policy_context_path(path: str) -> bool:
     return _matches(path, POLICY_CONTEXT_PATTERNS) is not None
 
@@ -272,7 +284,11 @@ def classify_chunk(
         reasons.append("dependency_change_promotion")
 
     if chunk_tier == "skip":
-        if any(changed.status.upper().startswith("A") for changed in changed_files):
+        if any(
+            changed.status.upper().startswith("A")
+            and not _is_obvious_low_signal_skip_path(normalize_path(changed.path))
+            for changed in changed_files
+        ):
             chunk_tier = "moderate"
             reasons.append("skip_safeguard:new_file_in_skip_path")
         elif any(

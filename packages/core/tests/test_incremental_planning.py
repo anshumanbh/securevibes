@@ -288,6 +288,72 @@ def test_build_incremental_plan_splits_targeted_bucket_by_line_budget(
     assert "split_for_diff_budget" in plan.clusters[1].reasons
 
 
+def test_build_incremental_plan_reroutes_docs_slice_to_skip_cluster(
+    tmp_path: Path,
+) -> None:
+    securevibes_dir = tmp_path / ".securevibes"
+    _write_baseline_artifacts(securevibes_dir)
+    baseline = load_baseline_context(securevibes_dir)
+
+    plan = build_incremental_plan(
+        [
+            CommitMetadata(
+                sha="commit-mixed",
+                subject="Auth change with docs",
+                body="",
+                changed_files=(
+                    ChangedFile(path="src/auth.py", status="M", insertions=10, deletions=2),
+                    ChangedFile(path="docs/guide.md", status="M", insertions=20, deletions=0),
+                ),
+                insertions=30,
+                deletions=2,
+            )
+        ],
+        baseline,
+        base_ref="base123",
+        head_ref="head456",
+        generated_at="2026-03-20T12:00:00Z",
+    )
+
+    routes_by_paths = {cluster.file_paths: cluster.route for cluster in plan.clusters}
+
+    assert routes_by_paths[("src/auth.py",)] == "targeted_pr_review"
+    assert routes_by_paths[("docs/guide.md",)] == "skip"
+
+
+def test_build_incremental_plan_reroutes_dependency_slice_to_supply_chain_cluster(
+    tmp_path: Path,
+) -> None:
+    securevibes_dir = tmp_path / ".securevibes"
+    _write_baseline_artifacts(securevibes_dir)
+    baseline = load_baseline_context(securevibes_dir)
+
+    plan = build_incremental_plan(
+        [
+            CommitMetadata(
+                sha="commit-mixed",
+                subject="Auth change with dependency bump",
+                body="",
+                changed_files=(
+                    ChangedFile(path="src/auth.py", status="M", insertions=10, deletions=2),
+                    ChangedFile(path="package.json", status="M", insertions=4, deletions=1),
+                ),
+                insertions=14,
+                deletions=3,
+            )
+        ],
+        baseline,
+        base_ref="base123",
+        head_ref="head456",
+        generated_at="2026-03-20T12:00:00Z",
+    )
+
+    routes_by_paths = {cluster.file_paths: cluster.route for cluster in plan.clusters}
+
+    assert routes_by_paths[("src/auth.py",)] == "targeted_pr_review"
+    assert routes_by_paths[("package.json",)] == "supply_chain_review"
+
+
 def test_write_incremental_plan_artifacts_persists_synopsis_and_hypotheses(
     tmp_path: Path,
 ) -> None:
