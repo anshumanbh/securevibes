@@ -196,6 +196,7 @@ securevibes pr-review . --base main --head feature-branch --model haiku --debug
 # Incremental planning/execution for larger commit windows
 securevibes incremental . --base main~10 --head HEAD
 securevibes incremental-run . --base main~10 --head HEAD
+securevibes incremental-run . --since-last-incremental
 
 # Catchup: pull latest + review since last incremental anchor
 # (falls back to the last full scan when no incremental anchor exists)

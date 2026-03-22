@@ -83,11 +83,16 @@ def _command_console(quiet: bool) -> Console:
     return Console(stderr=True) if quiet else console
 
 
-def _require_repo_scoped_path(repo_root: Path, candidate: Path, *, operation: str) -> Path:
+def _require_repo_scoped_path(
+    repo_root: Path, candidate: Path, *, operation: str
+) -> Path:
     """Ensure a candidate path resolves inside the repository root."""
     resolved_repo_root = repo_root.resolve(strict=False)
     resolved_candidate = candidate.resolve(strict=False)
-    if resolved_candidate == resolved_repo_root or resolved_repo_root in resolved_candidate.parents:
+    if (
+        resolved_candidate == resolved_repo_root
+        or resolved_repo_root in resolved_candidate.parents
+    ):
         return candidate
     raise RuntimeError(
         f"Refusing unsafe {operation}: {candidate} resolves outside repository root "
@@ -111,7 +116,9 @@ def _filter_by_severity(result, min_severity: Optional[str]) -> None:
     threshold = Severity(min_severity)
     min_rank = SEVERITY_RANK[threshold.value]
     result.issues = [
-        issue for issue in result.issues if SEVERITY_RANK.get(issue.severity.value, 0) >= min_rank
+        issue
+        for issue in result.issues
+        if SEVERITY_RANK.get(issue.severity.value, 0) >= min_rank
     ]
 
 
@@ -122,7 +129,9 @@ def _resolve_markdown_output_path(
     if output:
         output_path = Path(output)
         if output_path.is_absolute():
-            return _repo_output_path(repo_path, output_path, operation="markdown output file")
+            return _repo_output_path(
+                repo_path, output_path, operation="markdown output file"
+            )
         return _repo_output_path(
             repo_path,
             Path(".securevibes") / output,
@@ -148,7 +157,9 @@ def _write_output(
     if output_format == "markdown":
         from securevibes.reporters.markdown_reporter import MarkdownReporter
 
-        output_path = _resolve_markdown_output_path(repo_path, output, markdown_default_filename)
+        output_path = _resolve_markdown_output_path(
+            repo_path, output, markdown_default_filename
+        )
         try:
             output_path.parent.mkdir(parents=True, exist_ok=True)
             MarkdownReporter.save(result, output_path)
@@ -171,10 +182,14 @@ def _write_output(
                     operation="JSON output file",
                 )
                 output_path.parent.mkdir(parents=True, exist_ok=True)
-                output_path.write_text(json.dumps(output_data, indent=2), encoding="utf-8")
+                output_path.write_text(
+                    json.dumps(output_data, indent=2), encoding="utf-8"
+                )
                 console.print(f"\n✅ Results saved to: {output_path}")
             except (IOError, OSError, PermissionError) as exc:
-                console.print(f"[bold red]❌ Error writing output file:[/bold red] {exc}")
+                console.print(
+                    f"[bold red]❌ Error writing output file:[/bold red] {exc}"
+                )
                 sys.exit(1)
         else:
             console.print_json(data=output_data)
@@ -206,14 +221,18 @@ def _build_progress_output_writer(
 
         def _write_json_checkpoint(result) -> None:
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
+            output_path.write_text(
+                json.dumps(result.to_dict(), indent=2), encoding="utf-8"
+            )
 
         return _write_json_checkpoint
 
     if output_format == "markdown":
         from securevibes.reporters.markdown_reporter import MarkdownReporter
 
-        output_path = _resolve_markdown_output_path(repo_path, output, markdown_default_filename)
+        output_path = _resolve_markdown_output_path(
+            repo_path, output, markdown_default_filename
+        )
 
         def _write_markdown_checkpoint(result) -> None:
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -243,7 +262,9 @@ def cli():
 
 @cli.command()
 @click.argument("path", type=click.Path(exists=True), default=".")
-@click.option("--model", "-m", default="sonnet", help="Claude model to use (e.g., sonnet, haiku)")
+@click.option(
+    "--model", "-m", default="sonnet", help="Claude model to use (e.g., sonnet, haiku)"
+)
 @click.option("--output", "-o", type=click.Path(), help="Output file path")
 @click.option(
     "--format",
@@ -285,12 +306,16 @@ def cli():
 )
 @click.option(
     "--subagent",
-    type=click.Choice(["assessment", "threat-modeling", "code-review", "report-generator", "dast"]),
+    type=click.Choice(
+        ["assessment", "threat-modeling", "code-review", "report-generator", "dast"]
+    ),
     help="Run specific sub-agent only (mutually exclusive with --dast and --resume-from)",
 )
 @click.option(
     "--resume-from",
-    type=click.Choice(["assessment", "threat-modeling", "code-review", "report-generator", "dast"]),
+    type=click.Choice(
+        ["assessment", "threat-modeling", "code-review", "report-generator", "dast"]
+    ),
     help="Resume scan from specific sub-agent onwards",
 )
 @click.option(
@@ -376,8 +401,12 @@ def scan(
                 "[bold red]❌ Error:[/bold red] --subagent and --dast are mutually exclusive"
             )
             console.print("\n[dim]Use either:[/dim]")
-            console.print("  --subagent dast --target-url URL      (run DAST sub-agent only)")
-            console.print("  --dast --target-url URL               (full scan with DAST)")
+            console.print(
+                "  --subagent dast --target-url URL      (run DAST sub-agent only)"
+            )
+            console.print(
+                "  --dast --target-url URL               (full scan with DAST)"
+            )
             sys.exit(1)
 
         # Auto-enable DAST for dast sub-agent
@@ -413,7 +442,9 @@ def scan(
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
         except (IOError, OSError) as e:
-            console.print(f"[bold red]❌ Error:[/bold red] Cannot create output directory: {e}")
+            console.print(
+                f"[bold red]❌ Error:[/bold red] Cannot create output directory: {e}"
+            )
             sys.exit(1)
 
         # DAST validation checks
@@ -438,8 +469,12 @@ def scan(
 
             # Safety gate: production URL detection
             if _is_production_url(target_url) and not allow_production:
-                console.print(f"[bold red]⚠️  PRODUCTION URL DETECTED:[/bold red] {target_url}")
-                console.print("\n[yellow]DAST testing sends real HTTP requests to the target.")
+                console.print(
+                    f"[bold red]⚠️  PRODUCTION URL DETECTED:[/bold red] {target_url}"
+                )
+                console.print(
+                    "\n[yellow]DAST testing sends real HTTP requests to the target."
+                )
                 console.print(
                     "Testing production systems requires explicit authorization.[/yellow]"
                 )
@@ -450,9 +485,13 @@ def scan(
 
             # Safety gate: explicit confirmation
             if not allow_production and not quiet:
-                console.print("\n[bold yellow]⚠️  DAST Validation Enabled[/bold yellow]")
+                console.print(
+                    "\n[bold yellow]⚠️  DAST Validation Enabled[/bold yellow]"
+                )
                 console.print(f"Target: {target_url}")
-                console.print("\nDAST will send HTTP requests to validate IDOR vulnerabilities.")
+                console.print(
+                    "\nDAST will send HTTP requests to validate IDOR vulnerabilities."
+                )
                 console.print("Ensure you have authorization to test this target.\n")
 
                 if not click.confirm("Proceed with DAST validation?", default=False):
@@ -516,10 +555,18 @@ def scan(
 @click.option("--base", help="Base branch/commit (e.g., main)")
 @click.option("--head", help="Head branch/commit (e.g., feature-branch)")
 @click.option("--range", "commit_range", help="Commit range (e.g., abc123~1..abc123)")
-@click.option("--diff", "diff_file", type=click.Path(exists=True), help="Path to diff/patch file")
-@click.option("--since-last-scan", is_flag=True, help="Review commits since last full scan")
-@click.option("--since", "since_date", help="Review commits since date (YYYY-MM-DD, Pacific)")
-@click.option("--last", "last_commits", type=click.IntRange(min=1), help="Review last N commits")
+@click.option(
+    "--diff", "diff_file", type=click.Path(exists=True), help="Path to diff/patch file"
+)
+@click.option(
+    "--since-last-scan", is_flag=True, help="Review commits since last full scan"
+)
+@click.option(
+    "--since", "since_date", help="Review commits since date (YYYY-MM-DD, Pacific)"
+)
+@click.option(
+    "--last", "last_commits", type=click.IntRange(min=1), help="Review last N commits"
+)
 @click.option(
     "--update-artifacts",
     is_flag=True,
@@ -530,7 +577,9 @@ def scan(
     is_flag=True,
     help="Delete transient PR review artifacts before running",
 )
-@click.option("--model", "-m", default="sonnet", help="Claude model to use (e.g., sonnet, haiku)")
+@click.option(
+    "--model", "-m", default="sonnet", help="Claude model to use (e.g., sonnet, haiku)"
+)
 @click.option(
     "--format",
     "-f",
@@ -635,7 +684,9 @@ def pr_review(
         required_artifacts = ["SECURITY.md", "THREAT_MODEL.json"]
         missing = [a for a in required_artifacts if not (securevibes_dir / a).exists()]
         if missing:
-            console.print(f"[bold red]❌ Missing required artifacts:[/bold red] {missing}")
+            console.print(
+                f"[bold red]❌ Missing required artifacts:[/bold red] {missing}"
+            )
             console.print("Run 'securevibes scan' first to generate base artifacts.")
             sys.exit(1)
 
@@ -643,7 +694,9 @@ def pr_review(
             removed_artifacts = _clean_pr_artifacts(securevibes_dir, repo_root=repo)
             if removed_artifacts:
                 removed_list = ", ".join(path.name for path in removed_artifacts)
-                console.print(f"[dim]Removed transient PR artifacts: {removed_list}[/dim]")
+                console.print(
+                    f"[dim]Removed transient PR artifacts: {removed_list}[/dim]"
+                )
 
         commits_reviewed: list[str] = []
         if diff_file:
@@ -682,7 +735,9 @@ def pr_review(
         elif last_commits is not None:
             commits_reviewed = get_last_n_commits(repo, last_commits)
             if not commits_reviewed:
-                console.print("[yellow]No commits found for the requested range.[/yellow]")
+                console.print(
+                    "[yellow]No commits found for the requested range.[/yellow]"
+                )
                 sys.exit(0)
             diff_content = get_diff_from_commit_list(repo, commits_reviewed)
         else:
@@ -773,7 +828,9 @@ def pr_review(
 @cli.command("catchup")
 @click.argument("path", type=click.Path(exists=True), default=".")
 @click.option("--branch", default="main", help="Branch to pull before reviewing")
-@click.option("--model", "-m", default="sonnet", help="Claude model to use (e.g., sonnet, haiku)")
+@click.option(
+    "--model", "-m", default="sonnet", help="Claude model to use (e.g., sonnet, haiku)"
+)
 @click.option(
     "--format",
     "-f",
@@ -848,11 +905,12 @@ def catchup(
             securevibes_dir / "scan_state.json",
             operation="catchup scan_state artifact",
         )
-        state = load_scan_state(state_path) or {}
-        base_ref = _resolve_incremental_base_ref(state, branch)
-        if not base_ref:
-            console.print("[bold red]❌ Missing incremental baseline in scan_state.json[/bold red]")
+        if not state_path.exists():
+            console.print(
+                "[bold red]❌ Missing incremental baseline in scan_state.json[/bold red]"
+            )
             sys.exit(1)
+        base_ref = _resolve_incremental_base_from_state(repo, securevibes_dir)
 
         exit_code, result = _run_incremental_range_command(
             repo=repo,
@@ -883,8 +941,12 @@ def catchup(
 
 @cli.command("incremental")
 @click.argument("path", type=click.Path(exists=True), default=".")
-@click.option("--base", required=True, help="Base commit or branch for the incremental range")
-@click.option("--head", required=True, help="Head commit or branch for the incremental range")
+@click.option(
+    "--base", required=True, help="Base commit or branch for the incremental range"
+)
+@click.option(
+    "--head", required=True, help="Head commit or branch for the incremental range"
+)
 @click.option("--quiet", "-q", is_flag=True, help="Minimal output (errors only)")
 def incremental(path: str, base: str, head: str, quiet: bool):
     """Build incremental planning artifacts for a commit range."""
@@ -923,9 +985,21 @@ def incremental(path: str, base: str, head: str, quiet: bool):
 
 @cli.command("incremental-run")
 @click.argument("path", type=click.Path(exists=True), default=".")
-@click.option("--base", required=True, help="Base commit or branch for the incremental range")
-@click.option("--head", required=True, help="Head commit or branch for the incremental range")
-@click.option("--model", "-m", default="sonnet", help="Claude model to use (e.g., sonnet, haiku)")
+@click.option("--base", help="Base commit or branch for the incremental range")
+@click.option(
+    "--head",
+    default="HEAD",
+    show_default=True,
+    help="Head commit or branch for the incremental range",
+)
+@click.option(
+    "--since-last-incremental",
+    is_flag=True,
+    help="Use the last incremental anchor on the current branch, falling back to the last full scan",
+)
+@click.option(
+    "--model", "-m", default="sonnet", help="Claude model to use (e.g., sonnet, haiku)"
+)
 @click.option(
     "--severity",
     "-s",
@@ -942,8 +1016,9 @@ def incremental(path: str, base: str, head: str, quiet: bool):
 @click.option("--debug", is_flag=True, help="Show verbose diagnostic output")
 def incremental_run(
     path: str,
-    base: str,
+    base: Optional[str],
     head: str,
+    since_last_incremental: bool,
     model: str,
     severity: str,
     update_artifacts: bool,
@@ -954,9 +1029,29 @@ def incremental_run(
     console = _command_console(quiet)
     try:
         repo = Path(path).resolve()
+        if since_last_incremental and base:
+            console.print(
+                "[bold red]❌ Choose either --base or --since-last-incremental[/bold red]"
+            )
+            sys.exit(1)
+        if not since_last_incremental and not base:
+            console.print(
+                "[bold red]❌ Must specify either --base or --since-last-incremental[/bold red]"
+            )
+            sys.exit(1)
+
+        resolved_base = base
+        if since_last_incremental:
+            securevibes_dir = _repo_output_path(
+                repo,
+                Path(".securevibes"),
+                operation="incremental execution artifact directory",
+            )
+            resolved_base = _resolve_incremental_base_from_state(repo, securevibes_dir)
+
         exit_code, _result = _run_incremental_range_command(
             repo=repo,
-            base=base,
+            base=resolved_base,
             head=head,
             model=model,
             severity=severity,
@@ -980,14 +1075,48 @@ def _incremental_execution_exit_code(execution_result) -> int:
     return 0
 
 
-def _resolve_incremental_base_ref(state: dict[str, object], branch: str) -> Optional[str]:
+def _resolve_incremental_base_ref(
+    state: dict[str, object], branch: str
+) -> Optional[str]:
     """Choose the best incremental anchor for the current branch."""
     incremental_entry = state.get("last_incremental_run")
-    if isinstance(incremental_entry, dict) and incremental_entry.get("branch") == branch:
+    if (
+        isinstance(incremental_entry, dict)
+        and incremental_entry.get("branch") == branch
+    ):
         incremental_commit = get_last_incremental_commit(state)
         if incremental_commit:
             return incremental_commit
     return get_last_full_scan_commit(state)
+
+
+def _resolve_incremental_base_from_state(repo: Path, securevibes_dir: Path) -> str:
+    """Resolve the saved incremental base for the current branch."""
+    branch = get_repo_branch(repo)
+    if not branch:
+        raise RuntimeError(
+            "Could not determine current git branch for incremental review."
+        )
+
+    state_path = _repo_output_path(
+        repo,
+        securevibes_dir / "scan_state.json",
+        operation="incremental scan_state artifact",
+    )
+    state = load_scan_state(state_path) or {}
+    if not state or not scan_state_branch_matches(state, branch):
+        raise RuntimeError(
+            f"No baseline scan found for branch {branch}. Run 'securevibes scan .' "
+            "or provide --base explicitly."
+        )
+
+    base_ref = _resolve_incremental_base_ref(state, branch)
+    if not base_ref:
+        raise RuntimeError(
+            "Missing incremental baseline in scan_state.json. "
+            "Run 'securevibes scan .' or provide --base explicitly."
+        )
+    return base_ref
 
 
 def _persist_incremental_run_state(
@@ -1030,7 +1159,7 @@ def _run_incremental_range_command(
     update_artifacts: bool,
     quiet: bool,
     debug: bool,
-) -> int:
+) -> tuple[int, ScanResult]:
     """Plan and execute incremental review for a resolved commit range."""
     securevibes_dir = _repo_output_path(
         repo,
@@ -1109,7 +1238,9 @@ def _is_production_url(url: str) -> bool:
     if not hostname:
         return True
 
-    if hostname in SAFE_NON_PRODUCTION_HOSTS or hostname.endswith(SAFE_NON_PRODUCTION_SUFFIXES):
+    if hostname in SAFE_NON_PRODUCTION_HOSTS or hostname.endswith(
+        SAFE_NON_PRODUCTION_SUFFIXES
+    ):
         return False
 
     try:
@@ -1119,7 +1250,9 @@ def _is_production_url(url: str) -> bool:
         return True
 
 
-def _clean_pr_artifacts(securevibes_dir: Path, *, repo_root: Optional[Path] = None) -> list[Path]:
+def _clean_pr_artifacts(
+    securevibes_dir: Path, *, repo_root: Optional[Path] = None
+) -> list[Path]:
     """Delete transient PR review artifacts that can taint reruns."""
     removed: list[Path] = []
     for file_name in TRANSIENT_PR_ARTIFACTS:
@@ -1135,7 +1268,9 @@ def _clean_pr_artifacts(securevibes_dir: Path, *, repo_root: Optional[Path] = No
         try:
             candidate.unlink()
         except OSError as exc:
-            raise RuntimeError(f"Failed to remove transient artifact {candidate}: {exc}") from exc
+            raise RuntimeError(
+                f"Failed to remove transient artifact {candidate}: {exc}"
+            ) from exc
         removed.append(candidate)
     return removed
 
@@ -1152,7 +1287,9 @@ def _parse_since_date_pacific(date_str: str) -> str:
     return since_dt.strftime("%Y-%m-%dT%H:%M:%S%z")
 
 
-def _ensure_baseline_scan(repo: Path, model: str, debug: bool, quiet: bool = False) -> None:
+def _ensure_baseline_scan(
+    repo: Path, model: str, debug: bool, quiet: bool = False
+) -> None:
     console = _command_console(quiet)
     securevibes_dir = _repo_output_path(
         repo,
@@ -1199,7 +1336,9 @@ def _ensure_baseline_scan(repo: Path, model: str, debug: bool, quiet: bool = Fal
     state = load_scan_state(state_path)
     branch = get_repo_branch(repo)
     if not state or not branch or not scan_state_branch_matches(state, branch):
-        console.print("[bold red]❌ Baseline scan did not initialize scan_state.json[/bold red]")
+        console.print(
+            "[bold red]❌ Baseline scan did not initialize scan_state.json[/bold red]"
+        )
         sys.exit(1)
 
 
@@ -1273,7 +1412,9 @@ async def _run_scan(
             console.print(
                 f"[bold yellow]⚠️  Warning:[/bold yellow] Target {target_url} is not reachable"
             )
-            console.print("[dim]DAST validation may fail if target is not running[/dim]")
+            console.print(
+                "[dim]DAST validation may fail if target is not running[/dim]"
+            )
 
             if not force and not click.confirm("Continue anyway?", default=True):
                 console.print("[yellow]Scan cancelled[/yellow]")
@@ -1296,9 +1437,13 @@ async def _run_scan(
 
     # Run in appropriate mode
     if subagent:
-        result = await scanner.scan_subagent(str(repo_path), subagent, force, skip_checks)
+        result = await scanner.scan_subagent(
+            str(repo_path), subagent, force, skip_checks
+        )
     elif resume_from:
-        result = await scanner.scan_resume(str(repo_path), resume_from, force, skip_checks)
+        result = await scanner.scan_resume(
+            str(repo_path), resume_from, force, skip_checks
+        )
     else:
         result = await scanner.scan(str(repo_path))
 
@@ -1351,8 +1496,12 @@ def _display_table_results(result, quiet: bool):
     stats_table.add_row("🐛 Issues found:", f"[bold]{len(result.issues)}[/bold]")
 
     if result.issues:
-        stats_table.add_row("   🔴 Critical:", f"[bold red]{result.critical_count}[/bold red]")
-        stats_table.add_row("   🟠 High:", f"[bold yellow]{result.high_count}[/bold yellow]")
+        stats_table.add_row(
+            "   🔴 Critical:", f"[bold red]{result.critical_count}[/bold red]"
+        )
+        stats_table.add_row(
+            "   🟠 High:", f"[bold yellow]{result.high_count}[/bold yellow]"
+        )
         stats_table.add_row("   🟡 Medium:", f"[bold]{result.medium_count}[/bold]")
         stats_table.add_row("   🟢 Low:", f"[dim]{result.low_count}[/dim]")
 
@@ -1367,7 +1516,9 @@ def _display_table_results(result, quiet: bool):
 
     if result.issues:
         # Issues table
-        issues_table = Table(title="🔍 Detected Vulnerabilities", box=box.ROUNDED, show_lines=True)
+        issues_table = Table(
+            title="🔍 Detected Vulnerabilities", box=box.ROUNDED, show_lines=True
+        )
         issues_table.add_column("#", style="dim", width=3)
         issues_table.add_column("Severity", width=10)
         issues_table.add_column("Issue", style="bold")
@@ -1446,7 +1597,9 @@ def _parse_report_issues(raw_issues: list[dict]) -> list:
                 )
                 issue_id = f"ISSUE-{idx + 1}"
 
-            missing = [field for field in REQUIRED_REPORT_ISSUE_FIELDS if field not in item]
+            missing = [
+                field for field in REQUIRED_REPORT_ISSUE_FIELDS if field not in item
+            ]
             if missing:
                 console.print(
                     f"[yellow]⚠️  Warning: Issue #{idx + 1} missing fields: "
@@ -1498,7 +1651,9 @@ def report(report_path: str):
 
         data = JSONReporter.load(report_path)
 
-        missing_fields = [field for field in REQUIRED_REPORT_FIELDS if field not in data]
+        missing_fields = [
+            field for field in REQUIRED_REPORT_FIELDS if field not in data
+        ]
         if missing_fields:
             console.print(
                 f"[bold red]❌ Invalid report format:[/bold red] Missing fields: {', '.join(missing_fields)}"
@@ -1540,7 +1695,9 @@ def report(report_path: str):
         console.print("\n[dim]Run 'securevibes scan' first to generate a report[/dim]")
         sys.exit(1)
     except PermissionError:
-        console.print(f"[bold red]❌ Permission denied:[/bold red] Cannot read {report_path}")
+        console.print(
+            f"[bold red]❌ Permission denied:[/bold red] Cannot read {report_path}"
+        )
         sys.exit(1)
     except Exception as e:
         console.print(f"[bold red]❌ Error loading report:[/bold red] {e}")
