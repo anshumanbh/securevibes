@@ -168,6 +168,14 @@ class TestCLIBasics:
         assert result.exit_code == 0
         assert "catchup" in result.output.lower()
 
+    def test_incremental_state_help(self, runner):
+        result = runner.invoke(cli, ["incremental-state", "--help"])
+
+        assert result.exit_code == 0
+        assert "show" in result.output.lower()
+        assert "reset" in result.output.lower()
+        assert "set" in result.output.lower()
+
 
 class TestCatchupCommand:
     """Tests for catchup command."""
@@ -176,18 +184,14 @@ class TestCatchupCommand:
         repo = tmp_path / "repo"
         repo.mkdir()
 
-        monkeypatch.setattr(
-            "securevibes.cli.main.get_repo_branch", lambda *_args, **_kwargs: "dev"
-        )
+        monkeypatch.setattr("securevibes.cli.main.get_repo_branch", lambda *_args, **_kwargs: "dev")
 
         result = runner.invoke(cli, ["catchup", str(repo), "--branch", "main"])
 
         assert result.exit_code == 1
         assert "checkout" in result.output.lower()
 
-    def test_catchup_prefers_last_incremental_anchor(
-        self, runner, tmp_path, monkeypatch
-    ):
+    def test_catchup_prefers_last_incremental_anchor(self, runner, tmp_path, monkeypatch):
         repo = tmp_path / "repo"
         repo.mkdir()
         securevibes_dir = repo / ".securevibes"
@@ -247,9 +251,7 @@ class TestCatchupCommand:
             "securevibes.cli.main.execute_incremental_plan",
             fake_execute_incremental_plan,
         )
-        monkeypatch.setattr(
-            "securevibes.cli.main._git_pull", lambda *_args, **_kwargs: None
-        )
+        monkeypatch.setattr("securevibes.cli.main._git_pull", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(
             "securevibes.cli.main._repo_has_local_changes",
             lambda *_args, **_kwargs: False,
@@ -277,9 +279,7 @@ class TestCatchupCommand:
             None,
         )
 
-    def test_catchup_falls_back_to_last_full_scan_anchor(
-        self, runner, tmp_path, monkeypatch
-    ):
+    def test_catchup_falls_back_to_last_full_scan_anchor(self, runner, tmp_path, monkeypatch):
         repo = tmp_path / "repo"
         repo.mkdir()
         securevibes_dir = repo / ".securevibes"
@@ -333,9 +333,7 @@ class TestCatchupCommand:
             "securevibes.cli.main.execute_incremental_plan",
             fake_execute_incremental_plan,
         )
-        monkeypatch.setattr(
-            "securevibes.cli.main._git_pull", lambda *_args, **_kwargs: None
-        )
+        monkeypatch.setattr("securevibes.cli.main._git_pull", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(
             "securevibes.cli.main._repo_has_local_changes",
             lambda *_args, **_kwargs: False,
@@ -367,9 +365,7 @@ class TestCatchupCommand:
         repo = tmp_path / "repo"
         repo.mkdir()
 
-        monkeypatch.setattr(
-            "securevibes.cli.main._repo_has_local_changes", lambda *_a, **_k: True
-        )
+        monkeypatch.setattr("securevibes.cli.main._repo_has_local_changes", lambda *_a, **_k: True)
         monkeypatch.setattr(
             "securevibes.cli.main.get_repo_branch", lambda *_args, **_kwargs: "main"
         )
@@ -584,9 +580,7 @@ class TestIncrementalRunCommand:
         assert "executed 1 cluster" in result.output.lower()
         assert "skipped 1 cluster" in result.output.lower()
 
-    def test_incremental_run_quiet_suppresses_summary(
-        self, runner, tmp_path, monkeypatch
-    ):
+    def test_incremental_run_quiet_suppresses_summary(self, runner, tmp_path, monkeypatch):
         repo = tmp_path / "repo"
         repo.mkdir()
 
@@ -722,9 +716,7 @@ class TestIncrementalRunCommand:
             "securevibes.cli.main.get_repo_branch", lambda *_args, **_kwargs: "main"
         )
 
-        result = runner.invoke(
-            cli, ["incremental-run", str(repo), "--since-last-incremental"]
-        )
+        result = runner.invoke(cli, ["incremental-run", str(repo), "--since-last-incremental"])
 
         assert result.exit_code == 0
         assert observed["plan"] == (
@@ -810,9 +802,7 @@ class TestIncrementalRunCommand:
             "securevibes.cli.main.get_repo_branch", lambda *_args, **_kwargs: "main"
         )
 
-        result = runner.invoke(
-            cli, ["incremental-run", str(repo), "--since-last-incremental"]
-        )
+        result = runner.invoke(cli, ["incremental-run", str(repo), "--since-last-incremental"])
 
         assert result.exit_code == 0
         assert observed["plan"] == (
@@ -823,9 +813,7 @@ class TestIncrementalRunCommand:
             None,
         )
 
-    def test_incremental_run_persists_last_incremental_anchor(
-        self, runner, tmp_path, monkeypatch
-    ):
+    def test_incremental_run_persists_last_incremental_anchor(self, runner, tmp_path, monkeypatch):
         repo = tmp_path / "repo"
         repo.mkdir()
 
@@ -870,15 +858,131 @@ class TestIncrementalRunCommand:
         )
 
         assert result.exit_code == 0
-        state_payload = json.loads(
-            (repo / ".securevibes" / "scan_state.json").read_text()
-        )
+        state_payload = json.loads((repo / ".securevibes" / "scan_state.json").read_text())
         assert state_payload["last_incremental_run"] == {
             "commit": "def456",
             "base_commit": "abc123",
             "branch": "main",
             "timestamp": state_payload["last_incremental_run"]["timestamp"],
         }
+
+
+class TestIncrementalStateCommand:
+    """Tests for incremental state inspection and reset commands."""
+
+    def test_incremental_state_show_reports_effective_anchor(self, runner, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        securevibes_dir = repo / ".securevibes"
+        securevibes_dir.mkdir()
+        (securevibes_dir / "scan_state.json").write_text(
+            json.dumps(
+                {
+                    "last_full_scan": {
+                        "commit": "base123",
+                        "branch": "main",
+                        "timestamp": "2026-03-21T00:00:00Z",
+                    },
+                    "last_incremental_run": {
+                        "commit": "incr456",
+                        "base_commit": "base123",
+                        "branch": "main",
+                        "timestamp": "2026-03-21T01:00:00Z",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.get_repo_branch", lambda *_args, **_kwargs: "main"
+        )
+
+        result = runner.invoke(cli, ["incremental-state", "show", str(repo)])
+
+        assert result.exit_code == 0
+        assert "branch: main" in result.output.lower()
+        assert "last full scan: base123" in result.output.lower()
+        assert "last incremental run: incr456" in result.output.lower()
+        assert "effective anchor: incr456" in result.output.lower()
+
+    def test_incremental_state_reset_clears_last_incremental_run(
+        self, runner, tmp_path, monkeypatch
+    ):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        securevibes_dir = repo / ".securevibes"
+        securevibes_dir.mkdir()
+        (securevibes_dir / "scan_state.json").write_text(
+            json.dumps(
+                {
+                    "last_full_scan": {
+                        "commit": "base123",
+                        "branch": "main",
+                        "timestamp": "2026-03-21T00:00:00Z",
+                    },
+                    "last_incremental_run": {
+                        "commit": "incr456",
+                        "base_commit": "base123",
+                        "branch": "main",
+                        "timestamp": "2026-03-21T01:00:00Z",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.get_repo_branch", lambda *_args, **_kwargs: "main"
+        )
+
+        result = runner.invoke(cli, ["incremental-state", "reset", str(repo)])
+
+        assert result.exit_code == 0
+        assert "cleared last incremental anchor" in result.output.lower()
+        state_payload = json.loads(
+            (repo / ".securevibes" / "scan_state.json").read_text(encoding="utf-8")
+        )
+        assert state_payload["last_full_scan"]["commit"] == "base123"
+        assert "last_incremental_run" not in state_payload
+
+    def test_incremental_state_set_pins_manual_anchor(self, runner, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        securevibes_dir = repo / ".securevibes"
+        securevibes_dir.mkdir()
+        (securevibes_dir / "scan_state.json").write_text(
+            json.dumps(
+                {
+                    "last_full_scan": {
+                        "commit": "base123",
+                        "branch": "main",
+                        "timestamp": "2026-03-21T00:00:00Z",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.get_repo_branch", lambda *_args, **_kwargs: "main"
+        )
+        monkeypatch.setattr(
+            "securevibes.cli.main.resolve_repo_commit",
+            lambda _repo, ref: {"feature~2": "pin789"}[ref],
+        )
+
+        result = runner.invoke(
+            cli,
+            ["incremental-state", "set", str(repo), "--commit", "feature~2"],
+        )
+
+        assert result.exit_code == 0
+        assert "set incremental anchor to pin789" in result.output.lower()
+        state_payload = json.loads(
+            (repo / ".securevibes" / "scan_state.json").read_text(encoding="utf-8")
+        )
+        assert state_payload["last_full_scan"]["commit"] == "base123"
+        assert state_payload["last_incremental_run"]["commit"] == "pin789"
+        assert state_payload["last_incremental_run"]["base_commit"] == "pin789"
+        assert state_payload["last_incremental_run"]["branch"] == "main"
 
 
 class TestProductionUrlDetection:
@@ -944,22 +1048,16 @@ class TestGitHelpers:
             returncode = 0
             stdout = " M app.py\n"
 
-        monkeypatch.setattr(
-            "securevibes.cli.main.subprocess.run", lambda *_a, **_k: DummyResult()
-        )
+        monkeypatch.setattr("securevibes.cli.main.subprocess.run", lambda *_a, **_k: DummyResult())
 
         assert _repo_has_local_changes(Path(".")) is True
 
-    def test_repo_has_local_changes_returns_true_when_git_status_fails(
-        self, monkeypatch
-    ):
+    def test_repo_has_local_changes_returns_true_when_git_status_fails(self, monkeypatch):
         class DummyResult:
             returncode = 1
             stdout = ""
 
-        monkeypatch.setattr(
-            "securevibes.cli.main.subprocess.run", lambda *_a, **_k: DummyResult()
-        )
+        monkeypatch.setattr("securevibes.cli.main.subprocess.run", lambda *_a, **_k: DummyResult())
 
         assert _repo_has_local_changes(Path(".")) is True
 
@@ -968,9 +1066,7 @@ class TestGitHelpers:
             returncode = 0
             stdout = "   \n"
 
-        monkeypatch.setattr(
-            "securevibes.cli.main.subprocess.run", lambda *_a, **_k: DummyResult()
-        )
+        monkeypatch.setattr("securevibes.cli.main.subprocess.run", lambda *_a, **_k: DummyResult())
 
         assert _repo_has_local_changes(Path(".")) is False
 
@@ -986,9 +1082,7 @@ class TestScanCommand:
 
     def test_scan_with_path(self, runner, test_repo):
         """Test scan with valid path and mocked scanner."""
-        with patch(
-            "securevibes.cli.main._run_scan", new_callable=AsyncMock
-        ) as mock_run:
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _empty_scan_result(test_repo)
             result = runner.invoke(cli, ["scan", str(test_repo), "--format", "table"])
 
@@ -997,9 +1091,7 @@ class TestScanCommand:
 
     def test_scan_with_options(self, runner, test_repo):
         """Test scan with options and mocked scanner."""
-        with patch(
-            "securevibes.cli.main._run_scan", new_callable=AsyncMock
-        ) as mock_run:
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _empty_scan_result(test_repo)
             result = runner.invoke(
                 cli,
@@ -1023,12 +1115,8 @@ class TestScanCommand:
         scanner.configure_dast = MagicMock()
         scanner.scan = AsyncMock(return_value=_empty_scan_result(test_repo))
 
-        with patch(
-            "securevibes.cli.main.Scanner", return_value=scanner
-        ) as mock_scanner:
-            result = runner.invoke(
-                cli, ["scan", str(test_repo), "--format", "json", "--quiet"]
-            )
+        with patch("securevibes.cli.main.Scanner", return_value=scanner) as mock_scanner:
+            result = runner.invoke(cli, ["scan", str(test_repo), "--format", "json", "--quiet"])
 
         assert result.exit_code == 0
         mock_scanner.assert_called_once_with(model="sonnet", debug=False, quiet=True)
@@ -1043,9 +1131,7 @@ class TestScanCommand:
             new_callable=AsyncMock,
             side_effect=RuntimeError("boom"),
         ):
-            result = runner.invoke(
-                cli, ["scan", str(test_repo), "--format", "json", "--quiet"]
-            )
+            result = runner.invoke(cli, ["scan", str(test_repo), "--format", "json", "--quiet"])
 
         assert result.exit_code == 1
         assert result.stdout == ""
@@ -1053,9 +1139,7 @@ class TestScanCommand:
 
     def test_scan_markdown_format_default(self, runner, test_repo):
         """Test default markdown output path."""
-        with patch(
-            "securevibes.cli.main._run_scan", new_callable=AsyncMock
-        ) as mock_run:
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _empty_scan_result(test_repo)
             result = runner.invoke(cli, ["scan", str(test_repo)])
 
@@ -1066,9 +1150,7 @@ class TestScanCommand:
 
     def test_scan_markdown_output_relative_path(self, runner, test_repo):
         """Test markdown output with relative filename saves to .securevibes/"""
-        with patch(
-            "securevibes.cli.main._run_scan", new_callable=AsyncMock
-        ) as mock_run:
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _empty_scan_result(test_repo)
             result = runner.invoke(
                 cli,
@@ -1090,9 +1172,7 @@ class TestScanCommand:
     def test_scan_markdown_output_absolute_path(self, runner, test_repo):
         """Absolute markdown output path is allowed when it stays within repo root."""
         output_file = (test_repo / "absolute_report.md").resolve()
-        with patch(
-            "securevibes.cli.main._run_scan", new_callable=AsyncMock
-        ) as mock_run:
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _empty_scan_result(test_repo)
             result = runner.invoke(
                 cli,
@@ -1115,9 +1195,7 @@ class TestScanCommand:
     ):
         """Absolute markdown output path must not escape repository boundaries."""
         output_file = (test_repo.parent / "outside_report.md").resolve()
-        with patch(
-            "securevibes.cli.main._run_scan", new_callable=AsyncMock
-        ) as mock_run:
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _empty_scan_result(test_repo)
             result = runner.invoke(
                 cli,
@@ -1138,9 +1216,7 @@ class TestScanCommand:
     def test_scan_json_output_absolute_path_inside_repo(self, runner, test_repo):
         """Absolute JSON output path is allowed when it stays within repo root."""
         output_file = (test_repo / "scan_results.json").resolve()
-        with patch(
-            "securevibes.cli.main._run_scan", new_callable=AsyncMock
-        ) as mock_run:
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _empty_scan_result(test_repo)
             result = runner.invoke(
                 cli,
@@ -1158,14 +1234,10 @@ class TestScanCommand:
         assert output_file.exists()
         assert "Results saved to" in result.output
 
-    def test_scan_json_output_rejects_absolute_path_outside_repo(
-        self, runner, test_repo, tmp_path
-    ):
+    def test_scan_json_output_rejects_absolute_path_outside_repo(self, runner, test_repo, tmp_path):
         """Absolute JSON output path must not escape repository boundaries."""
         output_file = (test_repo.parent / "outside_results.json").resolve()
-        with patch(
-            "securevibes.cli.main._run_scan", new_callable=AsyncMock
-        ) as mock_run:
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _empty_scan_result(test_repo)
             result = runner.invoke(
                 cli,
@@ -1183,20 +1255,14 @@ class TestScanCommand:
         assert "outside repository root" in result.output
         assert not output_file.exists()
 
-    def test_scan_markdown_output_rejects_relative_path_escape(
-        self, runner, test_repo, tmp_path
-    ):
+    def test_scan_markdown_output_rejects_relative_path_escape(self, runner, test_repo, tmp_path):
         """Relative markdown output should not allow escaping repository boundaries."""
         escaped_name = "escaped_scan_report.md"
-        escaped_path = (
-            test_repo / ".securevibes" / ".." / ".." / escaped_name
-        ).resolve()
+        escaped_path = (test_repo / ".securevibes" / ".." / ".." / escaped_name).resolve()
         if escaped_path.exists():
             escaped_path.unlink()
 
-        with patch(
-            "securevibes.cli.main._run_scan", new_callable=AsyncMock
-        ) as mock_run:
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _empty_scan_result(test_repo)
             result = runner.invoke(
                 cli,
@@ -1227,9 +1293,7 @@ class TestScanCommand:
         except (OSError, NotImplementedError):
             pytest.skip("Symlinks are not supported in this environment")
 
-        with patch(
-            "securevibes.cli.main._run_scan", new_callable=AsyncMock
-        ) as mock_run:
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _empty_scan_result(repo)
             result = runner.invoke(cli, ["scan", str(repo), "--format", "table"])
 
@@ -1239,9 +1303,7 @@ class TestScanCommand:
 
     def test_scan_table_format_still_works(self, runner, test_repo):
         """Test backward compatibility - table format still works"""
-        with patch(
-            "securevibes.cli.main._run_scan", new_callable=AsyncMock
-        ) as mock_run:
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _empty_scan_result(test_repo)
             result = runner.invoke(cli, ["scan", str(test_repo), "--format", "table"])
 
@@ -1296,9 +1358,7 @@ class TestCLIOutputFormats:
 
     def test_json_output_format(self, runner, test_repo):
         """Test JSON output format"""
-        with patch(
-            "securevibes.cli.main._run_scan", new_callable=AsyncMock
-        ) as mock_run:
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _empty_scan_result(test_repo)
             result = runner.invoke(cli, ["scan", str(test_repo), "--format", "json"])
 
@@ -1307,9 +1367,7 @@ class TestCLIOutputFormats:
 
     def test_table_output_format(self, runner, test_repo):
         """Test table output format."""
-        with patch(
-            "securevibes.cli.main._run_scan", new_callable=AsyncMock
-        ) as mock_run:
+        with patch("securevibes.cli.main._run_scan", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _empty_scan_result(test_repo)
             result = runner.invoke(cli, ["scan", str(test_repo), "--format", "table"])
 
@@ -1347,9 +1405,7 @@ class TestPRReviewOutput:
         scanner = MagicMock()
         scanner.pr_review = AsyncMock(return_value=_empty_scan_result(repo))
 
-        with patch(
-            "securevibes.cli.main.Scanner", return_value=scanner
-        ) as mock_scanner:
+        with patch("securevibes.cli.main.Scanner", return_value=scanner) as mock_scanner:
             result = runner.invoke(
                 cli,
                 [

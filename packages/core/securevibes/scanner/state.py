@@ -61,6 +61,38 @@ def update_scan_state(
     return state
 
 
+def clear_incremental_run_state(state_path: Path) -> Dict[str, object]:
+    """Atomically remove the incremental-run entry while preserving other state."""
+    if not state_path.exists():
+        return {}
+
+    lock_path = _lock_path_for_state(state_path)
+    with _file_lock(lock_path):
+        state = load_scan_state(state_path) or {}
+        state.pop("last_incremental_run", None)
+        _write_json_atomic(state_path, state)
+    return state
+
+
+def set_incremental_run_state(
+    state_path: Path,
+    *,
+    commit: str,
+    branch: str,
+    timestamp: str,
+) -> Dict[str, object]:
+    """Atomically pin the incremental-run entry to a specific commit."""
+    return update_scan_state(
+        state_path,
+        incremental_run=build_incremental_run_entry(
+            commit=commit,
+            base_commit=commit,
+            branch=branch,
+            timestamp=timestamp,
+        ),
+    )
+
+
 def build_full_scan_entry(*, commit: str, branch: str, timestamp: str) -> Dict[str, object]:
     """Build metadata for a completed full scan."""
     return {"commit": commit, "timestamp": timestamp, "branch": branch}

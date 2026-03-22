@@ -159,6 +159,9 @@ securevibes pr-review . --base main --head feature-branch --severity high
 securevibes incremental . --base main~10 --head HEAD
 securevibes incremental-run . --base main~10 --head HEAD
 securevibes incremental-run . --since-last-incremental
+securevibes incremental-state show .
+securevibes incremental-state reset .
+securevibes incremental-state set . --commit abc123
 
 # Catchup: pull latest + review since last incremental anchor
 # (falls back to the last full scan when no incremental anchor exists)
