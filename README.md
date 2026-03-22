@@ -10,7 +10,7 @@
   <a href="https://securevibes.ai/how-it-works">How It Works</a> •
   <a href="https://securevibes.ai/features">Features</a> •
   <a href="https://securevibes.ai/blog">Blog</a> •
-  <a href="https://discord.gg/9cYqTBdC9h">Discord</a>
+  <a href="https://discord.gg/2hWGpZz3z">Discord</a>
 </p>
 
 ---
@@ -650,7 +650,7 @@ Built by [@anshumanbh](https://github.com/anshumanbh)
 
 🌟 Star the repo to follow along!
 
-💬 [Join our Discord](https://discord.gg/9cYqTBdC9h) to follow our journey!
+💬 [Join our Discord](https://discord.gg/2hWGpZz3z) to follow our journey!
 
 ---
 
