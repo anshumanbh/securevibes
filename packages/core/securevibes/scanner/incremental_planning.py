@@ -35,6 +35,8 @@ ReviewRoute = Literal[
 
 _SYNOPSIS_SCHEMA_VERSION = 1
 _HYPOTHESES_SCHEMA_VERSION = 1
+_EXECUTABLE_CLUSTER_MAX_FILES = 15
+_EXECUTABLE_CLUSTER_MAX_CHANGED_LINES = 500
 
 
 @dataclass(frozen=True)
@@ -76,6 +78,7 @@ class CommitSynopsis:
     new_attack_surface: bool
     insertions: int
     deletions: int
+    changed_files: tuple[ChangedFile, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -90,6 +93,20 @@ class ReviewCluster:
     baseline_components: tuple[str, ...]
     coarse_intents: tuple[CoarseIntent, ...]
     reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _ClusterSlice:
+    """Internal per-commit file slice used for cluster chunking."""
+
+    commit_sha: str
+    route: ReviewRoute
+    file_paths: tuple[str, ...]
+    baseline_vuln_paths: tuple[str, ...]
+    baseline_components: tuple[str, ...]
+    coarse_intent: CoarseIntent
+    reasons: tuple[str, ...]
+    changed_lines: int
 
 
 @dataclass(frozen=True)
@@ -308,6 +325,8 @@ def _load_commit_metadata(repo: Path, sha: str) -> CommitMetadata:
             ChangedFile(
                 path=path,
                 status=file_statuses.get(path, "M"),
+                insertions=file_stats.get(path, (0, 0))[0],
+                deletions=file_stats.get(path, (0, 0))[1],
             )
         )
 
@@ -387,6 +406,7 @@ def _build_commit_synopsis(
         new_attack_surface=chunk_risk.new_attack_surface,
         insertions=commit.insertions,
         deletions=commit.deletions,
+        changed_files=commit.changed_files,
     )
 
 
@@ -424,30 +444,196 @@ def _cluster_synopses(synopses: Sequence[CommitSynopsis]) -> tuple[ReviewCluster
         buckets.setdefault(key, []).append(synopsis)
 
     clusters: list[ReviewCluster] = []
-    for index, bucket in enumerate(buckets.values(), start=1):
+    index = 1
+    for bucket in buckets.values():
+        for cluster in _split_bucket_into_clusters(bucket, cluster_index_start=index):
+            clusters.append(cluster)
+            index += 1
+    return tuple(clusters)
+
+
+def _split_bucket_into_clusters(
+    bucket: Sequence[CommitSynopsis],
+    *,
+    cluster_index_start: int,
+) -> tuple[ReviewCluster, ...]:
+    if not bucket:
+        return ()
+
+    route = bucket[0].route
+    if route == "skip":
+        return (
+            _build_review_cluster(
+                cluster_id=f"cluster-{cluster_index_start:03d}",
+                route=route,
+                slices=tuple(item for synopsis in bucket for item in _slice_synopsis(synopsis)),
+            ),
+        )
+
+    slices = [item for synopsis in bucket for item in _slice_synopsis(synopsis)]
+    clusters: list[ReviewCluster] = []
+    cluster_slices: list[_ClusterSlice] = []
+    current_files: set[str] = set()
+    current_lines = 0
+    split_occurred = len(slices) > 1
+
+    for slice_item in slices:
+        slice_files = set(slice_item.file_paths)
+        next_file_count = len(current_files | slice_files)
+        next_line_count = current_lines + slice_item.changed_lines
+        exceeds_budget = cluster_slices and (
+            next_file_count > _EXECUTABLE_CLUSTER_MAX_FILES
+            or next_line_count > _EXECUTABLE_CLUSTER_MAX_CHANGED_LINES
+        )
+        if exceeds_budget:
+            clusters.append(
+                _build_review_cluster(
+                    cluster_id=f"cluster-{cluster_index_start + len(clusters):03d}",
+                    route=route,
+                    slices=tuple(cluster_slices),
+                    split_for_budget=split_occurred,
+                )
+            )
+            cluster_slices = []
+            current_files = set()
+            current_lines = 0
+
+        cluster_slices.append(slice_item)
+        current_files.update(slice_files)
+        current_lines += slice_item.changed_lines
+
+    if cluster_slices:
         clusters.append(
-            ReviewCluster(
-                cluster_id=f"cluster-{index:03d}",
-                route=bucket[0].route,
-                commit_shas=tuple(item.sha for item in bucket),
-                file_paths=tuple(sorted({path for item in bucket for path in item.file_paths})),
-                baseline_vuln_paths=tuple(
-                    sorted({path for item in bucket for path in item.matched_baseline_vuln_paths})
-                ),
-                baseline_components=tuple(
-                    sorted(
-                        {
-                            component
-                            for item in bucket
-                            for component in item.matched_baseline_components
-                        }
-                    )
-                ),
-                coarse_intents=tuple(dict.fromkeys(item.coarse_intent for item in bucket)),
-                reasons=tuple(sorted({reason for item in bucket for reason in item.reasons})),
+            _build_review_cluster(
+                cluster_id=f"cluster-{cluster_index_start + len(clusters):03d}",
+                route=route,
+                slices=tuple(cluster_slices),
+                split_for_budget=split_occurred,
             )
         )
+
     return tuple(clusters)
+
+
+def _build_review_cluster(
+    *,
+    cluster_id: str,
+    route: ReviewRoute,
+    slices: Sequence[_ClusterSlice],
+    split_for_budget: bool = False,
+) -> ReviewCluster:
+    reasons = {reason for item in slices for reason in item.reasons}
+    if split_for_budget:
+        reasons.add("split_for_diff_budget")
+
+    return ReviewCluster(
+        cluster_id=cluster_id,
+        route=route,
+        commit_shas=tuple(dict.fromkeys(item.commit_sha for item in slices)),
+        file_paths=tuple(sorted({path for item in slices for path in item.file_paths})),
+        baseline_vuln_paths=tuple(
+            sorted({path for item in slices for path in item.baseline_vuln_paths})
+        ),
+        baseline_components=tuple(
+            sorted({component for item in slices for component in item.baseline_components})
+        ),
+        coarse_intents=tuple(dict.fromkeys(item.coarse_intent for item in slices)),
+        reasons=tuple(sorted(reasons)),
+    )
+
+
+def _slice_synopsis(synopsis: CommitSynopsis) -> tuple[_ClusterSlice, ...]:
+    changed_files = _normalized_changed_files(synopsis)
+    if not changed_files:
+        return (
+            _ClusterSlice(
+                commit_sha=synopsis.sha,
+                route=synopsis.route,
+                file_paths=synopsis.file_paths,
+                baseline_vuln_paths=synopsis.matched_baseline_vuln_paths,
+                baseline_components=synopsis.matched_baseline_components,
+                coarse_intent=synopsis.coarse_intent,
+                reasons=synopsis.reasons,
+                changed_lines=synopsis.insertions + synopsis.deletions,
+            ),
+        )
+
+    slices: list[_ClusterSlice] = []
+    current_files: list[ChangedFile] = []
+    current_paths: set[str] = set()
+    current_lines = 0
+
+    for changed_file in changed_files:
+        normalized_path = normalize_path(changed_file.path)
+        if not normalized_path:
+            continue
+        file_lines = changed_file.insertions + changed_file.deletions
+        next_file_count = len(current_paths | {normalized_path})
+        next_line_count = current_lines + file_lines
+        exceeds_budget = current_files and (
+            next_file_count > _EXECUTABLE_CLUSTER_MAX_FILES
+            or next_line_count > _EXECUTABLE_CLUSTER_MAX_CHANGED_LINES
+        )
+        if exceeds_budget:
+            slices.append(_build_cluster_slice(synopsis, current_files))
+            current_files = []
+            current_paths = set()
+            current_lines = 0
+
+        current_files.append(changed_file)
+        current_paths.add(normalized_path)
+        current_lines += file_lines
+
+    if current_files:
+        slices.append(_build_cluster_slice(synopsis, current_files))
+
+    return tuple(slices)
+
+
+def _build_cluster_slice(
+    synopsis: CommitSynopsis,
+    changed_files: Sequence[ChangedFile],
+) -> _ClusterSlice:
+    file_paths = tuple(
+        sorted(
+            {
+                normalized
+                for changed_file in changed_files
+                if (normalized := normalize_path(changed_file.path))
+            }
+        )
+    )
+    baseline_components = tuple(
+        sorted(
+            {
+                component
+                for path in file_paths
+                for component in _derive_components_from_file_path(path)
+                if component in synopsis.matched_baseline_components
+            }
+        )
+    )
+    return _ClusterSlice(
+        commit_sha=synopsis.sha,
+        route=synopsis.route,
+        file_paths=file_paths,
+        baseline_vuln_paths=tuple(
+            sorted(path for path in file_paths if path in synopsis.matched_baseline_vuln_paths)
+        ),
+        baseline_components=baseline_components,
+        coarse_intent=synopsis.coarse_intent,
+        reasons=synopsis.reasons,
+        changed_lines=sum(file.insertions + file.deletions for file in changed_files),
+    )
+
+
+def _normalized_changed_files(synopsis: CommitSynopsis) -> tuple[ChangedFile, ...]:
+    normalized_files = [
+        changed_file
+        for changed_file in synopsis.changed_files
+        if isinstance(changed_file.path, str) and normalize_path(changed_file.path)
+    ]
+    return tuple(sorted(normalized_files, key=lambda item: normalize_path(item.path)))
 
 
 def _cluster_topic(synopsis: CommitSynopsis) -> tuple[str, ...]:

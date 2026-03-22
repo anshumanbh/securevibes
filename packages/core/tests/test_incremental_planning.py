@@ -200,6 +200,94 @@ def test_build_incremental_plan_clusters_existing_surface_commits_by_component(
     assert set(cluster.file_paths) == {"src/auth.py", "src/session.py"}
 
 
+def test_build_incremental_plan_splits_oversized_single_commit_by_file_budget(
+    tmp_path: Path,
+) -> None:
+    securevibes_dir = tmp_path / ".securevibes"
+    _write_baseline_artifacts(securevibes_dir)
+    baseline = load_baseline_context(securevibes_dir)
+
+    large_commit = CommitMetadata(
+        sha="commit-huge",
+        subject="Large auth refactor",
+        body="",
+        changed_files=tuple(
+            ChangedFile(
+                path=f"src/module_{index:02d}.py",
+                status="M",
+                insertions=10,
+                deletions=0,
+            )
+            for index in range(20)
+        ),
+        insertions=200,
+        deletions=0,
+    )
+
+    plan = build_incremental_plan(
+        [large_commit],
+        baseline,
+        base_ref="base123",
+        head_ref="head456",
+        generated_at="2026-03-20T12:00:00Z",
+    )
+
+    assert len(plan.clusters) == 2
+    assert plan.clusters[0].route == "targeted_pr_review"
+    assert plan.clusters[1].route == "targeted_pr_review"
+    assert plan.clusters[0].commit_shas == ("commit-huge",)
+    assert plan.clusters[1].commit_shas == ("commit-huge",)
+    assert len(plan.clusters[0].file_paths) == 15
+    assert len(plan.clusters[1].file_paths) == 5
+    assert "split_for_diff_budget" in plan.clusters[0].reasons
+    assert "split_for_diff_budget" in plan.clusters[1].reasons
+
+
+def test_build_incremental_plan_splits_targeted_bucket_by_line_budget(
+    tmp_path: Path,
+) -> None:
+    securevibes_dir = tmp_path / ".securevibes"
+    _write_baseline_artifacts(securevibes_dir)
+    baseline = load_baseline_context(securevibes_dir)
+
+    commits = [
+        CommitMetadata(
+            sha="commit-a",
+            subject="Auth changes",
+            body="",
+            changed_files=(
+                ChangedFile(path="src/auth.py", status="M", insertions=320, deletions=0),
+            ),
+            insertions=320,
+            deletions=0,
+        ),
+        CommitMetadata(
+            sha="commit-b",
+            subject="Session changes",
+            body="",
+            changed_files=(
+                ChangedFile(path="src/session.py", status="M", insertions=320, deletions=0),
+            ),
+            insertions=320,
+            deletions=0,
+        ),
+    ]
+
+    plan = build_incremental_plan(
+        commits,
+        baseline,
+        base_ref="base123",
+        head_ref="head456",
+        generated_at="2026-03-20T12:00:00Z",
+    )
+
+    assert len(plan.clusters) == 2
+    assert plan.clusters[0].commit_shas == ("commit-a",)
+    assert plan.clusters[1].commit_shas == ("commit-b",)
+    assert "split_for_diff_budget" in plan.clusters[0].reasons
+    assert "split_for_diff_budget" in plan.clusters[1].reasons
+
+
 def test_write_incremental_plan_artifacts_persists_synopsis_and_hypotheses(
     tmp_path: Path,
 ) -> None:
