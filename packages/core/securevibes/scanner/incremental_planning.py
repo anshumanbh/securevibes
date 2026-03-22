@@ -13,10 +13,14 @@ from securevibes.scanner.artifacts import _derive_components_from_file_path
 from securevibes.scanner.risk_scorer import (
     ChangedFile,
     ChunkRisk,
+    SECURITY_KEYWORDS,
+    build_risk_map_from_threat_model,
     classify_chunk,
     load_risk_map,
     load_threat_model_entries,
     normalize_path,
+    resolve_component_globs,
+    save_risk_map,
 )
 from securevibes.scanner.state import utc_timestamp
 
@@ -121,11 +125,12 @@ class IncrementalPlan:
     clusters: tuple[ReviewCluster, ...]
 
 
-def load_baseline_context(securevibes_dir: Path) -> BaselineContext:
+def load_baseline_context(securevibes_dir: Path, *, repo: Path | None = None) -> BaselineContext:
     """Load baseline artifacts required for incremental routing.
 
     Args:
         securevibes_dir: Repository `.securevibes` directory.
+        repo: Repository root used to rebuild derived artifacts when needed.
 
     Returns:
         Parsed baseline context.
@@ -134,16 +139,26 @@ def load_baseline_context(securevibes_dir: Path) -> BaselineContext:
         FileNotFoundError: If a required baseline artifact is missing.
         ValueError: If an artifact exists but is invalid.
     """
-    risk_map_path = securevibes_dir / "risk_map.json"
     threat_model_path = securevibes_dir / "THREAT_MODEL.json"
     vulnerabilities_path = securevibes_dir / "VULNERABILITIES.json"
+    risk_map_path = securevibes_dir / "risk_map.json"
 
-    for path in (risk_map_path, threat_model_path, vulnerabilities_path):
+    for path in (threat_model_path, vulnerabilities_path):
         if not path.exists():
             raise FileNotFoundError(f"Missing required baseline artifact: {path.name}")
 
-    risk_map = load_risk_map(risk_map_path)
     threat_entries = load_threat_model_entries(threat_model_path)
+    if risk_map_path.exists():
+        risk_map = load_risk_map(risk_map_path)
+    elif repo is not None:
+        risk_map = build_risk_map_from_threat_model(
+            threat_entries,
+            component_resolver=lambda component: resolve_component_globs(repo, component),
+        )
+        save_risk_map(risk_map_path, risk_map)
+    else:
+        raise FileNotFoundError(f"Missing required baseline artifact: {risk_map_path.name}")
+
     vulnerabilities = _load_vulnerability_entries(vulnerabilities_path)
 
     affected_components: set[str] = set()
@@ -212,7 +227,7 @@ def plan_incremental_range(
     generated_at: str | None = None,
 ) -> IncrementalPlan:
     """Load, build, and persist an incremental plan for a commit range."""
-    baseline = load_baseline_context(securevibes_dir)
+    baseline = load_baseline_context(securevibes_dir, repo=repo)
     commits = collect_commit_range(repo, base=base_ref, head=head_ref)
     plan = build_incremental_plan(
         commits,
@@ -381,6 +396,7 @@ def _build_commit_synopsis(
 
     coarse_intent = _coarse_intent_for_synopsis(
         chunk_risk,
+        file_paths=file_paths,
         matched_baseline_vuln_paths=matched_baseline_vuln_paths,
         matched_baseline_components=matched_baseline_components,
     )
@@ -414,6 +430,7 @@ def _build_commit_synopsis(
 def _coarse_intent_for_synopsis(
     chunk_risk: ChunkRisk,
     *,
+    file_paths: Sequence[str],
     matched_baseline_vuln_paths: Sequence[str],
     matched_baseline_components: Sequence[str],
 ) -> CoarseIntent:
@@ -423,9 +440,42 @@ def _coarse_intent_for_synopsis(
         return "new_surface"
     if chunk_risk.tier == "skip":
         return "likely_non_security"
-    if matched_baseline_vuln_paths or matched_baseline_components:
+    if _has_targeted_review_evidence(
+        chunk_risk,
+        file_paths=file_paths,
+        matched_baseline_vuln_paths=matched_baseline_vuln_paths,
+        matched_baseline_components=matched_baseline_components,
+    ):
         return "existing_surface_delta"
-    return "existing_surface_delta"
+    return "likely_non_security"
+
+
+def _has_targeted_review_evidence(
+    chunk_risk: ChunkRisk,
+    *,
+    file_paths: Sequence[str],
+    matched_baseline_vuln_paths: Sequence[str],
+    matched_baseline_components: Sequence[str],
+) -> bool:
+    if matched_baseline_vuln_paths:
+        return True
+
+    reasons = set(chunk_risk.reasons)
+    if {"policy_file_changed", "skip_safeguard:script_exec_eval_signal"} & reasons:
+        return True
+
+    if not _paths_have_security_signal(file_paths):
+        return False
+
+    return chunk_risk.tier == "critical" or bool(matched_baseline_components)
+
+
+def _paths_have_security_signal(file_paths: Sequence[str]) -> bool:
+    for path in file_paths:
+        normalized = normalize_path(path).lower()
+        if any(keyword in normalized for keyword in SECURITY_KEYWORDS):
+            return True
+    return False
 
 
 def _route_for_intent(intent: CoarseIntent) -> ReviewRoute:
@@ -616,6 +666,7 @@ def _build_cluster_slice(
     )
     coarse_intent = _coarse_intent_for_synopsis(
         chunk_risk,
+        file_paths=file_paths,
         matched_baseline_vuln_paths=matched_baseline_vuln_paths,
         matched_baseline_components=baseline_components,
     )

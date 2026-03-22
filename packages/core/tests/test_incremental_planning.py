@@ -57,6 +57,49 @@ def _write_baseline_artifacts(securevibes_dir: Path) -> None:
     )
 
 
+def test_plan_incremental_range_rebuilds_missing_risk_map(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir(parents=True, exist_ok=True)
+    (repo / "src").mkdir(parents=True, exist_ok=True)
+    (repo / "src" / "auth.py").write_text("print('auth')\n", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "THREAT-001",
+                    "severity": "high",
+                    "affected_components": ["src/*"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (securevibes_dir / "VULNERABILITIES.json").write_text("[]\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "securevibes.scanner.incremental_planning.collect_commit_range",
+        lambda *_args, **_kwargs: (),
+    )
+
+    plan = plan_incremental_range(
+        repo,
+        securevibes_dir,
+        base_ref="base123",
+        head_ref="head456",
+    )
+
+    risk_map = json.loads((securevibes_dir / "risk_map.json").read_text(encoding="utf-8"))
+
+    assert plan.synopses == ()
+    assert plan.clusters == ()
+    assert risk_map["critical"] == ["src/*"]
+    assert risk_map["moderate"] == []
+    assert "docs/*" in risk_map["skip"]
+
+
 def test_collect_commit_range_loads_commit_details_in_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -158,6 +201,37 @@ def test_build_incremental_plan_classifies_commit_intents_and_routes(tmp_path: P
     assert synopses["commit-docs"].route == "skip"
 
 
+def test_build_incremental_plan_skips_generic_component_overlap_without_security_signal(
+    tmp_path: Path,
+) -> None:
+    securevibes_dir = tmp_path / ".securevibes"
+    _write_baseline_artifacts(securevibes_dir)
+    baseline = load_baseline_context(securevibes_dir)
+
+    plan = build_incremental_plan(
+        [
+            CommitMetadata(
+                sha="commit-generic",
+                subject="Refactor generic service helper",
+                body="",
+                changed_files=(ChangedFile(path="src/service.py", status="M"),),
+                insertions=10,
+                deletions=4,
+            )
+        ],
+        baseline,
+        base_ref="base123",
+        head_ref="head456",
+        generated_at="2026-03-20T12:00:00Z",
+    )
+
+    synopsis = plan.synopses[0]
+
+    assert synopsis.matched_baseline_components == ("src:py",)
+    assert synopsis.coarse_intent == "likely_non_security"
+    assert synopsis.route == "skip"
+
+
 def test_build_incremental_plan_clusters_existing_surface_commits_by_component(
     tmp_path: Path,
 ) -> None:
@@ -176,9 +250,9 @@ def test_build_incremental_plan_clusters_existing_surface_commits_by_component(
         ),
         CommitMetadata(
             sha="commit-b",
-            subject="Session changes",
+            subject="Auth session changes",
             body="",
-            changed_files=(ChangedFile(path="src/session.py", status="M"),),
+            changed_files=(ChangedFile(path="src/auth_session.py", status="M"),),
             insertions=7,
             deletions=1,
         ),
@@ -197,7 +271,7 @@ def test_build_incremental_plan_clusters_existing_surface_commits_by_component(
     assert cluster.route == "targeted_pr_review"
     assert cluster.commit_shas == ("commit-a", "commit-b")
     assert cluster.baseline_components == ("src:py",)
-    assert set(cluster.file_paths) == {"src/auth.py", "src/session.py"}
+    assert set(cluster.file_paths) == {"src/auth.py", "src/auth_session.py"}
 
 
 def test_build_incremental_plan_splits_oversized_single_commit_by_file_budget(
@@ -213,7 +287,7 @@ def test_build_incremental_plan_splits_oversized_single_commit_by_file_budget(
         body="",
         changed_files=tuple(
             ChangedFile(
-                path=f"src/module_{index:02d}.py",
+                path=f"src/auth_module_{index:02d}.py",
                 status="M",
                 insertions=10,
                 deletions=0,
@@ -263,10 +337,10 @@ def test_build_incremental_plan_splits_targeted_bucket_by_line_budget(
         ),
         CommitMetadata(
             sha="commit-b",
-            subject="Session changes",
+            subject="Auth session changes",
             body="",
             changed_files=(
-                ChangedFile(path="src/session.py", status="M", insertions=320, deletions=0),
+                ChangedFile(path="src/auth_session.py", status="M", insertions=320, deletions=0),
             ),
             insertions=320,
             deletions=0,
@@ -423,8 +497,9 @@ def test_plan_incremental_range_orchestrates_collection_build_and_persistence(
         )
     ]
 
-    def fake_load_baseline_context(path: Path):
+    def fake_load_baseline_context(path: Path, *, repo: Path | None = None):
         observed["baseline_path"] = path
+        observed["baseline_repo"] = repo
         return "baseline"
 
     def fake_collect_commit_range(path: Path, *, base: str, head: str):
@@ -478,6 +553,7 @@ def test_plan_incremental_range_orchestrates_collection_build_and_persistence(
     )
 
     assert observed["baseline_path"] == securevibes_dir
+    assert observed["baseline_repo"] == repo
     assert observed["range"] == (repo, "base123", "head456")
     assert observed["build"][1] == "baseline"
     assert observed["write"] == (securevibes_dir, "base123", "head456", 1)
