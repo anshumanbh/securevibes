@@ -111,7 +111,7 @@ def _incremental_execution_result() -> IncrementalExecutionResult:
             ),
             ClusterExecutionResult(
                 cluster_id="cluster-002",
-                route="supply_chain_review",
+                route="custom_route",
                 status="skipped",
                 skip_reason="route_not_implemented",
             ),

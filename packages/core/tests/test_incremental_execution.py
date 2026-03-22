@@ -288,7 +288,7 @@ def test_aggregate_incremental_scan_result_merges_cluster_findings(tmp_path: Pat
             ),
             ClusterExecutionResult(
                 cluster_id="cluster-002",
-                route="skip",
+                route="custom_route",
                 status="skipped",
                 skip_reason="route_not_implemented",
             ),
@@ -300,6 +300,85 @@ def test_aggregate_incremental_scan_result_merges_cluster_findings(tmp_path: Pat
     assert aggregated.repository_path == str(repo)
     assert len(aggregated.issues) == 1
     assert "cluster-002" in aggregated.warnings[0]
+
+
+def test_aggregate_incremental_scan_result_omits_warning_for_planned_skip(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    execution_result = IncrementalExecutionResult(
+        cluster_results=(
+            ClusterExecutionResult(
+                cluster_id="cluster-001",
+                route="skip",
+                status="skipped",
+                skip_reason="planned_skip",
+            ),
+        )
+    )
+
+    aggregated = aggregate_incremental_scan_result(repo, execution_result)
+
+    assert aggregated.repository_path == str(repo)
+    assert aggregated.warnings == []
+
+
+def test_execute_incremental_plan_respects_planned_skip_route(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    diff_context = parse_unified_diff("""diff --git a/README.md b/README.md
+index 1111111..2222222 100644
+--- a/README.md
++++ b/README.md
+@@ -1 +1,2 @@
+-# app
++# app
++docs update
+""")
+
+    plan = IncrementalPlan(
+        base_ref="base123",
+        head_ref="head456",
+        generated_at="2026-03-20T12:00:00Z",
+        synopses=(),
+        clusters=(
+            ReviewCluster(
+                cluster_id="cluster-001",
+                route="skip",
+                commit_shas=("commit-1",),
+                file_paths=("README.md",),
+                baseline_vuln_paths=(),
+                baseline_components=(),
+                coarse_intents=("likely_non_security",),
+                reasons=("all_files_matched_skip_patterns",),
+            ),
+        ),
+    )
+
+    fake_scanner = SimpleNamespace(
+        scan_subagent=AsyncMock(return_value=_scan_result(repo)),
+        pr_review=AsyncMock(return_value=_scan_result(repo)),
+    )
+
+    result = asyncio.run(
+        execute_incremental_plan(
+            repo,
+            securevibes_dir,
+            plan,
+            diff_context,
+            model="sonnet",
+            quiet=True,
+            debug=False,
+            scanner_factory=lambda **_kwargs: fake_scanner,
+        )
+    )
+
+    assert result.cluster_results[0].status == "skipped"
+    assert result.cluster_results[0].skip_reason == "planned_skip"
+    fake_scanner.scan_subagent.assert_not_awaited()
+    fake_scanner.pr_review.assert_not_awaited()
 
 
 def test_execute_incremental_plan_skips_empty_cluster_subset(tmp_path: Path) -> None:

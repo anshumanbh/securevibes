@@ -20,6 +20,7 @@ from securevibes.scanner.risk_scorer import (
 )
 
 ClusterExecutionStatus = Literal["executed", "skipped"]
+_NON_WARNING_SKIP_REASONS = frozenset({"planned_skip"})
 
 
 @dataclass(frozen=True)
@@ -52,7 +53,11 @@ def aggregate_incremental_scan_result(
 
     for cluster_result in execution_result.cluster_results:
         if cluster_result.scan_result is None:
-            if cluster_result.status == "skipped" and cluster_result.skip_reason:
+            if (
+                cluster_result.status == "skipped"
+                and cluster_result.skip_reason
+                and cluster_result.skip_reason not in _NON_WARNING_SKIP_REASONS
+            ):
                 aggregated.warnings.append(
                     f"Incremental cluster {cluster_result.cluster_id} skipped: "
                     f"{cluster_result.skip_reason}"
@@ -140,6 +145,17 @@ async def execute_incremental_plan(
 
     cluster_results: list[ClusterExecutionResult] = []
     for cluster in plan.clusters:
+        if cluster.route == "skip":
+            cluster_results.append(
+                ClusterExecutionResult(
+                    cluster_id=cluster.cluster_id,
+                    route=cluster.route,
+                    status="skipped",
+                    skip_reason="planned_skip",
+                )
+            )
+            continue
+
         if cluster.route not in {
             "targeted_pr_review",
             "incremental_threat_model_then_review",
