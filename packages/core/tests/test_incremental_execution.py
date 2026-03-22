@@ -17,6 +17,7 @@ from securevibes.scanner.incremental_execution import (
     ClusterExecutionResult,
     execute_incremental_plan,
     IncrementalExecutionResult,
+    split_cluster_diff_context,
 )
 from securevibes.scanner.incremental_planning import (
     CommitSynopsis,
@@ -199,6 +200,32 @@ index 3333333..4444444 100644
     assert subset.removed_lines == 1
 
 
+def test_split_cluster_diff_context_slices_oversized_single_hunk() -> None:
+    lines = "\n".join(f"+line {index}" for index in range(1200))
+    diff_context = parse_unified_diff(f"""diff --git a/src/big.ts b/src/big.ts
+index 1111111..2222222 100644
+--- a/src/big.ts
++++ b/src/big.ts
+@@ -0,0 +1,1200 @@
+{lines}
+""")
+
+    slices = split_cluster_diff_context(diff_context)
+
+    assert len(slices) == 3
+    assert all(item.changed_files == ["src/big.ts"] for item in slices)
+    assert (
+        max(len(hunk.lines) for item in slices for file in item.files for hunk in file.hunks) <= 500
+    )
+    assert [
+        sum(len(hunk.lines) for file in item.files for hunk in file.hunks) for item in slices
+    ] == [
+        500,
+        500,
+        200,
+    ]
+
+
 def test_execute_incremental_plan_runs_targeted_and_supply_chain_clusters(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -272,6 +299,89 @@ index 3333333..4444444 100644
     assert supply_chain_call.args[2] == known_vulns_path
     assert supply_chain_call.kwargs["update_artifacts"] is True
     fake_scanner.scan_subagent.assert_not_awaited()
+
+
+def test_execute_incremental_plan_slices_large_cluster_diff_and_aggregates_results(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    known_vulns_path = securevibes_dir / "VULNERABILITIES.json"
+    known_vulns_path.write_text("[]", encoding="utf-8")
+
+    lines = "\n".join(f"+line {index}" for index in range(1200))
+    diff_context = parse_unified_diff(f"""diff --git a/src/big.ts b/src/big.ts
+index 1111111..2222222 100644
+--- a/src/big.ts
++++ b/src/big.ts
+@@ -0,0 +1,1200 @@
+{lines}
+""")
+
+    plan = IncrementalPlan(
+        base_ref="base123",
+        head_ref="head456",
+        generated_at="2026-03-20T12:00:00Z",
+        synopses=(),
+        clusters=(
+            ReviewCluster(
+                cluster_id="cluster-001",
+                route="targeted_pr_review",
+                commit_shas=("commit-1",),
+                file_paths=("src/big.ts",),
+                baseline_vuln_paths=(),
+                baseline_components=("src:ts",),
+                coarse_intents=("existing_surface_delta",),
+                reasons=("critical_pattern_match",),
+            ),
+        ),
+    )
+
+    fake_scanner = SimpleNamespace(
+        scan_subagent=AsyncMock(return_value=_scan_result(repo)),
+        pr_review=AsyncMock(
+            side_effect=[
+                _scan_result(repo, issues=1),
+                _scan_result(repo, issues=1),
+                _scan_result(repo, issues=0),
+            ]
+        ),
+    )
+
+    result = asyncio.run(
+        execute_incremental_plan(
+            repo,
+            securevibes_dir,
+            plan,
+            diff_context,
+            model="sonnet",
+            quiet=True,
+            debug=False,
+            known_vulns_path=known_vulns_path,
+            severity_threshold="medium",
+            update_artifacts=False,
+            scanner_factory=lambda **_kwargs: fake_scanner,
+        )
+    )
+
+    assert len(result.cluster_results) == 1
+    cluster_result = result.cluster_results[0]
+    assert cluster_result.status == "executed"
+    assert cluster_result.findings_count == 2
+    assert cluster_result.scan_result is not None
+    assert len(cluster_result.scan_result.issues) == 2
+    assert fake_scanner.pr_review.await_count == 3
+    assert (
+        max(
+            len(hunk.lines)
+            for call in fake_scanner.pr_review.await_args_list
+            for file in call.args[1].files
+            for hunk in file.hunks
+        )
+        <= 500
+    )
 
 
 def test_aggregate_incremental_scan_result_merges_cluster_findings(tmp_path: Path) -> None:
