@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Literal, Sequence
 
 from securevibes.diff.extractor import get_commits_between, validate_git_ref
+from securevibes.models.schemas import fix_vulnerabilities_json
 from securevibes.scanner.artifacts import _derive_components_from_file_path
 from securevibes.scanner.risk_scorer import (
     ChangedFile,
@@ -734,12 +735,14 @@ def _cluster_topic_values(
 
 
 def _load_vulnerability_entries(path: Path) -> list[dict[str, object]]:
+    raw = path.read_text(encoding="utf-8", errors="ignore")
+    fixed_content, _ = fix_vulnerabilities_json(raw)
     try:
-        parsed = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Invalid VULNERABILITIES.json: {exc.msg}") from exc
+        parsed = json.loads(fixed_content)
+    except json.JSONDecodeError:
+        return []
     if not isinstance(parsed, list):
-        raise ValueError("VULNERABILITIES.json must be a JSON array.")
+        return []
     return [entry for entry in parsed if isinstance(entry, dict)]
 
 

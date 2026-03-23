@@ -100,6 +100,57 @@ def test_plan_incremental_range_rebuilds_missing_risk_map(
     assert "docs/*" in risk_map["skip"]
 
 
+def test_plan_incremental_range_tolerates_malformed_vulnerabilities_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir(parents=True, exist_ok=True)
+    (repo / "src").mkdir(parents=True, exist_ok=True)
+    (repo / "src" / "auth.py").write_text("print('auth')\n", encoding="utf-8")
+    (securevibes_dir / "THREAT_MODEL.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "THREAT-001",
+                    "severity": "high",
+                    "affected_components": ["src/*"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (securevibes_dir / "risk_map.json").write_text(
+        json.dumps(
+            {
+                "critical": ["src/*"],
+                "moderate": [],
+                "skip": ["docs/*"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (securevibes_dir / "VULNERABILITIES.json").write_text(
+        '[{"file_path":"src/auth.py","title":"bad","severity":"high","code_snippet":"\\\\q"}]\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "securevibes.scanner.incremental_planning.collect_commit_range",
+        lambda *_args, **_kwargs: (),
+    )
+
+    plan = plan_incremental_range(
+        repo,
+        securevibes_dir,
+        base_ref="base123",
+        head_ref="head456",
+    )
+
+    assert plan.synopses == ()
+    assert plan.clusters == ()
+
+
 def test_collect_commit_range_loads_commit_details_in_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

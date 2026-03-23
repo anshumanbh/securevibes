@@ -293,12 +293,251 @@ index 3333333..4444444 100644
     assert targeted_call.args[2] == known_vulns_path
     assert targeted_call.args[3] == "medium"
     assert targeted_call.kwargs["update_artifacts"] is True
+    assert targeted_call.kwargs["pr_review_attempts"] == 1
+    assert targeted_call.kwargs["pr_timeout_seconds"] == 120
+    assert targeted_call.kwargs["auto_triage"] is True
 
     supply_chain_call = fake_scanner.pr_review.await_args_list[1]
     assert supply_chain_call.args[1].changed_files == ["package.json"]
     assert supply_chain_call.args[2] == known_vulns_path
     assert supply_chain_call.kwargs["update_artifacts"] is True
+    assert supply_chain_call.kwargs["pr_review_attempts"] == 1
+    assert supply_chain_call.kwargs["pr_timeout_seconds"] == 90
+    assert supply_chain_call.kwargs["auto_triage"] is True
     fake_scanner.scan_subagent.assert_not_awaited()
+
+
+def test_execute_incremental_plan_prioritizes_and_caps_targeted_clusters(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    known_vulns_path = securevibes_dir / "VULNERABILITIES.json"
+    known_vulns_path.write_text("[]", encoding="utf-8")
+
+    diff_context = parse_unified_diff("""diff --git a/src/service.py b/src/service.py
+index 1111111..2222222 100644
+--- a/src/service.py
++++ b/src/service.py
+@@ -1 +1,2 @@
+-run()
++run()
++trace()
+diff --git a/src/auth.py b/src/auth.py
+index 3333333..4444444 100644
+--- a/src/auth.py
++++ b/src/auth.py
+@@ -1 +1,2 @@
+-allow(user)
++allow(user)
++audit(user)
+diff --git a/src/permission.py b/src/permission.py
+index 5555555..6666666 100644
+--- a/src/permission.py
++++ b/src/permission.py
+@@ -1 +1,2 @@
+-check()
++check()
++audit()
+""")
+
+    plan = IncrementalPlan(
+        base_ref="base123",
+        head_ref="head456",
+        generated_at="2026-03-20T12:00:00Z",
+        synopses=(),
+        clusters=(
+            ReviewCluster(
+                cluster_id="cluster-001",
+                route="targeted_pr_review",
+                commit_shas=("commit-1",),
+                file_paths=("src/service.py",),
+                baseline_vuln_paths=(),
+                baseline_components=("src:py",),
+                coarse_intents=("existing_surface_delta",),
+                reasons=("critical_pattern_match",),
+            ),
+            ReviewCluster(
+                cluster_id="cluster-002",
+                route="targeted_pr_review",
+                commit_shas=("commit-2",),
+                file_paths=("src/auth.py",),
+                baseline_vuln_paths=("src/auth.py",),
+                baseline_components=("src:py",),
+                coarse_intents=("existing_surface_delta",),
+                reasons=("critical_pattern_match", "baseline_component_overlap"),
+            ),
+            ReviewCluster(
+                cluster_id="cluster-003",
+                route="targeted_pr_review",
+                commit_shas=("commit-3",),
+                file_paths=("src/permission.py",),
+                baseline_vuln_paths=(),
+                baseline_components=("src:py",),
+                coarse_intents=("existing_surface_delta",),
+                reasons=("critical_pattern_match", "baseline_component_overlap"),
+            ),
+        ),
+    )
+
+    monkeypatch.setattr(
+        "securevibes.scanner.incremental_execution._TARGETED_CLUSTER_MAX_EXECUTIONS",
+        2,
+    )
+    monkeypatch.setattr(
+        "securevibes.scanner.incremental_execution._TARGETED_CLUSTER_MAX_FILES",
+        2,
+    )
+
+    fake_scanner = SimpleNamespace(
+        scan_subagent=AsyncMock(return_value=_scan_result(repo)),
+        pr_review=AsyncMock(return_value=_scan_result(repo)),
+    )
+
+    result = asyncio.run(
+        execute_incremental_plan(
+            repo,
+            securevibes_dir,
+            plan,
+            diff_context,
+            model="sonnet",
+            quiet=True,
+            debug=False,
+            known_vulns_path=known_vulns_path,
+            scanner_factory=lambda **_kwargs: fake_scanner,
+        )
+    )
+
+    assert [item.status for item in result.cluster_results] == ["skipped", "executed", "executed"]
+    assert result.cluster_results[0].skip_reason == "targeted_budget_exhausted"
+    assert fake_scanner.pr_review.await_count == 2
+    reviewed_files = [
+        call.args[1].changed_files[0] for call in fake_scanner.pr_review.await_args_list
+    ]
+    assert reviewed_files == ["src/auth.py", "src/permission.py"]
+
+
+def test_execute_incremental_plan_prioritizes_global_execution_budget_across_routes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    known_vulns_path = securevibes_dir / "VULNERABILITIES.json"
+    known_vulns_path.write_text("[]", encoding="utf-8")
+
+    diff_context = parse_unified_diff(
+        """diff --git a/plugins/runtime/loader.ts b/plugins/runtime/loader.ts
+index 1111111..2222222 100644
+--- a/plugins/runtime/loader.ts
++++ b/plugins/runtime/loader.ts
+@@ -0,0 +1,2 @@
++export function loadPlugin() {}
++export function validatePlugin() {}
+diff --git a/src/auth.py b/src/auth.py
+index 3333333..4444444 100644
+--- a/src/auth.py
++++ b/src/auth.py
+@@ -1 +1,2 @@
+-allow(user)
++allow(user)
++audit(user)
+diff --git a/package.json b/package.json
+index 5555555..6666666 100644
+--- a/package.json
++++ b/package.json
+@@ -1 +1 @@
+-{\"name\":\"app\",\"version\":\"1.0.0\"}
++{\"name\":\"app\",\"version\":\"1.1.0\"}
+"""
+    )
+
+    plan = IncrementalPlan(
+        base_ref="base123",
+        head_ref="head456",
+        generated_at="2026-03-20T12:00:00Z",
+        synopses=(),
+        clusters=(
+            ReviewCluster(
+                cluster_id="cluster-001",
+                route="incremental_threat_model_then_review",
+                commit_shas=("commit-1",),
+                file_paths=("plugins/runtime/loader.ts",),
+                baseline_vuln_paths=(),
+                baseline_components=(),
+                coarse_intents=("new_surface",),
+                reasons=("unmapped_new_attack_surface",),
+            ),
+            ReviewCluster(
+                cluster_id="cluster-002",
+                route="targeted_pr_review",
+                commit_shas=("commit-2",),
+                file_paths=("src/auth.py",),
+                baseline_vuln_paths=("src/auth.py",),
+                baseline_components=("src:py",),
+                coarse_intents=("existing_surface_delta",),
+                reasons=("critical_pattern_match", "baseline_component_overlap"),
+            ),
+            ReviewCluster(
+                cluster_id="cluster-003",
+                route="supply_chain_review",
+                commit_shas=("commit-3",),
+                file_paths=("package.json",),
+                baseline_vuln_paths=(),
+                baseline_components=(),
+                coarse_intents=("dependency_change",),
+                reasons=("dependency_change_promotion",),
+            ),
+        ),
+    )
+
+    monkeypatch.setattr(
+        "securevibes.scanner.incremental_execution._EXECUTABLE_CLUSTER_MAX_EXECUTIONS",
+        2,
+    )
+    monkeypatch.setattr(
+        "securevibes.scanner.incremental_execution._EXECUTABLE_CLUSTER_MAX_FILES",
+        2,
+    )
+    monkeypatch.setattr(
+        "securevibes.scanner.incremental_execution._TARGETED_CLUSTER_MAX_EXECUTIONS",
+        5,
+    )
+    monkeypatch.setattr(
+        "securevibes.scanner.incremental_execution._TARGETED_CLUSTER_MAX_FILES",
+        5,
+    )
+
+    fake_scanner = SimpleNamespace(
+        scan_subagent=AsyncMock(return_value=_scan_result(repo)),
+        pr_review=AsyncMock(return_value=_scan_result(repo)),
+    )
+
+    result = asyncio.run(
+        execute_incremental_plan(
+            repo,
+            securevibes_dir,
+            plan,
+            diff_context,
+            model="sonnet",
+            quiet=True,
+            debug=False,
+            known_vulns_path=known_vulns_path,
+            scanner_factory=lambda **_kwargs: fake_scanner,
+        )
+    )
+
+    assert [item.status for item in result.cluster_results] == ["executed", "executed", "skipped"]
+    assert result.cluster_results[2].skip_reason == "execution_budget_exhausted"
+    fake_scanner.scan_subagent.assert_awaited_once()
+    assert fake_scanner.pr_review.await_count == 2
+    reviewed_files = [
+        call.args[1].changed_files[0] for call in fake_scanner.pr_review.await_args_list
+    ]
+    assert reviewed_files == ["plugins/runtime/loader.ts", "src/auth.py"]
 
 
 def test_execute_incremental_plan_slices_large_cluster_diff_and_aggregates_results(
@@ -545,6 +784,92 @@ index 1111111..2222222 100644
     fake_scanner.pr_review.assert_not_awaited()
 
 
+def test_execute_incremental_plan_continues_after_cluster_failure(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    known_vulns_path = securevibes_dir / "VULNERABILITIES.json"
+    known_vulns_path.write_text("[]", encoding="utf-8")
+
+    diff_context = parse_unified_diff("""diff --git a/src/auth.py b/src/auth.py
+index 1111111..2222222 100644
+--- a/src/auth.py
++++ b/src/auth.py
+@@ -1 +1,2 @@
+-allow(user)
++allow(user)
++audit(user)
+diff --git a/src/permission.py b/src/permission.py
+index 3333333..4444444 100644
+--- a/src/permission.py
++++ b/src/permission.py
+@@ -1 +1,2 @@
+-check()
++check()
++trace()
+""")
+
+    plan = IncrementalPlan(
+        base_ref="base123",
+        head_ref="head456",
+        generated_at="2026-03-20T12:00:00Z",
+        synopses=(),
+        clusters=(
+            ReviewCluster(
+                cluster_id="cluster-001",
+                route="targeted_pr_review",
+                commit_shas=("commit-1",),
+                file_paths=("src/auth.py",),
+                baseline_vuln_paths=("src/auth.py",),
+                baseline_components=("src:py",),
+                coarse_intents=("existing_surface_delta",),
+                reasons=("critical_pattern_match", "baseline_component_overlap"),
+            ),
+            ReviewCluster(
+                cluster_id="cluster-002",
+                route="targeted_pr_review",
+                commit_shas=("commit-2",),
+                file_paths=("src/permission.py",),
+                baseline_vuln_paths=(),
+                baseline_components=("src:py",),
+                coarse_intents=("existing_surface_delta",),
+                reasons=("critical_pattern_match", "baseline_component_overlap"),
+            ),
+        ),
+    )
+
+    fake_scanner = SimpleNamespace(
+        scan_subagent=AsyncMock(return_value=_scan_result(repo)),
+        pr_review=AsyncMock(
+            side_effect=[
+                RuntimeError("synthetic cluster failure"),
+                _scan_result(repo, issues=1),
+            ]
+        ),
+    )
+
+    result = asyncio.run(
+        execute_incremental_plan(
+            repo,
+            securevibes_dir,
+            plan,
+            diff_context,
+            model="sonnet",
+            quiet=True,
+            debug=False,
+            known_vulns_path=known_vulns_path,
+            scanner_factory=lambda **_kwargs: fake_scanner,
+        )
+    )
+
+    assert [item.status for item in result.cluster_results] == ["skipped", "executed"]
+    assert result.cluster_results[0].skip_reason == "cluster_execution_failed"
+    assert "synthetic cluster failure" in result.cluster_results[0].scan_result.warnings[0]
+    assert result.cluster_results[1].findings_count == 1
+    assert fake_scanner.pr_review.await_count == 2
+
+
 def test_execute_incremental_plan_runs_new_surface_route_before_pr_review(
     tmp_path: Path,
 ) -> None:
@@ -603,6 +928,9 @@ index 3333333..4444444 100644
     assert fake_scanner.pr_review.await_count == 2
     new_surface_call = fake_scanner.pr_review.await_args_list[0]
     assert new_surface_call.args[1].changed_files == ["plugins/runtime/loader.ts"]
+    assert new_surface_call.kwargs["pr_review_attempts"] == 1
+    assert new_surface_call.kwargs["pr_timeout_seconds"] == 120
+    assert new_surface_call.kwargs["auto_triage"] is True
 
 
 def test_execute_incremental_plan_refreshes_known_vulns_between_clusters(
