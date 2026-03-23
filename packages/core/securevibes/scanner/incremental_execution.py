@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal
@@ -35,6 +36,8 @@ _INCREMENTAL_NEW_SURFACE_ATTEMPTS = 1
 _INCREMENTAL_NEW_SURFACE_TIMEOUT_SECONDS = 120
 _INCREMENTAL_SUPPLY_CHAIN_ATTEMPTS = 1
 _INCREMENTAL_SUPPLY_CHAIN_TIMEOUT_SECONDS = 90
+_INCREMENTAL_EXECUTION_SCHEMA_VERSION = 1
+_INCREMENTAL_TELEMETRY_MIRROR_DIR = Path("/tmp/securevibes-incremental-telemetry")
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,80 @@ def aggregate_incremental_scan_result(
         aggregated.warnings.extend(cluster_result.scan_result.warnings)
 
     return aggregated
+
+
+def write_incremental_execution_artifacts(
+    repo: Path,
+    securevibes_dir: Path,
+    plan: IncrementalPlan,
+    execution_result: IncrementalExecutionResult,
+) -> tuple[Path, Path]:
+    """Persist incremental execution telemetry in-repo and in a durable temp mirror."""
+    payload = _incremental_execution_payload(repo, plan, execution_result)
+    serialized = json.dumps(payload, indent=2) + "\n"
+
+    securevibes_dir.mkdir(parents=True, exist_ok=True)
+    artifact_path = securevibes_dir / "incremental_execution.json"
+    artifact_path.write_text(serialized, encoding="utf-8")
+
+    mirror_dir = _INCREMENTAL_TELEMETRY_MIRROR_DIR
+    mirror_dir.mkdir(parents=True, exist_ok=True)
+    mirror_path = mirror_dir / _incremental_telemetry_filename(repo, plan)
+    mirror_path.write_text(serialized, encoding="utf-8")
+
+    return artifact_path, mirror_path
+
+
+def _incremental_execution_payload(
+    repo: Path,
+    plan: IncrementalPlan,
+    execution_result: IncrementalExecutionResult,
+) -> dict[str, object]:
+    plan_clusters = {cluster.cluster_id: cluster for cluster in plan.clusters}
+    clusters_payload: list[dict[str, object]] = []
+
+    for result in execution_result.cluster_results:
+        cluster = plan_clusters.get(result.cluster_id)
+        clusters_payload.append(
+            {
+                "cluster_id": result.cluster_id,
+                "route": result.route,
+                "status": result.status,
+                "skip_reason": result.skip_reason,
+                "findings_count": result.findings_count,
+                "critical_count": result.critical_count,
+                "high_count": result.high_count,
+                "commit_shas": list(cluster.commit_shas) if cluster else [],
+                "file_paths": list(cluster.file_paths) if cluster else [],
+                "baseline_vuln_paths": list(cluster.baseline_vuln_paths) if cluster else [],
+                "baseline_components": list(cluster.baseline_components) if cluster else [],
+                "coarse_intents": list(cluster.coarse_intents) if cluster else [],
+                "reasons": list(cluster.reasons) if cluster else [],
+                "warnings": list(result.scan_result.warnings) if result.scan_result else [],
+            }
+        )
+
+    return {
+        "schema_version": _INCREMENTAL_EXECUTION_SCHEMA_VERSION,
+        "repo_name": repo.resolve().name,
+        "base_ref": plan.base_ref,
+        "head_ref": plan.head_ref,
+        "generated_at": plan.generated_at,
+        "clusters": clusters_payload,
+    }
+
+
+def _incremental_telemetry_filename(repo: Path, plan: IncrementalPlan) -> str:
+    return (
+        f"{_sanitize_telemetry_token(repo.resolve().name)}-"
+        f"{_sanitize_telemetry_token(plan.base_ref)[:24]}-"
+        f"{_sanitize_telemetry_token(plan.head_ref)[:24]}-incremental-execution.json"
+    )
+
+
+def _sanitize_telemetry_token(value: str) -> str:
+    token = "".join(char if char.isalnum() else "_" for char in value.strip())
+    return token or "unknown"
 
 
 def build_cluster_diff_context(

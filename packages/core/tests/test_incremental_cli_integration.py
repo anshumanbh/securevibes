@@ -66,6 +66,7 @@ def _append_excludes(repo: Path) -> None:
         handle.write("/.securevibes/scan_state.json\n")
         handle.write("/.securevibes/incremental_synopsis.json\n")
         handle.write("/.securevibes/incremental_hypotheses.json\n")
+        handle.write("/.securevibes/incremental_execution.json\n")
 
 
 def test_incremental_cli_anchor_lifecycle(tmp_path: Path) -> None:

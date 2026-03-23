@@ -169,6 +169,9 @@ securevibes catchup . --branch main
 ```
 
 `securevibes catchup` requires a clean working tree (commit, stash, or discard local changes first).
+`securevibes incremental-run` also writes `.securevibes/incremental_execution.json`
+and mirrors the same cluster telemetry under `/tmp/securevibes-incremental-telemetry/`
+so benchmark temp worktrees do not lose executed/skipped cluster details.
 
 ```bash
 # Override PR review budget via CLI flags
@@ -200,6 +203,7 @@ PR review artifacts (written to `.securevibes/`):
 - `PR_VULNERABILITIES.json` (raw findings)
 - `pr_review_report.md` (default markdown report)
 - `scan_state.json` (commit tracking for pr-review/catchup/incremental)
+- `incremental_execution.json` (executed/skipped incremental cluster telemetry)
 
 ---
 

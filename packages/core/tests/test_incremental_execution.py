@@ -18,6 +18,7 @@ from securevibes.scanner.incremental_execution import (
     execute_incremental_plan,
     IncrementalExecutionResult,
     split_cluster_diff_context,
+    write_incremental_execution_artifacts,
 )
 from securevibes.scanner.incremental_planning import (
     CommitSynopsis,
@@ -649,6 +650,62 @@ def test_aggregate_incremental_scan_result_merges_cluster_findings(tmp_path: Pat
     assert aggregated.repository_path == str(repo)
     assert len(aggregated.issues) == 1
     assert "cluster-002" in aggregated.warnings[0]
+
+
+def test_write_incremental_execution_artifacts_persists_cluster_statuses(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    mirror_dir = tmp_path / "mirror"
+
+    monkeypatch.setattr(
+        "securevibes.scanner.incremental_execution._INCREMENTAL_TELEMETRY_MIRROR_DIR",
+        mirror_dir,
+    )
+
+    execution_result = IncrementalExecutionResult(
+        cluster_results=(
+            ClusterExecutionResult(
+                cluster_id="cluster-001",
+                route="targeted_pr_review",
+                status="executed",
+                findings_count=1,
+                high_count=1,
+                scan_result=_scan_result(repo, issues=1),
+            ),
+            ClusterExecutionResult(
+                cluster_id="cluster-002",
+                route="targeted_pr_review",
+                status="skipped",
+                skip_reason="targeted_budget_exhausted",
+            ),
+        )
+    )
+
+    artifact_path, mirror_path = write_incremental_execution_artifacts(
+        repo,
+        securevibes_dir,
+        _incremental_plan(),
+        execution_result,
+    )
+
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    mirror_payload = json.loads(mirror_path.read_text(encoding="utf-8"))
+
+    assert payload["base_ref"] == "base123"
+    assert payload["head_ref"] == "head456"
+    assert payload["repo_name"] == "repo"
+    assert payload["clusters"][0]["cluster_id"] == "cluster-001"
+    assert payload["clusters"][0]["status"] == "executed"
+    assert payload["clusters"][0]["file_paths"] == ["src/auth.py"]
+    assert payload["clusters"][0]["commit_shas"] == ["commit-1"]
+    assert payload["clusters"][1]["cluster_id"] == "cluster-002"
+    assert payload["clusters"][1]["status"] == "skipped"
+    assert payload["clusters"][1]["skip_reason"] == "targeted_budget_exhausted"
+    assert mirror_payload == payload
 
 
 def test_aggregate_incremental_scan_result_omits_warning_for_planned_skip(tmp_path: Path) -> None:

@@ -53,6 +53,7 @@ from securevibes.scanner.state import (
 from securevibes.scanner.incremental_execution import (
     aggregate_incremental_scan_result,
     execute_incremental_plan,
+    write_incremental_execution_artifacts,
 )
 from securevibes.scanner.incremental_planning import plan_incremental_range
 
@@ -1282,6 +1283,12 @@ def _run_incremental_range_command(
             severity_threshold=severity,
             update_artifacts=update_artifacts,
         )
+    )
+    write_incremental_execution_artifacts(
+        repo,
+        securevibes_dir,
+        plan,
+        execution_result,
     )
 
     if not quiet:

@@ -548,6 +548,13 @@ class TestIncrementalRunCommand:
             "securevibes.cli.main.execute_incremental_plan",
             fake_execute_incremental_plan,
         )
+        monkeypatch.setattr(
+            "securevibes.cli.main.write_incremental_execution_artifacts",
+            lambda repo_path, securevibes_dir, plan, execution_result: observed.setdefault(
+                "artifact",
+                (repo_path, securevibes_dir, plan.base_ref, plan.head_ref, execution_result),
+            ),
+        )
 
         result = runner.invoke(
             cli,
@@ -576,6 +583,13 @@ class TestIncrementalRunCommand:
             None,
             "medium",
             True,
+        )
+        assert observed["artifact"] == (
+            repo.resolve(),
+            repo.resolve() / ".securevibes",
+            "base123",
+            "head456",
+            _incremental_execution_result(),
         )
         assert "executed 1 cluster" in result.output.lower()
         assert "skipped 1 cluster" in result.output.lower()

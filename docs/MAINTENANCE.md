@@ -439,6 +439,7 @@ When deciding whether to keep or remove code:
 # - VULNERABILITIES.json
 # - scan_results.json
 # - scan_state.json (commit tracking for pr-review/catchup/incremental)
+# - incremental_execution.json (executed/skipped incremental cluster telemetry)
 
 # Optional artifacts (only when --target-url provided):
 # - DAST_VALIDATION.json (created by DAST agent)
