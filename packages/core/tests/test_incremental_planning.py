@@ -283,6 +283,111 @@ def test_build_incremental_plan_skips_generic_component_overlap_without_security
     assert synopsis.route == "skip"
 
 
+def test_build_incremental_plan_promotes_new_nested_src_subsystem_to_new_surface(
+    tmp_path: Path,
+) -> None:
+    securevibes_dir = tmp_path / ".securevibes"
+    _write_baseline_artifacts(securevibes_dir)
+    baseline = load_baseline_context(securevibes_dir)
+
+    changed_files = (
+        ChangedFile(path="src/acp/control-plane/manager.core.ts", status="A", insertions=120),
+        ChangedFile(path="src/acp/runtime/registry.ts", status="A", insertions=80),
+        ChangedFile(path="src/acp/runtime/session-identity.ts", status="A", insertions=60),
+    )
+
+    plan = build_incremental_plan(
+        [
+            CommitMetadata(
+                sha="commit-acp",
+                subject="Add ACP runtime",
+                body="",
+                changed_files=changed_files,
+                insertions=260,
+                deletions=0,
+            )
+        ],
+        baseline,
+        base_ref="base123",
+        head_ref="head456",
+        generated_at="2026-03-24T12:00:00Z",
+    )
+
+    synopsis = plan.synopses[0]
+
+    assert synopsis.new_attack_surface is True
+    assert synopsis.coarse_intent == "new_surface"
+    assert synopsis.route == "incremental_threat_model_then_review"
+    assert "new_subsystem_surface" in synopsis.reasons
+
+    assert len(plan.clusters) == 1
+    assert plan.clusters[0].route == "incremental_threat_model_then_review"
+    assert set(plan.clusters[0].file_paths) == {
+        "src/acp/control-plane/manager.core.ts",
+        "src/acp/runtime/registry.ts",
+        "src/acp/runtime/session-identity.ts",
+    }
+    assert "new_subsystem_surface" in plan.clusters[0].reasons
+
+
+def test_build_incremental_plan_promotes_new_nested_custom_root_subsystem_to_new_surface(
+    tmp_path: Path,
+) -> None:
+    securevibes_dir = tmp_path / ".securevibes"
+    _write_baseline_artifacts(securevibes_dir)
+    (securevibes_dir / "risk_map.json").write_text(
+        json.dumps(
+            {
+                "critical": ["src/*"],
+                "moderate": ["backend/*"],
+                "skip": ["docs/*", "package.json"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    baseline = load_baseline_context(securevibes_dir)
+
+    changed_files = (
+        ChangedFile(path="backend/acp/control-plane/manager.core.ts", status="A", insertions=120),
+        ChangedFile(path="backend/acp/runtime/registry.ts", status="A", insertions=80),
+        ChangedFile(path="backend/acp/runtime/session-identity.ts", status="A", insertions=60),
+    )
+
+    plan = build_incremental_plan(
+        [
+            CommitMetadata(
+                sha="commit-backend-acp",
+                subject="Add ACP runtime to backend tree",
+                body="",
+                changed_files=changed_files,
+                insertions=260,
+                deletions=0,
+            )
+        ],
+        baseline,
+        base_ref="base123",
+        head_ref="head456",
+        generated_at="2026-03-24T12:00:00Z",
+    )
+
+    synopsis = plan.synopses[0]
+
+    assert synopsis.new_attack_surface is True
+    assert synopsis.coarse_intent == "new_surface"
+    assert synopsis.route == "incremental_threat_model_then_review"
+    assert synopsis.new_subsystem_roots == ("backend/acp",)
+    assert "new_subsystem_surface" in synopsis.reasons
+
+    assert len(plan.clusters) == 1
+    assert plan.clusters[0].route == "incremental_threat_model_then_review"
+    assert set(plan.clusters[0].file_paths) == {
+        "backend/acp/control-plane/manager.core.ts",
+        "backend/acp/runtime/registry.ts",
+        "backend/acp/runtime/session-identity.ts",
+    }
+    assert "new_subsystem_surface" in plan.clusters[0].reasons
+
+
 def test_build_incremental_plan_clusters_existing_surface_commits_by_component(
     tmp_path: Path,
 ) -> None:

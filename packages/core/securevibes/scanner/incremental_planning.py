@@ -42,6 +42,8 @@ _SYNOPSIS_SCHEMA_VERSION = 1
 _HYPOTHESES_SCHEMA_VERSION = 1
 _EXECUTABLE_CLUSTER_MAX_FILES = 15
 _EXECUTABLE_CLUSTER_MAX_CHANGED_LINES = 500
+_NEW_SUBSYSTEM_MIN_ADDED_FILES = 3
+_NEW_SUBSYSTEM_NAMESPACE_DEPTH = 2
 
 
 @dataclass(frozen=True)
@@ -84,6 +86,7 @@ class CommitSynopsis:
     insertions: int
     deletions: int
     changed_files: tuple[ChangedFile, ...] = ()
+    new_subsystem_roots: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -365,6 +368,8 @@ def _build_commit_synopsis(
     baseline: BaselineContext,
 ) -> CommitSynopsis:
     chunk_risk = classify_chunk(commit.changed_files, baseline.risk_map)
+    new_subsystem_roots = _detect_new_subsystem_roots(commit.changed_files)
+    new_surface_signal = chunk_risk.new_attack_surface or bool(new_subsystem_roots)
     file_paths = tuple(
         sorted(
             {
@@ -397,6 +402,7 @@ def _build_commit_synopsis(
 
     coarse_intent = _coarse_intent_for_synopsis(
         chunk_risk,
+        new_surface_signal=new_surface_signal,
         file_paths=file_paths,
         matched_baseline_vuln_paths=matched_baseline_vuln_paths,
         matched_baseline_components=matched_baseline_components,
@@ -408,6 +414,8 @@ def _build_commit_synopsis(
         reasons.append("baseline_vulnerability_overlap")
     if matched_baseline_components:
         reasons.append("baseline_component_overlap")
+    if new_subsystem_roots:
+        reasons.append("new_subsystem_surface")
 
     return CommitSynopsis(
         sha=commit.sha,
@@ -421,7 +429,8 @@ def _build_commit_synopsis(
         risk_tier=chunk_risk.tier,
         reasons=tuple(dict.fromkeys(reasons)),
         dependency_files=chunk_risk.dependency_files,
-        new_attack_surface=chunk_risk.new_attack_surface,
+        new_attack_surface=new_surface_signal,
+        new_subsystem_roots=new_subsystem_roots,
         insertions=commit.insertions,
         deletions=commit.deletions,
         changed_files=commit.changed_files,
@@ -431,13 +440,14 @@ def _build_commit_synopsis(
 def _coarse_intent_for_synopsis(
     chunk_risk: ChunkRisk,
     *,
+    new_surface_signal: bool,
     file_paths: Sequence[str],
     matched_baseline_vuln_paths: Sequence[str],
     matched_baseline_components: Sequence[str],
 ) -> CoarseIntent:
     if chunk_risk.dependency_only:
         return "dependency_change"
-    if chunk_risk.new_attack_surface:
+    if new_surface_signal:
         return "new_surface"
     if chunk_risk.tier == "skip":
         return "likely_non_security"
@@ -653,6 +663,9 @@ def _build_cluster_slice(
         )
     )
     chunk_risk = classify_chunk(changed_files, baseline.risk_map)
+    new_surface_signal = chunk_risk.new_attack_surface or _matches_new_subsystem_roots(
+        file_paths, synopsis.new_subsystem_roots
+    )
     matched_baseline_vuln_paths = tuple(
         sorted(path for path in file_paths if path.lower() in baseline.vuln_paths)
     )
@@ -667,6 +680,7 @@ def _build_cluster_slice(
     )
     coarse_intent = _coarse_intent_for_synopsis(
         chunk_risk,
+        new_surface_signal=new_surface_signal,
         file_paths=file_paths,
         matched_baseline_vuln_paths=matched_baseline_vuln_paths,
         matched_baseline_components=baseline_components,
@@ -677,6 +691,8 @@ def _build_cluster_slice(
         reasons.append("baseline_vulnerability_overlap")
     if baseline_components:
         reasons.append("baseline_component_overlap")
+    if new_surface_signal and not chunk_risk.new_attack_surface:
+        reasons.append("new_subsystem_surface")
     return _ClusterSlice(
         commit_sha=synopsis.sha,
         route=route,
@@ -703,6 +719,74 @@ def _normalized_changed_files(synopsis: CommitSynopsis) -> tuple[ChangedFile, ..
         if isinstance(changed_file.path, str) and normalize_path(changed_file.path)
     ]
     return tuple(sorted(normalized_files, key=lambda item: normalize_path(item.path)))
+
+
+def _detect_new_subsystem_roots(changed_files: Sequence[ChangedFile]) -> tuple[str, ...]:
+    added_root_counts: dict[str, int] = {}
+    for changed_file in changed_files:
+        if not changed_file.status.upper().startswith("A"):
+            continue
+        root = _new_subsystem_root(changed_file.path)
+        if not root:
+            continue
+        added_root_counts[root] = added_root_counts.get(root, 0) + 1
+
+    return tuple(
+        sorted(
+            root
+            for root, count in added_root_counts.items()
+            if count >= _NEW_SUBSYSTEM_MIN_ADDED_FILES
+        )
+    )
+
+
+def _new_subsystem_root(path: str) -> str | None:
+    normalized = normalize_path(path)
+    if not normalized or _is_low_signal_new_subsystem_path(normalized):
+        return None
+
+    parts = normalized.split("/")
+    if len(parts) < _NEW_SUBSYSTEM_NAMESPACE_DEPTH:
+        return None
+    return "/".join(parts[:_NEW_SUBSYSTEM_NAMESPACE_DEPTH])
+
+
+def _matches_new_subsystem_roots(
+    file_paths: Sequence[str], new_subsystem_roots: Sequence[str]
+) -> bool:
+    if not new_subsystem_roots:
+        return False
+    normalized_roots = tuple(root.rstrip("/") for root in new_subsystem_roots if root)
+    for path in file_paths:
+        normalized = normalize_path(path)
+        if not normalized:
+            continue
+        for root in normalized_roots:
+            if normalized == root or normalized.startswith(f"{root}/"):
+                return True
+    return False
+
+
+def _is_low_signal_new_subsystem_path(path: str) -> bool:
+    normalized = normalize_path(path).lower()
+    if not normalized:
+        return True
+    if normalized.startswith(("docs/", "test/", "tests/", ".github/", "fixtures/")):
+        return True
+    if any(marker in normalized for marker in (".test.", ".spec.", ".snap.", "/__tests__/")):
+        return True
+    return normalized.endswith(
+        (
+            ".md",
+            ".mdx",
+            ".txt",
+            ".rst",
+            ".json",
+            ".yaml",
+            ".yml",
+            ".lock",
+        )
+    )
 
 
 def _cluster_topic(synopsis: CommitSynopsis) -> tuple[str, ...]:
