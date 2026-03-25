@@ -388,6 +388,66 @@ def test_build_incremental_plan_promotes_new_nested_custom_root_subsystem_to_new
     assert "new_subsystem_surface" in plan.clusters[0].reasons
 
 
+def test_build_incremental_plan_groups_new_surface_clusters_by_subsystem_topic(
+    tmp_path: Path,
+) -> None:
+    securevibes_dir = tmp_path / ".securevibes"
+    _write_baseline_artifacts(securevibes_dir)
+    (securevibes_dir / "risk_map.json").write_text(
+        json.dumps(
+            {
+                "critical": ["src/*"],
+                "moderate": ["backend/*"],
+                "skip": ["docs/*", "package.json"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    baseline = load_baseline_context(securevibes_dir)
+
+    changed_files = (
+        ChangedFile(path="backend/acp/control-plane/manager.core.ts", status="A", insertions=40),
+        ChangedFile(path="backend/acp/runtime/registry.ts", status="A", insertions=40),
+        ChangedFile(path="backend/acp/runtime/session-identity.ts", status="A", insertions=40),
+        ChangedFile(path="backend/mcp/server.ts", status="A", insertions=40),
+        ChangedFile(path="backend/mcp/router.ts", status="A", insertions=40),
+        ChangedFile(path="backend/mcp/session.ts", status="A", insertions=40),
+    )
+
+    plan = build_incremental_plan(
+        [
+            CommitMetadata(
+                sha="commit-backend-subsystems",
+                subject="Add ACP and MCP backends",
+                body="",
+                changed_files=changed_files,
+                insertions=240,
+                deletions=0,
+            )
+        ],
+        baseline,
+        base_ref="base123",
+        head_ref="head456",
+        generated_at="2026-03-25T12:00:00Z",
+    )
+
+    clusters_by_topic = {cluster.topic: cluster for cluster in plan.clusters}
+
+    assert set(clusters_by_topic) == {("backend/acp",), ("backend/mcp",)}
+    assert clusters_by_topic[("backend/acp",)].route == "incremental_threat_model_then_review"
+    assert clusters_by_topic[("backend/mcp",)].route == "incremental_threat_model_then_review"
+    assert set(clusters_by_topic[("backend/acp",)].file_paths) == {
+        "backend/acp/control-plane/manager.core.ts",
+        "backend/acp/runtime/registry.ts",
+        "backend/acp/runtime/session-identity.ts",
+    }
+    assert set(clusters_by_topic[("backend/mcp",)].file_paths) == {
+        "backend/mcp/router.ts",
+        "backend/mcp/server.ts",
+        "backend/mcp/session.ts",
+    }
+
+
 def test_build_incremental_plan_clusters_existing_surface_commits_by_component(
     tmp_path: Path,
 ) -> None:
@@ -630,6 +690,7 @@ def test_write_incremental_plan_artifacts_persists_synopsis_and_hypotheses(
     assert hypotheses_payload["head_ref"] == "head456"
     assert hypotheses_payload["clusters"][0]["route"] == "targeted_pr_review"
     assert hypotheses_payload["clusters"][0]["commit_shas"] == ["commit-existing"]
+    assert hypotheses_payload["clusters"][0]["topic"] == ["src:py"]
 
 
 def test_plan_incremental_range_orchestrates_collection_build_and_persistence(

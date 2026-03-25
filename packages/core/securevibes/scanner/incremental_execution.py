@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Callable, Literal
 
 from securevibes.diff.context import normalize_repo_path
@@ -52,6 +53,11 @@ class ClusterExecutionResult:
     high_count: int = 0
     skip_reason: str | None = None
     scan_result: ScanResult | None = None
+    diff_slice_count: int = 0
+    threat_model_reused: bool = False
+    threat_model_duration_seconds: float | None = None
+    pr_review_duration_seconds: float | None = None
+    total_duration_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -137,7 +143,13 @@ def _incremental_execution_payload(
                 "baseline_components": list(cluster.baseline_components) if cluster else [],
                 "coarse_intents": list(cluster.coarse_intents) if cluster else [],
                 "reasons": list(cluster.reasons) if cluster else [],
+                "topic": list(cluster.topic) if cluster else [],
                 "warnings": list(result.scan_result.warnings) if result.scan_result else [],
+                "diff_slice_count": result.diff_slice_count,
+                "threat_model_reused": result.threat_model_reused,
+                "threat_model_duration_seconds": result.threat_model_duration_seconds,
+                "pr_review_duration_seconds": result.pr_review_duration_seconds,
+                "total_duration_seconds": result.total_duration_seconds,
             }
         )
 
@@ -275,16 +287,20 @@ async def execute_incremental_plan(
     severity_threshold: str = "medium",
     update_artifacts: bool = False,
     scanner_factory: Callable[..., Scanner] | None = None,
+    clock: Callable[[], float] | None = None,
 ) -> IncrementalExecutionResult:
     """Execute supported review clusters from an incremental plan."""
     factory = scanner_factory or (
         lambda *, model, debug, quiet: Scanner(model=model, debug=debug, quiet=quiet)
     )
+    timer = clock or perf_counter
     selected_executable_clusters = _select_executable_clusters(plan.clusters)
     selected_targeted_clusters = _select_targeted_clusters(plan.clusters)
+    threat_modeled_topics: set[tuple[str, ...]] = set()
 
     cluster_results: list[ClusterExecutionResult] = []
     for cluster in plan.clusters:
+        cluster_started_at = timer()
         if cluster.route == "skip":
             cluster_results.append(
                 ClusterExecutionResult(
@@ -292,6 +308,7 @@ async def execute_incremental_plan(
                     route=cluster.route,
                     status="skipped",
                     skip_reason="planned_skip",
+                    total_duration_seconds=timer() - cluster_started_at,
                 )
             )
             continue
@@ -307,6 +324,7 @@ async def execute_incremental_plan(
                     route=cluster.route,
                     status="skipped",
                     skip_reason="route_not_implemented",
+                    total_duration_seconds=timer() - cluster_started_at,
                 )
             )
             continue
@@ -318,6 +336,7 @@ async def execute_incremental_plan(
                     route=cluster.route,
                     status="skipped",
                     skip_reason="execution_budget_exhausted",
+                    total_duration_seconds=timer() - cluster_started_at,
                 )
             )
             continue
@@ -332,6 +351,7 @@ async def execute_incremental_plan(
                     route=cluster.route,
                     status="skipped",
                     skip_reason="targeted_budget_exhausted",
+                    total_duration_seconds=timer() - cluster_started_at,
                 )
             )
             continue
@@ -344,6 +364,7 @@ async def execute_incremental_plan(
                     route=cluster.route,
                     status="skipped",
                     skip_reason="empty_cluster_diff",
+                    total_duration_seconds=timer() - cluster_started_at,
                 )
             )
             continue
@@ -353,23 +374,37 @@ async def execute_incremental_plan(
             known_vulns_path,
         )
         scanner = factory(model=model, debug=debug, quiet=quiet)
+        threat_model_duration_seconds = 0.0
+        pr_review_duration_seconds = 0.0
+        diff_slice_count = 0
+        threat_model_reused = False
+        slice_results: list[ScanResult] = []
         try:
             if cluster.route == "incremental_threat_model_then_review":
-                await scanner.scan_subagent(
-                    str(repo),
-                    "threat-modeling",
-                    force=True,
-                    skip_checks=True,
-                )
-                _refresh_incremental_artifacts(repo, securevibes_dir)
-                current_known_vulns_path = _resolve_known_vulns_path(
-                    securevibes_dir,
-                    known_vulns_path,
-                )
+                topic_key = _new_surface_topic_key(cluster)
+                if topic_key and topic_key in threat_modeled_topics:
+                    threat_model_reused = True
+                else:
+                    threat_model_started_at = timer()
+                    await scanner.scan_subagent(
+                        str(repo),
+                        "threat-modeling",
+                        force=True,
+                        skip_checks=True,
+                    )
+                    threat_model_duration_seconds += timer() - threat_model_started_at
+                    _refresh_incremental_artifacts(repo, securevibes_dir)
+                    current_known_vulns_path = _resolve_known_vulns_path(
+                        securevibes_dir,
+                        known_vulns_path,
+                    )
+                    if topic_key:
+                        threat_modeled_topics.add(topic_key)
             diff_slices = split_cluster_diff_context(cluster_diff_context)
-            slice_results: list[ScanResult] = []
             pr_review_kwargs = _pr_review_kwargs_for_cluster(cluster)
             for diff_slice in diff_slices:
+                diff_slice_count += 1
+                pr_review_started_at = timer()
                 result = await scanner.pr_review(
                     str(repo),
                     diff_slice,
@@ -378,6 +413,7 @@ async def execute_incremental_plan(
                     update_artifacts=update_artifacts,
                     **pr_review_kwargs,
                 )
+                pr_review_duration_seconds += timer() - pr_review_started_at
                 slice_results.append(result)
                 if update_artifacts:
                     _refresh_incremental_artifacts(repo, securevibes_dir)
@@ -386,20 +422,29 @@ async def execute_incremental_plan(
                         known_vulns_path,
                     )
             cluster_results.append(
-                _execution_result_for_cluster(cluster, _aggregate_scan_results(repo, slice_results))
+                _execution_result_for_cluster(
+                    cluster,
+                    _aggregate_scan_results(repo, slice_results),
+                    diff_slice_count=diff_slice_count,
+                    threat_model_reused=threat_model_reused,
+                    threat_model_duration_seconds=threat_model_duration_seconds,
+                    pr_review_duration_seconds=pr_review_duration_seconds,
+                    total_duration_seconds=timer() - cluster_started_at,
+                )
             )
         except Exception as exc:
-            partial_result = (
-                _aggregate_scan_results(repo, slice_results)
-                if "slice_results" in locals()
-                else None
-            )
+            partial_result = _aggregate_scan_results(repo, slice_results) if slice_results else None
             cluster_results.append(
                 _cluster_execution_failure_result(
                     cluster,
                     repo,
                     exc,
                     partial_result=partial_result,
+                    diff_slice_count=diff_slice_count,
+                    threat_model_reused=threat_model_reused,
+                    threat_model_duration_seconds=threat_model_duration_seconds,
+                    pr_review_duration_seconds=pr_review_duration_seconds,
+                    total_duration_seconds=timer() - cluster_started_at,
                 )
             )
 
@@ -525,6 +570,12 @@ def _cluster_has_security_signal(cluster: ReviewCluster) -> bool:
 def _execution_result_for_cluster(
     cluster: ReviewCluster,
     result: ScanResult,
+    *,
+    diff_slice_count: int,
+    threat_model_reused: bool,
+    threat_model_duration_seconds: float,
+    pr_review_duration_seconds: float,
+    total_duration_seconds: float,
 ) -> ClusterExecutionResult:
     return ClusterExecutionResult(
         cluster_id=cluster.cluster_id,
@@ -534,6 +585,11 @@ def _execution_result_for_cluster(
         critical_count=result.critical_count,
         high_count=result.high_count,
         scan_result=result,
+        diff_slice_count=diff_slice_count,
+        threat_model_reused=threat_model_reused,
+        threat_model_duration_seconds=threat_model_duration_seconds,
+        pr_review_duration_seconds=pr_review_duration_seconds,
+        total_duration_seconds=total_duration_seconds,
     )
 
 
@@ -543,6 +599,11 @@ def _cluster_execution_failure_result(
     exc: Exception,
     *,
     partial_result: ScanResult | None,
+    diff_slice_count: int,
+    threat_model_reused: bool,
+    threat_model_duration_seconds: float,
+    pr_review_duration_seconds: float,
+    total_duration_seconds: float,
 ) -> ClusterExecutionResult:
     result = partial_result or ScanResult(repository_path=str(repo))
     result.warnings.append(
@@ -558,6 +619,11 @@ def _cluster_execution_failure_result(
         high_count=result.high_count,
         skip_reason="cluster_execution_failed",
         scan_result=result,
+        diff_slice_count=diff_slice_count,
+        threat_model_reused=threat_model_reused,
+        threat_model_duration_seconds=threat_model_duration_seconds,
+        pr_review_duration_seconds=pr_review_duration_seconds,
+        total_duration_seconds=total_duration_seconds,
     )
 
 
@@ -570,6 +636,12 @@ def _aggregate_scan_results(repo: Path, results: list[ScanResult]) -> ScanResult
         aggregated.total_cost_usd += result.total_cost_usd
         aggregated.warnings.extend(result.warnings)
     return aggregated
+
+
+def _new_surface_topic_key(cluster: ReviewCluster) -> tuple[str, ...] | None:
+    if cluster.route != "incremental_threat_model_then_review":
+        return None
+    return cluster.topic or None
 
 
 def _resolve_known_vulns_path(

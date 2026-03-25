@@ -675,12 +675,16 @@ def test_write_incremental_execution_artifacts_persists_cluster_statuses(
                 findings_count=1,
                 high_count=1,
                 scan_result=_scan_result(repo, issues=1),
+                diff_slice_count=2,
+                pr_review_duration_seconds=1.5,
+                total_duration_seconds=2.0,
             ),
             ClusterExecutionResult(
                 cluster_id="cluster-002",
                 route="targeted_pr_review",
                 status="skipped",
                 skip_reason="targeted_budget_exhausted",
+                total_duration_seconds=0.0,
             ),
         )
     )
@@ -702,9 +706,14 @@ def test_write_incremental_execution_artifacts_persists_cluster_statuses(
     assert payload["clusters"][0]["status"] == "executed"
     assert payload["clusters"][0]["file_paths"] == ["src/auth.py"]
     assert payload["clusters"][0]["commit_shas"] == ["commit-1"]
+    assert payload["clusters"][0]["topic"] == []
+    assert payload["clusters"][0]["diff_slice_count"] == 2
+    assert payload["clusters"][0]["pr_review_duration_seconds"] == 1.5
+    assert payload["clusters"][0]["total_duration_seconds"] == 2.0
     assert payload["clusters"][1]["cluster_id"] == "cluster-002"
     assert payload["clusters"][1]["status"] == "skipped"
     assert payload["clusters"][1]["skip_reason"] == "targeted_budget_exhausted"
+    assert payload["clusters"][1]["total_duration_seconds"] == 0.0
     assert mirror_payload == payload
 
 
@@ -988,6 +997,95 @@ index 3333333..4444444 100644
     assert new_surface_call.kwargs["pr_review_attempts"] == 1
     assert new_surface_call.kwargs["pr_timeout_seconds"] == 120
     assert new_surface_call.kwargs["auto_triage"] is True
+    assert result.cluster_results[0].threat_model_duration_seconds is not None
+    assert result.cluster_results[0].pr_review_duration_seconds is not None
+    assert result.cluster_results[0].total_duration_seconds is not None
+
+
+def test_execute_incremental_plan_reuses_threat_modeling_for_same_new_surface_topic(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+
+    plan = IncrementalPlan(
+        base_ref="base123",
+        head_ref="head456",
+        generated_at="2026-03-25T12:00:00Z",
+        synopses=(),
+        clusters=(
+            ReviewCluster(
+                cluster_id="cluster-001",
+                route="incremental_threat_model_then_review",
+                commit_shas=("commit-1",),
+                file_paths=("src/acp/control-plane/manager.core.ts",),
+                baseline_vuln_paths=(),
+                baseline_components=(),
+                coarse_intents=("new_surface",),
+                reasons=("new_subsystem_surface",),
+                topic=("src/acp",),
+            ),
+            ReviewCluster(
+                cluster_id="cluster-002",
+                route="incremental_threat_model_then_review",
+                commit_shas=("commit-1",),
+                file_paths=("src/acp/runtime/registry.ts",),
+                baseline_vuln_paths=(),
+                baseline_components=(),
+                coarse_intents=("new_surface",),
+                reasons=("new_subsystem_surface",),
+                topic=("src/acp",),
+            ),
+        ),
+    )
+    diff_context = parse_unified_diff(
+        """diff --git a/src/acp/control-plane/manager.core.ts b/src/acp/control-plane/manager.core.ts
+index 1111111..2222222 100644
+--- a/src/acp/control-plane/manager.core.ts
++++ b/src/acp/control-plane/manager.core.ts
+@@ -0,0 +1,1 @@
++export const manager = true
+diff --git a/src/acp/runtime/registry.ts b/src/acp/runtime/registry.ts
+index 3333333..4444444 100644
+--- a/src/acp/runtime/registry.ts
++++ b/src/acp/runtime/registry.ts
+@@ -0,0 +1,1 @@
++export const registry = true
+"""
+    )
+
+    fake_scanner = SimpleNamespace(
+        scan_subagent=AsyncMock(return_value=_scan_result(repo)),
+        pr_review=AsyncMock(return_value=_scan_result(repo)),
+    )
+    clock_values = iter(float(value) for value in range(20))
+
+    result = asyncio.run(
+        execute_incremental_plan(
+            repo,
+            securevibes_dir,
+            plan,
+            diff_context,
+            model="sonnet",
+            quiet=True,
+            debug=False,
+            scanner_factory=lambda **_kwargs: fake_scanner,
+            clock=lambda: next(clock_values),
+        )
+    )
+
+    fake_scanner.scan_subagent.assert_awaited_once()
+    assert fake_scanner.pr_review.await_count == 2
+    assert result.cluster_results[0].threat_model_reused is False
+    assert result.cluster_results[0].threat_model_duration_seconds == 1.0
+    assert result.cluster_results[0].pr_review_duration_seconds == 1.0
+    assert result.cluster_results[0].total_duration_seconds is not None
+    assert result.cluster_results[1].threat_model_reused is True
+    assert result.cluster_results[1].threat_model_duration_seconds == 0.0
+    assert result.cluster_results[1].pr_review_duration_seconds == 1.0
+    assert result.cluster_results[1].total_duration_seconds is not None
 
 
 def test_execute_incremental_plan_refreshes_known_vulns_between_clusters(

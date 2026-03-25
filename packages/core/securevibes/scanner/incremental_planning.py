@@ -101,6 +101,7 @@ class ReviewCluster:
     baseline_components: tuple[str, ...]
     coarse_intents: tuple[CoarseIntent, ...]
     reasons: tuple[str, ...]
+    topic: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -290,6 +291,7 @@ def write_incremental_plan_artifacts(securevibes_dir: Path, plan: IncrementalPla
                 "baseline_components": list(cluster.baseline_components),
                 "coarse_intents": list(cluster.coarse_intents),
                 "reasons": list(cluster.reasons),
+                "topic": list(cluster.topic),
             }
             for cluster in plan.clusters
         ],
@@ -604,6 +606,7 @@ def _build_review_cluster(
         ),
         coarse_intents=tuple(dict.fromkeys(item.coarse_intent for item in slices)),
         reasons=tuple(sorted(reasons)),
+        topic=tuple(dict.fromkeys(value for item in slices for value in item.topic)),
     )
 
 
@@ -613,17 +616,18 @@ def _slice_synopsis(
 ) -> tuple[_ClusterSlice, ...]:
     changed_files = _normalized_changed_files(synopsis)
     if not changed_files:
+        topic = _cluster_topic_values(
+            synopsis.matched_baseline_components,
+            synopsis.matched_baseline_vuln_paths,
+            synopsis.dependency_files,
+            synopsis.derived_components,
+            synopsis.file_paths,
+        )
         return (
             _ClusterSlice(
                 commit_sha=synopsis.sha,
                 route=synopsis.route,
-                topic=_cluster_topic_values(
-                    synopsis.matched_baseline_components,
-                    synopsis.matched_baseline_vuln_paths,
-                    synopsis.dependency_files,
-                    synopsis.derived_components,
-                    synopsis.file_paths,
-                ),
+                topic=topic,
                 file_paths=synopsis.file_paths,
                 baseline_vuln_paths=synopsis.matched_baseline_vuln_paths,
                 baseline_components=synopsis.matched_baseline_components,
@@ -693,16 +697,19 @@ def _build_cluster_slice(
         reasons.append("baseline_component_overlap")
     if new_surface_signal and not chunk_risk.new_attack_surface:
         reasons.append("new_subsystem_surface")
+    topic = _slice_topic_values(
+        file_paths=file_paths,
+        baseline_components=baseline_components,
+        matched_baseline_vuln_paths=matched_baseline_vuln_paths,
+        dependency_files=chunk_risk.dependency_files,
+        derived_components=derived_components,
+        new_surface_signal=new_surface_signal,
+        new_subsystem_roots=synopsis.new_subsystem_roots,
+    )
     return _ClusterSlice(
         commit_sha=synopsis.sha,
         route=route,
-        topic=_cluster_topic_values(
-            baseline_components,
-            matched_baseline_vuln_paths,
-            chunk_risk.dependency_files,
-            derived_components,
-            file_paths,
-        ),
+        topic=topic,
         file_paths=file_paths,
         baseline_vuln_paths=matched_baseline_vuln_paths,
         baseline_components=baseline_components,
@@ -719,6 +726,34 @@ def _normalized_changed_files(synopsis: CommitSynopsis) -> tuple[ChangedFile, ..
         if isinstance(changed_file.path, str) and normalize_path(changed_file.path)
     ]
     return tuple(sorted(normalized_files, key=lambda item: normalize_path(item.path)))
+
+
+def _slice_topic_values(
+    *,
+    file_paths: Sequence[str],
+    baseline_components: Sequence[str],
+    matched_baseline_vuln_paths: Sequence[str],
+    dependency_files: Sequence[str],
+    derived_components: Sequence[str],
+    new_surface_signal: bool,
+    new_subsystem_roots: Sequence[str],
+) -> tuple[str, ...]:
+    if new_surface_signal:
+        matched_roots = tuple(
+            root
+            for root in new_subsystem_roots
+            if _matches_new_subsystem_roots(file_paths, (root,))
+        )
+        if matched_roots:
+            return matched_roots
+
+    return _cluster_topic_values(
+        baseline_components,
+        matched_baseline_vuln_paths,
+        dependency_files,
+        derived_components,
+        file_paths,
+    )
 
 
 def _detect_new_subsystem_roots(changed_files: Sequence[ChangedFile]) -> tuple[str, ...]:
