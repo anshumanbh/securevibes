@@ -441,7 +441,8 @@ When deciding whether to keep or remove code:
 # - scan_state.json (commit tracking for pr-review/catchup/incremental)
 # - incremental_execution.json (executed/skipped incremental cluster telemetry, including
 #   cluster topic, diff-slice count, and per-cluster timing)
-# - incremental_hypotheses.json (planned incremental routes, reasons, and cluster topics)
+# - incremental_hypotheses.json (planned incremental review jobs, reasons, and compatibility
+#   clusters)
 
 # Optional artifacts (only when --target-url provided):
 # - DAST_VALIDATION.json (created by DAST agent)

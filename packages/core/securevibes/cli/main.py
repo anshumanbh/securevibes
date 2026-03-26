@@ -907,10 +907,8 @@ def incremental(path: str, base: str, head: str, quiet: bool):
 
         if not quiet:
             commit_count = len(plan.synopses)
-            cluster_count = len(plan.clusters)
-            console.print(
-                f"Planned {commit_count} commit(s) into {cluster_count} review cluster(s)."
-            )
+            job_count = len(plan.jobs)
+            console.print(f"Planned {commit_count} commit(s) into {job_count} review job(s).")
             console.print(
                 f"Artifacts: {securevibes_dir / 'incremental_synopsis.json'}, "
                 f"{securevibes_dir / 'incremental_hypotheses.json'}"

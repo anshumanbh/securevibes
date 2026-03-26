@@ -31,6 +31,12 @@ CoarseIntent = Literal[
     "dependency_change",
     "likely_non_security",
 ]
+JobType = Literal[
+    "dependency_review",
+    "new_subsystem_review",
+    "baseline_overlap_review",
+    "skip",
+]
 ReviewRoute = Literal[
     "targeted_pr_review",
     "incremental_threat_model_then_review",
@@ -39,9 +45,7 @@ ReviewRoute = Literal[
 ]
 
 _SYNOPSIS_SCHEMA_VERSION = 1
-_HYPOTHESES_SCHEMA_VERSION = 1
-_EXECUTABLE_CLUSTER_MAX_FILES = 15
-_EXECUTABLE_CLUSTER_MAX_CHANGED_LINES = 500
+_HYPOTHESES_SCHEMA_VERSION = 2
 _NEW_SUBSYSTEM_MIN_ADDED_FILES = 3
 _NEW_SUBSYSTEM_NAMESPACE_DEPTH = 2
 
@@ -105,18 +109,32 @@ class ReviewCluster:
 
 
 @dataclass(frozen=True)
-class _ClusterSlice:
-    """Internal per-commit file slice used for cluster chunking."""
+class ReviewJob:
+    """Simplified subsystem-oriented review job."""
+
+    job_id: str
+    job_type: JobType
+    subsystem: str
+    commit_shas: tuple[str, ...]
+    file_paths: tuple[str, ...]
+    baseline_vuln_paths: tuple[str, ...]
+    baseline_components: tuple[str, ...]
+    coarse_intents: tuple[CoarseIntent, ...]
+    reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _JobSlice:
+    """Internal per-commit job slice used to aggregate subsystem review jobs."""
 
     commit_sha: str
-    route: ReviewRoute
-    topic: tuple[str, ...]
+    job_type: JobType
+    subsystem: str
     file_paths: tuple[str, ...]
     baseline_vuln_paths: tuple[str, ...]
     baseline_components: tuple[str, ...]
     coarse_intent: CoarseIntent
     reasons: tuple[str, ...]
-    changed_lines: int
 
 
 @dataclass(frozen=True)
@@ -127,7 +145,8 @@ class IncrementalPlan:
     head_ref: str
     generated_at: str
     synopses: tuple[CommitSynopsis, ...]
-    clusters: tuple[ReviewCluster, ...]
+    jobs: tuple[ReviewJob, ...] = ()
+    clusters: tuple[ReviewCluster, ...] = ()
 
 
 def load_baseline_context(securevibes_dir: Path, *, repo: Path | None = None) -> BaselineContext:
@@ -213,12 +232,14 @@ def build_incremental_plan(
 ) -> IncrementalPlan:
     """Build a deterministic incremental routing plan for a commit range."""
     synopses = tuple(_build_commit_synopsis(commit, baseline) for commit in commits)
-    clusters = _cluster_synopses(synopses, baseline)
+    jobs = _build_review_jobs(synopses, baseline)
+    clusters = _build_compatibility_clusters(jobs)
     return IncrementalPlan(
         base_ref=base_ref,
         head_ref=head_ref,
         generated_at=generated_at or utc_timestamp(),
         synopses=synopses,
+        jobs=jobs,
         clusters=clusters,
     )
 
@@ -280,6 +301,21 @@ def write_incremental_plan_artifacts(securevibes_dir: Path, plan: IncrementalPla
         "generated_at": plan.generated_at,
         "base_ref": plan.base_ref,
         "head_ref": plan.head_ref,
+        "job_count": len(plan.jobs),
+        "jobs": [
+            {
+                "job_id": job.job_id,
+                "job_type": job.job_type,
+                "subsystem": job.subsystem,
+                "commit_shas": list(job.commit_shas),
+                "file_paths": list(job.file_paths),
+                "baseline_vuln_paths": list(job.baseline_vuln_paths),
+                "baseline_components": list(job.baseline_components),
+                "coarse_intents": list(job.coarse_intents),
+                "reasons": list(job.reasons),
+            }
+            for job in plan.jobs
+        ],
         "cluster_count": len(plan.clusters),
         "clusters": [
             {
@@ -501,101 +537,28 @@ def _route_for_intent(intent: CoarseIntent) -> ReviewRoute:
     return "targeted_pr_review"
 
 
-def _cluster_synopses(
+def _build_review_jobs(
     synopses: Sequence[CommitSynopsis],
     baseline: BaselineContext,
-) -> tuple[ReviewCluster, ...]:
-    buckets: dict[tuple[ReviewRoute, tuple[str, ...]], list[_ClusterSlice]] = {}
+) -> tuple[ReviewJob, ...]:
+    buckets: dict[tuple[JobType, str], list[_JobSlice]] = {}
     for synopsis in synopses:
-        for slice_item in _slice_synopsis(synopsis, baseline):
-            key = (slice_item.route, slice_item.topic)
+        for slice_item in _job_slices_for_synopsis(synopsis, baseline):
+            key = (slice_item.job_type, slice_item.subsystem)
             buckets.setdefault(key, []).append(slice_item)
 
-    clusters: list[ReviewCluster] = []
-    index = 1
-    for bucket in buckets.values():
-        for cluster in _split_bucket_into_clusters(bucket, cluster_index_start=index):
-            clusters.append(cluster)
-            index += 1
-    return tuple(clusters)
+    jobs: list[ReviewJob] = []
+    for index, bucket in enumerate(buckets.values(), start=1):
+        jobs.append(_build_review_job(job_id=f"job-{index:03d}", slices=tuple(bucket)))
+    return tuple(jobs)
 
 
-def _split_bucket_into_clusters(
-    bucket: Sequence[_ClusterSlice],
-    *,
-    cluster_index_start: int,
-) -> tuple[ReviewCluster, ...]:
-    if not bucket:
-        return ()
-
-    route = bucket[0].route
-    if route == "skip":
-        return (
-            _build_review_cluster(
-                cluster_id=f"cluster-{cluster_index_start:03d}",
-                route=route,
-                slices=tuple(bucket),
-            ),
-        )
-
-    clusters: list[ReviewCluster] = []
-    cluster_slices: list[_ClusterSlice] = []
-    current_files: set[str] = set()
-    current_lines = 0
-    split_occurred = len(bucket) > 1
-
-    for slice_item in bucket:
-        slice_files = set(slice_item.file_paths)
-        next_file_count = len(current_files | slice_files)
-        next_line_count = current_lines + slice_item.changed_lines
-        exceeds_budget = cluster_slices and (
-            next_file_count > _EXECUTABLE_CLUSTER_MAX_FILES
-            or next_line_count > _EXECUTABLE_CLUSTER_MAX_CHANGED_LINES
-        )
-        if exceeds_budget:
-            clusters.append(
-                _build_review_cluster(
-                    cluster_id=f"cluster-{cluster_index_start + len(clusters):03d}",
-                    route=route,
-                    slices=tuple(cluster_slices),
-                    split_for_budget=split_occurred,
-                )
-            )
-            cluster_slices = []
-            current_files = set()
-            current_lines = 0
-
-        cluster_slices.append(slice_item)
-        current_files.update(slice_files)
-        current_lines += slice_item.changed_lines
-
-    if cluster_slices:
-        clusters.append(
-            _build_review_cluster(
-                cluster_id=f"cluster-{cluster_index_start + len(clusters):03d}",
-                route=route,
-                slices=tuple(cluster_slices),
-                split_for_budget=split_occurred,
-            )
-        )
-
-    return tuple(clusters)
-
-
-def _build_review_cluster(
-    *,
-    cluster_id: str,
-    route: ReviewRoute,
-    slices: Sequence[_ClusterSlice],
-    split_for_budget: bool = False,
-) -> ReviewCluster:
-    reasons = {reason for item in slices for reason in item.reasons}
-    if split_for_budget:
-        reasons.add("split_for_diff_budget")
-
-    return ReviewCluster(
-        cluster_id=cluster_id,
-        route=route,
+def _build_review_job(*, job_id: str, slices: Sequence[_JobSlice]) -> ReviewJob:
+    first = slices[0]
+    return ReviewJob(
+        job_id=job_id,
+        job_type=first.job_type,
+        subsystem=first.subsystem,
         commit_shas=tuple(dict.fromkeys(item.commit_sha for item in slices)),
         file_paths=tuple(sorted({path for item in slices for path in item.file_paths})),
         baseline_vuln_paths=tuple(
@@ -605,48 +568,157 @@ def _build_review_cluster(
             sorted({component for item in slices for component in item.baseline_components})
         ),
         coarse_intents=tuple(dict.fromkeys(item.coarse_intent for item in slices)),
-        reasons=tuple(sorted(reasons)),
-        topic=tuple(dict.fromkeys(value for item in slices for value in item.topic)),
+        reasons=tuple(sorted({reason for item in slices for reason in item.reasons})),
     )
 
 
-def _slice_synopsis(
+def _build_compatibility_clusters(jobs: Sequence[ReviewJob]) -> tuple[ReviewCluster, ...]:
+    return tuple(
+        ReviewCluster(
+            cluster_id=f"cluster-{index:03d}",
+            route=_route_for_job_type(job.job_type),
+            commit_shas=job.commit_shas,
+            file_paths=job.file_paths,
+            baseline_vuln_paths=job.baseline_vuln_paths,
+            baseline_components=job.baseline_components,
+            coarse_intents=job.coarse_intents,
+            reasons=job.reasons,
+            topic=(job.subsystem,) if job.subsystem else (job.job_type,),
+        )
+        for index, job in enumerate(jobs, start=1)
+    )
+
+
+def _route_for_job_type(job_type: JobType) -> ReviewRoute:
+    if job_type == "new_subsystem_review":
+        return "incremental_threat_model_then_review"
+    if job_type == "dependency_review":
+        return "supply_chain_review"
+    if job_type == "baseline_overlap_review":
+        return "targeted_pr_review"
+    return "skip"
+
+
+def _coarse_intent_for_job_type(job_type: JobType) -> CoarseIntent:
+    if job_type == "new_subsystem_review":
+        return "new_surface"
+    if job_type == "dependency_review":
+        return "dependency_change"
+    if job_type == "baseline_overlap_review":
+        return "existing_surface_delta"
+    return "likely_non_security"
+
+
+def _job_slices_for_synopsis(
     synopsis: CommitSynopsis,
     baseline: BaselineContext,
-) -> tuple[_ClusterSlice, ...]:
+) -> tuple[_JobSlice, ...]:
     changed_files = _normalized_changed_files(synopsis)
     if not changed_files:
-        topic = _cluster_topic_values(
-            synopsis.matched_baseline_components,
-            synopsis.matched_baseline_vuln_paths,
-            synopsis.dependency_files,
-            synopsis.derived_components,
-            synopsis.file_paths,
+        subsystem = (
+            _structural_subsystem(synopsis.file_paths[0]) if synopsis.file_paths else "empty"
         )
         return (
-            _ClusterSlice(
+            _JobSlice(
                 commit_sha=synopsis.sha,
-                route=synopsis.route,
-                topic=topic,
+                job_type=_job_type_for_synopsis(synopsis),
+                subsystem=subsystem,
                 file_paths=synopsis.file_paths,
                 baseline_vuln_paths=synopsis.matched_baseline_vuln_paths,
                 baseline_components=synopsis.matched_baseline_components,
                 coarse_intent=synopsis.coarse_intent,
                 reasons=synopsis.reasons,
-                changed_lines=synopsis.insertions + synopsis.deletions,
             ),
         )
 
+    dependency_paths = set(synopsis.dependency_files)
+    explicit_security_control = _synopsis_has_explicit_security_control_signal(synopsis.reasons)
+    buckets: dict[tuple[JobType, str], list[ChangedFile]] = {}
+
+    for changed_file in changed_files:
+        path = normalize_path(changed_file.path)
+        if not path:
+            continue
+        job_type, subsystem = _classify_changed_file_job(
+            changed_file,
+            synopsis=synopsis,
+            dependency_paths=dependency_paths,
+            explicit_security_control=explicit_security_control,
+        )
+        buckets.setdefault((job_type, subsystem), []).append(changed_file)
+
     return tuple(
-        _build_cluster_slice(synopsis, (changed_file,), baseline) for changed_file in changed_files
+        _build_job_slice(
+            synopsis,
+            baseline,
+            job_type=job_type,
+            subsystem=subsystem,
+            changed_files=bucket_files,
+        )
+        for (job_type, subsystem), bucket_files in buckets.items()
     )
 
 
-def _build_cluster_slice(
+def _job_type_for_synopsis(synopsis: CommitSynopsis) -> JobType:
+    if synopsis.coarse_intent == "new_surface":
+        return "new_subsystem_review"
+    if synopsis.coarse_intent == "dependency_change":
+        return "dependency_review"
+    if synopsis.coarse_intent == "existing_surface_delta":
+        return "baseline_overlap_review"
+    return "skip"
+
+
+def _classify_changed_file_job(
+    changed_file: ChangedFile,
+    *,
     synopsis: CommitSynopsis,
-    changed_files: Sequence[ChangedFile],
+    dependency_paths: set[str],
+    explicit_security_control: bool,
+) -> tuple[JobType, str]:
+    path = normalize_path(changed_file.path)
+    if path in dependency_paths:
+        return ("dependency_review", "dependency")
+
+    new_root = _matching_new_subsystem_root(path, synopsis.new_subsystem_roots)
+    if new_root:
+        return ("new_subsystem_review", new_root)
+
+    if _is_single_file_new_surface(path, changed_file, synopsis):
+        return ("new_subsystem_review", _structural_subsystem(path))
+
+    if path in synopsis.matched_baseline_vuln_paths:
+        return ("baseline_overlap_review", _structural_subsystem(path))
+
+    if explicit_security_control and not _is_low_signal_new_subsystem_path(path):
+        return ("baseline_overlap_review", _structural_subsystem(path))
+
+    if synopsis.matched_baseline_components and _paths_have_security_signal((path,)):
+        return ("baseline_overlap_review", _structural_subsystem(path))
+
+    return ("skip", _structural_subsystem(path))
+
+
+def _is_single_file_new_surface(
+    path: str,
+    changed_file: ChangedFile,
+    synopsis: CommitSynopsis,
+) -> bool:
+    return (
+        synopsis.new_attack_surface
+        and changed_file.status.upper().startswith("A")
+        and not _is_low_signal_new_subsystem_path(path)
+    )
+
+
+def _build_job_slice(
+    synopsis: CommitSynopsis,
     baseline: BaselineContext,
-) -> _ClusterSlice:
+    *,
+    job_type: JobType,
+    subsystem: str,
+    changed_files: Sequence[ChangedFile],
+) -> _JobSlice:
     file_paths = tuple(
         sorted(
             {
@@ -667,11 +739,8 @@ def _build_cluster_slice(
         )
     )
     chunk_risk = classify_chunk(changed_files, baseline.risk_map)
-    new_surface_signal = chunk_risk.new_attack_surface or _matches_new_subsystem_roots(
-        file_paths, synopsis.new_subsystem_roots
-    )
     matched_baseline_vuln_paths = tuple(
-        sorted(path for path in file_paths if path.lower() in baseline.vuln_paths)
+        sorted(path for path in file_paths if path in synopsis.matched_baseline_vuln_paths)
     )
     baseline_components = tuple(
         sorted(
@@ -682,40 +751,24 @@ def _build_cluster_slice(
             }
         )
     )
-    coarse_intent = _coarse_intent_for_synopsis(
-        chunk_risk,
-        new_surface_signal=new_surface_signal,
-        file_paths=file_paths,
-        matched_baseline_vuln_paths=matched_baseline_vuln_paths,
-        matched_baseline_components=baseline_components,
-    )
-    route = _route_for_intent(coarse_intent)
+
     reasons = list(chunk_risk.reasons)
     if matched_baseline_vuln_paths:
         reasons.append("baseline_vulnerability_overlap")
-    if baseline_components:
+    if baseline_components and job_type == "baseline_overlap_review":
         reasons.append("baseline_component_overlap")
-    if new_surface_signal and not chunk_risk.new_attack_surface:
+    if job_type == "new_subsystem_review":
         reasons.append("new_subsystem_surface")
-    topic = _slice_topic_values(
-        file_paths=file_paths,
-        baseline_components=baseline_components,
-        matched_baseline_vuln_paths=matched_baseline_vuln_paths,
-        dependency_files=chunk_risk.dependency_files,
-        derived_components=derived_components,
-        new_surface_signal=new_surface_signal,
-        new_subsystem_roots=synopsis.new_subsystem_roots,
-    )
-    return _ClusterSlice(
+
+    return _JobSlice(
         commit_sha=synopsis.sha,
-        route=route,
-        topic=topic,
+        job_type=job_type,
+        subsystem=subsystem,
         file_paths=file_paths,
         baseline_vuln_paths=matched_baseline_vuln_paths,
         baseline_components=baseline_components,
-        coarse_intent=coarse_intent,
+        coarse_intent=_coarse_intent_for_job_type(job_type),
         reasons=tuple(dict.fromkeys(reasons)),
-        changed_lines=sum(file.insertions + file.deletions for file in changed_files),
     )
 
 
@@ -726,34 +779,6 @@ def _normalized_changed_files(synopsis: CommitSynopsis) -> tuple[ChangedFile, ..
         if isinstance(changed_file.path, str) and normalize_path(changed_file.path)
     ]
     return tuple(sorted(normalized_files, key=lambda item: normalize_path(item.path)))
-
-
-def _slice_topic_values(
-    *,
-    file_paths: Sequence[str],
-    baseline_components: Sequence[str],
-    matched_baseline_vuln_paths: Sequence[str],
-    dependency_files: Sequence[str],
-    derived_components: Sequence[str],
-    new_surface_signal: bool,
-    new_subsystem_roots: Sequence[str],
-) -> tuple[str, ...]:
-    if new_surface_signal:
-        matched_roots = tuple(
-            root
-            for root in new_subsystem_roots
-            if _matches_new_subsystem_roots(file_paths, (root,))
-        )
-        if matched_roots:
-            return matched_roots
-
-    return _cluster_topic_values(
-        baseline_components,
-        matched_baseline_vuln_paths,
-        dependency_files,
-        derived_components,
-        file_paths,
-    )
 
 
 def _detect_new_subsystem_roots(changed_files: Sequence[ChangedFile]) -> tuple[str, ...]:
@@ -786,20 +811,28 @@ def _new_subsystem_root(path: str) -> str | None:
     return "/".join(parts[:_NEW_SUBSYSTEM_NAMESPACE_DEPTH])
 
 
-def _matches_new_subsystem_roots(
-    file_paths: Sequence[str], new_subsystem_roots: Sequence[str]
-) -> bool:
-    if not new_subsystem_roots:
-        return False
-    normalized_roots = tuple(root.rstrip("/") for root in new_subsystem_roots if root)
-    for path in file_paths:
-        normalized = normalize_path(path)
-        if not normalized:
-            continue
-        for root in normalized_roots:
-            if normalized == root or normalized.startswith(f"{root}/"):
-                return True
-    return False
+def _matching_new_subsystem_root(path: str, new_subsystem_roots: Sequence[str]) -> str | None:
+    normalized = normalize_path(path)
+    for root in (item.rstrip("/") for item in new_subsystem_roots if item):
+        if normalized == root or normalized.startswith(f"{root}/"):
+            return root
+    return None
+
+
+def _structural_subsystem(path: str) -> str:
+    normalized = normalize_path(path)
+    if not normalized:
+        return "empty"
+    parts = normalized.split("/")
+    if len(parts) >= 3:
+        return "/".join(parts[:2])
+    if len(parts) >= 2:
+        return parts[0]
+    return normalized
+
+
+def _synopsis_has_explicit_security_control_signal(reasons: Sequence[str]) -> bool:
+    return bool({"policy_file_changed", "skip_safeguard:script_exec_eval_signal"} & set(reasons))
 
 
 def _is_low_signal_new_subsystem_path(path: str) -> bool:
@@ -822,35 +855,6 @@ def _is_low_signal_new_subsystem_path(path: str) -> bool:
             ".lock",
         )
     )
-
-
-def _cluster_topic(synopsis: CommitSynopsis) -> tuple[str, ...]:
-    return _cluster_topic_values(
-        synopsis.matched_baseline_components,
-        synopsis.matched_baseline_vuln_paths,
-        synopsis.dependency_files,
-        synopsis.derived_components,
-        synopsis.file_paths,
-    )
-
-
-def _cluster_topic_values(
-    matched_baseline_components: Sequence[str],
-    matched_baseline_vuln_paths: Sequence[str],
-    dependency_files: Sequence[str],
-    derived_components: Sequence[str],
-    file_paths: Sequence[str],
-) -> tuple[str, ...]:
-    if matched_baseline_components:
-        return tuple(matched_baseline_components)
-    if matched_baseline_vuln_paths:
-        return tuple(matched_baseline_vuln_paths)
-    if dependency_files:
-        return ("dependency_change",)
-    if derived_components:
-        return tuple(derived_components)
-    top_levels = {path.split("/", 1)[0] if "/" in path else path for path in file_paths if path}
-    return tuple(sorted(top_levels)) or ("empty",)
 
 
 def _load_vulnerability_entries(path: Path) -> list[dict[str, object]]:

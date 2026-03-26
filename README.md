@@ -244,7 +244,7 @@ PR review artifacts (written to `.securevibes/`):
 - `pr_review_report.md` (default markdown report)
 - `scan_state.json` (commit tracking for pr-review/catchup/incremental)
 - `incremental_execution.json` (executed/skipped incremental cluster telemetry)
-- `incremental_hypotheses.json` (planned incremental routes, reasons, and cluster topics)
+- `incremental_hypotheses.json` (planned incremental review jobs, reasons, and compatibility clusters)
 
 ### Agentic Detection Override
 

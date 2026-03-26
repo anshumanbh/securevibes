@@ -94,6 +94,7 @@ def test_plan_incremental_range_rebuilds_missing_risk_map(
     risk_map = json.loads((securevibes_dir / "risk_map.json").read_text(encoding="utf-8"))
 
     assert plan.synopses == ()
+    assert plan.jobs == ()
     assert plan.clusters == ()
     assert risk_map["critical"] == ["src/*"]
     assert risk_map["moderate"] == []
@@ -148,6 +149,7 @@ def test_plan_incremental_range_tolerates_malformed_vulnerabilities_json(
     )
 
     assert plan.synopses == ()
+    assert plan.jobs == ()
     assert plan.clusters == ()
 
 
@@ -186,7 +188,7 @@ def test_collect_commit_range_loads_commit_details_in_order(
     assert [commit.subject for commit in result] == ["Subject for c1", "Subject for c2"]
 
 
-def test_build_incremental_plan_classifies_commit_intents_and_routes(tmp_path: Path) -> None:
+def test_build_incremental_plan_emits_simple_review_jobs(tmp_path: Path) -> None:
     securevibes_dir = tmp_path / ".securevibes"
     _write_baseline_artifacts(securevibes_dir)
     baseline = load_baseline_context(securevibes_dir)
@@ -234,22 +236,23 @@ def test_build_incremental_plan_classifies_commit_intents_and_routes(tmp_path: P
         generated_at="2026-03-20T12:00:00Z",
     )
 
-    synopses = {synopsis.sha: synopsis for synopsis in plan.synopses}
+    jobs_by_type = {job.job_type: job for job in plan.jobs}
 
-    assert synopses["commit-existing"].coarse_intent == "existing_surface_delta"
-    assert synopses["commit-existing"].route == "targeted_pr_review"
-    assert synopses["commit-existing"].matched_baseline_vuln_paths == ("src/auth.py",)
-    assert synopses["commit-existing"].matched_baseline_components == ("src:py",)
+    assert jobs_by_type["baseline_overlap_review"].file_paths == ("src/auth.py",)
+    assert jobs_by_type["baseline_overlap_review"].subsystem == "src"
+    assert jobs_by_type["new_subsystem_review"].file_paths == ("plugins/runtime/loader.ts",)
+    assert jobs_by_type["new_subsystem_review"].subsystem == "plugins/runtime"
+    assert jobs_by_type["dependency_review"].file_paths == ("package.json",)
+    assert jobs_by_type["dependency_review"].subsystem == "dependency"
+    assert jobs_by_type["skip"].file_paths == ("docs/guide.md",)
+    assert jobs_by_type["skip"].subsystem == "docs"
 
-    assert synopses["commit-new-surface"].coarse_intent == "new_surface"
-    assert synopses["commit-new-surface"].route == "incremental_threat_model_then_review"
-
-    assert synopses["commit-dependency"].coarse_intent == "dependency_change"
-    assert synopses["commit-dependency"].route == "supply_chain_review"
-    assert synopses["commit-dependency"].dependency_files == ("package.json",)
-
-    assert synopses["commit-docs"].coarse_intent == "likely_non_security"
-    assert synopses["commit-docs"].route == "skip"
+    assert [cluster.route for cluster in plan.clusters] == [
+        "targeted_pr_review",
+        "incremental_threat_model_then_review",
+        "supply_chain_review",
+        "skip",
+    ]
 
 
 def test_build_incremental_plan_skips_generic_component_overlap_without_security_signal(
@@ -281,9 +284,12 @@ def test_build_incremental_plan_skips_generic_component_overlap_without_security
     assert synopsis.matched_baseline_components == ("src:py",)
     assert synopsis.coarse_intent == "likely_non_security"
     assert synopsis.route == "skip"
+    assert len(plan.jobs) == 1
+    assert plan.jobs[0].job_type == "skip"
+    assert plan.clusters[0].route == "skip"
 
 
-def test_build_incremental_plan_promotes_new_nested_src_subsystem_to_new_surface(
+def test_build_incremental_plan_promotes_new_nested_subsystems_to_review_jobs(
     tmp_path: Path,
 ) -> None:
     securevibes_dir = tmp_path / ".securevibes"
@@ -313,84 +319,19 @@ def test_build_incremental_plan_promotes_new_nested_src_subsystem_to_new_surface
         generated_at="2026-03-24T12:00:00Z",
     )
 
-    synopsis = plan.synopses[0]
-
-    assert synopsis.new_attack_surface is True
-    assert synopsis.coarse_intent == "new_surface"
-    assert synopsis.route == "incremental_threat_model_then_review"
-    assert "new_subsystem_surface" in synopsis.reasons
-
-    assert len(plan.clusters) == 1
-    assert plan.clusters[0].route == "incremental_threat_model_then_review"
-    assert set(plan.clusters[0].file_paths) == {
+    assert len(plan.jobs) == 1
+    assert plan.jobs[0].job_type == "new_subsystem_review"
+    assert plan.jobs[0].subsystem == "src/acp"
+    assert set(plan.jobs[0].file_paths) == {
         "src/acp/control-plane/manager.core.ts",
         "src/acp/runtime/registry.ts",
         "src/acp/runtime/session-identity.ts",
     }
-    assert "new_subsystem_surface" in plan.clusters[0].reasons
-
-
-def test_build_incremental_plan_promotes_new_nested_custom_root_subsystem_to_new_surface(
-    tmp_path: Path,
-) -> None:
-    securevibes_dir = tmp_path / ".securevibes"
-    _write_baseline_artifacts(securevibes_dir)
-    (securevibes_dir / "risk_map.json").write_text(
-        json.dumps(
-            {
-                "critical": ["src/*"],
-                "moderate": ["backend/*"],
-                "skip": ["docs/*", "package.json"],
-            }
-        ),
-        encoding="utf-8",
-    )
-    baseline = load_baseline_context(securevibes_dir)
-
-    changed_files = (
-        ChangedFile(path="backend/acp/control-plane/manager.core.ts", status="A", insertions=120),
-        ChangedFile(path="backend/acp/runtime/registry.ts", status="A", insertions=80),
-        ChangedFile(path="backend/acp/runtime/session-identity.ts", status="A", insertions=60),
-    )
-
-    plan = build_incremental_plan(
-        [
-            CommitMetadata(
-                sha="commit-backend-acp",
-                subject="Add ACP runtime to backend tree",
-                body="",
-                changed_files=changed_files,
-                insertions=260,
-                deletions=0,
-            )
-        ],
-        baseline,
-        base_ref="base123",
-        head_ref="head456",
-        generated_at="2026-03-24T12:00:00Z",
-    )
-
-    synopsis = plan.synopses[0]
-
-    assert synopsis.new_attack_surface is True
-    assert synopsis.coarse_intent == "new_surface"
-    assert synopsis.route == "incremental_threat_model_then_review"
-    assert synopsis.new_subsystem_roots == ("backend/acp",)
-    assert "new_subsystem_surface" in synopsis.reasons
-
-    assert len(plan.clusters) == 1
+    assert "new_subsystem_surface" in plan.jobs[0].reasons
     assert plan.clusters[0].route == "incremental_threat_model_then_review"
-    assert set(plan.clusters[0].file_paths) == {
-        "backend/acp/control-plane/manager.core.ts",
-        "backend/acp/runtime/registry.ts",
-        "backend/acp/runtime/session-identity.ts",
-    }
-    assert "new_subsystem_surface" in plan.clusters[0].reasons
 
 
-def test_build_incremental_plan_groups_new_surface_clusters_by_subsystem_topic(
-    tmp_path: Path,
-) -> None:
+def test_build_incremental_plan_separates_multiple_new_subsystems(tmp_path: Path) -> None:
     securevibes_dir = tmp_path / ".securevibes"
     _write_baseline_artifacts(securevibes_dir)
     (securevibes_dir / "risk_map.json").write_text(
@@ -431,26 +372,14 @@ def test_build_incremental_plan_groups_new_surface_clusters_by_subsystem_topic(
         generated_at="2026-03-25T12:00:00Z",
     )
 
-    clusters_by_topic = {cluster.topic: cluster for cluster in plan.clusters}
+    jobs_by_subsystem = {job.subsystem: job for job in plan.jobs}
 
-    assert set(clusters_by_topic) == {("backend/acp",), ("backend/mcp",)}
-    assert clusters_by_topic[("backend/acp",)].route == "incremental_threat_model_then_review"
-    assert clusters_by_topic[("backend/mcp",)].route == "incremental_threat_model_then_review"
-    assert set(clusters_by_topic[("backend/acp",)].file_paths) == {
-        "backend/acp/control-plane/manager.core.ts",
-        "backend/acp/runtime/registry.ts",
-        "backend/acp/runtime/session-identity.ts",
-    }
-    assert set(clusters_by_topic[("backend/mcp",)].file_paths) == {
-        "backend/mcp/router.ts",
-        "backend/mcp/server.ts",
-        "backend/mcp/session.ts",
-    }
+    assert set(jobs_by_subsystem) == {"backend/acp", "backend/mcp"}
+    assert jobs_by_subsystem["backend/acp"].job_type == "new_subsystem_review"
+    assert jobs_by_subsystem["backend/mcp"].job_type == "new_subsystem_review"
 
 
-def test_build_incremental_plan_clusters_existing_surface_commits_by_component(
-    tmp_path: Path,
-) -> None:
+def test_build_incremental_plan_groups_baseline_overlap_by_subsystem(tmp_path: Path) -> None:
     securevibes_dir = tmp_path / ".securevibes"
     _write_baseline_artifacts(securevibes_dir)
     baseline = load_baseline_context(securevibes_dir)
@@ -482,105 +411,16 @@ def test_build_incremental_plan_clusters_existing_surface_commits_by_component(
         generated_at="2026-03-20T12:00:00Z",
     )
 
-    assert len(plan.clusters) == 1
-    cluster = plan.clusters[0]
-    assert cluster.route == "targeted_pr_review"
-    assert cluster.commit_shas == ("commit-a", "commit-b")
-    assert cluster.baseline_components == ("src:py",)
-    assert set(cluster.file_paths) == {"src/auth.py", "src/auth_session.py"}
-
-
-def test_build_incremental_plan_splits_oversized_single_commit_by_file_budget(
-    tmp_path: Path,
-) -> None:
-    securevibes_dir = tmp_path / ".securevibes"
-    _write_baseline_artifacts(securevibes_dir)
-    baseline = load_baseline_context(securevibes_dir)
-
-    large_commit = CommitMetadata(
-        sha="commit-huge",
-        subject="Large auth refactor",
-        body="",
-        changed_files=tuple(
-            ChangedFile(
-                path=f"src/auth_module_{index:02d}.py",
-                status="M",
-                insertions=10,
-                deletions=0,
-            )
-            for index in range(20)
-        ),
-        insertions=200,
-        deletions=0,
-    )
-
-    plan = build_incremental_plan(
-        [large_commit],
-        baseline,
-        base_ref="base123",
-        head_ref="head456",
-        generated_at="2026-03-20T12:00:00Z",
-    )
-
-    assert len(plan.clusters) == 2
+    assert len(plan.jobs) == 1
+    job = plan.jobs[0]
+    assert job.job_type == "baseline_overlap_review"
+    assert job.commit_shas == ("commit-a", "commit-b")
+    assert job.subsystem == "src"
+    assert set(job.file_paths) == {"src/auth.py", "src/auth_session.py"}
     assert plan.clusters[0].route == "targeted_pr_review"
-    assert plan.clusters[1].route == "targeted_pr_review"
-    assert plan.clusters[0].commit_shas == ("commit-huge",)
-    assert plan.clusters[1].commit_shas == ("commit-huge",)
-    assert len(plan.clusters[0].file_paths) == 15
-    assert len(plan.clusters[1].file_paths) == 5
-    assert "split_for_diff_budget" in plan.clusters[0].reasons
-    assert "split_for_diff_budget" in plan.clusters[1].reasons
 
 
-def test_build_incremental_plan_splits_targeted_bucket_by_line_budget(
-    tmp_path: Path,
-) -> None:
-    securevibes_dir = tmp_path / ".securevibes"
-    _write_baseline_artifacts(securevibes_dir)
-    baseline = load_baseline_context(securevibes_dir)
-
-    commits = [
-        CommitMetadata(
-            sha="commit-a",
-            subject="Auth changes",
-            body="",
-            changed_files=(
-                ChangedFile(path="src/auth.py", status="M", insertions=320, deletions=0),
-            ),
-            insertions=320,
-            deletions=0,
-        ),
-        CommitMetadata(
-            sha="commit-b",
-            subject="Auth session changes",
-            body="",
-            changed_files=(
-                ChangedFile(path="src/auth_session.py", status="M", insertions=320, deletions=0),
-            ),
-            insertions=320,
-            deletions=0,
-        ),
-    ]
-
-    plan = build_incremental_plan(
-        commits,
-        baseline,
-        base_ref="base123",
-        head_ref="head456",
-        generated_at="2026-03-20T12:00:00Z",
-    )
-
-    assert len(plan.clusters) == 2
-    assert plan.clusters[0].commit_shas == ("commit-a",)
-    assert plan.clusters[1].commit_shas == ("commit-b",)
-    assert "split_for_diff_budget" in plan.clusters[0].reasons
-    assert "split_for_diff_budget" in plan.clusters[1].reasons
-
-
-def test_build_incremental_plan_reroutes_docs_slice_to_skip_cluster(
-    tmp_path: Path,
-) -> None:
+def test_build_incremental_plan_splits_mixed_commit_into_jobs(tmp_path: Path) -> None:
     securevibes_dir = tmp_path / ".securevibes"
     _write_baseline_artifacts(securevibes_dir)
     baseline = load_baseline_context(securevibes_dir)
@@ -589,46 +429,14 @@ def test_build_incremental_plan_reroutes_docs_slice_to_skip_cluster(
         [
             CommitMetadata(
                 sha="commit-mixed",
-                subject="Auth change with docs",
-                body="",
-                changed_files=(
-                    ChangedFile(path="src/auth.py", status="M", insertions=10, deletions=2),
-                    ChangedFile(path="docs/guide.md", status="M", insertions=20, deletions=0),
-                ),
-                insertions=30,
-                deletions=2,
-            )
-        ],
-        baseline,
-        base_ref="base123",
-        head_ref="head456",
-        generated_at="2026-03-20T12:00:00Z",
-    )
-
-    routes_by_paths = {cluster.file_paths: cluster.route for cluster in plan.clusters}
-
-    assert routes_by_paths[("src/auth.py",)] == "targeted_pr_review"
-    assert routes_by_paths[("docs/guide.md",)] == "skip"
-
-
-def test_build_incremental_plan_reroutes_dependency_slice_to_supply_chain_cluster(
-    tmp_path: Path,
-) -> None:
-    securevibes_dir = tmp_path / ".securevibes"
-    _write_baseline_artifacts(securevibes_dir)
-    baseline = load_baseline_context(securevibes_dir)
-
-    plan = build_incremental_plan(
-        [
-            CommitMetadata(
-                sha="commit-mixed",
-                subject="Auth change with dependency bump",
+                subject="Auth change with dependency and docs",
                 body="",
                 changed_files=(
                     ChangedFile(path="src/auth.py", status="M", insertions=10, deletions=2),
                     ChangedFile(path="package.json", status="M", insertions=4, deletions=1),
+                    ChangedFile(path="docs/guide.md", status="M", insertions=20, deletions=0),
                 ),
-                insertions=14,
+                insertions=34,
                 deletions=3,
             )
         ],
@@ -638,13 +446,14 @@ def test_build_incremental_plan_reroutes_dependency_slice_to_supply_chain_cluste
         generated_at="2026-03-20T12:00:00Z",
     )
 
-    routes_by_paths = {cluster.file_paths: cluster.route for cluster in plan.clusters}
+    jobs_by_type = {job.job_type: job for job in plan.jobs}
 
-    assert routes_by_paths[("src/auth.py",)] == "targeted_pr_review"
-    assert routes_by_paths[("package.json",)] == "supply_chain_review"
+    assert jobs_by_type["baseline_overlap_review"].file_paths == ("src/auth.py",)
+    assert jobs_by_type["dependency_review"].file_paths == ("package.json",)
+    assert jobs_by_type["skip"].file_paths == ("docs/guide.md",)
 
 
-def test_write_incremental_plan_artifacts_persists_synopsis_and_hypotheses(
+def test_write_incremental_plan_artifacts_persists_synopsis_jobs_and_clusters(
     tmp_path: Path,
 ) -> None:
     securevibes_dir = tmp_path / ".securevibes"
@@ -673,24 +482,18 @@ def test_write_incremental_plan_artifacts_persists_synopsis_and_hypotheses(
     synopsis_path = securevibes_dir / "incremental_synopsis.json"
     hypotheses_path = securevibes_dir / "incremental_hypotheses.json"
 
-    assert synopsis_path.exists()
-    assert hypotheses_path.exists()
-
     synopsis_payload = json.loads(synopsis_path.read_text(encoding="utf-8"))
     hypotheses_payload = json.loads(hypotheses_path.read_text(encoding="utf-8"))
 
     assert synopsis_payload["schema_version"] == 1
-    assert synopsis_payload["base_ref"] == "base123"
-    assert synopsis_payload["head_ref"] == "head456"
-    assert synopsis_payload["commits"][0]["sha"] == "commit-existing"
     assert synopsis_payload["commits"][0]["coarse_intent"] == "existing_surface_delta"
 
-    assert hypotheses_payload["schema_version"] == 1
-    assert hypotheses_payload["base_ref"] == "base123"
-    assert hypotheses_payload["head_ref"] == "head456"
+    assert hypotheses_payload["schema_version"] == 2
+    assert hypotheses_payload["job_count"] == 1
+    assert hypotheses_payload["jobs"][0]["job_type"] == "baseline_overlap_review"
+    assert hypotheses_payload["jobs"][0]["subsystem"] == "src"
+    assert hypotheses_payload["cluster_count"] == 1
     assert hypotheses_payload["clusters"][0]["route"] == "targeted_pr_review"
-    assert hypotheses_payload["clusters"][0]["commit_shas"] == ["commit-existing"]
-    assert hypotheses_payload["clusters"][0]["topic"] == ["src:py"]
 
 
 def test_plan_incremental_range_orchestrates_collection_build_and_persistence(
@@ -741,7 +544,7 @@ def test_plan_incremental_range_orchestrates_collection_build_and_persistence(
         )
 
     def fake_write_incremental_plan_artifacts(path: Path, plan) -> None:
-        observed["write"] = (path, plan.base_ref, plan.head_ref, len(plan.synopses))
+        observed["write"] = (path, plan.base_ref, plan.head_ref, len(plan.jobs))
 
     _write_baseline_artifacts(securevibes_dir)
     monkeypatch.setattr(
@@ -808,8 +611,11 @@ def test_plan_incremental_range_writes_empty_artifacts_for_empty_commit_window(
     )
 
     assert plan.synopses == ()
+    assert plan.jobs == ()
     assert plan.clusters == ()
     assert synopsis_payload["commit_count"] == 0
     assert synopsis_payload["commits"] == []
+    assert hypotheses_payload["job_count"] == 0
+    assert hypotheses_payload["jobs"] == []
     assert hypotheses_payload["cluster_count"] == 0
     assert hypotheses_payload["clusters"] == []

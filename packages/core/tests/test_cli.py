@@ -19,6 +19,7 @@ from securevibes.models.result import ScanResult
 from securevibes.scanner.incremental_planning import (
     CommitSynopsis,
     IncrementalPlan,
+    ReviewJob,
     ReviewCluster,
 )
 from securevibes.scanner.incremental_execution import (
@@ -82,6 +83,19 @@ def _incremental_plan() -> IncrementalPlan:
                 new_attack_surface=False,
                 insertions=8,
                 deletions=2,
+            ),
+        ),
+        jobs=(
+            ReviewJob(
+                job_id="job-001",
+                job_type="baseline_overlap_review",
+                subsystem="src",
+                commit_shas=("commit-1",),
+                file_paths=("src/auth.py",),
+                baseline_vuln_paths=("src/auth.py",),
+                baseline_components=("src:py",),
+                coarse_intents=("existing_surface_delta",),
+                reasons=("critical_pattern_match",),
             ),
         ),
         clusters=(
@@ -437,7 +451,7 @@ class TestIncrementalCommand:
             None,
         )
         assert "planned 1 commit" in result.output.lower()
-        assert "1 review cluster" in result.output.lower()
+        assert "1 review job" in result.output.lower()
 
     def test_incremental_quiet_suppresses_summary(self, runner, tmp_path, monkeypatch):
         repo = tmp_path / "repo"
