@@ -424,6 +424,105 @@ index 1111111..2222222 100644
     assert fake_scanner.pr_review.await_args_list[0].args[1].changed_files == [
         "plugins/runtime/loader.ts"
     ]
+    assert result.cluster_results[0].selected_file_paths == ("plugins/runtime/loader.ts",)
+    assert result.cluster_results[0].deferred_file_paths == ()
+
+
+def test_execute_incremental_plan_limits_review_to_top_n_job_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    known_vulns_path = securevibes_dir / "VULNERABILITIES.json"
+    known_vulns_path.write_text("[]", encoding="utf-8")
+
+    diff_context = parse_unified_diff("""diff --git a/src/service.py b/src/service.py
+index 1111111..2222222 100644
+--- a/src/service.py
++++ b/src/service.py
+@@ -1 +1,2 @@
+-run()
++run()
++trace()
+diff --git a/src/auth.py b/src/auth.py
+index 3333333..4444444 100644
+--- a/src/auth.py
++++ b/src/auth.py
+@@ -1 +1,2 @@
+-allow(user)
++allow(user)
++audit(user)
+diff --git a/src/runtime.py b/src/runtime.py
+index 5555555..6666666 100644
+--- a/src/runtime.py
++++ b/src/runtime.py
+@@ -1 +1,2 @@
+-start()
++start()
++trace()
+diff --git a/src/notes.py b/src/notes.py
+index 7777777..8888888 100644
+--- a/src/notes.py
++++ b/src/notes.py
+@@ -1 +1,2 @@
+-note()
++note()
++trace()
+""")
+
+    plan = IncrementalPlan(
+        base_ref="base123",
+        head_ref="head456",
+        generated_at="2026-03-20T12:00:00Z",
+        synopses=(),
+        jobs=(
+            ReviewJob(
+                job_id="job-001",
+                job_type="baseline_overlap_review",
+                subsystem="src",
+                commit_shas=("commit-1",),
+                file_paths=("src/service.py", "src/auth.py", "src/runtime.py", "src/notes.py"),
+                baseline_vuln_paths=("src/auth.py",),
+                baseline_components=("src:py",),
+                coarse_intents=("existing_surface_delta",),
+                reasons=("baseline_component_overlap",),
+            ),
+        ),
+        clusters=(),
+    )
+
+    monkeypatch.setattr(
+        "securevibes.scanner.incremental_execution._BASELINE_OVERLAP_MAX_REVIEW_FILES",
+        2,
+    )
+
+    fake_scanner = SimpleNamespace(
+        scan_subagent=AsyncMock(return_value=_scan_result(repo)),
+        pr_review=AsyncMock(return_value=_scan_result(repo)),
+    )
+
+    result = asyncio.run(
+        execute_incremental_plan(
+            repo,
+            securevibes_dir,
+            plan,
+            diff_context,
+            model="sonnet",
+            quiet=True,
+            debug=False,
+            known_vulns_path=known_vulns_path,
+            scanner_factory=lambda **_kwargs: fake_scanner,
+        )
+    )
+
+    assert fake_scanner.pr_review.await_count == 1
+    reviewed_paths = fake_scanner.pr_review.await_args_list[0].args[1].changed_files
+    assert reviewed_paths == ["src/auth.py", "src/runtime.py"]
+    assert result.cluster_results[0].selected_file_paths == ("src/auth.py", "src/runtime.py")
+    assert result.cluster_results[0].deferred_file_paths == ("src/service.py", "src/notes.py")
 
 
 def test_execute_incremental_plan_prioritizes_and_caps_targeted_clusters(
@@ -793,6 +892,8 @@ def test_write_incremental_execution_artifacts_persists_cluster_statuses(
                 findings_count=1,
                 high_count=1,
                 scan_result=_scan_result(repo, issues=1),
+                selected_file_paths=("src/auth.py",),
+                deferred_file_paths=("src/auth_session.py",),
                 diff_slice_count=2,
                 pr_review_duration_seconds=1.5,
                 total_duration_seconds=2.0,
@@ -823,6 +924,8 @@ def test_write_incremental_execution_artifacts_persists_cluster_statuses(
     assert payload["clusters"][0]["cluster_id"] == "cluster-001"
     assert payload["clusters"][0]["status"] == "executed"
     assert payload["clusters"][0]["file_paths"] == ["src/auth.py"]
+    assert payload["clusters"][0]["selected_file_paths"] == ["src/auth.py"]
+    assert payload["clusters"][0]["deferred_file_paths"] == ["src/auth_session.py"]
     assert payload["clusters"][0]["commit_shas"] == ["commit-1"]
     assert payload["clusters"][0]["topic"] == []
     assert payload["clusters"][0]["diff_slice_count"] == 2

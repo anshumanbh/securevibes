@@ -37,8 +37,27 @@ _INCREMENTAL_NEW_SURFACE_ATTEMPTS = 1
 _INCREMENTAL_NEW_SURFACE_TIMEOUT_SECONDS = 120
 _INCREMENTAL_SUPPLY_CHAIN_ATTEMPTS = 1
 _INCREMENTAL_SUPPLY_CHAIN_TIMEOUT_SECONDS = 90
+_BASELINE_OVERLAP_MAX_REVIEW_FILES = 3
+_NEW_SUBSYSTEM_MAX_REVIEW_FILES = 4
+_SUPPLY_CHAIN_MAX_REVIEW_FILES = 3
 _INCREMENTAL_EXECUTION_SCHEMA_VERSION = 1
 _INCREMENTAL_TELEMETRY_MIRROR_DIR = Path("/tmp/securevibes-incremental-telemetry")
+_EXECUTION_PRIORITY_KEYWORDS = SECURITY_KEYWORDS + (
+    "session",
+    "runtime",
+    "control",
+    "plugin",
+    "sandbox",
+    "spawn",
+    "command",
+    "router",
+    "server",
+    "client",
+    "api",
+    "handler",
+    "manager",
+    "policy",
+)
 
 
 @dataclass(frozen=True)
@@ -67,6 +86,8 @@ class ClusterExecutionResult:
     high_count: int = 0
     skip_reason: str | None = None
     scan_result: ScanResult | None = None
+    selected_file_paths: tuple[str, ...] = ()
+    deferred_file_paths: tuple[str, ...] = ()
     diff_slice_count: int = 0
     threat_model_reused: bool = False
     threat_model_duration_seconds: float | None = None
@@ -159,6 +180,8 @@ def _incremental_execution_payload(
                 "high_count": result.high_count,
                 "commit_shas": list(cluster.commit_shas) if cluster else [],
                 "file_paths": list(cluster.file_paths) if cluster else [],
+                "selected_file_paths": list(result.selected_file_paths),
+                "deferred_file_paths": list(result.deferred_file_paths),
                 "baseline_vuln_paths": list(cluster.baseline_vuln_paths) if cluster else [],
                 "baseline_components": list(cluster.baseline_components) if cluster else [],
                 "coarse_intents": list(cluster.coarse_intents) if cluster else [],
@@ -326,6 +349,10 @@ async def execute_incremental_plan(
     cluster_results: list[ClusterExecutionResult] = []
     for cluster in execution_units:
         cluster_started_at = timer()
+        selected_file_paths = _selected_file_paths_for_execution(cluster)
+        deferred_file_paths = tuple(
+            path for path in cluster.file_paths if path not in selected_file_paths
+        )
         if cluster.route == "skip":
             cluster_results.append(
                 ClusterExecutionResult(
@@ -333,6 +360,8 @@ async def execute_incremental_plan(
                     route=cluster.route,
                     status="skipped",
                     skip_reason="planned_skip",
+                    selected_file_paths=selected_file_paths,
+                    deferred_file_paths=deferred_file_paths,
                     total_duration_seconds=timer() - cluster_started_at,
                 )
             )
@@ -349,6 +378,8 @@ async def execute_incremental_plan(
                     route=cluster.route,
                     status="skipped",
                     skip_reason="route_not_implemented",
+                    selected_file_paths=selected_file_paths,
+                    deferred_file_paths=deferred_file_paths,
                     total_duration_seconds=timer() - cluster_started_at,
                 )
             )
@@ -361,6 +392,8 @@ async def execute_incremental_plan(
                     route=cluster.route,
                     status="skipped",
                     skip_reason="execution_budget_exhausted",
+                    selected_file_paths=selected_file_paths,
+                    deferred_file_paths=deferred_file_paths,
                     total_duration_seconds=timer() - cluster_started_at,
                 )
             )
@@ -376,12 +409,14 @@ async def execute_incremental_plan(
                     route=cluster.route,
                     status="skipped",
                     skip_reason="targeted_budget_exhausted",
+                    selected_file_paths=selected_file_paths,
+                    deferred_file_paths=deferred_file_paths,
                     total_duration_seconds=timer() - cluster_started_at,
                 )
             )
             continue
 
-        cluster_diff_context = build_cluster_diff_context(diff_context, cluster.file_paths)
+        cluster_diff_context = build_cluster_diff_context(diff_context, selected_file_paths)
         if not cluster_diff_context.changed_files:
             cluster_results.append(
                 ClusterExecutionResult(
@@ -389,6 +424,8 @@ async def execute_incremental_plan(
                     route=cluster.route,
                     status="skipped",
                     skip_reason="empty_cluster_diff",
+                    selected_file_paths=selected_file_paths,
+                    deferred_file_paths=deferred_file_paths,
                     total_duration_seconds=timer() - cluster_started_at,
                 )
             )
@@ -450,6 +487,8 @@ async def execute_incremental_plan(
                 _execution_result_for_cluster(
                     cluster,
                     _aggregate_scan_results(repo, slice_results),
+                    selected_file_paths=selected_file_paths,
+                    deferred_file_paths=deferred_file_paths,
                     diff_slice_count=diff_slice_count,
                     threat_model_reused=threat_model_reused,
                     threat_model_duration_seconds=threat_model_duration_seconds,
@@ -465,6 +504,8 @@ async def execute_incremental_plan(
                     repo,
                     exc,
                     partial_result=partial_result,
+                    selected_file_paths=selected_file_paths,
+                    deferred_file_paths=deferred_file_paths,
                     diff_slice_count=diff_slice_count,
                     threat_model_reused=threat_model_reused,
                     threat_model_duration_seconds=threat_model_duration_seconds,
@@ -555,7 +596,7 @@ def _select_targeted_units(clusters: tuple[_ExecutionUnit, ...]) -> set[str]:
     selected_ids: set[str] = set()
     selected_files = 0
     for _index, cluster in ranked:
-        next_file_total = selected_files + len(cluster.file_paths)
+        next_file_total = selected_files + len(_selected_file_paths_for_execution(cluster))
         if selected_ids and (
             len(selected_ids) + 1 > _TARGETED_CLUSTER_MAX_EXECUTIONS
             or next_file_total > _TARGETED_CLUSTER_MAX_FILES
@@ -591,7 +632,7 @@ def _select_executable_units(clusters: tuple[_ExecutionUnit, ...]) -> set[str]:
     selected_ids: set[str] = set()
     selected_files = 0
     for _index, cluster in ranked:
-        next_file_total = selected_files + len(cluster.file_paths)
+        next_file_total = selected_files + len(_selected_file_paths_for_execution(cluster))
         if selected_ids and (
             len(selected_ids) + 1 > _EXECUTABLE_CLUSTER_MAX_EXECUTIONS
             or next_file_total > _EXECUTABLE_CLUSTER_MAX_FILES
@@ -629,6 +670,60 @@ def _targeted_cluster_score(cluster: _ExecutionUnit) -> int:
     return score
 
 
+def _selected_file_paths_for_execution(cluster: _ExecutionUnit) -> tuple[str, ...]:
+    cap = _review_file_cap(cluster)
+    if len(cluster.file_paths) <= cap:
+        return cluster.file_paths
+
+    ranked = sorted(
+        cluster.file_paths,
+        key=lambda path: (_file_execution_score(cluster, path), path),
+        reverse=True,
+    )
+    return tuple(ranked[:cap])
+
+
+def _review_file_cap(cluster: _ExecutionUnit) -> int:
+    if cluster.route == "incremental_threat_model_then_review":
+        return _NEW_SUBSYSTEM_MAX_REVIEW_FILES
+    if cluster.route == "supply_chain_review":
+        return _SUPPLY_CHAIN_MAX_REVIEW_FILES
+    if cluster.route == "targeted_pr_review":
+        return _BASELINE_OVERLAP_MAX_REVIEW_FILES
+    return len(cluster.file_paths)
+
+
+def _file_execution_score(cluster: _ExecutionUnit, path: str) -> int:
+    normalized = normalize_repo_path(path).lower()
+    score = 0
+    if path in cluster.baseline_vuln_paths:
+        score += 200
+    if _path_has_priority_signal(normalized):
+        score += 80
+    if "policy_file_changed" in cluster.reasons and any(
+        token in normalized for token in ("policy", "config", "permission", "auth")
+    ):
+        score += 40
+    if cluster.route == "incremental_threat_model_then_review" and any(
+        token in normalized for token in ("runtime", "session", "control", "router", "manager")
+    ):
+        score += 30
+    if _is_test_or_doc_path(normalized):
+        score -= 100
+    score -= normalized.count("/")
+    return score
+
+
+def _path_has_priority_signal(path: str) -> bool:
+    return any(keyword in path for keyword in _EXECUTION_PRIORITY_KEYWORDS)
+
+
+def _is_test_or_doc_path(path: str) -> bool:
+    return path.startswith(("docs/", "doc/", "tests/", "test/")) or any(
+        marker in path for marker in (".test.", ".spec.", "/__tests__/")
+    )
+
+
 def _cluster_has_security_signal(cluster: _ExecutionUnit) -> bool:
     for path in cluster.file_paths:
         normalized = normalize_repo_path(path).lower()
@@ -641,6 +736,8 @@ def _execution_result_for_cluster(
     cluster: _ExecutionUnit,
     result: ScanResult,
     *,
+    selected_file_paths: tuple[str, ...],
+    deferred_file_paths: tuple[str, ...],
     diff_slice_count: int,
     threat_model_reused: bool,
     threat_model_duration_seconds: float,
@@ -655,6 +752,8 @@ def _execution_result_for_cluster(
         critical_count=result.critical_count,
         high_count=result.high_count,
         scan_result=result,
+        selected_file_paths=selected_file_paths,
+        deferred_file_paths=deferred_file_paths,
         diff_slice_count=diff_slice_count,
         threat_model_reused=threat_model_reused,
         threat_model_duration_seconds=threat_model_duration_seconds,
@@ -669,6 +768,8 @@ def _cluster_execution_failure_result(
     exc: Exception,
     *,
     partial_result: ScanResult | None,
+    selected_file_paths: tuple[str, ...],
+    deferred_file_paths: tuple[str, ...],
     diff_slice_count: int,
     threat_model_reused: bool,
     threat_model_duration_seconds: float,
@@ -688,6 +789,8 @@ def _cluster_execution_failure_result(
         high_count=result.high_count,
         skip_reason="cluster_execution_failed",
         scan_result=result,
+        selected_file_paths=selected_file_paths,
+        deferred_file_paths=deferred_file_paths,
         diff_slice_count=diff_slice_count,
         threat_model_reused=threat_model_reused,
         threat_model_duration_seconds=threat_model_duration_seconds,
