@@ -23,6 +23,7 @@ from securevibes.scanner.incremental_execution import (
 from securevibes.scanner.incremental_planning import (
     CommitSynopsis,
     IncrementalPlan,
+    ReviewJob,
     ReviewCluster,
 )
 
@@ -64,6 +65,30 @@ def _incremental_plan() -> IncrementalPlan:
                 new_attack_surface=False,
                 insertions=3,
                 deletions=1,
+            ),
+        ),
+        jobs=(
+            ReviewJob(
+                job_id="job-001",
+                job_type="baseline_overlap_review",
+                subsystem="src",
+                commit_shas=("commit-1",),
+                file_paths=("src/auth.py",),
+                baseline_vuln_paths=("src/auth.py",),
+                baseline_components=("src:py",),
+                coarse_intents=("existing_surface_delta",),
+                reasons=("critical_pattern_match",),
+            ),
+            ReviewJob(
+                job_id="job-002",
+                job_type="dependency_review",
+                subsystem="dependency",
+                commit_shas=("commit-2",),
+                file_paths=("package.json",),
+                baseline_vuln_paths=(),
+                baseline_components=(),
+                coarse_intents=("dependency_change",),
+                reasons=("dependency_change_promotion",),
             ),
         ),
         clusters=(
@@ -128,6 +153,30 @@ def _new_surface_plan() -> IncrementalPlan:
                 new_attack_surface=False,
                 insertions=8,
                 deletions=2,
+            ),
+        ),
+        jobs=(
+            ReviewJob(
+                job_id="job-001",
+                job_type="new_subsystem_review",
+                subsystem="plugins/runtime",
+                commit_shas=("commit-1",),
+                file_paths=("plugins/runtime/loader.ts",),
+                baseline_vuln_paths=(),
+                baseline_components=(),
+                coarse_intents=("new_surface",),
+                reasons=("unmapped_new_attack_surface",),
+            ),
+            ReviewJob(
+                job_id="job-002",
+                job_type="baseline_overlap_review",
+                subsystem="src",
+                commit_shas=("commit-2",),
+                file_paths=("src/auth.py",),
+                baseline_vuln_paths=("src/auth.py",),
+                baseline_components=("src:py",),
+                coarse_intents=("existing_surface_delta",),
+                reasons=("critical_pattern_match",),
             ),
         ),
         clusters=(
@@ -306,6 +355,75 @@ index 3333333..4444444 100644
     assert supply_chain_call.kwargs["pr_timeout_seconds"] == 90
     assert supply_chain_call.kwargs["auto_triage"] is True
     fake_scanner.scan_subagent.assert_not_awaited()
+
+
+def test_execute_incremental_plan_prefers_jobs_when_clusters_are_absent(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    securevibes_dir = repo / ".securevibes"
+    securevibes_dir.mkdir()
+    known_vulns_path = securevibes_dir / "VULNERABILITIES.json"
+    known_vulns_path.write_text("[]", encoding="utf-8")
+
+    diff_context = parse_unified_diff(
+        """diff --git a/plugins/runtime/loader.ts b/plugins/runtime/loader.ts
+index 1111111..2222222 100644
+--- a/plugins/runtime/loader.ts
++++ b/plugins/runtime/loader.ts
+@@ -0,0 +1,2 @@
++export function loadPlugin() {}
++export function validatePlugin() {}
+"""
+    )
+
+    plan = IncrementalPlan(
+        base_ref="base123",
+        head_ref="head456",
+        generated_at="2026-03-20T12:00:00Z",
+        synopses=(),
+        jobs=(
+            ReviewJob(
+                job_id="job-001",
+                job_type="new_subsystem_review",
+                subsystem="plugins/runtime",
+                commit_shas=("commit-1",),
+                file_paths=("plugins/runtime/loader.ts",),
+                baseline_vuln_paths=(),
+                baseline_components=(),
+                coarse_intents=("new_surface",),
+                reasons=("unmapped_new_attack_surface",),
+            ),
+        ),
+        clusters=(),
+    )
+
+    fake_scanner = SimpleNamespace(
+        scan_subagent=AsyncMock(return_value=_scan_result(repo)),
+        pr_review=AsyncMock(return_value=_scan_result(repo)),
+    )
+
+    result = asyncio.run(
+        execute_incremental_plan(
+            repo,
+            securevibes_dir,
+            plan,
+            diff_context,
+            model="sonnet",
+            quiet=True,
+            debug=False,
+            known_vulns_path=known_vulns_path,
+            scanner_factory=lambda **_kwargs: fake_scanner,
+        )
+    )
+
+    assert len(result.cluster_results) == 1
+    assert result.cluster_results[0].cluster_id == "job-001"
+    assert result.cluster_results[0].status == "executed"
+    fake_scanner.scan_subagent.assert_awaited_once()
+    fake_scanner.pr_review.assert_awaited_once()
+    assert fake_scanner.pr_review.await_args_list[0].args[1].changed_files == [
+        "plugins/runtime/loader.ts"
+    ]
 
 
 def test_execute_incremental_plan_prioritizes_and_caps_targeted_clusters(

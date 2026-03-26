@@ -1,4 +1,4 @@
-"""Execution helpers for incremental review clusters."""
+"""Execution helpers for incremental review jobs."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from securevibes.diff.parser import DiffContext, DiffFile, DiffHunk
 from securevibes.models.result import ScanResult
 from securevibes.scanner import Scanner
 from securevibes.scanner.chain_analysis import diff_file_path
-from securevibes.scanner.incremental_planning import IncrementalPlan, ReviewCluster
+from securevibes.scanner.incremental_planning import IncrementalPlan, ReviewJob
 from securevibes.scanner.risk_scorer import (
     SECURITY_KEYWORDS,
     build_risk_map_from_threat_model,
@@ -39,6 +39,20 @@ _INCREMENTAL_SUPPLY_CHAIN_ATTEMPTS = 1
 _INCREMENTAL_SUPPLY_CHAIN_TIMEOUT_SECONDS = 90
 _INCREMENTAL_EXECUTION_SCHEMA_VERSION = 1
 _INCREMENTAL_TELEMETRY_MIRROR_DIR = Path("/tmp/securevibes-incremental-telemetry")
+
+
+@dataclass(frozen=True)
+class _ExecutionUnit:
+    """Primary executable review unit derived from plan jobs or compatibility clusters."""
+
+    result_id: str
+    route: str
+    file_paths: tuple[str, ...]
+    baseline_vuln_paths: tuple[str, ...]
+    baseline_components: tuple[str, ...]
+    coarse_intents: tuple[str, ...]
+    reasons: tuple[str, ...]
+    topic: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -124,13 +138,19 @@ def _incremental_execution_payload(
     execution_result: IncrementalExecutionResult,
 ) -> dict[str, object]:
     plan_clusters = {cluster.cluster_id: cluster for cluster in plan.clusters}
+    plan_jobs = {job.job_id: job for job in plan.jobs}
+    compatibility_jobs = _compatibility_jobs_by_cluster_id(plan)
     clusters_payload: list[dict[str, object]] = []
 
     for result in execution_result.cluster_results:
         cluster = plan_clusters.get(result.cluster_id)
+        job = plan_jobs.get(result.cluster_id) or compatibility_jobs.get(result.cluster_id)
         clusters_payload.append(
             {
                 "cluster_id": result.cluster_id,
+                "job_id": job.job_id if job else None,
+                "job_type": job.job_type if job else None,
+                "subsystem": job.subsystem if job else None,
                 "route": result.route,
                 "status": result.status,
                 "skip_reason": result.skip_reason,
@@ -161,6 +181,10 @@ def _incremental_execution_payload(
         "generated_at": plan.generated_at,
         "clusters": clusters_payload,
     }
+
+
+def _compatibility_jobs_by_cluster_id(plan: IncrementalPlan) -> dict[str, ReviewJob]:
+    return {cluster.cluster_id: job for cluster, job in zip(plan.clusters, plan.jobs, strict=False)}
 
 
 def _incremental_telemetry_filename(repo: Path, plan: IncrementalPlan) -> str:
@@ -289,22 +313,23 @@ async def execute_incremental_plan(
     scanner_factory: Callable[..., Scanner] | None = None,
     clock: Callable[[], float] | None = None,
 ) -> IncrementalExecutionResult:
-    """Execute supported review clusters from an incremental plan."""
+    """Execute supported review jobs from an incremental plan."""
     factory = scanner_factory or (
         lambda *, model, debug, quiet: Scanner(model=model, debug=debug, quiet=quiet)
     )
     timer = clock or perf_counter
-    selected_executable_clusters = _select_executable_clusters(plan.clusters)
-    selected_targeted_clusters = _select_targeted_clusters(plan.clusters)
+    execution_units = _execution_units(plan)
+    selected_executable_clusters = _select_executable_units(execution_units)
+    selected_targeted_clusters = _select_targeted_units(execution_units)
     threat_modeled_topics: set[tuple[str, ...]] = set()
 
     cluster_results: list[ClusterExecutionResult] = []
-    for cluster in plan.clusters:
+    for cluster in execution_units:
         cluster_started_at = timer()
         if cluster.route == "skip":
             cluster_results.append(
                 ClusterExecutionResult(
-                    cluster_id=cluster.cluster_id,
+                    cluster_id=cluster.result_id,
                     route=cluster.route,
                     status="skipped",
                     skip_reason="planned_skip",
@@ -320,7 +345,7 @@ async def execute_incremental_plan(
         }:
             cluster_results.append(
                 ClusterExecutionResult(
-                    cluster_id=cluster.cluster_id,
+                    cluster_id=cluster.result_id,
                     route=cluster.route,
                     status="skipped",
                     skip_reason="route_not_implemented",
@@ -329,10 +354,10 @@ async def execute_incremental_plan(
             )
             continue
 
-        if cluster.cluster_id not in selected_executable_clusters:
+        if cluster.result_id not in selected_executable_clusters:
             cluster_results.append(
                 ClusterExecutionResult(
-                    cluster_id=cluster.cluster_id,
+                    cluster_id=cluster.result_id,
                     route=cluster.route,
                     status="skipped",
                     skip_reason="execution_budget_exhausted",
@@ -343,11 +368,11 @@ async def execute_incremental_plan(
 
         if (
             cluster.route == "targeted_pr_review"
-            and cluster.cluster_id not in selected_targeted_clusters
+            and cluster.result_id not in selected_targeted_clusters
         ):
             cluster_results.append(
                 ClusterExecutionResult(
-                    cluster_id=cluster.cluster_id,
+                    cluster_id=cluster.result_id,
                     route=cluster.route,
                     status="skipped",
                     skip_reason="targeted_budget_exhausted",
@@ -360,7 +385,7 @@ async def execute_incremental_plan(
         if not cluster_diff_context.changed_files:
             cluster_results.append(
                 ClusterExecutionResult(
-                    cluster_id=cluster.cluster_id,
+                    cluster_id=cluster.result_id,
                     route=cluster.route,
                     status="skipped",
                     skip_reason="empty_cluster_diff",
@@ -451,7 +476,52 @@ async def execute_incremental_plan(
     return IncrementalExecutionResult(cluster_results=tuple(cluster_results))
 
 
-def _pr_review_kwargs_for_cluster(cluster: ReviewCluster) -> dict[str, int | bool]:
+def _execution_units(plan: IncrementalPlan) -> tuple[_ExecutionUnit, ...]:
+    if plan.jobs:
+        compatibility_clusters = list(plan.clusters)
+        units: list[_ExecutionUnit] = []
+        for index, job in enumerate(plan.jobs):
+            cluster = compatibility_clusters[index] if index < len(compatibility_clusters) else None
+            units.append(
+                _ExecutionUnit(
+                    result_id=cluster.cluster_id if cluster else job.job_id,
+                    route=cluster.route if cluster else _route_for_job(job),
+                    file_paths=job.file_paths,
+                    baseline_vuln_paths=job.baseline_vuln_paths,
+                    baseline_components=job.baseline_components,
+                    coarse_intents=job.coarse_intents,
+                    reasons=job.reasons,
+                    topic=cluster.topic if cluster else ((job.subsystem,) if job.subsystem else ()),
+                )
+            )
+        return tuple(units)
+
+    return tuple(
+        _ExecutionUnit(
+            result_id=cluster.cluster_id,
+            route=cluster.route,
+            file_paths=cluster.file_paths,
+            baseline_vuln_paths=cluster.baseline_vuln_paths,
+            baseline_components=cluster.baseline_components,
+            coarse_intents=cluster.coarse_intents,
+            reasons=cluster.reasons,
+            topic=cluster.topic,
+        )
+        for cluster in plan.clusters
+    )
+
+
+def _route_for_job(job: ReviewJob) -> str:
+    route_by_type = {
+        "dependency_review": "supply_chain_review",
+        "new_subsystem_review": "incremental_threat_model_then_review",
+        "baseline_overlap_review": "targeted_pr_review",
+        "skip": "skip",
+    }
+    return route_by_type[job.job_type]
+
+
+def _pr_review_kwargs_for_cluster(cluster: _ExecutionUnit) -> dict[str, int | bool]:
     if cluster.route == "supply_chain_review":
         return {
             "pr_review_attempts": _INCREMENTAL_SUPPLY_CHAIN_ATTEMPTS,
@@ -471,10 +541,10 @@ def _pr_review_kwargs_for_cluster(cluster: ReviewCluster) -> dict[str, int | boo
     }
 
 
-def _select_targeted_clusters(clusters: tuple[ReviewCluster, ...]) -> set[str]:
+def _select_targeted_units(clusters: tuple[_ExecutionUnit, ...]) -> set[str]:
     targeted = [cluster for cluster in clusters if cluster.route == "targeted_pr_review"]
     if len(targeted) <= _TARGETED_CLUSTER_MAX_EXECUTIONS:
-        return {cluster.cluster_id for cluster in targeted}
+        return {cluster.result_id for cluster in targeted}
 
     ranked = sorted(
         enumerate(targeted),
@@ -492,13 +562,13 @@ def _select_targeted_clusters(clusters: tuple[ReviewCluster, ...]) -> set[str]:
         ):
             continue
 
-        selected_ids.add(cluster.cluster_id)
+        selected_ids.add(cluster.result_id)
         selected_files = next_file_total
 
     return selected_ids
 
 
-def _select_executable_clusters(clusters: tuple[ReviewCluster, ...]) -> set[str]:
+def _select_executable_units(clusters: tuple[_ExecutionUnit, ...]) -> set[str]:
     executable = [
         cluster
         for cluster in clusters
@@ -510,7 +580,7 @@ def _select_executable_clusters(clusters: tuple[ReviewCluster, ...]) -> set[str]
         }
     ]
     if len(executable) <= _EXECUTABLE_CLUSTER_MAX_EXECUTIONS:
-        return {cluster.cluster_id for cluster in executable}
+        return {cluster.result_id for cluster in executable}
 
     ranked = sorted(
         enumerate(executable),
@@ -528,13 +598,13 @@ def _select_executable_clusters(clusters: tuple[ReviewCluster, ...]) -> set[str]
         ):
             continue
 
-        selected_ids.add(cluster.cluster_id)
+        selected_ids.add(cluster.result_id)
         selected_files = next_file_total
 
     return selected_ids
 
 
-def _cluster_execution_score(cluster: ReviewCluster) -> int:
+def _cluster_execution_score(cluster: _ExecutionUnit) -> int:
     route_bonus = {
         "incremental_threat_model_then_review": 200,
         "targeted_pr_review": 100,
@@ -543,7 +613,7 @@ def _cluster_execution_score(cluster: ReviewCluster) -> int:
     return route_bonus + _targeted_cluster_score(cluster)
 
 
-def _targeted_cluster_score(cluster: ReviewCluster) -> int:
+def _targeted_cluster_score(cluster: _ExecutionUnit) -> int:
     score = 0
     if cluster.baseline_vuln_paths:
         score += 100
@@ -559,7 +629,7 @@ def _targeted_cluster_score(cluster: ReviewCluster) -> int:
     return score
 
 
-def _cluster_has_security_signal(cluster: ReviewCluster) -> bool:
+def _cluster_has_security_signal(cluster: _ExecutionUnit) -> bool:
     for path in cluster.file_paths:
         normalized = normalize_repo_path(path).lower()
         if any(keyword in normalized for keyword in SECURITY_KEYWORDS):
@@ -568,7 +638,7 @@ def _cluster_has_security_signal(cluster: ReviewCluster) -> bool:
 
 
 def _execution_result_for_cluster(
-    cluster: ReviewCluster,
+    cluster: _ExecutionUnit,
     result: ScanResult,
     *,
     diff_slice_count: int,
@@ -578,7 +648,7 @@ def _execution_result_for_cluster(
     total_duration_seconds: float,
 ) -> ClusterExecutionResult:
     return ClusterExecutionResult(
-        cluster_id=cluster.cluster_id,
+        cluster_id=cluster.result_id,
         route=cluster.route,
         status="executed",
         findings_count=len(result.issues),
@@ -594,7 +664,7 @@ def _execution_result_for_cluster(
 
 
 def _cluster_execution_failure_result(
-    cluster: ReviewCluster,
+    cluster: _ExecutionUnit,
     repo: Path,
     exc: Exception,
     *,
@@ -607,11 +677,10 @@ def _cluster_execution_failure_result(
 ) -> ClusterExecutionResult:
     result = partial_result or ScanResult(repository_path=str(repo))
     result.warnings.append(
-        f"Incremental cluster {cluster.cluster_id} execution failed: "
-        f"{type(exc).__name__}: {exc}"
+        f"Incremental cluster {cluster.result_id} execution failed: " f"{type(exc).__name__}: {exc}"
     )
     return ClusterExecutionResult(
-        cluster_id=cluster.cluster_id,
+        cluster_id=cluster.result_id,
         route=cluster.route,
         status="skipped",
         findings_count=len(result.issues),
@@ -638,7 +707,7 @@ def _aggregate_scan_results(repo: Path, results: list[ScanResult]) -> ScanResult
     return aggregated
 
 
-def _new_surface_topic_key(cluster: ReviewCluster) -> tuple[str, ...] | None:
+def _new_surface_topic_key(cluster: _ExecutionUnit) -> tuple[str, ...] | None:
     if cluster.route != "incremental_threat_model_then_review":
         return None
     return cluster.topic or None
