@@ -45,6 +45,19 @@ def test_update_scan_state_writes_full_scan(tmp_path: Path):
     assert persisted["last_full_scan"]["commit"] == "abc123"
 
 
+def test_update_scan_state_does_not_leave_repo_lock_file(tmp_path: Path):
+    state_path = tmp_path / "scan_state.json"
+    full_scan = build_full_scan_entry(
+        commit="abc123",
+        branch="main",
+        timestamp="2026-02-02T10:00:00Z",
+    )
+
+    update_scan_state(state_path, full_scan=full_scan)
+
+    assert not state_path.with_name(".scan_state.json.lock").exists()
+
+
 def test_update_scan_state_merges_pr_review(tmp_path: Path):
     state_path = tmp_path / "scan_state.json"
     full_scan = build_full_scan_entry(
