@@ -38,6 +38,18 @@ def test_classify_chunk_matches_globs_and_unmapped_defaults_to_moderate() -> Non
     )
 
 
+def test_changed_file_exposes_line_count_metadata() -> None:
+    changed_file = ChangedFile(
+        path="src/security/auth.py",
+        status="M",
+        insertions=12,
+        deletions=3,
+    )
+
+    assert changed_file.insertions == 12
+    assert changed_file.deletions == 3
+
+
 def test_dependency_change_promotes_skip_chunk_to_moderate() -> None:
     risk_map = {
         "critical": [],
@@ -189,9 +201,7 @@ def test_load_threat_model_entries_accepts_wrapped_and_list_formats(
 
 def test_load_risk_map_requires_all_tier_buckets(tmp_path) -> None:
     risk_map_path = tmp_path / "risk_map.json"
-    risk_map_path.write_text(
-        json.dumps({"critical": [], "moderate": []}), encoding="utf-8"
-    )
+    risk_map_path.write_text(json.dumps({"critical": [], "moderate": []}), encoding="utf-8")
 
     with pytest.raises(ValueError, match="missing required field"):
         load_risk_map(risk_map_path)

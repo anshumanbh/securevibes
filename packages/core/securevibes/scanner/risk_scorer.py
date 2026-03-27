@@ -82,6 +82,8 @@ class ChangedFile:
 
     path: str
     status: str = "M"
+    insertions: int = 0
+    deletions: int = 0
     added_lines: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -281,8 +283,7 @@ def classify_chunk(
             chunk_tier = "moderate"
             reasons.append("skip_safeguard:deleted_security_test")
         elif any(
-            _is_extensionless_non_doc(normalize_path(changed.path))
-            for changed in changed_files
+            _is_extensionless_non_doc(normalize_path(changed.path)) for changed in changed_files
         ):
             chunk_tier = "moderate"
             reasons.append("skip_safeguard:extensionless_file")
@@ -301,9 +302,7 @@ def classify_chunk(
         if not path or path not in unmapped_files:
             continue
         top_level = path.split("/", 1)[0] if "/" in path else path
-        has_security_keyword = any(
-            keyword in path.lower() for keyword in SECURITY_KEYWORDS
-        )
+        has_security_keyword = any(keyword in path.lower() for keyword in SECURITY_KEYWORDS)
         if changed_file.status.upper().startswith("A") and (
             top_level not in mapped_top_levels or has_security_keyword
         ):
@@ -330,9 +329,7 @@ def load_threat_model_entries(threat_model_path: Path) -> list[dict[str, object]
     if isinstance(parsed, dict) and isinstance(parsed.get("threats"), list):
         parsed = parsed["threats"]
     if not isinstance(parsed, list):
-        raise ValueError(
-            "THREAT_MODEL.json must be a JSON array or an object with 'threats'."
-        )
+        raise ValueError("THREAT_MODEL.json must be a JSON array or an object with 'threats'.")
     return [entry for entry in parsed if isinstance(entry, dict)]
 
 
@@ -367,11 +364,7 @@ def resolve_component_globs(
     for root, dirs, files in os.walk(repo_root):
         rel_root = Path(root).relative_to(repo_root)
         depth = len(rel_root.parts)
-        dirs[:] = [
-            name
-            for name in dirs
-            if name not in excluded_dirs and (depth + 1) <= max_depth
-        ]
+        dirs[:] = [name for name in dirs if name not in excluded_dirs and (depth + 1) <= max_depth]
         if depth > max_depth:
             continue
 
@@ -445,9 +438,7 @@ def build_risk_map_from_threat_model(
             for pattern in resolved_patterns:
                 target_bucket.add(pattern)
 
-    timestamp = (
-        generated_at or datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-    )
+    timestamp = generated_at or datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     if timestamp.endswith("+00:00"):
         timestamp = timestamp.replace("+00:00", "Z")
 
@@ -474,12 +465,8 @@ def load_risk_map(risk_map_path: Path) -> dict[str, object]:
         if bucket not in parsed:
             raise ValueError(f"risk_map.json missing required field '{bucket}'.")
         value = parsed[bucket]
-        if not isinstance(value, list) or not all(
-            isinstance(item, str) for item in value
-        ):
-            raise ValueError(
-                f"risk_map.json field '{bucket}' must be a list of strings."
-            )
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise ValueError(f"risk_map.json field '{bucket}' must be a list of strings.")
 
     return parsed
 
